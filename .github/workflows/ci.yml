@@ -1,0 +1,16 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install pytest numpy pybind11 scikit-build-core
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCDFMM_BUILD_TESTS=ON -DCDFMM_BUILD_PYTHON=ON
+      - run: cmake --build build -j
+      - run: ctest --test-dir build --output-on-failure
+      - run: python -m pip install .
+      - run: python -m pytest python_tests -v

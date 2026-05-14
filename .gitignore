@@ -1,69 +1,31 @@
-# Prerequisites
-*.d
+# Build directories
+build/
+cmake-build-*/
 
-# Compiled Object files
-*.slo
-*.lo
+# CMake artefacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+
+# Binaries and libraries
 *.o
 *.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
 *.so
 *.dylib
 *.dll
-*.so.*
-
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
 *.a
 *.lib
-
-# Executables
 *.exe
-*.out
-*.app
 
-# Build directories
-build/
-Build/
-build-*/
+# Python artefacts
+__pycache__/
+*.py[cod]
+*.pyd
+*.egg-info/
+.venv/
 
-# CMake generated files
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-install_manifest.txt
-compile_commands.json
-
-# Temporary files
-*.tmp
-*.log
-*.bak
-*.swp
-
-# vcpkg
-vcpkg_installed/
-
-# debug information files
-*.dwo
-
-# test output & cache
-Testing/
-.cache/
+# Test/cache tools
+.pytest_cache/
+.mypy_cache/

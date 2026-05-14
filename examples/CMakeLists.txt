@@ -1,0 +1,3 @@
+add_executable(single_box_demo single_box_demo.cpp)
+target_link_libraries(single_box_demo PRIVATE cdfmm_core)
+target_include_directories(single_box_demo PRIVATE ${CMAKE_SOURCE_DIR}/include)
