@@ -1,0 +1,15 @@
+# Mathematical convention
+
+G(r)=1/(4*pi*|r|). Dipole potential and field follow repository AGENTS.md conventions.
+
+P2M: M_alpha(c)=(-1)^|alpha| sum_j sum_k m_{j,k} (x_j-c)^(alpha-e_k)/(alpha-e_k)!
+
+M2M: M_alpha(parent)+=sum_{gamma<=alpha} d^gamma/gamma! M_{alpha-gamma}(child)
+
+M2L: L_beta(target)+=sum_alpha M_alpha(source) D_{alpha+beta}G(c_target-c_source)
+
+L2L: L_beta(child)+=sum_gamma d^gamma/gamma! L_{beta+gamma}(parent)
+
+L2P: phi=sum_beta L_beta (x-c)^beta/beta!, H_k=-sum_{beta_k>0} L_beta (x-c)^(beta-e_k)/(beta-e_k)!
+
+P2P: phi_ij=m_j.r_ij/(4*pi*|r_ij|^3), H_ij=1/(4*pi)*[3*r_ij*(m_j.r_ij)/|r_ij|^5-m_j/|r_ij|^3]
