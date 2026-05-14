@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+
 #include <span>
+
 #include "cdfmm/coefficients.hpp"
+#include "cdfmm/multi_index.hpp"
 #include "cdfmm/output_flags.hpp"
+
 namespace cdfmm {
 CoeffVector p2m_dipole(const MultiIndexSet& basis, const Vec3& centre, std::span<const Vec3> source_positions, std::span<const Vec3> dipole_moments);
 void m2m_add(const MultiIndexSet& basis, const Vec3& d, std::span<const double> child, std::span<double> parent);
