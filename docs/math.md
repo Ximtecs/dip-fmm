@@ -10,6 +10,10 @@ M2L: L_beta(target)+=sum_alpha M_alpha(source) D_{alpha+beta}G(c_target-c_source
 
 L2L: L_beta(child)+=sum_gamma d^gamma/gamma! L_{beta+gamma}(parent)
 
+M2P: phi_far(x)=sum_alpha M_alpha(c) D_alpha G(x-c)
+
+M2P: H_k(x)=-sum_alpha M_alpha(c) D_{alpha+e_k} G(x-c)
+
 L2P: phi=sum_beta L_beta (x-c)^beta/beta!, H_k=-sum_{beta_k>0} L_beta (x-c)^(beta-e_k)/(beta-e_k)!
 
 P2P: phi_ij=m_j.r_ij/(4*pi*|r_ij|^3), H_ij=1/(4*pi)*[3*r_ij*(m_j.r_ij)/|r_ij|^5-m_j/|r_ij|^3]

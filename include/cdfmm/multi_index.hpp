@@ -9,11 +9,15 @@
 
 namespace cdfmm {
 
+/**
+ * @brief Cartesian multi-index alpha=(alpha_x, alpha_y, alpha_z).
+ */
 struct MultiIndex {
   int ax{0};
   int ay{0};
   int az{0};
 
+  /// @brief Returns |alpha| = alpha_x + alpha_y + alpha_z.
   int degree() const { return ax + ay + az; }
   int operator[](int i) const { return i == 0 ? ax : (i == 1 ? ay : az); }
 };
@@ -30,13 +34,19 @@ inline MultiIndex sub(const MultiIndex &a, const MultiIndex &b) {
   return {a.ax - b.ax, a.ay - b.ay, a.az - b.az};
 }
 
+/**
+ * @brief Dense total-degree multi-index basis up to order p.
+ *
+ * Storage order is grouped by total degree and then lexicographically in
+ * (alpha_x, alpha_y) at fixed degree, with alpha_z implied by degree balance.
+ */
 class MultiIndexSet {
 public:
   explicit MultiIndexSet(int p) : p_(p) {
     for (int d = 0; d <= p_; ++d) {
       for (int ax = 0; ax <= d; ++ax) {
         for (int ay = 0; ay <= d - ax; ++ay) {
-          int az = d - ax - ay;
+          const int az = d - ax - ay;
           indices_.push_back({ax, ay, az});
         }
       }
@@ -70,6 +80,7 @@ public:
     return factorial(a.ax) * factorial(a.ay) * factorial(a.az);
   }
 
+  /// @brief Returns r^alpha / alpha! for Cartesian Taylor expansions.
   static double monomial_over_factorial(const Vec3 &r, const MultiIndex &a) {
     return std::pow(r.x, a.ax) * std::pow(r.y, a.ay) * std::pow(r.z, a.az) /
            multi_factorial(a);
