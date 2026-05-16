@@ -16,6 +16,7 @@ add_library(cdfmm_core
     src/operators.cpp
 )
 target_include_directories(cdfmm_core PUBLIC include)
+set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(CDFMM_BUILD_TESTS)
   include(FetchContent)
@@ -48,4 +49,5 @@ if(CDFMM_BUILD_PYTHON)
   pybind11_add_module(cdfmm python/bindings.cpp)
   target_link_libraries(cdfmm PRIVATE cdfmm_core)
   target_include_directories(cdfmm PRIVATE include)
+  install(TARGETS cdfmm LIBRARY DESTINATION .)
 endif()
