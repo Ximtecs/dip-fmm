@@ -107,8 +107,10 @@ TEST_CASE("Single-cluster P2M plus M2P far-field accuracy improves with order") 
   REQUIRE(best_error < 8e-1);
 
   // Require either measurable improvement or near-tie within numerical noise.
-  REQUIRE((mean_errors.back() < mean_errors.front() * 0.98) ||
-          (std::abs(mean_errors.back() - mean_errors.front()) < 1e-12));
+  const bool improved_or_tied =
+      (mean_errors.back() < mean_errors.front() * 0.98) ||
+      (std::abs(mean_errors.back() - mean_errors.front()) < 1e-12);
+  REQUIRE(improved_or_tied);
 }
 
 TEST_CASE("Eight-child P2M plus M2M plus M2P far-field accuracy") {
@@ -194,8 +196,10 @@ TEST_CASE("Eight-child P2M plus M2M plus M2P far-field accuracy") {
   REQUIRE(best_error < 8e-1);
 
   // Require either measurable improvement or near-tie within numerical noise.
-  REQUIRE((mean_errors.back() < mean_errors.front() * 0.98) ||
-          (std::abs(mean_errors.back() - mean_errors.front()) < 1e-12));
+  const bool improved_or_tied =
+      (mean_errors.back() < mean_errors.front() * 0.98) ||
+      (std::abs(mean_errors.back() - mean_errors.front()) < 1e-12);
+  REQUIRE(improved_or_tied);
   REQUIRE(mean_errors.back() < 1.5 * single_cluster_errors.back());
 }
 
