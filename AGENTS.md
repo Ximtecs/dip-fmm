@@ -134,6 +134,59 @@ Good:
 
 Keep full LaTeX formulas in `docs/math.md`.
 
+## Formatting and readability
+
+All C++ code must be formatted as readable multi-line code. Do not compress function bodies, loops, conditionals, lambdas, examples, or benchmarks into dense one-line blocks.
+
+Prefer clarity over compactness.
+
+Rules:
+
+- Use one statement per line except for very small, obvious declarations.
+- Use clear indentation and whitespace to show code structure.
+- Dense one-line function bodies are forbidden.
+- Dense one-line loops, conditionals, and lambdas are forbidden.
+- Do not use minified or code-golf style formatting anywhere in the repository.
+- Use descriptive variable names in examples, benchmarks, tests, and public-facing code.
+- Short mathematical variable names are allowed only when they match nearby mathematical notation or established FMM conventions.
+- Examples and benchmarks should be especially readable because they act as user-facing documentation.
+- Comments should explain intent, setup, assumptions, indexing conventions, or mathematical meaning, not obvious syntax.
+- Future agent contributions must preserve this style.
+
+Unacceptable:
+
+    int main(){ using namespace cdfmm; std::vector<Vec3> xs(10000),ms(10000); for(int i=0;i<10000;++i){xs[i]={0,0,0};ms[i]={1,0,0};} auto r=p2p_dipole_sum({0,0,1},xs,ms); std::cout<<r.H.z<<"\n"; }
+
+Acceptable:
+
+    int main()
+    {
+        using namespace cdfmm;
+
+        constexpr int n_sources = 10000;
+
+        std::vector<Vec3> source_positions(n_sources);
+        std::vector<Vec3> source_moments(n_sources);
+
+        // Initialise a deterministic source distribution for the example.
+        for (int i = 0; i < n_sources; ++i) {
+            source_positions[i] = {0.0, 0.0, 0.0};
+            source_moments[i] = {1.0, 0.0, 0.0};
+        }
+
+        const Vec3 target_position{0.0, 0.0, 1.0};
+
+        const auto result = p2p_dipole_sum(
+            target_position,
+            source_positions,
+            source_moments
+        );
+
+        std::cout << "H_z = " << result.H.z << "\n";
+
+        return 0;
+    }
+
 ## Header file structure
 
 Header files should generally follow this structure:
