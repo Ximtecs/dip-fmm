@@ -2,8 +2,9 @@
 
 #include "cdfmm/laplace_derivatives.hpp"
 
-#include <cmath>
 #include <numbers>
+
+#include "cdfmm/taylor_jet.hpp"
 
 namespace cdfmm {
 
@@ -11,44 +12,7 @@ namespace cdfmm {
 // Helper functions
 //------------------------------------------------------------------------------
 
-static double G(const Vec3 &r) {
-  return 1.0 / (4.0 * std::numbers::pi * std::sqrt(dot(r, r)));
-}
-
-static double deriv(const Vec3 &r, const MultiIndex &alpha, double h = 1e-5) {
-  if (alpha.ax + alpha.ay + alpha.az == 0) {
-    return G(r);
-  }
-
-  // Recursively apply central finite differences one axis at a time.
-  if (alpha.ax > 0) {
-    auto eta = alpha;
-    eta.ax--;
-    Vec3 rp = r;
-    rp.x += h;
-    Vec3 rm = r;
-    rm.x -= h;
-    return (deriv(rp, eta, h) - deriv(rm, eta, h)) / (2.0 * h);
-  }
-
-  if (alpha.ay > 0) {
-    auto eta = alpha;
-    eta.ay--;
-    Vec3 rp = r;
-    rp.y += h;
-    Vec3 rm = r;
-    rm.y -= h;
-    return (deriv(rp, eta, h) - deriv(rm, eta, h)) / (2.0 * h);
-  }
-
-  auto eta = alpha;
-  eta.az--;
-  Vec3 rp = r;
-  rp.z += h;
-  Vec3 rm = r;
-  rm.z -= h;
-  return (deriv(rp, eta, h) - deriv(rm, eta, h)) / (2.0 * h);
-}
+static constexpr double k_inv_four_pi = 1.0 / (4.0 * std::numbers::pi);
 
 //------------------------------------------------------------------------------
 // Public interface
@@ -56,9 +20,19 @@ static double deriv(const Vec3 &r, const MultiIndex &alpha, double h = 1e-5) {
 
 std::vector<double> laplace_derivatives_raw(const MultiIndexSet &basis,
                                             const Vec3 &r) {
+  const TaylorJet x = TaylorJet::coordinate(basis, 0, r.x);
+  const TaylorJet y = TaylorJet::coordinate(basis, 1, r.y);
+  const TaylorJet z = TaylorJet::coordinate(basis, 2, r.z);
+
+  const TaylorJet rho2 = x.mul(x).add(y.mul(y)).add(z.mul(z));
+  const TaylorJet inv_r = rho2.invsqrt();
+  const TaylorJet G = inv_r.mul(TaylorJet::constant(basis, k_inv_four_pi));
+
   std::vector<double> out(basis.size());
   for (int i = 0; i < basis.size(); ++i) {
-    out[i] = deriv(r, basis[i]);
+    // TaylorJet stores normalised coefficients c_alpha = D_alpha G / alpha!.
+    // Convert back to raw derivatives required by multipole operators.
+    out[i] = G.at(basis[i]) * MultiIndexSet::multi_factorial(basis[i]);
   }
   return out;
 }
