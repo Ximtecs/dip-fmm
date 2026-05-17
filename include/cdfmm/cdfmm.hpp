@@ -8,3 +8,6 @@
 #include "cdfmm/taylor_jet.hpp"
 #include "cdfmm/vec3.hpp"
 #include "cdfmm/validation.hpp"
+
+#include "cdfmm/tree_node.hpp"
+#include "cdfmm/uniform_tree.hpp"
