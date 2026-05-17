@@ -47,6 +47,10 @@ TaylorJet TaylorJet::mul(const TaylorJet &b) const {
   for (int i = 0; i < basis_->size(); ++i) {
     const MultiIndex alpha = (*basis_)[i];
     double sum = 0.0;
+    // Cauchy product over multi-indices:
+    //   (a*b)_alpha = sum_{gamma<=alpha} a_gamma b_{alpha-gamma}
+    // Coefficients are normalised Taylor coefficients, so no binomial factors
+    // are required in this representation.
     for (int j = 0; j < basis_->size(); ++j) {
       const MultiIndex gamma = (*basis_)[j];
       if (!leq(gamma, alpha)) {
@@ -70,10 +74,15 @@ TaylorJet TaylorJet::invsqrt(int) const {
         "TaylorJet::invsqrt requires positive constant coefficient");
   }
 
-  // Solve y^2 * z = 1 coefficient-by-coefficient in increasing total degree.
+  // Compute y = z^(-1/2) via y^2*z = 1.
+  // This is the core step for invsqrt(x*x + y*y + z*z) used in Laplace
+  // derivative generation.
+  //
+  // Solve coefficient-by-coefficient in increasing total degree.
   // The Taylor basis is stored by total degree, so lower-order coefficients
   // required by the recursion are always available when needed.
   y.at({0, 0, 0}) = 1.0 / std::sqrt(z0);
+  // y_0 = 1/sqrt(z_0).
 
   for (int i = 1; i < basis_->size(); ++i) {
     const MultiIndex alpha = (*basis_)[i];
@@ -81,6 +90,7 @@ TaylorJet TaylorJet::invsqrt(int) const {
     // Step 1: solve for w_alpha where w = y*y from w*z = 1.
     // Coefficient equation at alpha>0:
     //   w_alpha*z_0 + sum_{gamma<alpha} w_gamma*z_{alpha-gamma} = 0
+    // Hence w_alpha is linear once lower-order terms are known.
     double sum_lower = 0.0;
     for (int j = 0; j < basis_->size(); ++j) {
       const MultiIndex gamma = (*basis_)[j];
@@ -112,6 +122,8 @@ TaylorJet TaylorJet::invsqrt(int) const {
 
     // Step 2: recover y_alpha from w_alpha = (y*y)_alpha.
     //   w_alpha = 2*y_0*y_alpha + sum_{0<eta<alpha} y_eta*y_{alpha-eta}
+    // y_alpha appears linearly through 2*y_0*y_alpha; the remaining nonlinear
+    // sum depends only on already-computed lower-order coefficients.
     double nonlinear = 0.0;
     for (int j = 0; j < basis_->size(); ++j) {
       const MultiIndex eta = (*basis_)[j];

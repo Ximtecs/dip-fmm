@@ -10,8 +10,15 @@ namespace cdfmm {
 /**
  * @brief Computes raw Cartesian derivatives D_alpha G(r) for Laplace Green's function.
  *
- * This returns unnormalised derivatives, i.e. direct partial derivatives of
- * G(r)=1/(4*pi*|r|), not Taylor coefficients divided by alpha!.
+ * The implementation uses truncated Cartesian Taylor algebra (TaylorJet)
+ * rather than finite differences to generate deterministic high-order
+ * derivatives needed by M2L and M2P field evaluation.
+ *
+ * Returned entries are unnormalised partial derivatives:
+ *
+ *   out[alpha] = D_alpha G(r),   G(r)=1/(4*pi*|r|)
+ *
+ * not the normalised Taylor coefficients D_alpha G(r)/alpha!.
  */
 std::vector<double> laplace_derivatives_raw(const MultiIndexSet &basis,
                                             const Vec3 &r);

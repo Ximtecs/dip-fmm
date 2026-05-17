@@ -32,7 +32,8 @@ CoeffVector p2m_dipole(const MultiIndexSet &basis, const Vec3 &centre,
 /**
  * @brief Adds one child multipole expansion into a parent expansion centre.
  *
- * The translation vector @p d is parent-centre minus child-centre.
+ * The translation vector @p d is parent-centre minus child-centre, and the
+ * translation is a multi-index Taylor shift in that displacement.
  */
 void m2m_add(const MultiIndexSet &basis, const Vec3 &d,
              std::span<const double> child, std::span<double> parent);
@@ -48,12 +49,17 @@ void m2l_add(const MultiIndexSet &basis, const Vec3 &R,
 
 /**
  * @brief Adds a parent local expansion shifted to a child expansion centre.
+ *
+ * The translation vector @p d is child-centre minus parent-centre.
  */
 void l2l_add(const MultiIndexSet &basis, const Vec3 &d,
              std::span<const double> parent, std::span<double> child);
 
 /**
  * @brief Evaluates a local expansion at one target position.
+ *
+ * Potential output is optional. Field output is computed as H = -grad(phi).
+ * Field-only is the default because H is the main quantity of interest.
  */
 PotentialField l2p_eval(const MultiIndexSet &basis, const Vec3 &centre,
                         const Vec3 &target, std::span<const double> L,
@@ -77,6 +83,9 @@ PotentialField m2p_eval(const MultiIndexSet &basis_p, const CoeffVector &M,
 
 /**
  * @brief Evaluates one dipole source contribution at one target position.
+ *
+ * Uses the direct dipole formula with the repository sign convention
+ * consistent with H = -grad(phi).
  */
 PotentialField p2p_dipole_pair(const Vec3 &target, const Vec3 &source,
                                const Vec3 &moment,
@@ -85,7 +94,8 @@ PotentialField p2p_dipole_pair(const Vec3 &target, const Vec3 &source,
 /**
  * @brief Sums direct dipole contributions from all sources at one target.
  *
- * @param self_index Optional source index to skip for source-point evaluation.
+ * @param self_index Optional source index to skip for source-point evaluation
+ * to avoid singular self-interaction.
  */
 PotentialField p2p_dipole_sum(const Vec3 &target, std::span<const Vec3> sources,
                               std::span<const Vec3> moments,
