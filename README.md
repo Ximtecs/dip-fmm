@@ -37,3 +37,7 @@ G(r)=1/(4*pi*|r|), H=-grad(phi). See `docs/math.md`.
 4. Adaptive tree
 5. CUDA P2P/M2L
 6. MagTense/Fortran interface
+
+## Uniform tree status
+
+The repository now includes an initial complete uniform Morton-sorted tree structure for geometry organisation and neighbour-list inspection. Upward and downward FMM passes are intentionally not implemented yet.

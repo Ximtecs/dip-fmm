@@ -62,3 +62,9 @@ For pre-tree operator validation, the main consistency paths are:
 - P2M + M2P
 - P2M + M2L + L2P
 - P2M + M2M + M2P
+
+## Uniform complete-tree geometry
+
+For level `ell`, boxes are indexed by `(ix, iy, iz)` with `0 <= i < 2^ell`. Level ordering uses Morton index `morton = interleave_bits(ix, iy, iz)`. Flat node index is `level_offset(ell) + morton`, where `level_offset(ell) = (8^ell - 1)/7`.
+
+`list1` is the same-level 3x3x3 neighbourhood (including self). `list2` is built from children of parent-neighbourhood boxes, excluding `list1`.
