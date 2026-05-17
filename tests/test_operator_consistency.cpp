@@ -3,6 +3,7 @@
 #include <numeric>
 #include <random>
 #include <vector>
+#include <string>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -60,7 +61,7 @@ std::vector<Vec3> generate_far_targets(int n_targets, uint32_t seed)
 }
 
 std::vector<Vec3> evaluate_m2p_fields(const MultiIndexSet &basis,
-                                      std::span<const double> M,
+                                      const CoeffVector &M,
                                       const Vec3 &source_centre,
                                       std::span<const Vec3> target_positions)
 {
