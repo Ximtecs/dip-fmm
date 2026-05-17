@@ -92,26 +92,22 @@ TEST_CASE("Single-cluster P2M plus M2P far-field accuracy improves with order") 
 
   std::vector<double> mean_errors;
 
-  // NOTE(cdfmm): laplace_derivatives_raw currently uses recursive finite
-  // differences, which becomes unstable for higher derivative orders in CI.
-  // Keep validation orders within a stable range for deterministic checks.
-  for (int p = 1; p <= 3; ++p) {
+  for (int p = 2; p <= 6; ++p) {
     mean_errors.push_back(mean_m2p_field_error_for_order(
         p, source_centre, source_positions, dipole_moments, targets));
   }
 
-  const double best_error = *std::min_element(mean_errors.begin(), mean_errors.end());
+  REQUIRE(std::isfinite(mean_errors.front()));
+  REQUIRE(std::isfinite(mean_errors.back()));
+  REQUIRE(mean_errors.back() < mean_errors.front());
+  // NOTE(cdfmm): Keep a meaningful far-field threshold while allowing
+  // small deterministic CI variation in random-source realisations.
+  REQUIRE(mean_errors.back() < 1.2e-2);
 
-  REQUIRE(std::isfinite(best_error));
-  REQUIRE(best_error <= mean_errors.front());
-  REQUIRE(best_error < 8e-1);
-
-  // Require either measurable improvement or near-tie within numerical noise.
-  INFO("mean_errors = [" << mean_errors[0] << ", " << mean_errors[1] << ", "
-                        << mean_errors[2] << "]");
-  INFO("first_error = " << mean_errors.front());
-  INFO("last_error = " << mean_errors.back());
-  INFO("best_error = " << best_error);
+  INFO("mean_errors(p=2..6) = [" << mean_errors[0] << ", " << mean_errors[1]
+                                  << ", " << mean_errors[2] << ", "
+                                  << mean_errors[3] << ", " << mean_errors[4]
+                                  << "]");
 }
 
 TEST_CASE("Eight-child P2M plus M2M plus M2P far-field accuracy") {
@@ -126,9 +122,7 @@ TEST_CASE("Eight-child P2M plus M2M plus M2P far-field accuracy") {
   std::vector<double> mean_errors;
   std::vector<double> single_cluster_errors;
 
-  // NOTE(cdfmm): Use the same stable order range as the single-cluster test
-  // until high-order derivative evaluation is upgraded.
-  for (int p = 1; p <= 3; ++p) {
+  for (int p = 2; p <= 6; ++p) {
     const MultiIndexSet basis(p);
     CoeffVector parent_coeffs(basis.size(), 0.0);
 
@@ -190,21 +184,22 @@ TEST_CASE("Eight-child P2M plus M2M plus M2P far-field accuracy") {
     single_cluster_errors.push_back(mean_single_error);
   }
 
-  const double best_error = *std::min_element(mean_errors.begin(), mean_errors.end());
+  REQUIRE(std::isfinite(mean_errors.front()));
+  REQUIRE(std::isfinite(mean_errors.back()));
+  REQUIRE(mean_errors.back() < mean_errors.front());
+  // NOTE(cdfmm): Keep a meaningful far-field threshold while allowing
+  // small deterministic CI variation in random-source realisations.
+  REQUIRE(mean_errors.back() < 1.2e-2);
 
-  REQUIRE(std::isfinite(best_error));
-  REQUIRE(best_error <= mean_errors.front());
-  REQUIRE(best_error < 8e-1);
-
-  // Require either measurable improvement or near-tie within numerical noise.
-  INFO("mean_errors = [" << mean_errors[0] << ", " << mean_errors[1] << ", "
-                        << mean_errors[2] << "]");
-  INFO("first_error = " << mean_errors.front());
-  INFO("last_error = " << mean_errors.back());
-  INFO("best_error = " << best_error);
-  INFO("single_cluster_errors = [" << single_cluster_errors[0] << ", "
-                                  << single_cluster_errors[1] << ", "
-                                  << single_cluster_errors[2] << "]");
+  INFO("mean_errors(p=2..6) = [" << mean_errors[0] << ", " << mean_errors[1]
+                                  << ", " << mean_errors[2] << ", "
+                                  << mean_errors[3] << ", " << mean_errors[4]
+                                  << "]");
+  INFO("single_cluster_errors(p=2..6) = [" << single_cluster_errors[0] << ", "
+                                         << single_cluster_errors[1] << ", "
+                                         << single_cluster_errors[2] << ", "
+                                         << single_cluster_errors[3] << ", "
+                                         << single_cluster_errors[4] << "]");
   REQUIRE(mean_errors.back() < 1.5 * single_cluster_errors.back());
 }
 
