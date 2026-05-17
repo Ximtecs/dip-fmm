@@ -4,6 +4,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <stdexcept>
+
 #include "cdfmm/operators.hpp"
 #include "cdfmm/uniform_tree.hpp"
 
@@ -15,6 +17,29 @@ static Vec3 to_vec3(py::handle h)
     const auto a = py::cast<py::array_t<double>>(h);
     auto r = a.unchecked<1>();
     return {r(0), r(1), r(2)};
+}
+
+static std::vector<Vec3> parse_vec3_list(const py::handle& input)
+{
+    std::vector<Vec3> values;
+    for (const auto& item : py::reinterpret_borrow<py::iterable>(input)) {
+        if (py::isinstance<py::sequence>(item)) {
+            const auto seq = py::reinterpret_borrow<py::sequence>(item);
+            if (seq.size() != 3) {
+                throw std::invalid_argument("Each point must have exactly three components");
+            }
+            values.push_back({
+                py::cast<double>(seq[0]),
+                py::cast<double>(seq[1]),
+                py::cast<double>(seq[2])
+            });
+        } else if (py::isinstance<Vec3>(item)) {
+            values.push_back(py::cast<Vec3>(item));
+        } else {
+            throw std::invalid_argument("Points must be Vec3 objects or length-3 sequences");
+        }
+    }
+    return values;
 }
 
 static OutputFlags parse(std::string s)
@@ -65,8 +90,25 @@ PYBIND11_MODULE(cdfmm, m)
         .def_readwrite("root_half_width", &UniformTreeOptions::root_half_width);
 
     py::class_<UniformTree>(m, "UniformTree")
-        .def(py::init<const std::vector<Vec3>&, const UniformTreeOptions&>())
-        .def(py::init<const std::vector<Vec3>&, const std::vector<Vec3>&, const UniformTreeOptions&>())
+        .def(
+            py::init([](py::object source_positions, const UniformTreeOptions& options) {
+                return UniformTree(parse_vec3_list(source_positions), options);
+            }),
+            py::arg("source_positions"),
+            py::arg("options")
+        )
+        .def(
+            py::init([](py::object source_positions, py::object target_positions, const UniformTreeOptions& options) {
+                return UniformTree(
+                    parse_vec3_list(source_positions),
+                    parse_vec3_list(target_positions),
+                    options
+                );
+            }),
+            py::arg("source_positions"),
+            py::arg("target_positions"),
+            py::arg("options")
+        )
         .def_property_readonly("max_level", &UniformTree::max_level)
         .def_property_readonly("nodes", [](const UniformTree& t) { return std::vector<TreeNode>(t.nodes().begin(), t.nodes().end()); })
         .def_property_readonly("source_permutation", [](const UniformTree& t) { return std::vector<int>(t.source_permutation().begin(), t.source_permutation().end()); })
