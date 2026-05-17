@@ -7,3 +7,4 @@
 #include "cdfmm/output_flags.hpp"
 #include "cdfmm/taylor_jet.hpp"
 #include "cdfmm/vec3.hpp"
+#include "cdfmm/validation.hpp"

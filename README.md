@@ -13,8 +13,12 @@ ctest --test-dir build --output-on-failure
 python -m pip install .
 python -m pytest python_tests -v
 
-## C++ example
-See `examples/single_box_demo.cpp`.
+## C++ examples
+See `examples/single_box_demo.cpp` and `examples/operator_convergence_demo.cpp`.
+
+The validation helpers in `include/cdfmm/validation.hpp` provide reusable
+error metrics and direct-P2P reference evaluation utilities for tests and
+operator diagnostics.
 
 ## Python example
 ```python
