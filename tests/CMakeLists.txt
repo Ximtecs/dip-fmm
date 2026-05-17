@@ -6,6 +6,7 @@ add_executable(cdfmm_tests
   test_p2m_m2l_l2p.cpp
   test_multipole_accuracy.cpp
   test_output_flags.cpp
+  test_operator_consistency.cpp
 )
 target_link_libraries(cdfmm_tests PRIVATE cdfmm_core Catch2::Catch2WithMain)
 include(Catch)

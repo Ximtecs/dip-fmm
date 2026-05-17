@@ -1,3 +1,7 @@
 add_executable(single_box_demo single_box_demo.cpp)
 target_link_libraries(single_box_demo PRIVATE cdfmm_core)
 target_include_directories(single_box_demo PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
+add_executable(operator_convergence_demo operator_convergence_demo.cpp)
+target_link_libraries(operator_convergence_demo PRIVATE cdfmm_core)
+target_include_directories(operator_convergence_demo PRIVATE ${CMAKE_SOURCE_DIR}/include)

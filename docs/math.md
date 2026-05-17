@@ -53,3 +53,12 @@ raw derivatives by multiplying each coefficient by `alpha!`.
 These raw derivatives feed the multipole-to-local and multipole-to-point
 operators. Field evaluation requires one additional derivative order compared
 with potential evaluation.
+
+
+## Operator consistency validation paths
+
+For pre-tree operator validation, the main consistency paths are:
+
+- P2M + M2P
+- P2M + M2L + L2P
+- P2M + M2M + M2P

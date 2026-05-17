@@ -14,6 +14,7 @@ add_library(cdfmm_core
     src/taylor_jet.cpp
     src/laplace_derivatives.cpp
     src/operators.cpp
+    src/validation.cpp
 )
 target_include_directories(cdfmm_core PUBLIC include)
 set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
