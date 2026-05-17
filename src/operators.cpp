@@ -18,6 +18,9 @@ CoeffVector p2m_dipole(const MultiIndexSet &basis, const Vec3 &centre,
                        std::span<const Vec3> dipole_moments) {
   CoeffVector M(basis.size(), 0.0);
 
+  // Dipole sources contribute via first derivatives, hence alpha-e_k terms.
+  // For alpha=(0,0,0) all components are excluded, so M_0 is zero by
+  // construction for pure dipole input.
   for (size_t j = 0; j < source_positions.size(); ++j) {
     const Vec3 dx = source_positions[j] - centre;
 
@@ -39,7 +42,7 @@ CoeffVector p2m_dipole(const MultiIndexSet &basis, const Vec3 &centre,
                                           dx, {alpha.ax, alpha.ay, alpha.az - 1});
       }
 
-      // (-1)^|alpha| matches the repository multipole sign convention.
+      // (-1)^|alpha| matches the repository dipole-potential convention.
       const double sign = (alpha.degree() % 2 == 0) ? 1.0 : -1.0;
       M[i] += sign * value;
     }
@@ -50,6 +53,8 @@ CoeffVector p2m_dipole(const MultiIndexSet &basis, const Vec3 &centre,
 
 void m2m_add(const MultiIndexSet &basis, const Vec3 &d,
              std::span<const double> child, std::span<double> parent) {
+  // Translate a child multipole expansion to the parent centre using
+  // d = c_parent - c_child and a multi-index Taylor shift.
   for (int ia = 0; ia < basis.size(); ++ia) {
     const MultiIndex alpha = basis[ia];
 
@@ -67,7 +72,9 @@ void m2m_add(const MultiIndexSet &basis, const Vec3 &d,
 
 void m2l_add(const MultiIndexSet &basis, const Vec3 &R,
              std::span<const double> M, std::span<double> L) {
-  // M2L for order p requires D_(alpha+beta) up to total degree 2p.
+  // Convert source multipole coefficients M to target local coefficients L
+  // with R = c_target - c_source.
+  // For order p, alpha+beta reaches total degree 2p.
   MultiIndexSet deriv_basis(2 * basis.order());
   const auto D = laplace_derivatives_raw(deriv_basis, R);
 
@@ -83,6 +90,8 @@ void m2l_add(const MultiIndexSet &basis, const Vec3 &R,
 
 void l2l_add(const MultiIndexSet &basis, const Vec3 &d,
              std::span<const double> parent, std::span<double> child) {
+  // Shift local coefficients from parent target box to child target box using
+  // d = c_child - c_parent.
   for (int ib = 0; ib < basis.size(); ++ib) {
     const MultiIndex beta = basis[ib];
 
@@ -113,6 +122,7 @@ PotentialField l2p_eval(const MultiIndexSet &basis, const Vec3 &centre,
     }
 
     if (has_flag(output, OutputFlags::Field)) {
+      // Field is H = -grad(phi), hence the explicit minus signs.
       if (beta.ax > 0) {
         result.H.x -= L[ib] * MultiIndexSet::monomial_over_factorial(
                                   dx, {beta.ax - 1, beta.ay, beta.az});
@@ -136,6 +146,8 @@ PotentialField m2p_eval(const MultiIndexSet &basis_p, const CoeffVector &M,
                         const Vec3 &target_position, OutputFlags output) {
   PotentialField result;
   const Vec3 R = target_position - source_centre;
+  // This direct far-field evaluation is mainly used to validate P2M/M2M
+  // independently of M2L/L2L/L2P.
 
   // Field evaluation needs D_(alpha+e_k), so request one additional order.
   MultiIndexSet deriv_basis(basis_p.order() + 1);
