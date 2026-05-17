@@ -41,17 +41,18 @@ TaylorJet TaylorJet::add(const TaylorJet &b) const {
 TaylorJet TaylorJet::mul(const TaylorJet &b) const {
   TaylorJet o(*basis_);
   for (int i = 0; i < basis_->size(); ++i) {
-    const MultiIndex a = (*basis_)[i];
-    double s = 0.0;
+    const MultiIndex alpha = (*basis_)[i];
+    double sum = 0.0;
     for (int j = 0; j < basis_->size(); ++j) {
-      const MultiIndex g = (*basis_)[j];
-      if (!leq(g, a)) {
+      const MultiIndex gamma = (*basis_)[j];
+      if (!leq(gamma, alpha)) {
         continue;
       }
-      const MultiIndex h = sub(a, g);
-      s += c_[j] * b.c_[basis_->index(h)];
+
+      const MultiIndex eta = sub(alpha, gamma);
+      sum += c_[j] * b.c_[basis_->index(eta)];
     }
-    o.c_[i] = s;
+    o.c_[i] = sum;
   }
   return o;
 }
@@ -59,6 +60,7 @@ TaylorJet TaylorJet::mul(const TaylorJet &b) const {
 TaylorJet TaylorJet::invsqrt(int) const {
   TaylorJet o(*basis_);
   o.c_ = c_;
+  // TODO(cdfmm): Implement truncated Newton iteration for inverse square root.
   return o;
 }
 

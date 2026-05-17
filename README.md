@@ -2,7 +2,7 @@
 
 Cartesian-coordinate fast multipole method specialised for dipole interactions.
 
-Current status: CPU operator layer only; no tree yet.
+Current status: CPU operator layer only; no tree yet. Includes direct M2P evaluation for validating multipole expansions against direct P2P.
 
 ## Build
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCDFMM_BUILD_TESTS=ON -DCDFMM_BUILD_PYTHON=ON
