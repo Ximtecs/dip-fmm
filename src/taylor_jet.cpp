@@ -78,49 +78,58 @@ TaylorJet TaylorJet::invsqrt(int) const {
   for (int i = 1; i < basis_->size(); ++i) {
     const MultiIndex alpha = (*basis_)[i];
 
-    // Compute the coefficient of y*y*z at alpha excluding the two linear
-    // terms 2*y_0*z_0*y_alpha. The remaining part is denoted known_terms.
-    double known_terms = 0.0;
+    // Step 1: solve for w_alpha where w = y*y from w*z = 1.
+    // Coefficient equation at alpha>0:
+    //   w_alpha*z_0 + sum_{gamma<alpha} w_gamma*z_{alpha-gamma} = 0
+    double sum_lower = 0.0;
     for (int j = 0; j < basis_->size(); ++j) {
       const MultiIndex gamma = (*basis_)[j];
       if (!leq(gamma, alpha)) {
         continue;
       }
 
-      const MultiIndex rem_after_gamma = sub(alpha, gamma);
+      if (gamma.ax == alpha.ax && gamma.ay == alpha.ay &&
+          gamma.az == alpha.az) {
+        continue;
+      }
+
+      const MultiIndex delta = sub(alpha, gamma);
+
+      double w_gamma = 0.0;
       for (int k = 0; k < basis_->size(); ++k) {
         const MultiIndex eta = (*basis_)[k];
-        if (!leq(eta, rem_after_gamma)) {
+        if (!leq(eta, gamma)) {
           continue;
         }
 
-        const MultiIndex delta = sub(rem_after_gamma, eta);
-
-        const bool gamma_is_alpha = gamma.ax == alpha.ax &&
-                                    gamma.ay == alpha.ay &&
-                                    gamma.az == alpha.az;
-        const bool eta_is_zero = eta.ax == 0 && eta.ay == 0 && eta.az == 0;
-        const bool eta_is_alpha = eta.ax == alpha.ax && eta.ay == alpha.ay &&
-                                  eta.az == alpha.az;
-        const bool gamma_is_zero = gamma.ax == 0 && gamma.ay == 0 &&
-                                   gamma.az == 0;
-        const bool delta_is_zero = delta.ax == 0 && delta.ay == 0 &&
-                                   delta.az == 0;
-
-        // Exclude the two terms containing y_alpha linearly:
-        // (gamma=alpha, eta=0, delta=0) and (gamma=0, eta=alpha, delta=0).
-        if ((gamma_is_alpha && eta_is_zero && delta_is_zero) ||
-            (gamma_is_zero && eta_is_alpha && delta_is_zero)) {
-          continue;
-        }
-
-        known_terms += c_[j] * y.c_[basis_->index(eta)] *
-                       y.c_[basis_->index(delta)];
+        const MultiIndex theta = sub(gamma, eta);
+        w_gamma += y.c_[basis_->index(eta)] * y.c_[basis_->index(theta)];
       }
+
+      sum_lower += w_gamma * c_[basis_->index(delta)];
+    }
+    const double w_alpha = -sum_lower / z0;
+
+    // Step 2: recover y_alpha from w_alpha = (y*y)_alpha.
+    //   w_alpha = 2*y_0*y_alpha + sum_{0<eta<alpha} y_eta*y_{alpha-eta}
+    double nonlinear = 0.0;
+    for (int j = 0; j < basis_->size(); ++j) {
+      const MultiIndex eta = (*basis_)[j];
+      if (!leq(eta, alpha)) {
+        continue;
+      }
+
+      const MultiIndex theta = sub(alpha, eta);
+      const bool eta_is_zero = eta.ax == 0 && eta.ay == 0 && eta.az == 0;
+      const bool theta_is_zero = theta.ax == 0 && theta.ay == 0 && theta.az == 0;
+      if (eta_is_zero || theta_is_zero) {
+        continue;
+      }
+
+      nonlinear += y.c_[basis_->index(eta)] * y.c_[basis_->index(theta)];
     }
 
-    const double denom = 2.0 * y.at({0, 0, 0}) * z0;
-    y.c_[i] = -known_terms / denom;
+    y.c_[i] = (w_alpha - nonlinear) / (2.0 * y.at({0, 0, 0}));
   }
 
   return y;
