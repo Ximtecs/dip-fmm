@@ -202,6 +202,18 @@ def finish_3d_axes(axes, title):
     set_axes_equal(axes)
 
 
+def zoom_3d_axes(axes, centre, half_width, title):
+    """Focus a three-dimensional axes on a cubic region around one centre."""
+    centre = np.asarray(centre, dtype=float)
+    axes.set_xlim3d(centre[0] - half_width, centre[0] + half_width)
+    axes.set_ylim3d(centre[1] - half_width, centre[1] + half_width)
+    axes.set_zlim3d(centre[2] - half_width, centre[2] + half_width)
+    axes.set_xlabel("x")
+    axes.set_ylabel("y")
+    axes.set_zlabel("z")
+    axes.set_title(title)
+
+
 def new_3d_figure(figsize=(8, 7)):
     """Create a consistently sized three-dimensional figure and axes."""
     figure = plt.figure(figsize=figsize)
