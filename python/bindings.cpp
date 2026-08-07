@@ -4,7 +4,10 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include <cstddef>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include "cdfmm/operators.hpp"
 #include "cdfmm/uniform_tree.hpp"
@@ -12,70 +15,204 @@
 namespace py = pybind11;
 using namespace cdfmm;
 
+namespace {
+
+using DoubleArray = py::array_t<
+    double,
+    py::array::c_style | py::array::forcecast
+>;
+
 //------------------------------------------------------------------------------
 // Python conversion helpers
 //------------------------------------------------------------------------------
 
-static Vec3 to_vec3(py::handle h)
+Vec3 parse_vec3(const py::handle& input, const std::string& argument_name)
 {
-    // Direct-operator arguments use NumPy conversion so array-like Python
-    // objects share one compact path into the three-component C++ type.
-    const auto a = py::cast<py::array_t<double>>(h);
-    auto r = a.unchecked<1>();
-    return {r(0), r(1), r(2)};
+    const DoubleArray array = py::cast<DoubleArray>(input);
+    const py::buffer_info buffer = array.request();
+
+    if (buffer.ndim != 1 || buffer.shape[0] != 3) {
+        throw std::invalid_argument(
+            argument_name + " must have shape (3,)"
+        );
+    }
+
+    const auto values = array.unchecked<1>();
+    return {values(0), values(1), values(2)};
 }
 
-static std::vector<Vec3> parse_vec3_list(const py::handle& input)
+std::vector<Vec3> parse_vec3_array(
+    const py::handle& input,
+    const std::string& argument_name
+)
 {
-    // Tree construction accepts either bound Vec3 instances or ordinary
-    // length-three sequences, which keeps exploratory scripts lightweight.
+    const DoubleArray array = py::cast<DoubleArray>(input);
+    const py::buffer_info buffer = array.request();
+
+    if (buffer.ndim != 2 || buffer.shape[1] != 3) {
+        throw std::invalid_argument(
+            argument_name + " must have shape (n, 3)"
+        );
+    }
+
+    const auto values = array.unchecked<2>();
+    std::vector<Vec3> result;
+    result.reserve(static_cast<std::size_t>(buffer.shape[0]));
+
+    for (py::ssize_t i = 0; i < buffer.shape[0]; ++i) {
+        result.push_back({values(i, 0), values(i, 1), values(i, 2)});
+    }
+
+    return result;
+}
+
+std::vector<Vec3> parse_tree_points(const py::handle& input)
+{
+    // Tree construction retains support for bound Vec3 instances while the
+    // numerical operator interface uses shape-checked NumPy conversion.
     std::vector<Vec3> values;
     for (const auto& item : py::reinterpret_borrow<py::iterable>(input)) {
         if (py::isinstance<py::sequence>(item)) {
-            const auto seq = py::reinterpret_borrow<py::sequence>(item);
-            if (seq.size() != 3) {
-                throw std::invalid_argument("Each point must have exactly three components");
+            const auto sequence = py::reinterpret_borrow<py::sequence>(item);
+            if (sequence.size() != 3) {
+                throw std::invalid_argument(
+                    "Each point must have exactly three components"
+                );
             }
             values.push_back({
-                py::cast<double>(seq[0]),
-                py::cast<double>(seq[1]),
-                py::cast<double>(seq[2])
+                py::cast<double>(sequence[0]),
+                py::cast<double>(sequence[1]),
+                py::cast<double>(sequence[2])
             });
         } else if (py::isinstance<Vec3>(item)) {
             values.push_back(py::cast<Vec3>(item));
         } else {
-            throw std::invalid_argument("Points must be Vec3 objects or length-3 sequences");
+            throw std::invalid_argument(
+                "Points must be Vec3 objects or length-three sequences"
+            );
         }
     }
+
     return values;
 }
 
-static OutputFlags parse(std::string s)
+MultiIndexSet make_basis(int order)
 {
-    if (s == "field") {
+    if (order < 0) {
+        throw std::invalid_argument("order must be non-negative");
+    }
+
+    return MultiIndexSet(order);
+}
+
+CoeffVector parse_coefficients(
+    const py::handle& input,
+    const MultiIndexSet& basis,
+    const std::string& argument_name
+)
+{
+    const DoubleArray array = py::cast<DoubleArray>(input);
+    const py::buffer_info buffer = array.request();
+
+    if (buffer.ndim != 1 || buffer.shape[0] != basis.size()) {
+        throw std::invalid_argument(
+            argument_name + " must have shape (coefficient_count,) for order "
+            + std::to_string(basis.order())
+        );
+    }
+
+    const auto values = array.unchecked<1>();
+    CoeffVector result(static_cast<std::size_t>(basis.size()));
+    for (int i = 0; i < basis.size(); ++i) {
+        result[static_cast<std::size_t>(i)] = values(i);
+    }
+
+    return result;
+}
+
+OutputFlags parse_output(const std::string& output)
+{
+    if (output == "field") {
         return OutputFlags::Field;
     }
-    if (s == "potential") {
+    if (output == "potential") {
         return OutputFlags::Potential;
     }
-    return OutputFlags::Both;
+    if (output == "both") {
+        return OutputFlags::Both;
+    }
+
+    throw std::invalid_argument(
+        "output must be 'field', 'potential', or 'both'"
+    );
 }
+
+py::array_t<double> coefficients_to_array(const CoeffVector& coefficients)
+{
+    py::array_t<double> array(coefficients.size());
+    auto values = array.mutable_unchecked<1>();
+
+    for (py::ssize_t i = 0;
+         i < static_cast<py::ssize_t>(coefficients.size());
+         ++i) {
+        values(i) = coefficients[static_cast<std::size_t>(i)];
+    }
+
+    return array;
+}
+
+py::dict potential_field_to_dict(const PotentialField& result)
+{
+    py::dict output;
+    output["phi"] = result.phi;
+
+    py::array_t<double> field(3);
+    auto values = field.mutable_unchecked<1>();
+    values(0) = result.H.x;
+    values(1) = result.H.y;
+    values(2) = result.H.z;
+    output["H"] = field;
+
+    return output;
+}
+
+py::array_t<double> points_to_array(std::span<const Vec3> points)
+{
+    py::array_t<double> array({
+        static_cast<py::ssize_t>(points.size()),
+        static_cast<py::ssize_t>(3)
+    });
+    auto values = array.mutable_unchecked<2>();
+
+    for (py::ssize_t i = 0;
+         i < static_cast<py::ssize_t>(points.size());
+         ++i) {
+        values(i, 0) = points[static_cast<std::size_t>(i)].x;
+        values(i, 1) = points[static_cast<std::size_t>(i)].y;
+        values(i, 2) = points[static_cast<std::size_t>(i)].z;
+    }
+
+    return array;
+}
+
+} // namespace
 
 //------------------------------------------------------------------------------
 // Python module interface
 //------------------------------------------------------------------------------
 
-PYBIND11_MODULE(cdfmm, m)
+PYBIND11_MODULE(cdfmm, module)
 {
-    m.doc() = "Cartesian dipole FMM reference operators and uniform-tree geometry";
+    module.doc() =
+        "Cartesian dipole FMM reference operators and uniform-tree geometry";
 
-    py::class_<Vec3>(m, "Vec3")
+    py::class_<Vec3>(module, "Vec3")
         .def(py::init<double, double, double>())
         .def_readwrite("x", &Vec3::x)
         .def_readwrite("y", &Vec3::y)
         .def_readwrite("z", &Vec3::z);
 
-    py::class_<TreeNode>(m, "TreeNode")
+    py::class_<TreeNode>(module, "TreeNode")
         .def_readonly("index", &TreeNode::index)
         .def_readonly("level", &TreeNode::level)
         .def_readonly("parent", &TreeNode::parent)
@@ -93,29 +230,43 @@ PYBIND11_MODULE(cdfmm, m)
         .def_readonly("list1", &TreeNode::list1)
         .def_readonly("list2", &TreeNode::list2)
         .def_property_readonly("source_count", &TreeNode::source_count)
-        .def_property_readonly("target_count", &TreeNode::target_count);
+        .def_property_readonly("target_count", &TreeNode::target_count)
+        .def_property_readonly("is_leaf", &TreeNode::is_leaf);
 
-    py::class_<UniformTreeOptions>(m, "UniformTreeOptions")
+    py::class_<UniformTreeOptions>(module, "UniformTreeOptions")
         .def(py::init<>())
         .def_readwrite("max_level", &UniformTreeOptions::max_level)
-        .def_readwrite("include_empty_nodes", &UniformTreeOptions::include_empty_nodes)
+        .def_readwrite(
+            "include_empty_nodes",
+            &UniformTreeOptions::include_empty_nodes
+        )
         .def_readwrite("cubic_root_box", &UniformTreeOptions::cubic_root_box)
         .def_readwrite("root_centre", &UniformTreeOptions::root_centre)
         .def_readwrite("root_half_width", &UniformTreeOptions::root_half_width);
 
-    py::class_<UniformTree>(m, "UniformTree")
+    py::class_<UniformTree>(module, "UniformTree")
         .def(
-            py::init([](py::object source_positions, const UniformTreeOptions& options) {
-                return UniformTree(parse_vec3_list(source_positions), options);
+            py::init([](
+                py::object source_positions,
+                const UniformTreeOptions& options
+            ) {
+                return UniformTree(
+                    parse_tree_points(source_positions),
+                    options
+                );
             }),
             py::arg("source_positions"),
             py::arg("options")
         )
         .def(
-            py::init([](py::object source_positions, py::object target_positions, const UniformTreeOptions& options) {
+            py::init([](
+                py::object source_positions,
+                py::object target_positions,
+                const UniformTreeOptions& options
+            ) {
                 return UniformTree(
-                    parse_vec3_list(source_positions),
-                    parse_vec3_list(target_positions),
+                    parse_tree_points(source_positions),
+                    parse_tree_points(target_positions),
                     options
                 );
             }),
@@ -124,84 +275,353 @@ PYBIND11_MODULE(cdfmm, m)
             py::arg("options")
         )
         .def_property_readonly("max_level", &UniformTree::max_level)
-        .def_property_readonly("nodes", [](const UniformTree& t) { return std::vector<TreeNode>(t.nodes().begin(), t.nodes().end()); })
-        .def_property_readonly("source_permutation", [](const UniformTree& t) { return std::vector<int>(t.source_permutation().begin(), t.source_permutation().end()); })
-        .def_property_readonly("target_permutation", [](const UniformTree& t) { return std::vector<int>(t.target_permutation().begin(), t.target_permutation().end()); })
-        .def("leaf_indices", &UniformTree::leaf_indices)
-        .def("sorted_source_positions", [](const UniformTree& t) {
-            // Return owned NumPy storage rather than exposing a view whose
-            // lifetime and constness would be tied to the tree instance.
-            const auto src = t.sorted_source_positions();
-            py::array_t<double> arr({static_cast<py::ssize_t>(src.size()), static_cast<py::ssize_t>(3)});
-            auto a = arr.mutable_unchecked<2>();
-            for (py::ssize_t i = 0; i < static_cast<py::ssize_t>(src.size()); ++i) {
-                a(i, 0) = src[i].x;
-                a(i, 1) = src[i].y;
-                a(i, 2) = src[i].z;
-            }
-            return arr;
+        .def_property_readonly("n_levels", &UniformTree::n_levels)
+        .def_property_readonly("leaf_level", &UniformTree::leaf_level)
+        .def_property_readonly("root_centre", &UniformTree::root_centre)
+        .def_property_readonly("root_half_width", &UniformTree::root_half_width)
+        .def_property_readonly("nodes", [](const UniformTree& tree) {
+            return std::vector<TreeNode>(
+                tree.nodes().begin(),
+                tree.nodes().end()
+            );
         })
-        .def("sorted_target_positions", [](const UniformTree& t) {
-            const auto tgt = t.sorted_target_positions();
-            py::array_t<double> arr({static_cast<py::ssize_t>(tgt.size()), static_cast<py::ssize_t>(3)});
-            auto a = arr.mutable_unchecked<2>();
-            for (py::ssize_t i = 0; i < static_cast<py::ssize_t>(tgt.size()); ++i) {
-                a(i, 0) = tgt[i].x;
-                a(i, 1) = tgt[i].y;
-                a(i, 2) = tgt[i].z;
+        .def_property_readonly(
+            "source_permutation",
+            [](const UniformTree& tree) {
+                return std::vector<int>(
+                    tree.source_permutation().begin(),
+                    tree.source_permutation().end()
+                );
             }
-            return arr;
+        )
+        .def_property_readonly(
+            "source_inverse_permutation",
+            [](const UniformTree& tree) {
+                return std::vector<int>(
+                    tree.source_inverse_permutation().begin(),
+                    tree.source_inverse_permutation().end()
+                );
+            }
+        )
+        .def_property_readonly(
+            "target_permutation",
+            [](const UniformTree& tree) {
+                return std::vector<int>(
+                    tree.target_permutation().begin(),
+                    tree.target_permutation().end()
+                );
+            }
+        )
+        .def_property_readonly(
+            "target_inverse_permutation",
+            [](const UniformTree& tree) {
+                return std::vector<int>(
+                    tree.target_inverse_permutation().begin(),
+                    tree.target_inverse_permutation().end()
+                );
+            }
+        )
+        .def("leaf_indices", &UniformTree::leaf_indices)
+        .def("leaf_index_for_source", &UniformTree::leaf_index_for_source)
+        .def("leaf_index_for_target", &UniformTree::leaf_index_for_target)
+        .def("sorted_source_positions", [](const UniformTree& tree) {
+            // Return owned storage rather than a view tied to the tree.
+            return points_to_array(tree.sorted_source_positions());
+        })
+        .def("sorted_target_positions", [](const UniformTree& tree) {
+            return points_to_array(tree.sorted_target_positions());
         });
 
-    m.def("morton_encode", &morton_encode);
+    module.def("morton_encode", &morton_encode);
+    module.def("morton_decode", &morton_decode);
 
-    m.def(
-        "p2p_dipole_pair",
-        [](py::object target, py::object source, py::object moment,
-           std::string output) {
-            const auto r = p2p_dipole_pair(to_vec3(target), to_vec3(source),
-                                           to_vec3(moment), parse(output));
-            py::dict d;
-            d["phi"] = r.phi;
-            py::array_t<double> H(3);
-            auto h = H.mutable_unchecked<1>();
-            h(0) = r.H.x;
-            h(1) = r.H.y;
-            h(2) = r.H.z;
-            d["H"] = H;
-            return d;
-        },
-        py::arg("target"), py::arg("source"), py::arg("moment"),
-        py::arg("output") = "field",
-        "Evaluate one point-dipole contribution at one target.");
+    module.def(
+        "multi_indices",
+        [](int order) {
+            const MultiIndexSet basis = make_basis(order);
+            py::array_t<int> indices({
+                static_cast<py::ssize_t>(basis.size()),
+                static_cast<py::ssize_t>(3)
+            });
+            auto values = indices.mutable_unchecked<2>();
 
-    m.def(
-        "p2p_dipole_sum",
-        [](py::object target, py::array_t<double> sources,
-           py::array_t<double> moments, std::string output, int self_index) {
-            auto s = sources.unchecked<2>();
-            auto mm = moments.unchecked<2>();
-            std::vector<Vec3> xs;
-            std::vector<Vec3> ms;
-
-            for (ssize_t i = 0; i < s.shape(0); ++i) {
-                xs.push_back({s(i, 0), s(i, 1), s(i, 2)});
-                ms.push_back({mm(i, 0), mm(i, 1), mm(i, 2)});
+            for (int i = 0; i < basis.size(); ++i) {
+                values(i, 0) = basis[i].ax;
+                values(i, 1) = basis[i].ay;
+                values(i, 2) = basis[i].az;
             }
 
-            const auto r =
-                p2p_dipole_sum(to_vec3(target), xs, ms, parse(output), self_index);
-            py::dict d;
-            d["phi"] = r.phi;
-            py::array_t<double> H(3);
-            auto h = H.mutable_unchecked<1>();
-            h(0) = r.H.x;
-            h(1) = r.H.y;
-            h(2) = r.H.z;
-            d["H"] = H;
-            return d;
+            return indices;
         },
-        py::arg("target"), py::arg("sources"), py::arg("moments"),
-        py::arg("output") = "field", py::arg("self_index") = -1,
-        "Sum direct point-dipole contributions at one target.");
+        py::arg("order"),
+        "Return Cartesian multi-indices through order p in coefficient order."
+    );
+
+    module.def(
+        "p2p_dipole_pair",
+        [](py::object target,
+           py::object source,
+           py::object moment,
+           const std::string& output) {
+            const PotentialField result = p2p_dipole_pair(
+                parse_vec3(target, "target"),
+                parse_vec3(source, "source"),
+                parse_vec3(moment, "moment"),
+                parse_output(output)
+            );
+            return potential_field_to_dict(result);
+        },
+        py::arg("target"),
+        py::arg("source"),
+        py::arg("moment"),
+        py::arg("output") = "field",
+        "Evaluate one point-dipole contribution at one target."
+    );
+
+    module.def(
+        "p2p_dipole_sum",
+        [](py::object target,
+           py::object sources,
+           py::object moments,
+           const std::string& output,
+           int self_index) {
+            const std::vector<Vec3> source_positions =
+                parse_vec3_array(sources, "sources");
+            const std::vector<Vec3> dipole_moments =
+                parse_vec3_array(moments, "moments");
+
+            if (source_positions.size() != dipole_moments.size()) {
+                throw std::invalid_argument(
+                    "sources and moments must contain the same number of rows"
+                );
+            }
+
+            const PotentialField result = p2p_dipole_sum(
+                parse_vec3(target, "target"),
+                source_positions,
+                dipole_moments,
+                parse_output(output),
+                self_index
+            );
+            return potential_field_to_dict(result);
+        },
+        py::arg("target"),
+        py::arg("sources"),
+        py::arg("moments"),
+        py::arg("output") = "field",
+        py::arg("self_index") = -1,
+        "Sum direct point-dipole contributions at one target."
+    );
+
+    module.def(
+        "p2m_dipole",
+        [](py::object centre,
+           py::object source_positions,
+           py::object dipole_moments,
+           int order) {
+            const MultiIndexSet basis = make_basis(order);
+            const std::vector<Vec3> positions = parse_vec3_array(
+                source_positions,
+                "source_positions"
+            );
+            const std::vector<Vec3> moments = parse_vec3_array(
+                dipole_moments,
+                "dipole_moments"
+            );
+
+            if (positions.size() != moments.size()) {
+                throw std::invalid_argument(
+                    "source_positions and dipole_moments must contain the "
+                    "same number of rows"
+                );
+            }
+
+            const CoeffVector coefficients = p2m_dipole(
+                basis,
+                parse_vec3(centre, "centre"),
+                positions,
+                moments
+            );
+            return coefficients_to_array(coefficients);
+        },
+        py::arg("centre"),
+        py::arg("source_positions"),
+        py::arg("dipole_moments"),
+        py::arg("order"),
+        R"doc(Build dipole multipole coefficients about an expansion centre.
+
+Coefficients follow ``multi_indices(order)``: total degree first, then
+lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc"
+    );
+
+    module.def(
+        "m2m",
+        [](py::object child_coefficients,
+           py::object child_centre,
+           py::object parent_centre,
+           int order) {
+            const MultiIndexSet basis = make_basis(order);
+            const CoeffVector child = parse_coefficients(
+                child_coefficients,
+                basis,
+                "child_coefficients"
+            );
+            const Vec3 child_position = parse_vec3(
+                child_centre,
+                "child_centre"
+            );
+            const Vec3 parent_position = parse_vec3(
+                parent_centre,
+                "parent_centre"
+            );
+            CoeffVector parent(static_cast<std::size_t>(basis.size()), 0.0);
+
+            m2m_add(
+                basis,
+                parent_position - child_position,
+                child,
+                parent
+            );
+            return coefficients_to_array(parent);
+        },
+        py::arg("child_coefficients"),
+        py::arg("child_centre"),
+        py::arg("parent_centre"),
+        py::arg("order"),
+        "Translate one child multipole expansion to a parent centre."
+    );
+
+    module.def(
+        "m2p",
+        [](py::object multipole_coefficients,
+           py::object source_centre,
+           py::object target_position,
+           int order,
+           const std::string& output) {
+            const MultiIndexSet basis = make_basis(order);
+            const CoeffVector coefficients = parse_coefficients(
+                multipole_coefficients,
+                basis,
+                "multipole_coefficients"
+            );
+            const PotentialField result = m2p_eval(
+                basis,
+                coefficients,
+                parse_vec3(source_centre, "source_centre"),
+                parse_vec3(target_position, "target_position"),
+                parse_output(output)
+            );
+            return potential_field_to_dict(result);
+        },
+        py::arg("multipole_coefficients"),
+        py::arg("source_centre"),
+        py::arg("target_position"),
+        py::arg("order"),
+        py::arg("output") = "field",
+        "Evaluate a multipole expansion at one target position."
+    );
+
+    module.def(
+        "m2l",
+        [](py::object multipole_coefficients,
+           py::object source_centre,
+           py::object target_centre,
+           int order) {
+            const MultiIndexSet basis = make_basis(order);
+            const CoeffVector multipole = parse_coefficients(
+                multipole_coefficients,
+                basis,
+                "multipole_coefficients"
+            );
+            const Vec3 source_position = parse_vec3(
+                source_centre,
+                "source_centre"
+            );
+            const Vec3 target_position = parse_vec3(
+                target_centre,
+                "target_centre"
+            );
+            CoeffVector local(static_cast<std::size_t>(basis.size()), 0.0);
+
+            m2l_add(
+                basis,
+                target_position - source_position,
+                multipole,
+                local
+            );
+            return coefficients_to_array(local);
+        },
+        py::arg("multipole_coefficients"),
+        py::arg("source_centre"),
+        py::arg("target_centre"),
+        py::arg("order"),
+        "Convert a multipole expansion to a target-centred local expansion."
+    );
+
+    module.def(
+        "l2l",
+        [](py::object parent_coefficients,
+           py::object parent_centre,
+           py::object child_centre,
+           int order) {
+            const MultiIndexSet basis = make_basis(order);
+            const CoeffVector parent = parse_coefficients(
+                parent_coefficients,
+                basis,
+                "parent_coefficients"
+            );
+            const Vec3 parent_position = parse_vec3(
+                parent_centre,
+                "parent_centre"
+            );
+            const Vec3 child_position = parse_vec3(
+                child_centre,
+                "child_centre"
+            );
+            CoeffVector child(static_cast<std::size_t>(basis.size()), 0.0);
+
+            l2l_add(
+                basis,
+                child_position - parent_position,
+                parent,
+                child
+            );
+            return coefficients_to_array(child);
+        },
+        py::arg("parent_coefficients"),
+        py::arg("parent_centre"),
+        py::arg("child_centre"),
+        py::arg("order"),
+        "Shift a parent local expansion to a child target centre."
+    );
+
+    module.def(
+        "l2p",
+        [](py::object local_coefficients,
+           py::object local_centre,
+           py::object target_position,
+           int order,
+           const std::string& output) {
+            const MultiIndexSet basis = make_basis(order);
+            const CoeffVector coefficients = parse_coefficients(
+                local_coefficients,
+                basis,
+                "local_coefficients"
+            );
+            const PotentialField result = l2p_eval(
+                basis,
+                parse_vec3(local_centre, "local_centre"),
+                parse_vec3(target_position, "target_position"),
+                coefficients,
+                parse_output(output)
+            );
+            return potential_field_to_dict(result);
+        },
+        py::arg("local_coefficients"),
+        py::arg("local_centre"),
+        py::arg("target_position"),
+        py::arg("order"),
+        py::arg("output") = "field",
+        "Evaluate a local expansion at one target position."
+    );
 }

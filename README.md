@@ -49,8 +49,31 @@ result = cdfmm.p2p_dipole_pair(
 print(result)
 ```
 
-The experimental Python interface exposes direct pair/sum evaluation and
-uniform-tree inspection.
+The experimental Python interface exposes direct evaluation, every current
+expansion operator, Cartesian coefficient ordering, and uniform-tree
+inspection.
+
+## Interactive examples
+
+The development environment includes Matplotlib, JupyterLab, ipykernel, and
+ipywidgets for the structured examples under `examples/notebooks/`. Update an
+existing environment and start Jupyter from the repository root with:
+
+```console
+conda env update -n cdfmm -f environment.yml
+conda activate cdfmm
+jupyter lab
+```
+
+VSCode users can open a notebook and select the `Python (cdfmm)` kernel. The
+nine notebooks progress from exact P2P through P2M, M2M, M2P, M2L, L2L, and
+L2P, then compare complete operator chains and visualise the uniform tree,
+including Morton ordering, leaf occupancy, `list1`, and `list2`. See the
+[notebook catalogue](examples/notebooks/README.md) for the full sequence.
+
+These examples are interactive learning and validation tools, not replacements
+for the automated C++ and Python tests. Matplotlib and Jupyter remain optional
+example dependencies and are not required by the core Python package.
 
 ## Documentation
 

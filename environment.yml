@@ -7,6 +7,11 @@ dependencies:
   - pip
   - numpy
   - pytest
+  # Interactive scientific examples and the VSCode-compatible notebook kernel.
+  - matplotlib
+  - jupyterlab
+  - ipykernel
+  - ipywidgets
   - cmake>=3.20
   - ninja
   # clangxx supplies a C++20-capable Clang driver rather than selecting a

@@ -93,6 +93,10 @@ newer.
 | Ninja | Provide one cross-platform CMake build backend |
 | Python | Run the bindings and development tools |
 | NumPy | Supply Python numerical arrays |
+| Matplotlib | Plot operator convergence and uniform-tree geometry |
+| JupyterLab | Run the interactive scientific examples |
+| ipykernel | Expose the `cdfmm` environment as a notebook kernel |
+| ipywidgets | Provide optional interactive notebook controls |
 | pybind11 | Implement the C++/Python binding layer |
 | scikit-build-core | Drive CMake when building the Python package |
 | pytest | Run Python tests |
@@ -106,6 +110,32 @@ newer.
 documentation-only installations outside Conda.  Its four Python constraints
 match `environment.yml`; normal Conda development does **not** require
 `python -m pip install -r docs/requirements.txt`.
+
+The notebook stack is part of the development environment, not the core
+package dependency set. Outside Conda, it can be installed explicitly with
+`python -m pip install ".[examples]"`.
+
+### Interactive examples
+
+After updating or creating the development environment, launch Jupyter from
+`<repo-root>`:
+
+```console
+conda env update -n cdfmm -f environment.yml
+conda activate cdfmm
+jupyter lab
+```
+
+Open `examples/notebooks/00_direct_p2p.ipynb` to begin the operator sequence.
+JupyterLab and VSCode should offer `Python (cdfmm)` as the kernel. If a local
+Conda installation does not register it automatically, run:
+
+```console
+python -m ipykernel install --user --name cdfmm --display-name "Python (cdfmm)"
+```
+
+The notebooks use Matplotlib and ipywidgets for optional visual controls while
+calling the compiled C++ operator implementations for all numerical work.
 
 ### Compiler strategy and platform status
 

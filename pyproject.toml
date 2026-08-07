@@ -8,5 +8,13 @@ version = "0.1.0"
 requires-python = ">=3.9"
 dependencies = ["numpy"]
 
+[project.optional-dependencies]
+examples = [
+    "matplotlib",
+    "jupyterlab",
+    "ipykernel",
+    "ipywidgets",
+]
+
 [tool.scikit-build]
 cmake.args = ["-DCDFMM_BUILD_PYTHON=ON", "-DCDFMM_BUILD_TESTS=OFF", "-DCDFMM_BUILD_EXAMPLES=OFF"]
