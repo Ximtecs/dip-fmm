@@ -1,43 +1,68 @@
-# cartesian-dipole-fmm
+# dip-fmm
 
-Cartesian-coordinate fast multipole method specialised for dipole interactions.
+`dip-fmm` is a C++20 Cartesian-coordinate fast multipole method project
+specialised for point-dipole interactions.  It uses
+`G(r) = 1/(4*pi*|r|)` and treats the magnetic field `H = -grad(phi)` as the
+primary result, with optional scalar potential output.
 
-Current status: CPU operator layer only; no tree yet. Includes direct M2P evaluation for validating multipole expansions against direct P2P.
+## Status
 
-## Build
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCDFMM_BUILD_TESTS=ON -DCDFMM_BUILD_PYTHON=ON
+The CPU reference operator layer is implemented: P2M, M2M, M2L, L2L, L2P,
+M2P, and direct P2P, together with Taylor-jet Laplace derivatives and validation
+helpers.  The repository also contains a complete, non-adaptive,
+Morton-sorted uniform octree with source/target permutations, hierarchical
+ranges, and `list1`/`list2` interactions.
+
+The operators and tree are **not yet connected into an end-to-end FMM
+evaluation**.  Adaptive trees, persistent/static geometry optimisation, CUDA,
+and MagTense/Fortran integration are not implemented.  See the
+[roadmap](docs/roadmap.md) for the next milestone and later research.
+
+## Build and test
+
+```console
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+  -DCDFMM_BUILD_TESTS=ON -DCDFMM_BUILD_PYTHON=ON
 cmake --build build -j
 ctest --test-dir build --output-on-failure
-
-## Python
-python -m pip install .
-python -m pytest python_tests -v
-
-## C++ examples
-See `examples/single_box_demo.cpp` and `examples/operator_convergence_demo.cpp`.
-
-The validation helpers in `include/cdfmm/validation.hpp` provide reusable
-error metrics and direct-P2P reference evaluation utilities for tests and
-operator diagnostics.
-
-## Python example
-```python
-import cdfmm
-r=cdfmm.p2p_dipole_pair([1,0,0],[0,0,0],[1,0,0],output="both")
-print(r)
 ```
 
-## Mathematical convention
-G(r)=1/(4*pi*|r|), H=-grad(phi). See `docs/math.md`.
+Examples build by default.  Enable the current P2P benchmark with
+`-DCDFMM_BUILD_BENCHMARKS=ON`.
 
-## Roadmap
-1. CPU operator layer
-2. Uniform non-adaptive tree
-3. Persistent geometry plan
-4. Adaptive tree
-5. CUDA P2P/M2L
-6. MagTense/Fortran interface
+## Python
 
-## Uniform tree status
+```console
+python -m pip install .
+python -m pytest python_tests -v
+```
 
-The repository now includes an initial complete uniform Morton-sorted tree structure for geometry organisation and neighbour-list inspection. Upward and downward FMM passes are intentionally not implemented yet.
+```python
+import cdfmm
+
+result = cdfmm.p2p_dipole_pair(
+    [1.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0],
+    [1.0, 0.0, 0.0],
+    output="both",
+)
+print(result)
+```
+
+The experimental Python interface exposes direct pair/sum evaluation and
+uniform-tree inspection.
+
+## Documentation
+
+- [Overview and current limitations](docs/overview.md)
+- [Installation and building](docs/installation.md)
+- [Getting started](docs/getting-started.md)
+- [Mathematical formulation](docs/math.md)
+- [Uniform tree](docs/uniform-tree.md)
+- [Operator reference](docs/operators.md)
+- [Validation and testing](docs/validation.md)
+- [Roadmap](docs/roadmap.md)
+
+The Sphinx/MyST site integrates Doxygen API output through Breathe and is ready
+for Read the Docs.  Local documentation build instructions are in the
+[installation guide](docs/installation.md).

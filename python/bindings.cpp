@@ -12,8 +12,14 @@
 namespace py = pybind11;
 using namespace cdfmm;
 
+//------------------------------------------------------------------------------
+// Python conversion helpers
+//------------------------------------------------------------------------------
+
 static Vec3 to_vec3(py::handle h)
 {
+    // Direct-operator arguments use NumPy conversion so array-like Python
+    // objects share one compact path into the three-component C++ type.
     const auto a = py::cast<py::array_t<double>>(h);
     auto r = a.unchecked<1>();
     return {r(0), r(1), r(2)};
@@ -21,6 +27,8 @@ static Vec3 to_vec3(py::handle h)
 
 static std::vector<Vec3> parse_vec3_list(const py::handle& input)
 {
+    // Tree construction accepts either bound Vec3 instances or ordinary
+    // length-three sequences, which keeps exploratory scripts lightweight.
     std::vector<Vec3> values;
     for (const auto& item : py::reinterpret_borrow<py::iterable>(input)) {
         if (py::isinstance<py::sequence>(item)) {
@@ -53,8 +61,14 @@ static OutputFlags parse(std::string s)
     return OutputFlags::Both;
 }
 
+//------------------------------------------------------------------------------
+// Python module interface
+//------------------------------------------------------------------------------
+
 PYBIND11_MODULE(cdfmm, m)
 {
+    m.doc() = "Cartesian dipole FMM reference operators and uniform-tree geometry";
+
     py::class_<Vec3>(m, "Vec3")
         .def(py::init<double, double, double>())
         .def_readwrite("x", &Vec3::x)
@@ -115,6 +129,8 @@ PYBIND11_MODULE(cdfmm, m)
         .def_property_readonly("target_permutation", [](const UniformTree& t) { return std::vector<int>(t.target_permutation().begin(), t.target_permutation().end()); })
         .def("leaf_indices", &UniformTree::leaf_indices)
         .def("sorted_source_positions", [](const UniformTree& t) {
+            // Return owned NumPy storage rather than exposing a view whose
+            // lifetime and constness would be tied to the tree instance.
             const auto src = t.sorted_source_positions();
             py::array_t<double> arr({static_cast<py::ssize_t>(src.size()), static_cast<py::ssize_t>(3)});
             auto a = arr.mutable_unchecked<2>();
@@ -156,7 +172,8 @@ PYBIND11_MODULE(cdfmm, m)
             return d;
         },
         py::arg("target"), py::arg("source"), py::arg("moment"),
-        py::arg("output") = "field");
+        py::arg("output") = "field",
+        "Evaluate one point-dipole contribution at one target.");
 
     m.def(
         "p2p_dipole_sum",
@@ -185,5 +202,6 @@ PYBIND11_MODULE(cdfmm, m)
             return d;
         },
         py::arg("target"), py::arg("sources"), py::arg("moments"),
-        py::arg("output") = "field", py::arg("self_index") = -1);
+        py::arg("output") = "field", py::arg("self_index") = -1,
+        "Sum direct point-dipole contributions at one target.");
 }

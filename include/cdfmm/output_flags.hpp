@@ -15,13 +15,16 @@ enum class OutputFlags : unsigned {
   Field = 2u,
   Both = 3u
 };
+/// @brief Combines independent output selections.
 inline OutputFlags operator|(OutputFlags a, OutputFlags b) {
   return static_cast<OutputFlags>(static_cast<unsigned>(a) |
                                   static_cast<unsigned>(b));
 }
+/// @brief Tests whether an output selection contains a requested flag.
 inline bool has_flag(OutputFlags flags, OutputFlags test) {
   return (static_cast<unsigned>(flags) & static_cast<unsigned>(test)) != 0u;
 }
+/** @brief Optional scalar-potential and magnetic-field result. */
 struct PotentialField {
   /// @brief Scalar potential contribution (optional output).
   double phi{0.0};

@@ -1,21 +1,46 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "cdfmm/operators.hpp"
+
 #include <chrono>
 #include <iostream>
 #include <random>
-int main() {
+
+int main()
+{
   using namespace cdfmm;
-  std::mt19937 g(1);
-  std::uniform_real_distribution<double> d(-1, 1);
-  std::vector<Vec3> xs(10000), ms(10000);
-  for (int i = 0; i < 10000; ++i) {
-    xs[i] = {d(g), d(g), d(g)};
-    ms[i] = {d(g), d(g), d(g)};
+
+  constexpr int n_sources = 10000;
+  std::mt19937 generator(1u);
+  std::uniform_real_distribution<double> distribution(-1.0, 1.0);
+  std::vector<Vec3> source_positions(n_sources);
+  std::vector<Vec3> dipole_moments(n_sources);
+
+  // Use a deterministic cloud so smoke-benchmark runs remain comparable.
+  for (int i = 0; i < n_sources; ++i) {
+    source_positions[i] = {
+        distribution(generator),
+        distribution(generator),
+        distribution(generator)
+    };
+    dipole_moments[i] = {
+        distribution(generator),
+        distribution(generator),
+        distribution(generator)
+    };
   }
-  auto t0 = std::chrono::high_resolution_clock::now();
-  auto r = p2p_dipole_sum({0.3, -0.2, 0.1}, xs, ms);
-  auto t1 = std::chrono::high_resolution_clock::now();
-  std::cout << r.H.x << " "
-            << std::chrono::duration<double, std::milli>(t1 - t0).count()
+
+  const Vec3 target_position{0.3, -0.2, 0.1};
+  const auto start = std::chrono::high_resolution_clock::now();
+  const PotentialField result = p2p_dipole_sum(
+      target_position,
+      source_positions,
+      dipole_moments
+  );
+  const auto stop = std::chrono::high_resolution_clock::now();
+
+  std::cout << result.H.x << " "
+            << std::chrono::duration<double, std::milli>(stop - start).count()
             << " ms\n";
+
+  return 0;
 }

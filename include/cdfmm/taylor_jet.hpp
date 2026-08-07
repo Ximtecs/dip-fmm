@@ -24,6 +24,8 @@ namespace cdfmm {
  * avoiding hand-coded derivative tables and finite-difference noise.
  *
  * See docs/math.md for the operator formulas that consume these derivatives.
+ * The referenced MultiIndexSet must outlive the jet and every jet derived
+ * from it.
  */
 class TaylorJet {
 public:
@@ -60,6 +62,7 @@ public:
    */
   TaylorJet invsqrt(int iters = 8) const;
 
+  /// @brief Returns the multi-index basis that owns this jet's indexing.
   const MultiIndexSet &basis() const { return *basis_; }
 
 private:

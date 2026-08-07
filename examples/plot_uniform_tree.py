@@ -5,6 +5,7 @@ import cdfmm
 
 
 def main():
+    """Plot occupied leaf centres and their level-local Morton indices."""
     rng = np.random.default_rng(1234)
     sources = rng.uniform(-1.0, 1.0, size=(32, 3))
 
@@ -12,6 +13,7 @@ def main():
     options.max_level = 2
     tree = cdfmm.UniformTree(sources.tolist(), options)
 
+    # The returned array follows leaf Morton order rather than input order.
     sorted_sources = tree.sorted_source_positions()
 
     fig = plt.figure(figsize=(7, 7))
@@ -22,6 +24,8 @@ def main():
         node = tree.nodes[leaf_index]
         if node.source_count == 0:
             continue
+        # Labelling only occupied leaves keeps the complete depth-two tree
+        # legible while showing how nearby positions are grouped.
         ax.text(node.centre.x, node.centre.y, node.centre.z, str(node.morton_index), fontsize=7)
 
     ax.set_title("Uniform Morton-sorted tree leaf centres")
