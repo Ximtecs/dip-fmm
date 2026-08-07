@@ -157,3 +157,38 @@ After the reference and persistent-geometry investigations:
 3. MagTense integration and a Fortran interface.
 
 These phases are intentionally outside the current CPU reference scope.
+
+## Cross-platform build and packaging
+
+Linux is the current development path.  Windows is intended support, but a
+clean Windows environment and toolchain have not yet been validated and there
+are currently no Linux/Windows CI claims.  Support will mean continuous
+validation rather than a one-off successful build:
+
+- [ ] Verify clean Conda environment creation on Linux.
+- [ ] Verify clean Conda environment creation on Windows.
+- [ ] Verify C++20 compilation on Linux.
+- [ ] Verify C++20 compilation on Windows.
+- [ ] Verify the C++ test suite on both platforms.
+- [ ] Verify Python extension build and installation on both platforms.
+- [ ] Verify the Python tests on both platforms.
+- [ ] Verify documentation builds on both platforms where practical.
+- [ ] Add GitHub Actions jobs for Linux and Windows.
+- [ ] In each OS job, configure, build, run C++ tests, build Python, and run
+  Python tests.
+- [ ] Keep paths and documented commands platform-independent where possible.
+- [ ] Document unavoidable Windows SDK or toolchain prerequisites.
+- [ ] Test installation on completely clean machines or CI runners.
+
+## Distribution and releases
+
+Once source-build portability is continuously tested, investigate:
+
+- [ ] Linux and Windows Python wheels built automatically in CI;
+- [ ] whether `cibuildwheel` is appropriate for the native extension;
+- [ ] tagged GitHub releases and version/release automation;
+- [ ] publication of the Python package;
+- [ ] a Conda package and conda-forge feedstock if user demand warrants them.
+
+These are future shipping goals, not capabilities of the current source-only
+development workflow.

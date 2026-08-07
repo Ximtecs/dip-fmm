@@ -1,0 +1,61 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 20,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Developer build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CDFMM_BUILD_TESTS": "ON",
+        "CDFMM_BUILD_EXAMPLES": "ON",
+        "CDFMM_BUILD_PYTHON": "ON",
+        "CDFMM_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "C++ release build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CDFMM_BUILD_TESTS": "OFF",
+        "CDFMM_BUILD_EXAMPLES": "ON",
+        "CDFMM_BUILD_PYTHON": "OFF",
+        "CDFMM_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "benchmark",
+      "displayName": "Benchmark build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-bench",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CDFMM_BUILD_TESTS": "OFF",
+        "CDFMM_BUILD_EXAMPLES": "OFF",
+        "CDFMM_BUILD_PYTHON": "OFF",
+        "CDFMM_BUILD_BENCHMARKS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "benchmark", "configurePreset": "benchmark" }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}
