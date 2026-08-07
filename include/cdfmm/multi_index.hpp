@@ -22,18 +22,22 @@ struct MultiIndex {
 
   /// @brief Returns |alpha| = alpha_x + alpha_y + alpha_z.
   int degree() const { return ax + ay + az; }
+  /// @brief Returns the component for axis 0 (x), 1 (y), or 2 (z).
   int operator[](int i) const { return i == 0 ? ax : (i == 1 ? ay : az); }
 };
 
+/// @brief Tests the component-wise partial order `a_k <= b_k`.
 inline bool leq(const MultiIndex &a, const MultiIndex &b) {
   // Component-wise partial order: a <= b iff a_k <= b_k for each axis k.
   return a.ax <= b.ax && a.ay <= b.ay && a.az <= b.az;
 }
 
+/// @brief Adds two Cartesian multi-indices component-wise.
 inline MultiIndex add(const MultiIndex &a, const MultiIndex &b) {
   return {a.ax + b.ax, a.ay + b.ay, a.az + b.az};
 }
 
+/// @brief Subtracts two Cartesian multi-indices component-wise.
 inline MultiIndex sub(const MultiIndex &a, const MultiIndex &b) {
   return {a.ax - b.ax, a.ay - b.ay, a.az - b.az};
 }
@@ -47,9 +51,11 @@ inline MultiIndex sub(const MultiIndex &a, const MultiIndex &b) {
  * Total-degree ordering is convenient for truncated FMM expansions because
  * translations couple nearby degrees and recursion dependencies are naturally
  * satisfied from lower to higher degree.
+ * The basis contains `(p+1)(p+2)(p+3)/6` entries in three dimensions.
  */
 class MultiIndexSet {
 public:
+  /** @brief Constructs the dense basis containing all degrees through @p p. */
   explicit MultiIndexSet(int p) : p_(p) {
     for (int d = 0; d <= p_; ++d) {
       for (int ax = 0; ax <= d; ++ax) {
@@ -61,8 +67,11 @@ public:
     }
   }
 
+  /// @brief Returns the maximum total degree p.
   int order() const { return p_; }
+  /// @brief Returns the number of basis entries.
   int size() const { return static_cast<int>(indices_.size()); }
+  /// @brief Returns the multi-index at a linear storage position.
   const MultiIndex &operator[](int i) const { return indices_.at(i); }
 
   /// @brief Maps a multi-index to its linear storage position.
@@ -77,6 +86,7 @@ public:
     throw std::out_of_range("multi-index not found");
   }
 
+  /// @brief Returns `n!` as a floating-point value.
   static double factorial(int n) {
     double v = 1.0;
     for (int i = 2; i <= n; ++i) {
@@ -85,6 +95,7 @@ public:
     return v;
   }
 
+  /// @brief Returns `alpha! = alpha_x! alpha_y! alpha_z!`.
   static double multi_factorial(const MultiIndex &a) {
     return factorial(a.ax) * factorial(a.ay) * factorial(a.az);
   }

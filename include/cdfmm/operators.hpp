@@ -24,6 +24,7 @@ namespace cdfmm {
  *
  * NOTE: The monopole term M_(0,0,0) is identically zero for pure dipole
  * sources because each coefficient contribution depends on alpha-e_k.
+ * Source positions and dipole moments must have equal length.
  */
 CoeffVector p2m_dipole(const MultiIndexSet &basis, const Vec3 &centre,
                        std::span<const Vec3> source_positions,
@@ -34,6 +35,7 @@ CoeffVector p2m_dipole(const MultiIndexSet &basis, const Vec3 &centre,
  *
  * The translation vector @p d is parent-centre minus child-centre, and the
  * translation is a multi-index Taylor shift in that displacement.
+ * Both coefficient spans must contain `basis.size()` entries.
  */
 void m2m_add(const MultiIndexSet &basis, const Vec3 &d,
              std::span<const double> child, std::span<double> parent);
@@ -43,6 +45,8 @@ void m2m_add(const MultiIndexSet &basis, const Vec3 &d,
  *
  * This computes L_beta += sum_alpha M_alpha D_(alpha+beta) G(R), where
  * R = c_target - c_source.
+ * The centres must be separated and both spans must contain `basis.size()`
+ * entries.
  */
 void m2l_add(const MultiIndexSet &basis, const Vec3 &R,
              std::span<const double> M, std::span<double> L);
@@ -51,6 +55,7 @@ void m2l_add(const MultiIndexSet &basis, const Vec3 &R,
  * @brief Adds a parent local expansion shifted to a child expansion centre.
  *
  * The translation vector @p d is child-centre minus parent-centre.
+ * Both coefficient spans must contain `basis.size()` entries.
  */
 void l2l_add(const MultiIndexSet &basis, const Vec3 &d,
              std::span<const double> parent, std::span<double> child);
@@ -60,6 +65,7 @@ void l2l_add(const MultiIndexSet &basis, const Vec3 &d,
  *
  * Potential output is optional. Field output is computed as H = -grad(phi).
  * Field-only is the default because H is the main quantity of interest.
+ * The local coefficient span must contain `basis.size()` entries.
  */
 PotentialField l2p_eval(const MultiIndexSet &basis, const Vec3 &centre,
                         const Vec3 &target, std::span<const double> L,

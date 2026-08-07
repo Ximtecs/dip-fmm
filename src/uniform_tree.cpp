@@ -11,8 +11,14 @@
 
 namespace cdfmm {
 
+//------------------------------------------------------------------------------
+// Tree-construction helpers
+//------------------------------------------------------------------------------
+
 namespace {
 
+// Permit round-off at a user-specified root boundary.  Coordinates accepted
+// through this tolerance are clamped into the first or final leaf below.
 constexpr double kBoundaryTolerance = 1.0e-12;
 
 int boxes_per_dim(const int level)
@@ -33,13 +39,40 @@ std::size_t total_nodes(const int max_level)
 
 } // namespace
 
-bool TreeNode::is_leaf() const { return std::all_of(children.begin(), children.end(), [](int c) { return c < 0; }); }
-std::size_t TreeNode::source_count() const { return source_end - source_begin; }
-std::size_t TreeNode::target_count() const { return target_end - target_begin; }
+//------------------------------------------------------------------------------
+// Tree-node queries
+//------------------------------------------------------------------------------
+
+bool TreeNode::is_leaf() const
+{
+    return std::all_of(
+        children.begin(),
+        children.end(),
+        [](const int child) {
+            return child < 0;
+        }
+    );
+}
+
+std::size_t TreeNode::source_count() const
+{
+    return source_end - source_begin;
+}
+
+std::size_t TreeNode::target_count() const
+{
+    return target_end - target_begin;
+}
+
+//------------------------------------------------------------------------------
+// Morton and flat-index utilities
+//------------------------------------------------------------------------------
 
 std::uint64_t morton_encode(const int ix, const int iy, const int iz)
 {
     std::uint64_t morton = 0;
+    // A 64-bit Morton key accommodates 21 bits per coordinate (63 bits total).
+    // Each group of three output bits contains x, y, and z respectively.
     for (int bit = 0; bit < 21; ++bit) {
         const std::uint64_t xb = (static_cast<std::uint64_t>(ix) >> bit) & 1ULL;
         const std::uint64_t yb = (static_cast<std::uint64_t>(iy) >> bit) & 1ULL;
@@ -66,6 +99,7 @@ std::array<int, 3> morton_decode(const std::uint64_t morton)
 
 int level_offset(const int level)
 {
+    // Complete levels preceding level l contain sum_{k=0}^{l-1} 8^k nodes.
     std::size_t numerator = 1;
     for (int i = 0; i < level; ++i) {
         numerator *= 8;
@@ -88,6 +122,10 @@ UniformTree::UniformTree(const std::vector<Vec3>& source_positions, const std::v
     build(source_positions, target_positions, options);
 }
 
+//------------------------------------------------------------------------------
+// Complete uniform-tree construction
+//------------------------------------------------------------------------------
+
 void UniformTree::build(const std::vector<Vec3>& source_positions, const std::vector<Vec3>& target_positions, const UniformTreeOptions& options)
 {
     if (options.max_level < 0) {
@@ -98,6 +136,9 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
     }
 
     max_level_ = options.max_level;
+
+    // One common root encloses both populations.  This permits independent
+    // source and target sorting while retaining shared box coordinates.
     const std::vector<Vec3>* combined_ptrs[2] = {&source_positions, &target_positions};
     Vec3 minimum{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
     Vec3 maximum{-std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
@@ -129,7 +170,17 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
     } else {
         const Vec3 delta_max = maximum - root_centre_;
         const Vec3 delta_min = root_centre_ - minimum;
-        root_half_width_ = std::max({delta_max.x, delta_max.y, delta_max.z, delta_min.x, delta_min.y, delta_min.z});
+        // A single half-width makes the root cubic even for an anisotropic
+        // point cloud.  The centre need not be the inferred bounding-box centre
+        // when a caller supplies it, so inspect both sides independently.
+        root_half_width_ = std::max({
+            delta_max.x,
+            delta_max.y,
+            delta_max.z,
+            delta_min.x,
+            delta_min.y,
+            delta_min.z
+        });
         if (!has_points) {
             root_half_width_ = 1.0;
         }
@@ -151,6 +202,8 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
         const int n = boxes_per_dim(max_level_);
         const double cell_width = (2.0 * root_half_width_) / static_cast<double>(n);
         const auto index_for = [&](double value, double lo) {
+            // floor assigns internal boundaries to the box on their positive
+            // side.  Clamp the closed upper root face to index n-1.
             int index = static_cast<int>(std::floor((value - lo) / cell_width));
             if (index < 0) {
                 index = 0;
@@ -163,6 +216,8 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
         return std::array<int, 3>{index_for(point.x, root_min.x), index_for(point.y, root_min.y), index_for(point.z, root_min.z)};
     };
 
+    // Materialise every box, including empty boxes.  Consequently a flat node
+    // index is computable directly, with no sparse lookup table.
     nodes_.assign(total_nodes(max_level_), TreeNode{});
     for (int level = 0; level <= max_level_; ++level) {
         const int n = boxes_per_dim(level);
@@ -177,7 +232,11 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
                     node.iy = iy;
                     node.iz = iz;
                     node.morton_index = morton_encode(ix, iy, iz);
-                    node.parent = (level == 0) ? -1 : node_index(level - 1, ix / 2, iy / 2, iz / 2);
+                    // Integer division removes the lowest coordinate bit and
+                    // therefore gives the parent in a complete octree.
+                    node.parent = (level == 0)
+                        ? -1
+                        : node_index(level - 1, ix / 2, iy / 2, iz / 2);
                     const double child_width = root_half_width_ / static_cast<double>(1 << level);
                     node.half_width = child_width;
                     const Vec3 offset{
@@ -190,6 +249,7 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
         }
     }
 
+    // Child slot bits encode local (dx,dy,dz), matching Morton bit order.
     for (TreeNode& node : nodes_) {
         if (node.level == max_level_) {
             node.children.fill(-1);
@@ -198,12 +258,27 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
                 const int dx = child & 1;
                 const int dy = (child >> 1) & 1;
                 const int dz = (child >> 2) & 1;
-                node.children[child] = node_index(node.level + 1, 2 * node.ix + dx, 2 * node.iy + dy, 2 * node.iz + dz);
+                node.children[child] = node_index(
+                    node.level + 1,
+                    2 * node.ix + dx,
+                    2 * node.iy + dy,
+                    2 * node.iz + dz
+                );
             }
         }
     }
 
-    auto sort_points = [&](const std::vector<Vec3>& original, std::vector<Vec3>& sorted, std::vector<int>& permutation, std::vector<int>& inverse, std::vector<int>& leaf_indices) {
+    // Sort each population independently by leaf Morton index.  Stable sorting
+    // preserves user order for points sharing a leaf, making the convention
+    // deterministic.  permutation[sorted] = original, while
+    // inverse[original] = sorted.
+    auto sort_points = [&](
+        const std::vector<Vec3>& original,
+        std::vector<Vec3>& sorted,
+        std::vector<int>& permutation,
+        std::vector<int>& inverse,
+        std::vector<int>& leaf_indices
+    ) {
         std::vector<std::tuple<std::uint64_t, int, int>> keyed;
         keyed.reserve(original.size());
         for (std::size_t i = 0; i < original.size(); ++i) {
@@ -212,7 +287,13 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
             const int leaf_index = node_index(max_level_, ijk[0], ijk[1], ijk[2]);
             keyed.emplace_back(morton, static_cast<int>(i), leaf_index);
         }
-        std::stable_sort(keyed.begin(), keyed.end(), [](const auto& a, const auto& b) { return std::get<0>(a) < std::get<0>(b); });
+        std::stable_sort(
+            keyed.begin(),
+            keyed.end(),
+            [](const auto& a, const auto& b) {
+                return std::get<0>(a) < std::get<0>(b);
+            }
+        );
 
         sorted.resize(original.size());
         permutation.resize(original.size());
@@ -227,9 +308,23 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
         }
     };
 
-    sort_points(source_positions, source_positions_sorted_, source_permutation_, source_inverse_permutation_, source_leaf_indices_);
-    sort_points(target_positions, target_positions_sorted_, target_permutation_, target_inverse_permutation_, target_leaf_indices_);
+    sort_points(
+        source_positions,
+        source_positions_sorted_,
+        source_permutation_,
+        source_inverse_permutation_,
+        source_leaf_indices_
+    );
+    sort_points(
+        target_positions,
+        target_positions_sorted_,
+        target_permutation_,
+        target_inverse_permutation_,
+        target_leaf_indices_
+    );
 
+    // Empty ranges use [population_size, population_size).  Non-empty leaf
+    // ranges overwrite these sentinels before ranges are propagated upwards.
     for (TreeNode& node : nodes_) {
         node.source_begin = source_positions_sorted_.size();
         node.source_end = source_positions_sorted_.size();
@@ -238,6 +333,8 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
     }
 
     auto assign_ranges = [&](const std::vector<int>& leaf_for_sorted, bool is_source) {
+        // Equal Morton keys are contiguous, so each occupied leaf receives one
+        // half-open interval in the appropriate sorted point array.
         std::size_t cursor = 0;
         while (cursor < leaf_for_sorted.size()) {
             const int leaf = leaf_for_sorted[cursor];
@@ -256,6 +353,9 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
             cursor = next;
         }
 
+        // A depth-first Morton ordering makes all points below a parent
+        // contiguous.  Taking the minimum child begin and maximum child end
+        // therefore forms the exact parent range, including empty children.
         for (int level = max_level_ - 1; level >= 0; --level) {
             const int begin = level_offset(level);
             const int end = level_offset(level + 1);
@@ -284,6 +384,9 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
     assign_ranges(source_leaf_indices_, true);
     assign_ranges(target_leaf_indices_, false);
 
+    // list1 is the clipped 3x3x3 same-level neighbourhood.  It includes the
+    // node itself and has fewer than 27 entries at physical root boundaries.
+    // These boxes define the direct near field in a uniform FMM.
     for (TreeNode& node : nodes_) {
         const int n = boxes_per_dim(node.level);
         std::set<int> l1;
@@ -306,6 +409,10 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
             continue;
         }
 
+        // list2 contains children of the parent's list1 boxes minus this
+        // node's own list1.  Thus every entry is well separated at this level
+        // but its parent is adjacent to this node's parent, which is the
+        // classical uniform-tree M2L interaction criterion.
         std::set<int> l2;
         const TreeNode& parent = nodes_.at(node.parent);
         for (const int parent_neighbour : parent.list1) {
@@ -322,31 +429,94 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
     }
 }
 
-int UniformTree::max_level() const { return max_level_; }
-int UniformTree::n_levels() const { return max_level_ + 1; }
-int UniformTree::leaf_level() const { return max_level_; }
-const Vec3& UniformTree::root_centre() const { return root_centre_; }
-double UniformTree::root_half_width() const { return root_half_width_; }
-std::span<const TreeNode> UniformTree::nodes() const { return nodes_; }
-std::span<const Vec3> UniformTree::sorted_source_positions() const { return source_positions_sorted_; }
-std::span<const Vec3> UniformTree::sorted_target_positions() const { return target_positions_sorted_; }
-std::span<const int> UniformTree::source_permutation() const { return source_permutation_; }
-std::span<const int> UniformTree::source_inverse_permutation() const { return source_inverse_permutation_; }
-std::span<const int> UniformTree::target_permutation() const { return target_permutation_; }
-std::span<const int> UniformTree::target_inverse_permutation() const { return target_inverse_permutation_; }
+//------------------------------------------------------------------------------
+// Public tree queries
+//------------------------------------------------------------------------------
+
+int UniformTree::max_level() const
+{
+    return max_level_;
+}
+
+int UniformTree::n_levels() const
+{
+    return max_level_ + 1;
+}
+
+int UniformTree::leaf_level() const
+{
+    return max_level_;
+}
+
+const Vec3& UniformTree::root_centre() const
+{
+    return root_centre_;
+}
+
+double UniformTree::root_half_width() const
+{
+    return root_half_width_;
+}
+
+std::span<const TreeNode> UniformTree::nodes() const
+{
+    return nodes_;
+}
+
+std::span<const Vec3> UniformTree::sorted_source_positions() const
+{
+    return source_positions_sorted_;
+}
+
+std::span<const Vec3> UniformTree::sorted_target_positions() const
+{
+    return target_positions_sorted_;
+}
+
+std::span<const int> UniformTree::source_permutation() const
+{
+    return source_permutation_;
+}
+
+std::span<const int> UniformTree::source_inverse_permutation() const
+{
+    return source_inverse_permutation_;
+}
+
+std::span<const int> UniformTree::target_permutation() const
+{
+    return target_permutation_;
+}
+
+std::span<const int> UniformTree::target_inverse_permutation() const
+{
+    return target_inverse_permutation_;
+}
 
 std::vector<int> UniformTree::leaf_indices() const
 {
     std::vector<int> indices;
     const int begin = level_offset(max_level_);
-    const int end = begin + boxes_per_dim(max_level_) * boxes_per_dim(max_level_) * boxes_per_dim(max_level_);
+    const int boxes = boxes_per_dim(max_level_);
+    const int end = begin + boxes * boxes * boxes;
     for (int idx = begin; idx < end; ++idx) {
         indices.push_back(idx);
     }
     return indices;
 }
 
-int UniformTree::leaf_index_for_source(const std::size_t sorted_source_index) const { return source_leaf_indices_.at(sorted_source_index); }
-int UniformTree::leaf_index_for_target(const std::size_t sorted_target_index) const { return target_leaf_indices_.at(sorted_target_index); }
+int UniformTree::leaf_index_for_source(
+    const std::size_t sorted_source_index
+) const
+{
+    return source_leaf_indices_.at(sorted_source_index);
+}
+
+int UniformTree::leaf_index_for_target(
+    const std::size_t sorted_target_index
+) const
+{
+    return target_leaf_indices_.at(sorted_target_index);
+}
 
 } // namespace cdfmm

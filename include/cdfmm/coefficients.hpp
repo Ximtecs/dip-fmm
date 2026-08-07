@@ -9,7 +9,10 @@ namespace cdfmm {
  *
  *   coeff[i] <-> multi-index basis[i]
  *
- * The same convention is used for M (multipole) and L (local) vectors.
+ * The same container is used for M (multipole) and L (local) vectors, but the
+ * mathematical normalisation depends on the operator: multipole entries
+ * multiply raw kernel derivatives, whereas local entries are raw derivatives
+ * of the incoming potential and multiply factorial-normalised monomials.
  */
 using CoeffVector = std::vector<double>;
 }
