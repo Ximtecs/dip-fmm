@@ -5,9 +5,12 @@ import subprocess
 
 
 DOCS_DIR = Path(__file__).resolve().parent
+DOXYGEN_BUILD_DIR = DOCS_DIR / "_build" / "doxygen"
 
 # Generate XML on every clean documentation build; generated API data remains
 # under _build and is intentionally excluded from version control.
+# Doxygen requires its nested output directory to exist before it starts.
+DOXYGEN_BUILD_DIR.mkdir(parents=True, exist_ok=True)
 subprocess.run(["doxygen", "Doxyfile"], cwd=DOCS_DIR, check=True)
 
 project = "dip-fmm"
