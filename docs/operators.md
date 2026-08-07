@@ -19,6 +19,20 @@ $d=c_{parent}-c_{child}$. **Output:** contributions added to the parent
 multipole.  It contracts factorial-normalised monomials with coefficients at
 $\alpha-\gamma$.  Eight child calls form one parent in the upward pass.
 
+## Reference upward composition
+
+`UniformFmm` composes these two operators without reproducing their
+mathematics.  It calls P2M once for each non-empty leaf range, then visits
+parent levels from deepest to root and calls `m2m_add` for each populated
+child.  Destination vectors start at zero on every evaluation.  The M2M sign
+is exactly `d = parent centre - child centre`, so a node's final coefficients
+describe every source in its subtree about that node centre.
+
+The expansion order is fixed in `UniformFmmOptions` at construction.  The
+complete node-vector layout follows flat tree indices and `MultiIndexSet`
+coefficient order; `multipole(node_index)` exposes a read-only view for
+inspection.  This is only the upward portion of the future traversal.
+
 ## M2L: multipole to local
 
 **Inputs:** source multipole, target local destination, and

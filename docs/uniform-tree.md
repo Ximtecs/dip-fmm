@@ -57,6 +57,11 @@ Consequently, later target results in sorted order must use
 `target_permutation` to return to user order.  The tree does not yet perform
 that result permutation itself.
 
+`UniformFmm.upward_pass` uses `source_permutation` internally: callers supply
+dipole moments in the same original order as the constructor's source
+positions, and the evaluator maps them to the sorted source positions.  A
+caller must not pre-sort moments.
+
 Each sorted point also records its flat leaf index.  Occupied leaves receive a
 half-open range `[begin,end)` into the sorted population; empty leaves receive
 an empty range.  Ranges are propagated from children to parents.  Morton order
@@ -79,6 +84,21 @@ indices and removes duplicates.
 
 Interaction lists include empty nodes because the complete topology is
 materialised.  A future traversal can skip work by consulting source and
-target counts.  The current `include_empty_nodes` and `cubic_root_box` options
+target counts.  The upward pass skips empty leaf P2M and empty-child M2M, while
+retaining zero coefficient vectors for those nodes.  The current
+`include_empty_nodes` and `cubic_root_box` options
 describe the intended configuration but sparse or non-cubic trees are not yet
 implemented.
+
+## Upward-pass state
+
+`UniformTree` remains a geometry container.  `UniformFmm` owns one tree, one
+`MultiIndexSet`, and one multipole coefficient vector per flat node.  Geometry
+is built at construction; changing moments calls only `upward_pass` and does
+not reconstruct the tree.  This separation is the reference architecture for
+repeated magnetic states, not the later static-geometry optimisation milestone.
+
+Node ranges always index the Morton-sorted arrays.  Leaf P2M consumes each
+occupied leaf's range, then M2M aggregates from the deepest parent level to the
+root.  Read-only `tree()`, `basis()`, `multipole(node_index)`, and
+`root_multipole()` accessors permit validation without external mutation.

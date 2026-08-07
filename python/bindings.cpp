@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "cdfmm/operators.hpp"
+#include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/uniform_tree.hpp"
 
 namespace py = pybind11;
@@ -331,6 +332,59 @@ PYBIND11_MODULE(cdfmm, module)
         .def("sorted_target_positions", [](const UniformTree& tree) {
             return points_to_array(tree.sorted_target_positions());
         });
+
+    py::class_<UniformFmmOptions>(module, "UniformFmmOptions")
+        .def(py::init<>())
+        .def_readwrite(
+            "expansion_order",
+            &UniformFmmOptions::expansion_order
+        )
+        .def_readwrite("tree", &UniformFmmOptions::tree);
+
+    py::class_<UniformFmm>(module, "UniformFmm")
+        .def(
+            py::init([](
+                py::object source_positions,
+                const UniformFmmOptions& options
+            ) {
+                return UniformFmm(
+                    parse_vec3_array(source_positions, "source_positions"),
+                    options
+                );
+            }),
+            py::arg("source_positions"),
+            py::arg("options") = UniformFmmOptions{}
+        )
+        .def(
+            "upward_pass",
+            [](UniformFmm& fmm, py::object dipole_moments) {
+                fmm.upward_pass(
+                    parse_vec3_array(dipole_moments, "dipole_moments")
+                );
+            },
+            py::arg("dipole_moments"),
+            "Replace all node multipoles using moments in original source order."
+        )
+        .def_property_readonly(
+            "tree",
+            &UniformFmm::tree,
+            py::return_value_policy::reference_internal
+        )
+        .def_property_readonly("expansion_order", [](const UniformFmm& fmm) {
+            return fmm.basis().order();
+        })
+        .def_property_readonly("root_multipole", [](const UniformFmm& fmm) {
+            const auto coefficients = fmm.root_multipole();
+            return coefficients_to_array(
+                CoeffVector(coefficients.begin(), coefficients.end())
+            );
+        })
+        .def("multipole", [](const UniformFmm& fmm, const int node_index) {
+            const auto coefficients = fmm.multipole(node_index);
+            return coefficients_to_array(
+                CoeffVector(coefficients.begin(), coefficients.end())
+            );
+        }, py::arg("node_index"));
 
     module.def("morton_encode", &morton_encode);
     module.def("morton_decode", &morton_decode);

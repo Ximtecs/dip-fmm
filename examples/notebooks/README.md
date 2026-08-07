@@ -26,6 +26,7 @@ The sequence follows the data flow through the implemented operators:
 | `06_l2p_evaluation.ipynb` | Spatial local-expansion error near a target centre |
 | `07_operator_chain.ipynb` | Comparison of all implemented operator paths |
 | `08_uniform_tree.ipynb` | Morton order, occupancy, boxes, list1, and list2 |
+| `09_uniform_upward_pass.ipynb` | Leaf P2M, hierarchical M2M, and direct-root equivalence |
 
 Select the `Python (cdfmm)` kernel in JupyterLab or VSCode. Important
 parameters are collected near the top of each notebook, and all random
@@ -33,6 +34,6 @@ experiments use deterministic seeds. The notebooks call the compiled C++
 operators; `example_utils.py` contains only plotting, batched calls, and error
 diagnostics.
 
-The uniform tree currently provides geometry and interaction lists only. The
-notebooks do not implement an upward pass, downward pass, or end-to-end tree
-FMM.
+The uniform tree provides geometry and interaction lists, while `UniformFmm`
+adds the reference upward pass. The notebooks do not implement M2L, a downward
+pass, near-field traversal, or an end-to-end tree FMM.

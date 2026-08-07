@@ -11,4 +11,5 @@
 #include "cdfmm/vec3.hpp"
 #include "cdfmm/tree_node.hpp"
 #include "cdfmm/uniform_tree.hpp"
+#include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"

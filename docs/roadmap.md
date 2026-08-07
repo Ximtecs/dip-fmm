@@ -24,12 +24,12 @@ correctness baseline before introducing traversal or performance complexity.
 The tree currently organises geometry only; it does not claim to be a complete
 FMM evaluator.
 
-## 3. Functional reference uniform FMM — immediate next milestone
+## 3. Functional reference uniform FMM — in progress
 
 Connect the existing operators and geometry without introducing optimisation:
 
-- [ ] leaf P2M;
-- [ ] upward M2M pass;
+- [x] leaf P2M;
+- [x] upward M2M pass;
 - [ ] M2L accumulation using each target node's `list2`;
 - [ ] downward L2L pass;
 - [ ] leaf L2P;
