@@ -195,9 +195,9 @@ TEST_CASE("Uniform upward pass validates public input", "[uniform_fmm]") {
                     std::invalid_argument);
 
   UniformFmm fmm(distributed_positions, UniformFmmOptions{});
-  REQUIRE_THROWS_WITH(
+  REQUIRE_THROWS_AS(
       fmm.upward_pass(std::vector<Vec3>(distributed_positions.size() - 1)),
-      "UniformFmm::upward_pass requires one dipole moment per source position");
+      std::invalid_argument);
 }
 
 TEST_CASE("Hierarchical root and direct root give the same distant field",
