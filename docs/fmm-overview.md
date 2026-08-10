@@ -18,12 +18,11 @@ uniform-tree evaluation consists of:
    touching `list1` boxes, excluding singular self-pairs where applicable.
 8. **Unsorting:** map results from Morton order back to the user's target order.
 
-All seven mathematical operators exist and the tree provides the required
-geometry.  `UniformFmm` now implements steps 2 and 3 as a reference upward
-pass.  Its construction fixes the source geometry, while each `upward_pass`
-call accepts a new dipole state in user order.  The remaining steps 4--8 are
-**not yet assembled into a traversal**; direct P2P remains the only complete
-many-source field-evaluation path.
+All seven mathematical operators exist and `UniformFmm` assembles steps 2--8
+as a functional reference traversal. Construction fixes independent source
+and target geometry, while each `evaluate` call accepts a new dipole state in
+user source order. The upward and downward passes remain separately callable,
+and node multipole and local coefficients remain inspectable.
 
 The implemented algorithm is:
 
@@ -36,6 +35,21 @@ Upward stage:
         for parent at level:
             for populated child in parent.children:
                 M_parent += M2M(M_child)
+
+Downward stage:
+    clear every local expansion
+    for level = 1 ... leaf_level:
+        for occupied target box at level:
+            L_target += L2L(L_parent)
+            for populated source box in target.list2:
+                L_target += M2L(M_source)
+
+Evaluation stage:
+    for target in each occupied target leaf:
+        value = L2P(L_leaf, target)
+        for source box in leaf.list1:
+            value += P2P(sources in source box, target)
+    unpermute values to user target order
 ```
 
 Before the leaf stage, input moments are permuted to the source positions'
@@ -45,6 +59,16 @@ For M2M the displacement is `parent centre - child centre`.  Consequently each
 stored node multipole represents the union of all sources below that node,
 expanded about its centre.  In particular, the hierarchical root agrees to
 round-off with direct P2M of all sources about the root centre.
+
+M2L uses `target centre - source centre`, and L2L uses `child centre -
+parent centre`. `list2` supplies the far-field partition and leaf `list1`
+supplies the direct near field, so no pair belongs to both paths. Self
+interactions are excluded only through an explicit target-to-source index map;
+equal coordinates are not treated as particle identity. Public results are
+always unpermuted to the original target ordering.
+
+This is deliberately a readable CPU reference. It does not cache translation
+operators, optimise fixed geometry, use an adaptive tree, or provide CUDA.
 
 See [Operator reference](operators.md) for each translation and
 [Uniform tree](uniform-tree.md) for the geometric lists.

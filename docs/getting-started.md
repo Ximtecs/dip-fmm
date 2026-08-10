@@ -54,5 +54,6 @@ result = cdfmm.p2p_dipole_sum(
 print(result["phi"], result["H"])
 ```
 
-The Python interface also exposes `UniformTree` for geometry inspection.  It
-does not yet expose the Cartesian expansion operators or a complete FMM solve.
+The Python interface also exposes every Cartesian expansion operator,
+`UniformTree` geometry inspection, and the complete `UniformFmm.evaluate`
+reference solve.

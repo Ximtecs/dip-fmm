@@ -11,13 +11,13 @@ The CPU reference operator layer is implemented: P2M, M2M, M2L, L2L, L2P,
 M2P, and direct P2P, together with Taylor-jet Laplace derivatives and validation
 helpers.  The repository also contains a complete, non-adaptive,
 Morton-sorted uniform octree with source/target permutations, hierarchical
-ranges, and `list1`/`list2` interactions.  `UniformFmm` now connects fixed
-source geometry to a reference upward pass: it permutes each new dipole state,
-builds occupied-leaf multipoles with P2M, and aggregates them to the root with
-M2M.
+ranges, and `list1`/`list2` interactions. `UniformFmm` connects fixed source
+and target geometry to a complete reference traversal: P2M and upward M2M,
+`list2` M2L, downward L2L, leaf L2P, direct `list1` P2P, and result unsorting.
 
-This is **not yet an end-to-end FMM field evaluation**: M2L, the downward pass,
-and near-field traversal remain unassembled.  Adaptive trees,
+The evaluator supports field, potential, or both. Source-point self exclusion
+uses an explicit target-to-source identity index rather than coordinate
+equality, and returned values follow user target order. Adaptive trees,
 persistent/static geometry optimisation, CUDA,
 and MagTense/Fortran integration are not implemented.  See the
 [roadmap](docs/roadmap.md) for the next milestone and later research.
@@ -31,7 +31,8 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Examples build by default.  Enable the current P2P benchmark with
+Examples build by default. Enable the P2P and reference uniform-FMM smoke
+benchmarks with
 `-DCDFMM_BUILD_BENCHMARKS=ON`.
 
 ## Python
@@ -55,7 +56,8 @@ print(result)
 
 The experimental Python interface exposes direct evaluation, every current
 expansion operator, Cartesian coefficient ordering, uniform-tree inspection,
-and `UniformFmm.upward_pass` for root or per-node multipole inspection.
+and complete `UniformFmm.evaluate` calls, with per-node multipole and local
+inspection.
 
 ## Interactive examples
 
@@ -70,10 +72,11 @@ jupyter lab
 ```
 
 VSCode users can open a notebook and select the `Python (cdfmm)` kernel. The
-ten notebooks progress from exact P2P through P2M, M2M, M2P, M2L, L2L, and
+eleven notebooks progress from exact P2P through P2M, M2M, M2P, M2L, L2L, and
 L2P, then compare complete operator chains and visualise the uniform tree,
 including Morton ordering, leaf occupancy, `list1`, and `list2`.  The final
-notebook visualises leaf P2M and hierarchical M2M in the upward pass. See the
+notebooks visualise the upward pass and complete downward/near-field
+decomposition. See the
 [notebook catalogue](examples/notebooks/README.md) for the full sequence.
 
 These examples are interactive learning and validation tools, not replacements

@@ -1,2 +1,5 @@
 add_executable(benchmark_p2p benchmark_p2p.cpp)
 target_link_libraries(benchmark_p2p PRIVATE cdfmm_core)
+
+add_executable(benchmark_uniform_fmm benchmark_uniform_fmm.cpp)
+target_link_libraries(benchmark_uniform_fmm PRIVATE cdfmm_core)

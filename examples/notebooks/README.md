@@ -27,6 +27,7 @@ The sequence follows the data flow through the implemented operators:
 | `07_operator_chain.ipynb` | Comparison of all implemented operator paths |
 | `08_uniform_tree.ipynb` | Morton order, occupancy, boxes, list1, and list2 |
 | `09_uniform_upward_pass.ipynb` | Leaf P2M, hierarchical M2M, and direct-root equivalence |
+| `10_uniform_downward_pass.ipynb` | M2L/L2L routes, list1 near field, and complete-FMM accuracy |
 
 Select the `Python (cdfmm)` kernel in JupyterLab or VSCode. Important
 parameters are collected near the top of each notebook, and all random
@@ -35,5 +36,6 @@ operators; `example_utils.py` contains only plotting, batched calls, and error
 diagnostics.
 
 The uniform tree provides geometry and interaction lists, while `UniformFmm`
-adds the reference upward pass. The notebooks do not implement M2L, a downward
-pass, near-field traversal, or an end-to-end tree FMM.
+executes the complete reference traversal in compiled C++. Notebook 10 only
+visualises that state and compares it with compiled direct P2P; it does not
+reimplement traversal logic in Python.
