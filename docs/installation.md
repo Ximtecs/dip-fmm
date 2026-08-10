@@ -4,16 +4,57 @@ This guide starts from a clean source checkout.  It assumes only Git, internet
 access, and Conda; [Miniforge](https://github.com/conda-forge/miniforge) is the
 recommended Conda distribution because it uses conda-forge by default.
 
+## Complete clean rebuild, test, and MKL benchmark
+
+Run the following commands from the repository root. They update the existing
+`cdfmm` environment with the newest declared requirements, remove all previous
+build directories, rebuild and test the development configuration, reinstall
+the Python extension, and run the quick oneMKL benchmark profile.
+
+```console
+conda env update \
+  --name cdfmm \
+  --file environment.yml
+
+conda activate cdfmm
+
+rm -rf build build-release build-bench build-bench-mkl
+
+cmake --preset dev
+cmake --build --preset dev -j
+
+ctest --preset dev
+
+PYTHONPATH="$PWD/build" python -m pytest python_tests -v
+
+python -m pip install --force-reinstall --no-deps .
+python -m pytest python_tests -v
+
+cmake --preset benchmark-mkl
+cmake --build --preset benchmark-mkl -j
+
+python benchmarks/run_benchmarks.py \
+  --profile quick \
+  --max-threads 16 \
+  --executable build-bench-mkl/benchmarks/benchmark_uniform_fmm
+```
+
 ## Optional oneMKL backend
 
 The portable build uses an exact internal grouped dense kernel. For Intel
 performance builds, use oneMKL's CMake package:
 
 ```console
-cmake -S . -B build-mkl -DCMAKE_CXX_COMPILER=icpx \
-  -DCDFMM_ENABLE_MKL=ON -DCDFMM_ENABLE_OPENMP=ON
-cmake --build build-mkl -j
+conda env update -n cdfmm -f environment.yml
+conda activate cdfmm
+cmake --preset benchmark-mkl
+cmake --build --preset benchmark-mkl
 ```
+
+The `mkl-devel` dependency provides `MKLConfig.cmake`; the preset resolves it
+from `$CONDA_PREFIX/lib/cmake/mkl`. If CMake still reports that MKL is missing,
+verify the active environment with
+`test -f "$CONDA_PREFIX/lib/cmake/mkl/MKLConfig.cmake"`.
 
 Static M2L issues one DGEMM per transfer class. It does not place an OpenMP
 region around DGEMM, preventing accidental OpenMP-by-MKL multiplication. Set

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -16,6 +17,10 @@
 
 #ifdef CDFMM_USE_OPENMP
 #include <omp.h>
+#endif
+
+#ifdef CDFMM_USE_MKL
+#include <mkl_version.h>
 #endif
 
 namespace {
@@ -34,7 +39,14 @@ struct Options {
     int threads{0};
     unsigned int seed{314159U};
     bool direct{true};
+    bool workload_comparison{true};
     std::string output{};
+};
+
+struct WorkloadTiming {
+    double construction_seconds{0.0};
+    double evaluation_seconds{0.0};
+    double total_seconds{0.0};
 };
 
 Options parse_options(const int argc, char** argv)
@@ -44,6 +56,10 @@ Options parse_options(const int argc, char** argv)
         const std::string key = argv[index];
         if (key == "--no-direct") {
             options.direct = false;
+            continue;
+        }
+        if (key == "--no-workload-comparison") {
+            options.workload_comparison = false;
             continue;
         }
         if (index + 1 >= argc) {
@@ -91,6 +107,104 @@ double mean(const std::vector<double>& values)
         static_cast<double>(values.size());
 }
 
+WorkloadTiming median_timing(const std::vector<WorkloadTiming>& timings)
+{
+    std::vector<double> construction;
+    std::vector<double> evaluation;
+    std::vector<double> total;
+    construction.reserve(timings.size());
+    evaluation.reserve(timings.size());
+    total.reserve(timings.size());
+    for (const WorkloadTiming& timing : timings) {
+        construction.push_back(timing.construction_seconds);
+        evaluation.push_back(timing.evaluation_seconds);
+        total.push_back(timing.total_seconds);
+    }
+    return {median(construction), median(evaluation), median(total)};
+}
+
+WorkloadTiming benchmark_fmm_workload(
+    const std::vector<Vec3>& source_positions,
+    const std::vector<Vec3>& target_positions,
+    const std::vector<std::vector<Vec3>>& moment_states,
+    const std::vector<int>& source_identities,
+    const cdfmm::UniformFmmOptions& options,
+    const int evaluation_count,
+    const int samples)
+{
+    std::vector<WorkloadTiming> timings;
+    timings.reserve(static_cast<std::size_t>(samples));
+    for (int sample = 0; sample < samples; ++sample) {
+        const auto total_start = Clock::now();
+        const auto construction_start = Clock::now();
+        cdfmm::UniformFmm fmm(source_positions, target_positions, options);
+        std::vector<cdfmm::PotentialField> results(target_positions.size());
+        const double construction_seconds = std::chrono::duration<double>(
+            Clock::now() - construction_start
+        ).count();
+
+        const auto evaluation_start = Clock::now();
+        for (int evaluation = 0; evaluation < evaluation_count; ++evaluation) {
+            fmm.evaluate_into(
+                moment_states[static_cast<std::size_t>(evaluation)],
+                results,
+                cdfmm::OutputFlags::Field,
+                source_identities
+            );
+        }
+        const double evaluation_seconds = std::chrono::duration<double>(
+            Clock::now() - evaluation_start
+        ).count();
+        const double total_seconds = std::chrono::duration<double>(
+            Clock::now() - total_start
+        ).count();
+        timings.push_back(
+            {construction_seconds, evaluation_seconds, total_seconds}
+        );
+    }
+    return median_timing(timings);
+}
+
+WorkloadTiming benchmark_p2p_workload(
+    const std::vector<Vec3>& source_positions,
+    const std::vector<Vec3>& target_positions,
+    const std::vector<std::vector<Vec3>>& moment_states,
+    const std::vector<int>& source_identities,
+    const int evaluation_count,
+    const int samples)
+{
+    std::vector<WorkloadTiming> timings;
+    timings.reserve(static_cast<std::size_t>(samples));
+    for (int sample = 0; sample < samples; ++sample) {
+        const auto evaluation_start = Clock::now();
+        for (int evaluation = 0; evaluation < evaluation_count; ++evaluation) {
+            const auto results = cdfmm::direct_p2p_reference(
+                target_positions,
+                source_positions,
+                moment_states[static_cast<std::size_t>(evaluation)],
+                cdfmm::OutputFlags::Field,
+                source_identities
+            );
+            if (results.size() != target_positions.size()) {
+                throw std::runtime_error("Direct P2P returned an invalid result");
+            }
+        }
+        const double evaluation_seconds = std::chrono::duration<double>(
+            Clock::now() - evaluation_start
+        ).count();
+        // Direct P2P has no reusable geometry object, so construction is zero.
+        timings.push_back({0.0, evaluation_seconds, evaluation_seconds});
+    }
+    return median_timing(timings);
+}
+
+void write_workload(std::ostream& out, const WorkloadTiming& timing)
+{
+    out << ',' << timing.construction_seconds
+        << ',' << timing.evaluation_seconds
+        << ',' << timing.total_seconds;
+}
+
 std::string progress_bar(const int completed, const int total,
                          const int width = 24)
 {
@@ -118,6 +232,26 @@ std::string compiler_version()
     return __VERSION__;
 #else
     return "unknown";
+#endif
+}
+
+std::string static_multiply_backend()
+{
+#ifdef CDFMM_USE_MKL
+    return "oneMKL";
+#else
+    return "portable";
+#endif
+}
+
+std::string mkl_version()
+{
+#ifdef CDFMM_USE_MKL
+    return std::to_string(__INTEL_MKL__) + "." +
+        std::to_string(__INTEL_MKL_MINOR__) + "." +
+        std::to_string(__INTEL_MKL_UPDATE__);
+#else
+    return "not_enabled";
 #endif
 }
 
@@ -165,7 +299,11 @@ int main(int argc, char** argv)
         std::vector<int> source_identities(source_positions.size());
         std::iota(source_identities.begin(), source_identities.end(), 0);
 
-        const int state_count = options.warmups + options.evaluations;
+        constexpr int repeated_evaluation_count = 10;
+        const int state_count = options.warmups + std::max(
+            options.evaluations,
+            repeated_evaluation_count
+        );
         std::vector<std::vector<Vec3>> moment_states(
             static_cast<std::size_t>(state_count),
             std::vector<Vec3>(source_positions.size())
@@ -183,8 +321,89 @@ int main(int argc, char** argv)
         fmm_options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
         fmm_options.tree.root_half_width = 1.0;
 
+        UniformFmmOptions reference_options = fmm_options;
+        reference_options.m2l_backend = M2LBackend::Reference;
+        UniformFmmOptions static_options = fmm_options;
+        static_options.m2l_backend = M2LBackend::Static;
+
+        const double missing = std::numeric_limits<double>::quiet_NaN();
+        WorkloadTiming p2p_single{0.0, missing, missing};
+        WorkloadTiming p2p_repeated{0.0, missing, missing};
+        WorkloadTiming reference_single{missing, missing, missing};
+        WorkloadTiming reference_repeated{missing, missing, missing};
+        WorkloadTiming static_single{missing, missing, missing};
+        WorkloadTiming static_repeated{missing, missing, missing};
+        if (options.workload_comparison) {
+            std::cerr << "Benchmarking creation/evaluation workloads...\n";
+            if (options.direct) {
+                p2p_single = benchmark_p2p_workload(
+                    source_positions,
+                    target_positions,
+                    moment_states,
+                    source_identities,
+                    1,
+                    options.samples
+                );
+                p2p_repeated = benchmark_p2p_workload(
+                    source_positions,
+                    target_positions,
+                    moment_states,
+                    source_identities,
+                    repeated_evaluation_count,
+                    options.samples
+                );
+            }
+            reference_single = benchmark_fmm_workload(
+                source_positions,
+                target_positions,
+                moment_states,
+                source_identities,
+                reference_options,
+                1,
+                options.samples
+            );
+            reference_repeated = benchmark_fmm_workload(
+                source_positions,
+                target_positions,
+                moment_states,
+                source_identities,
+                reference_options,
+                repeated_evaluation_count,
+                options.samples
+            );
+            static_single = benchmark_fmm_workload(
+                source_positions,
+                target_positions,
+                moment_states,
+                source_identities,
+                static_options,
+                1,
+                options.samples
+            );
+            static_repeated = benchmark_fmm_workload(
+                source_positions,
+                target_positions,
+                moment_states,
+                source_identities,
+                static_options,
+                repeated_evaluation_count,
+                options.samples
+            );
+            std::cerr
+                << "Workload median totals (1 evaluation / 10 evaluations):\n"
+                << "  direct all-to-all P2P: "
+                << p2p_single.total_seconds << " s / "
+                << p2p_repeated.total_seconds << " s\n"
+                << "  reference FMM: "
+                << reference_single.total_seconds << " s / "
+                << reference_repeated.total_seconds << " s\n"
+                << "  static FMM (" << static_multiply_backend() << "): "
+                << static_single.total_seconds << " s / "
+                << static_repeated.total_seconds << " s\n";
+        }
+
         const auto setup_start = Clock::now();
-        UniformFmm fmm(source_positions, target_positions, fmm_options);
+        UniformFmm fmm(source_positions, target_positions, static_options);
         const double setup_seconds = std::chrono::duration<double>(
             Clock::now() - setup_start
         ).count();
@@ -229,6 +448,7 @@ int main(int argc, char** argv)
 
         double direct_seconds = std::numeric_limits<double>::quiet_NaN();
         ErrorMetrics metrics;
+        ErrorMetrics reference_metrics;
         if (options.direct) {
             std::cerr << "Computing direct all-to-all reference..." << std::flush;
             const auto direct_start = Clock::now();
@@ -252,6 +472,30 @@ int main(int argc, char** argv)
                 reference_fields[index] = reference[index].H;
             }
             metrics = compute_error_metrics(approximate_fields, reference_fields);
+
+            if (options.workload_comparison) {
+                UniformFmm reference_fmm(
+                    source_positions,
+                    target_positions,
+                    reference_options
+                );
+                const auto reference_fmm_values = reference_fmm.evaluate(
+                    moment_states[static_cast<std::size_t>(options.warmups)],
+                    OutputFlags::Field,
+                    source_identities
+                );
+                std::vector<Vec3> reference_fmm_fields(
+                    reference_fmm_values.size()
+                );
+                for (std::size_t index = 0;
+                     index < reference_fmm_values.size(); ++index) {
+                    reference_fmm_fields[index] = reference_fmm_values[index].H;
+                }
+                reference_metrics = compute_error_metrics(
+                    reference_fmm_fields,
+                    reference_fields
+                );
+            }
         }
 
         std::uint64_t m2l_translations = 0;
@@ -297,7 +541,17 @@ int main(int argc, char** argv)
                "local_reset,l2l,m2l,l2p,p2p,result_unpermutation,direct_seconds,"
                "mean_relative_error,rms_relative_error,max_relative_error,total_nodes,"
                "occupied_source_leaves,occupied_target_leaves,m2l_translations,"
-               "near_field_pairs\n";
+               "near_field_pairs,static_multiply_backend,mkl_version,"
+               "p2p_1_creation_median,p2p_1_evaluation_median,p2p_1_total_median,"
+               "p2p_10_creation_median,p2p_10_evaluation_median,p2p_10_total_median,"
+               "reference_1_creation_median,reference_1_evaluation_median,"
+               "reference_1_total_median,reference_10_creation_median,"
+               "reference_10_evaluation_median,reference_10_total_median,"
+               "static_1_creation_median,static_1_evaluation_median,"
+               "static_1_total_median,static_10_creation_median,"
+               "static_10_evaluation_median,static_10_total_median,"
+               "reference_mean_relative_error,reference_rms_relative_error,"
+               "reference_max_relative_error\n";
         const char* build_type =
 #ifdef NDEBUG
             "Release";
@@ -335,7 +589,17 @@ int main(int argc, char** argv)
             << ',' << fmm.tree().nodes().size() << ','
             << fmm.tree().occupied_source_leaves().size() << ','
             << fmm.tree().occupied_target_leaves().size() << ','
-            << m2l_translations << ',' << near_pairs << '\n';
+            << m2l_translations << ',' << near_pairs << ','
+            << static_multiply_backend() << ',' << mkl_version();
+        write_workload(out, p2p_single);
+        write_workload(out, p2p_repeated);
+        write_workload(out, reference_single);
+        write_workload(out, reference_repeated);
+        write_workload(out, static_single);
+        write_workload(out, static_repeated);
+        out << ',' << reference_metrics.mean_relative_error
+            << ',' << reference_metrics.rms_relative_error
+            << ',' << reference_metrics.max_relative_error << '\n';
 
         if (!options.output.empty()) {
             std::cout << "Wrote " << options.output << "\n";

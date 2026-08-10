@@ -45,7 +45,7 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
-Examples build by default. Enable the P2P and reference uniform-FMM smoke
+Examples build by default. Enable the P2P and static/reference uniform-FMM
 benchmarks with
 `-DCDFMM_BUILD_BENCHMARKS=ON`.
 
@@ -119,10 +119,10 @@ parameterised uniform-FMM benchmark are available. The Intel oneAPI benchmark
 workflow is:
 
 ```console
-cmake --preset benchmark
-cmake --build --preset benchmark
-OMP_NUM_THREADS=16 ./build-bench/benchmarks/benchmark_uniform_fmm --sources 10000 --targets 10000 --depth 4 --order 6 --threads 16 --evaluations 100 --samples 10
-python benchmarks/run_benchmarks.py --profile standard
+cmake --preset benchmark-mkl
+cmake --build --preset benchmark-mkl
+OMP_NUM_THREADS=16 MKL_NUM_THREADS=16 ./build-bench-mkl/benchmarks/benchmark_uniform_fmm --sources 10000 --targets 10000 --depth 4 --order 6 --threads 16 --evaluations 100 --samples 10
+python benchmarks/run_benchmarks.py --profile standard --executable build-bench-mkl/benchmarks/benchmark_uniform_fmm
 ```
 
 See the [benchmark guide](docs/benchmarks.md) for profiles, CSV fields, figures,

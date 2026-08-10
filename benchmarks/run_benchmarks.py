@@ -70,36 +70,23 @@ def progress_bar(completed: int, total: int, width: int = 24) -> str:
 
 def build_cases(profile: dict, max_threads: int) -> list[BenchmarkCase]:
     cases = []
-    for size_index, size in enumerate(profile["sizes"]):
-        depth_index = min(len(profile["depths"]) - 1, size_index)
-        depth = profile["depths"][depth_index]
+    for size in profile["sizes"]:
         for order in profile["orders"]:
-            cases.append(
-                BenchmarkCase(
-                    suite="size_order",
-                    size=size,
-                    order=order,
-                    depth=depth,
-                    threads=max_threads,
-                    direct=size <= 5000,
+            for depth in profile["depths"]:
+                cases.append(
+                    BenchmarkCase(
+                        suite="parameter_grid",
+                        size=size,
+                        order=order,
+                        depth=depth,
+                        threads=max_threads,
+                        direct=size <= 5000,
+                    )
                 )
-            )
 
     scale_size = profile["sizes"][-1]
     scale_order = min(profile["orders"], key=lambda order: abs(order - 4))
     scale_depth = profile["depths"][-1]
-    for depth in profile["depths"]:
-        cases.append(
-            BenchmarkCase(
-                suite="depth",
-                size=scale_size,
-                order=scale_order,
-                depth=depth,
-                threads=max_threads,
-                direct=scale_size <= 5000,
-            )
-        )
-
     for threads in thread_counts_up_to(max_threads):
         cases.append(
             BenchmarkCase(
@@ -116,13 +103,37 @@ def build_cases(profile: dict, max_threads: int) -> list[BenchmarkCase]:
 
 
 def representative_case(rows: list[dict[str, str]]) -> dict[str, str]:
-    base = [row for row in rows if row["suite"] == "size_order"]
+    base = [row for row in rows if row["suite"] == "parameter_grid"]
     if not base:
-        raise ValueError("No size/order benchmark rows are available")
+        raise ValueError("No parameter-grid benchmark rows are available")
 
     largest_size = max(int(row["sources"]) for row in base)
     candidates = [row for row in base if int(row["sources"]) == largest_size]
-    return min(candidates, key=lambda row: abs(int(row["order"]) - 4))
+    nearest_order = min(
+        (int(row["order"]) for row in candidates),
+        key=lambda order: abs(order - 4),
+    )
+    candidates = [
+        row for row in candidates if int(row["order"]) == nearest_order
+    ]
+    if "evaluation_median" in candidates[0]:
+        return min(candidates, key=lambda row: float(row["evaluation_median"]))
+    return min(candidates, key=lambda row: int(row.get("depth", 0)))
+
+
+def comparison_case(rows: list[dict[str, str]]) -> dict[str, str]:
+    candidates = [
+        row
+        for row in rows
+        if row["suite"] == "comparison"
+        and np.isfinite(float(row["p2p_1_total_median"]))
+    ]
+    if not candidates:
+        raise ValueError("No direct-enabled benchmark rows are available")
+
+    largest_size = max(int(row["sources"]) for row in candidates)
+    largest = [row for row in candidates if int(row["sources"]) == largest_size]
+    return min(largest, key=lambda row: abs(int(row["order"]) - 4))
 
 
 def case_description(row: dict[str, str]) -> str:
@@ -133,7 +144,8 @@ def case_description(row: dict[str, str]) -> str:
 
 
 def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
-           threads: int, evaluations: int, samples: int, direct: bool) -> dict[str, str]:
+           threads: int, evaluations: int, samples: int, direct: bool,
+           workload_comparison: bool = False) -> dict[str, str]:
     if not executable.is_file():
         raise FileNotFoundError(
             f"Benchmark executable not found at {executable}; run "
@@ -147,6 +159,8 @@ def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
                "--warmups", "1", "--seed", "314159", "--output", str(output)]
     if not direct:
         command.append("--no-direct")
+    if not workload_comparison:
+        command.append("--no-workload-comparison")
     subprocess.run(command, check=True)
     if not output.is_file():
         raise RuntimeError(
@@ -218,111 +232,373 @@ def generate_phase_breakdown(row: dict[str, str], path: Path) -> None:
     plt.close()
 
 
+def generate_work_breakdown(row: dict[str, str], path: Path) -> None:
+    figure, axes = plt.subplots(1, 2, figsize=(10, 4))
+    values = [
+        int(row["m2l_translations"]),
+        int(row["near_field_pairs"]),
+    ]
+    labels = ["M2L translations", "Directed near-field pairs"]
+    colours = ["tab:blue", "tab:orange"]
+    for axis, value, label, colour in zip(axes, values, labels, colours):
+        axis.bar([label], [value], color=colour)
+        axis.bar_label(axis.containers[0], labels=[f"{value:,}"], padding=3)
+        axis.set_ylabel("Count")
+        axis.set_title(label)
+    figure.suptitle(f"Geometry work\n{case_description(row)}")
+    figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.90))
+    figure.savefig(path)
+    plt.close(figure)
+
+
+def generate_setup_breakdown(row: dict[str, str], path: Path) -> None:
+    setup = float(row["tree_total"])
+    evaluation = float(row["evaluation_median"])
+    plt.figure(figsize=(7, 5))
+    plt.bar(["one construction + one evaluation"], [setup], label="Tree setup")
+    plt.bar(
+        ["one construction + one evaluation"],
+        [evaluation],
+        bottom=[setup],
+        label="Evaluation",
+    )
+    plt.ylabel("Wall time (s)")
+    plt.title(f"Setup and evaluation\n{case_description(row)}")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(path)
+    plt.close()
+
+
+def configuration_groups(rows: list[dict[str, str]]):
+    keys = sorted(
+        {
+            (int(row["sources"]), int(row["order"]), int(row["threads"]))
+            for row in rows
+        }
+    )
+    for size, order, threads in keys:
+        selected = sorted(
+            (
+                row
+                for row in rows
+                if int(row["sources"]) == size
+                and int(row["order"]) == order
+                and int(row["threads"]) == threads
+            ),
+            key=lambda row: int(row["depth"]),
+        )
+        yield size, order, threads, selected
+
+
 def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
-    base = [row for row in rows if row["suite"] == "size_order"]
+    grid = [row for row in rows if row["suite"] == "parameter_grid"]
     representative = representative_case(rows)
     benchmark_threads = representative["threads"]
 
-    plot_line(
-        base,
-        "sources",
-        "evaluation_median",
-        "order",
-        figures / "runtime_vs_particles.png",
-        f"Uniform FMM runtime (threads={benchmark_threads}; depth varies by N)",
-        "Sources and targets, N",
-        "Median evaluation time (s)",
-        True,
+    directories = {
+        name: figures / name
+        for name in [
+            "accuracy",
+            "comparison",
+            "phases",
+            "runtime",
+            "scaling",
+            "setup",
+            "work",
+        ]
+    }
+    for directory in directories.values():
+        directory.mkdir(parents=True, exist_ok=True)
+
+    per_run_directories = {}
+    for name in ["phases", "setup", "work"]:
+        per_run_directories[name] = directories[name] / "per_run"
+        per_run_directories[name].mkdir(parents=True, exist_ok=True)
+    for row in rows:
+        filename = phase_breakdown_filename(row)
+        generate_phase_breakdown(row, per_run_directories["phases"] / filename)
+        generate_setup_breakdown(row, per_run_directories["setup"] / filename)
+        generate_work_breakdown(row, per_run_directories["work"] / filename)
+
+    generate_phase_breakdown(
+        representative,
+        directories["phases"] / "representative.png",
     )
 
-    direct = [row for row in base if np.isfinite(float(row["direct_seconds"]))]
-    plt.figure()
-    selected = sorted(
-        (row for row in direct if int(row["order"]) == 4),
-        key=lambda row: int(row["sources"]),
-    )
-    if selected:
-        x = [int(row["sources"]) for row in selected]
-        plt.loglog(
-            x,
-            [float(row["evaluation_median"]) for row in selected],
-            "o-",
-            label="FMM",
-        )
-        plt.loglog(
-            x,
-            [float(row["direct_seconds"]) for row in selected],
-            "o-",
-            label="Direct P2P",
-        )
-        for row in selected:
-            plt.annotate(
-                f"depth={row['depth']}",
-                (int(row["sources"]), float(row["evaluation_median"])),
-                textcoords="offset points",
-                xytext=(4, 4),
-            )
-    plt.title(f"Direct P2P versus FMM (order=4, threads={benchmark_threads})")
-    plt.xlabel("Sources and targets, N")
-    plt.ylabel("Wall time (s)")
+    comparison = comparison_case(rows)
+    methods = ["Direct all-to-all P2P", "Reference FMM", "Static FMM"]
+    static_backend = comparison["static_multiply_backend"]
+    methods[-1] += f" ({static_backend})"
+    single_totals = [
+        float(comparison["p2p_1_total_median"]),
+        float(comparison["reference_1_total_median"]),
+        float(comparison["static_1_total_median"]),
+    ]
+    repeated_totals = [
+        float(comparison["p2p_10_total_median"]),
+        float(comparison["reference_10_total_median"]),
+        float(comparison["static_10_total_median"]),
+    ]
+    positions = np.arange(len(methods))
+    width = 0.36
+    plt.figure(figsize=(9, 5))
+    plt.bar(positions - width / 2, single_totals, width, label="1 creation + 1 evaluation")
+    plt.bar(positions + width / 2, repeated_totals, width, label="1 creation + 10 evaluations")
+    plt.xticks(positions, methods)
+    plt.ylabel("Median total wall time (s)")
+    plt.title(f"Evaluation strategy comparison\n{case_description(comparison)}")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(figures / "direct_vs_fmm.png")
+    plt.savefig(directories["comparison"] / "backend_workloads.png")
     plt.close()
 
-    largest = max(int(row["sources"]) for row in base)
-    trade = [row for row in base if int(row["sources"]) == largest]
-    trade_depth = trade[0]["depth"]
+    # Combined runtime, accuracy, and work views contain every grid case.
+    figure, axes = plt.subplots(2, 2, figsize=(14, 10))
+    for size, order, _, selected in configuration_groups(grid):
+        label = f"N={size}, p={order}"
+        depths = [int(row["depth"]) for row in selected]
+        axes[0, 0].plot(
+            depths,
+            [float(row["evaluation_median"]) for row in selected],
+            "o-",
+            label=label,
+        )
+        accurate = [
+            row for row in selected
+            if np.isfinite(float(row["rms_relative_error"]))
+        ]
+        if accurate:
+            axes[0, 1].plot(
+                [int(row["depth"]) for row in accurate],
+                [float(row["rms_relative_error"]) for row in accurate],
+                "o-",
+                label=label,
+            )
+        axes[1, 0].plot(
+            depths,
+            [int(row["m2l_translations"]) for row in selected],
+            "o-",
+            label=label,
+        )
+        axes[1, 1].plot(
+            depths,
+            [int(row["near_field_pairs"]) for row in selected],
+            "o-",
+            label=label,
+        )
+    axes[0, 0].set(
+        title="Runtime",
+        xlabel="Tree depth",
+        ylabel="Median evaluation time (s)",
+        yscale="log",
+    )
+    axes[0, 1].set(
+        title="Accuracy",
+        xlabel="Tree depth",
+        ylabel="RMS relative field error",
+        yscale="log",
+    )
+    axes[1, 0].set(
+        title="Far-field work",
+        xlabel="Tree depth",
+        ylabel="M2L translations",
+        yscale="log",
+    )
+    axes[1, 1].set(
+        title="Near-field work",
+        xlabel="Tree depth",
+        ylabel="Directed pairs",
+        yscale="log",
+    )
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    figure.legend(
+        handles,
+        labels,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.01),
+        ncol=4,
+    )
+    figure.suptitle(
+        f"All parameter-grid runs (threads={benchmark_threads})"
+    )
+    figure.tight_layout(rect=(0.0, 0.08, 1.0, 0.96))
+    figure.savefig(figures / "combined_overview.png")
+    plt.close(figure)
+
+    runtime_depth_directory = directories["runtime"] / "depth_sweeps"
+    accuracy_depth_directory = directories["accuracy"] / "depth_sweeps"
+    work_depth_directory = directories["work"] / "depth_sweeps"
+    for directory in [
+        runtime_depth_directory,
+        accuracy_depth_directory,
+        work_depth_directory,
+    ]:
+        directory.mkdir(parents=True, exist_ok=True)
+
+    for size, order, threads, selected in configuration_groups(grid):
+        depths = [int(row["depth"]) for row in selected]
+        stem = f"n{size}_p{order}_t{threads}.png"
+
+        plt.figure()
+        plt.plot(
+            depths,
+            [float(row["evaluation_median"]) for row in selected],
+            "o-",
+        )
+        plt.yscale("log")
+        plt.xlabel("Tree depth")
+        plt.ylabel("Median evaluation time (s)")
+        plt.title(f"Depth/runtime\nN={size}, order={order}, threads={threads}")
+        plt.tight_layout()
+        plt.savefig(runtime_depth_directory / stem)
+        plt.close()
+
+        accurate = [
+            row for row in selected
+            if np.isfinite(float(row["rms_relative_error"]))
+        ]
+        if accurate:
+            plt.figure()
+            plt.plot(
+                [int(row["depth"]) for row in accurate],
+                [float(row["rms_relative_error"]) for row in accurate],
+                "o-",
+            )
+            plt.yscale("log")
+            plt.xlabel("Tree depth")
+            plt.ylabel("RMS relative field error")
+            plt.title(
+                f"Depth/accuracy\nN={size}, order={order}, threads={threads}"
+            )
+            plt.tight_layout()
+            plt.savefig(accuracy_depth_directory / stem)
+            plt.close()
+
+        figure, axes = plt.subplots(1, 2, figsize=(11, 4))
+        axes[0].plot(
+            depths,
+            [int(row["m2l_translations"]) for row in selected],
+            "o-",
+        )
+        axes[0].set(
+            xlabel="Tree depth",
+            ylabel="M2L translations",
+            title="Far-field work",
+        )
+        axes[1].plot(
+            depths,
+            [int(row["near_field_pairs"]) for row in selected],
+            "o-",
+            color="tab:orange",
+        )
+        axes[1].set(
+            xlabel="Tree depth",
+            ylabel="Directed pair count",
+            title="Near-field work",
+        )
+        figure.suptitle(
+            f"Depth/work balance: N={size}, order={order}, threads={threads}"
+        )
+        figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.90))
+        figure.savefig(work_depth_directory / stem)
+        plt.close(figure)
+
+    # Particle-count plots are separated by order and depth to avoid mixing
+    # configurations that perform different amounts of work.
+    runtime_particle_directory = directories["runtime"] / "particle_sweeps"
+    direct_directory = directories["comparison"] / "direct_vs_fmm"
+    runtime_particle_directory.mkdir(parents=True, exist_ok=True)
+    direct_directory.mkdir(parents=True, exist_ok=True)
+    orders = sorted({int(row["order"]) for row in grid})
+    depths = sorted({int(row["depth"]) for row in grid})
+    for order in orders:
+        for depth in depths:
+            selected = sorted(
+                (
+                    row for row in grid
+                    if int(row["order"]) == order
+                    and int(row["depth"]) == depth
+                ),
+                key=lambda row: int(row["sources"]),
+            )
+            stem = f"p{order}_d{depth}_t{benchmark_threads}.png"
+            plt.figure()
+            plt.loglog(
+                [int(row["sources"]) for row in selected],
+                [float(row["evaluation_median"]) for row in selected],
+                "o-",
+            )
+            plt.xlabel("Sources and targets, N")
+            plt.ylabel("Median evaluation time (s)")
+            plt.title(
+                f"Runtime/particles: order={order}, depth={depth}, "
+                f"threads={benchmark_threads}"
+            )
+            plt.tight_layout()
+            plt.savefig(runtime_particle_directory / stem)
+            plt.close()
+
+            accurate = [
+                row for row in selected
+                if np.isfinite(float(row["direct_seconds"]))
+            ]
+            if accurate:
+                plt.figure()
+                plt.loglog(
+                    [int(row["sources"]) for row in accurate],
+                    [float(row["evaluation_median"]) for row in accurate],
+                    "o-",
+                    label="Static FMM",
+                )
+                plt.loglog(
+                    [int(row["sources"]) for row in accurate],
+                    [float(row["direct_seconds"]) for row in accurate],
+                    "o-",
+                    label="Direct all-to-all P2P",
+                )
+                plt.xlabel("Sources and targets, N")
+                plt.ylabel("Wall time (s)")
+                plt.title(
+                    f"Direct/FMM: order={order}, depth={depth}, "
+                    f"threads={benchmark_threads}"
+                )
+                plt.legend()
+                plt.tight_layout()
+                plt.savefig(direct_directory / stem)
+                plt.close()
+
+    largest = max(int(row["sources"]) for row in grid)
+    trade = [row for row in grid if int(row["sources"]) == largest]
     plot_line(
         trade,
         "order",
         "evaluation_median",
         "depth",
-        figures / "order_runtime.png",
-        f"Order/runtime tradeoff (N={largest}, depth={trade_depth}, threads={benchmark_threads})",
+        directories["runtime"] / "order_runtime_combined.png",
+        f"Order/runtime tradeoff (N={largest}, threads={benchmark_threads})",
         "Expansion order",
         "Median evaluation time (s)",
     )
-    plot_line(
-        [
-            row
-            for row in trade
-            if np.isfinite(float(row["rms_relative_error"]))
-        ],
-        "order",
-        "rms_relative_error",
-        "depth",
-        figures / "order_accuracy.png",
-        f"Order/accuracy tradeoff (N={largest}, depth={trade_depth}, threads={benchmark_threads})",
-        "Expansion order",
-        "RMS relative field error",
-        True,
-    )
-
-    plt.figure()
-    setup = float(representative["tree_total"])
-    evaluation = float(representative["evaluation_median"])
-    plt.bar(["one shot"], [setup], label="tree setup")
-    plt.bar(["one shot"], [evaluation], bottom=[setup], label="evaluation")
-    plt.ylabel("Wall time (s)")
-    plt.title(f"One-shot setup and evaluation\n{case_description(representative)}")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(figures / "one_shot_breakdown.png")
-    plt.close()
-
-    generate_phase_breakdown(
-        representative,
-        figures / "evaluation_breakdown.png",
-    )
-    breakdown_directory = figures / "evaluation_breakdowns"
-    breakdown_directory.mkdir(parents=True, exist_ok=True)
-    for row in rows:
-        generate_phase_breakdown(
-            row,
-            breakdown_directory / phase_breakdown_filename(row),
+    accurate_trade = [
+        row for row in trade
+        if np.isfinite(float(row["rms_relative_error"]))
+    ]
+    if accurate_trade:
+        plot_line(
+            accurate_trade,
+            "order",
+            "rms_relative_error",
+            "depth",
+            directories["accuracy"] / "order_accuracy_combined.png",
+            f"Order/accuracy tradeoff (N={largest}, threads={benchmark_threads})",
+            "Expansion order",
+            "RMS relative field error",
+            True,
         )
 
+    setup = float(representative["tree_total"])
+    evaluation = float(representative["evaluation_median"])
     counts = np.array([1, 2, 5, 10, 100], dtype=float)
     plt.figure()
     plt.plot(counts, evaluation + setup / counts, "o-")
@@ -331,89 +607,8 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     plt.ylabel("Amortised time per evaluation (s)")
     plt.title(f"Fixed-geometry amortisation\n{case_description(representative)}")
     plt.tight_layout()
-    plt.savefig(figures / "amortisation.png")
+    plt.savefig(directories["setup"] / "amortisation_representative.png")
     plt.close()
-
-    depth_rows = sorted(
-        (row for row in rows if row["suite"] == "depth"),
-        key=lambda row: int(row["depth"]),
-    )
-    if depth_rows:
-        depth_description = (
-            f"N={depth_rows[0]['sources']}, order={depth_rows[0]['order']}, "
-            f"threads={depth_rows[0]['threads']}"
-        )
-        figure, axes = plt.subplots(1, 2, figsize=(11, 4))
-        depths = [int(row["depth"]) for row in depth_rows]
-        axes[0].plot(
-            depths,
-            [float(row["evaluation_median"]) for row in depth_rows],
-            "o-",
-        )
-        axes[0].set(
-            xlabel="Tree depth",
-            ylabel="Median evaluation time (s)",
-            title="Runtime",
-        )
-        accurate_rows = [
-            row
-            for row in depth_rows
-            if np.isfinite(float(row["direct_seconds"]))
-        ]
-        if accurate_rows:
-            axes[1].semilogy(
-                [int(row["depth"]) for row in accurate_rows],
-                [float(row["rms_relative_error"]) for row in accurate_rows],
-                "o-",
-            )
-            axes[1].set(
-                xlabel="Tree depth",
-                ylabel="RMS relative field error",
-                title="Accuracy",
-            )
-        else:
-            axes[1].text(
-                0.5,
-                0.5,
-                "Direct reference disabled for this particle count",
-                ha="center",
-                va="center",
-                transform=axes[1].transAxes,
-            )
-            axes[1].set_axis_off()
-        figure.suptitle(f"Tree-depth sweep ({depth_description})")
-        figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
-        figure.savefig(figures / "depth_tradeoff.png")
-        plt.close(figure)
-
-        figure, axes = plt.subplots(1, 2, figsize=(11, 4))
-        axes[0].plot(
-            depths,
-            [int(row["m2l_translations"]) for row in depth_rows],
-            "o-",
-            label="M2L translations",
-        )
-        axes[0].set(
-            xlabel="Tree depth",
-            ylabel="Translation count",
-            title="Far-field work",
-        )
-        axes[1].plot(
-            depths,
-            [int(row["near_field_pairs"]) for row in depth_rows],
-            "o-",
-            color="tab:orange",
-            label="near-field pairs",
-        )
-        axes[1].set(
-            xlabel="Tree depth",
-            ylabel="Directed pair count",
-            title="Near-field work",
-        )
-        figure.suptitle(f"Tree-depth work balance ({depth_description})")
-        figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
-        figure.savefig(figures / "depth_work.png")
-        plt.close(figure)
 
     scaling = sorted(
         (row for row in rows if row["suite"] == "scaling"),
@@ -444,7 +639,7 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
         axes[1].legend()
         figure.suptitle(f"Thread scaling ({scaling_description})")
         figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
-        figure.savefig(figures / "openmp_scaling.png")
+        figure.savefig(directories["scaling"] / "openmp_scaling.png")
         plt.close(figure)
 
 
@@ -478,7 +673,7 @@ def main() -> None:
     available = os.cpu_count() or 1
     max_threads = min(args.max_threads or available, available)
     cases = build_cases(profile, max_threads)
-    total_cases = len(cases)
+    total_cases = len(cases) + 1
     print(
         f"Planned {total_cases} benchmark tests; maximum threads={max_threads}.",
         flush=True,
@@ -501,6 +696,7 @@ def main() -> None:
             evaluations=profile["evaluations"],
             samples=profile["samples"],
             direct=case.direct,
+            workload_comparison=False,
         )
         row["suite"] = case.suite
         rows.append(row)
@@ -510,6 +706,42 @@ def main() -> None:
             flush=True,
         )
 
+    direct_sizes = [size for size in profile["sizes"] if size <= 5000]
+    comparison_size = min(direct_sizes)
+    comparison_size_index = profile["sizes"].index(comparison_size)
+    comparison_depth = profile["depths"][
+        min(len(profile["depths"]) - 1, comparison_size_index)
+    ]
+    comparison_order = min(
+        profile["orders"],
+        key=lambda order: abs(order - 4),
+    )
+    print(
+        f"\nRunning test {total_cases}/{total_cases}: suite=comparison, "
+        f"sources={comparison_size}, targets={comparison_size}, "
+        f"order={comparison_order}, depth={comparison_depth}, "
+        f"threads={max_threads}",
+        flush=True,
+    )
+    comparison_row = invoke(
+        args.executable,
+        temporary,
+        size=comparison_size,
+        order=comparison_order,
+        depth=comparison_depth,
+        threads=max_threads,
+        evaluations=profile["evaluations"],
+        samples=profile["samples"],
+        direct=True,
+        workload_comparison=True,
+    )
+    comparison_row["suite"] = "comparison"
+    rows.append(comparison_row)
+    print(
+        f"Overall {progress_bar(total_cases, total_cases)} "
+        f"{total_cases}/{total_cases} tests complete",
+        flush=True,
+    )
     temporary.unlink(missing_ok=True)
     with (run_dir / "results.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
@@ -526,6 +758,7 @@ def main() -> None:
     )
     generate_figures(rows, figures)
     representative = representative_case(rows)
+    comparison = comparison_case(rows)
     evaluation = float(representative["evaluation_median"])
     phase_rows = []
     phase_total = sum(
@@ -542,6 +775,22 @@ def main() -> None:
         f"- Maximum thread count: **{max_threads}** of {available} logical CPUs.\n"
         f"- Representative case: **{case_description(representative)}**.\n"
         f"- Median complete evaluation: **{evaluation:.6g} s**.\n\n"
+        "## Creation/evaluation workloads\n\n"
+        f"Comparison case: **{case_description(comparison)}**. Static multiply "
+        f"backend: **{comparison['static_multiply_backend']}**. Times are median "
+        "totals and include construction where applicable. Direct all-to-all "
+        "P2P has no reusable construction phase.\n\n"
+        "| Method | 1 creation + 1 evaluation (s) | 1 creation + 10 evaluations (s) | RMS relative error |\n"
+        "|---|---:|---:|---:|\n"
+        f"| Direct all-to-all P2P | "
+        f"{float(comparison['p2p_1_total_median']):.6g} | "
+        f"{float(comparison['p2p_10_total_median']):.6g} | 0 |\n"
+        f"| Reference FMM | {float(comparison['reference_1_total_median']):.6g} | "
+        f"{float(comparison['reference_10_total_median']):.6g} | "
+        f"{float(comparison['reference_rms_relative_error']):.6g} |\n"
+        f"| Static FMM | {float(comparison['static_1_total_median']):.6g} | "
+        f"{float(comparison['static_10_total_median']):.6g} | "
+        f"{float(comparison['rms_relative_error']):.6g} |\n\n"
         "## Representative evaluation phases\n\n"
         "Shares are normalised over the recorded phase timers. The median "
         "complete evaluation above is measured independently.\n\n"
@@ -549,9 +798,12 @@ def main() -> None:
         "|---|---:|---:|\n"
         + "\n".join(phase_rows)
         + "\n\n"
-        "The depth sweep is stored with `suite=depth`; inspect `depth_tradeoff.png` "
-        "and `depth_work.png` for its accuracy/runtime and work-count tradeoffs. "
-        "Per-case phase plots are stored under `figures/evaluation_breakdowns/`.\n",
+        "The full size/order/depth sweep is stored with "
+        "`suite=parameter_grid`. `figures/combined_overview.png` provides the "
+        "top-level comparison. Figures are organised by result type under "
+        "`runtime/`, `accuracy/`, `work/`, `phases/`, `setup/`, `scaling/`, "
+        "and `comparison/`; per-run plots are in each applicable `per_run/` "
+        "subdirectory.\n",
         encoding="utf-8",
     )
     print(run_dir)

@@ -48,6 +48,16 @@
         "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=native",
         "CMAKE_CXX_COMPILER": "icpx"
       }
+    },
+    {
+      "name": "benchmark-mkl",
+      "displayName": "Benchmark build with oneMKL",
+      "inherits": "benchmark",
+      "binaryDir": "${sourceDir}/build-bench-mkl",
+      "cacheVariables": {
+        "CDFMM_ENABLE_MKL": "ON",
+        "MKL_DIR": "$env{CONDA_PREFIX}/lib/cmake/mkl"
+      }
     }
   ],
   "buildPresets": [
@@ -62,6 +72,10 @@
     {
       "name": "benchmark",
       "configurePreset": "benchmark"
+    },
+    {
+      "name": "benchmark-mkl",
+      "configurePreset": "benchmark-mkl"
     }
   ],
   "testPresets": [
