@@ -30,6 +30,9 @@ Run installed Python bindings against their tests with:
 python -m pytest python_tests -v
 ```
 
-There is not yet an end-to-end FMM traversal to test.  Direct comparison of the
-complete uniform FMM, including result unsorting and `list1` near fields, is a
-required part of the next milestone.
+Complete-traversal tests compare `UniformFmm` with direct P2P across expansion
+orders and check the convergence trend. They also cover depth-zero direct
+evaluation, target unsorting, repeated magnetic states, empty complete-tree
+boxes, output modes, and explicit index-based source self exclusion. Python
+tests exercise the same compiled evaluator, array shapes, ordering, and reset
+behaviour.

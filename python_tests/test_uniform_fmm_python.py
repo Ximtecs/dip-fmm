@@ -94,3 +94,49 @@ def test_uniform_fmm_rejects_negative_expansion_order():
     options.expansion_order = -1
     with pytest.raises(ValueError, match="expansion_order must be >= 0"):
         cdfmm.UniformFmm(POSITIONS, options)
+
+
+def test_complete_evaluation_shapes_ordering_and_repeated_state():
+    targets = np.array(
+        [[0.71, 0.66, 0.62], [-0.74, -0.69, -0.57], [0.13, -0.28, 0.45]]
+    )
+    options = cdfmm.UniformFmmOptions()
+    options.expansion_order = 4
+    options.tree.max_level = 2
+    options.tree.root_centre = cdfmm.Vec3(0.0, 0.0, 0.0)
+    options.tree.root_half_width = 1.0
+    fmm = cdfmm.UniformFmm(POSITIONS, targets, options)
+
+    result = fmm.evaluate(MOMENTS, output="both")
+    assert result["H"].shape == (len(targets), 3)
+    assert result["phi"].shape == (len(targets),)
+    direct = np.stack(
+        [cdfmm.p2p_dipole_sum(target, POSITIONS, MOMENTS)["H"] for target in targets]
+    )
+    relative = np.linalg.norm(result["H"] - direct, axis=1) / np.linalg.norm(
+        direct, axis=1
+    )
+    assert np.max(relative) < 0.03
+
+    reset = fmm.evaluate(np.zeros_like(MOMENTS))
+    np.testing.assert_array_equal(reset["H"], 0.0)
+    for node in fmm.tree.nodes:
+        np.testing.assert_array_equal(fmm.local(node.index), 0.0)
+
+
+def test_complete_source_point_evaluation_uses_explicit_identities():
+    options = cdfmm.UniformFmmOptions()
+    options.expansion_order = 3
+    options.tree.max_level = 0
+    fmm = cdfmm.UniformFmm(POSITIONS, POSITIONS, options)
+    identities = np.arange(len(POSITIONS), dtype=int)
+    actual = fmm.evaluate(MOMENTS, target_source_indices=identities)["H"]
+    direct = np.stack(
+        [
+            cdfmm.p2p_dipole_sum(
+                target, POSITIONS, MOMENTS, self_index=target_index
+            )["H"]
+            for target_index, target in enumerate(POSITIONS)
+        ]
+    )
+    np.testing.assert_allclose(actual, direct, rtol=1.0e-14, atol=1.0e-14)

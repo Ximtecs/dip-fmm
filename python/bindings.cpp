@@ -177,6 +177,31 @@ py::dict potential_field_to_dict(const PotentialField& result)
     return output;
 }
 
+py::dict potential_fields_to_dict(std::span<const PotentialField> results)
+{
+    py::dict output;
+    py::array_t<double> potential(results.size());
+    py::array_t<double> field({
+        static_cast<py::ssize_t>(results.size()),
+        static_cast<py::ssize_t>(3)
+    });
+    auto potential_values = potential.mutable_unchecked<1>();
+    auto field_values = field.mutable_unchecked<2>();
+
+    for (py::ssize_t i = 0;
+         i < static_cast<py::ssize_t>(results.size());
+         ++i) {
+        const PotentialField& result = results[static_cast<std::size_t>(i)];
+        potential_values(i) = result.phi;
+        field_values(i, 0) = result.H.x;
+        field_values(i, 1) = result.H.y;
+        field_values(i, 2) = result.H.z;
+    }
+    output["phi"] = potential;
+    output["H"] = field;
+    return output;
+}
+
 py::array_t<double> points_to_array(std::span<const Vec3> points)
 {
     py::array_t<double> array({
@@ -356,6 +381,22 @@ PYBIND11_MODULE(cdfmm, module)
             py::arg("options") = UniformFmmOptions{}
         )
         .def(
+            py::init([](
+                py::object source_positions,
+                py::object target_positions,
+                const UniformFmmOptions& options
+            ) {
+                return UniformFmm(
+                    parse_vec3_array(source_positions, "source_positions"),
+                    parse_vec3_array(target_positions, "target_positions"),
+                    options
+                );
+            }),
+            py::arg("source_positions"),
+            py::arg("target_positions"),
+            py::arg("options") = UniformFmmOptions{}
+        )
+        .def(
             "upward_pass",
             [](UniformFmm& fmm, py::object dipole_moments) {
                 fmm.upward_pass(
@@ -364,6 +405,32 @@ PYBIND11_MODULE(cdfmm, module)
             },
             py::arg("dipole_moments"),
             "Replace all node multipoles using moments in original source order."
+        )
+        .def("downward_pass", &UniformFmm::downward_pass)
+        .def(
+            "evaluate",
+            [](UniformFmm& fmm,
+               py::object dipole_moments,
+               const std::string& output,
+               py::object target_source_indices) {
+                const std::vector<Vec3> moments = parse_vec3_array(
+                    dipole_moments,
+                    "dipole_moments"
+                );
+                std::vector<int> identities;
+                if (!target_source_indices.is_none()) {
+                    identities = py::cast<std::vector<int>>(
+                        target_source_indices
+                    );
+                }
+                return potential_fields_to_dict(
+                    fmm.evaluate(moments, parse_output(output), identities)
+                );
+            },
+            py::arg("dipole_moments"),
+            py::arg("output") = "field",
+            py::arg("target_source_indices") = py::none(),
+            "Run the complete reference FMM and return values in target order."
         )
         .def_property_readonly(
             "tree",
@@ -381,6 +448,12 @@ PYBIND11_MODULE(cdfmm, module)
         })
         .def("multipole", [](const UniformFmm& fmm, const int node_index) {
             const auto coefficients = fmm.multipole(node_index);
+            return coefficients_to_array(
+                CoeffVector(coefficients.begin(), coefficients.end())
+            );
+        }, py::arg("node_index"))
+        .def("local", [](const UniformFmm& fmm, const int node_index) {
+            const auto coefficients = fmm.local(node_index);
             return coefficients_to_array(
                 CoeffVector(coefficients.begin(), coefficients.end())
             );

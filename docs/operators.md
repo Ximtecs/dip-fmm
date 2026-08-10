@@ -19,7 +19,7 @@ $d=c_{parent}-c_{child}$. **Output:** contributions added to the parent
 multipole.  It contracts factorial-normalised monomials with coefficients at
 $\alpha-\gamma$.  Eight child calls form one parent in the upward pass.
 
-## Reference upward composition
+## Reference traversal composition
 
 `UniformFmm` composes these two operators without reproducing their
 mathematics.  It calls P2M once for each non-empty leaf range, then visits
@@ -31,7 +31,11 @@ describe every source in its subtree about that node centre.
 The expansion order is fixed in `UniformFmmOptions` at construction.  The
 complete node-vector layout follows flat tree indices and `MultiIndexSet`
 coefficient order; `multipole(node_index)` exposes a read-only view for
-inspection.  This is only the upward portion of the future traversal.
+inspection.
+
+The complete evaluator additionally uses M2L over each target node's `list2`,
+L2L from parent to child, L2P at occupied target leaves, and direct P2P over
+leaf `list1`. Node locals are exposed through `local(node_index)`.
 
 ## M2L: multipole to local
 

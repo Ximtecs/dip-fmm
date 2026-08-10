@@ -22,17 +22,16 @@ for later optimisation.
 - optional potential and/or magnetic-field output;
 - a complete, non-adaptive, Morton-sorted uniform octree with source and target
   ranges plus `list1` and `list2` interactions;
-- a reference `UniformFmm` upward pass with Morton moment permutation, leaf
-  P2M, bottom-up M2M, and read-only node multipoles;
+- a functional reference `UniformFmm` with upward and downward passes, direct
+  list1 near fields, target unsorting, and inspectable node expansions;
 - C++ validation helpers, tests, examples, a small benchmark, and Python
   bindings for direct evaluation and tree inspection.
 
 ## Limitations
 
-Only the upward portion of the tree traversal exists: callers cannot currently
-request a complete FMM field evaluation.  M2L, downward L2L/L2P, and near-field
-P2P traversal are not assembled.  The adaptive tree, persistent geometry plan, CUDA
-kernels, and MagTense/Fortran interface are also planned rather than
+The complete traversal is intentionally a straightforward CPU reference. The
+adaptive tree, persistent geometry plan, translation caching, CUDA kernels,
+and MagTense/Fortran interface are planned rather than
 implemented.  See the [roadmap](roadmap.md) for sequencing.
 
 ## Architecture
@@ -40,7 +39,7 @@ implemented.  See the [roadmap](roadmap.md) for sequencing.
 Public C++ declarations live in `include/cdfmm`, with reference
 implementations in `src`.  `python/bindings.cpp` supplies the experimental
 pybind11 module.  The uniform tree owns geometry and ordering metadata only;
-`UniformFmm` owns upward-pass state separately from its fixed tree geometry;
+`UniformFmm` owns expansion state separately from its fixed tree geometry;
 the mathematical operators remain independent and testable in isolation.
 [Mathematical formulation](math.md) defines
 the shared conventions, while the [API reference](api.rst) exposes the public

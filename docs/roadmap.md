@@ -21,22 +21,21 @@ correctness baseline before introducing traversal or performance complexity.
 - [x] Leaf assignment and hierarchical point ranges.
 - [x] Uniform `list1` near neighbours and `list2` M2L interactions.
 
-The tree currently organises geometry only; it does not claim to be a complete
-FMM evaluator.
+The tree organises geometry and interaction lists used by the reference FMM.
 
-## 3. Functional reference uniform FMM — in progress
+## 3. Functional reference uniform FMM — complete
 
 Connect the existing operators and geometry without introducing optimisation:
 
 - [x] leaf P2M;
 - [x] upward M2M pass;
-- [ ] M2L accumulation using each target node's `list2`;
-- [ ] downward L2L pass;
-- [ ] leaf L2P;
-- [ ] direct near-field P2P using `list1`;
-- [ ] permutation of target results back to user ordering;
-- [ ] end-to-end validation against direct P2P;
-- [ ] end-to-end examples and benchmarks.
+- [x] M2L accumulation using each target node's `list2`;
+- [x] downward L2L pass;
+- [x] leaf L2P;
+- [x] direct near-field P2P using `list1`;
+- [x] permutation of target results back to user ordering;
+- [x] end-to-end validation against direct P2P;
+- [x] end-to-end examples and smoke benchmark.
 
 This milestone should establish edge cases such as coincident source/target
 sets, empty boxes, tree depth zero, output modes, and self-interaction policy.

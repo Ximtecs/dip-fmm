@@ -12,6 +12,7 @@
 
 #include "cdfmm/operators.hpp"
 #include "cdfmm/uniform_fmm.hpp"
+#include "cdfmm/validation.hpp"
 
 using namespace cdfmm;
 
@@ -228,4 +229,139 @@ TEST_CASE("Hierarchical root and direct root give the same distant field",
           Catch::Approx(direct_root_field.H.y).margin(1.0e-15));
   REQUIRE(hierarchical_field.H.z ==
           Catch::Approx(direct_root_field.H.z).margin(1.0e-15));
+}
+
+TEST_CASE("Complete uniform FMM converges towards direct P2P",
+          "[uniform_fmm]") {
+  std::mt19937 generator(9281);
+  std::uniform_real_distribution<double> distribution(-0.95, 0.95);
+  std::vector<Vec3> sources(20);
+  std::vector<Vec3> targets(15);
+  std::vector<Vec3> moments(20);
+  for (Vec3 &position : sources) {
+    position = {distribution(generator), distribution(generator),
+                distribution(generator)};
+  }
+  for (Vec3 &position : targets) {
+    position = {distribution(generator), distribution(generator),
+                distribution(generator)};
+  }
+  for (Vec3 &moment : moments) {
+    moment = {distribution(generator), distribution(generator),
+              distribution(generator)};
+  }
+
+  const auto direct = direct_p2p_reference(targets, sources, moments);
+  std::vector<Vec3> direct_fields;
+  for (const PotentialField &value : direct) {
+    direct_fields.push_back(value.H);
+  }
+
+  double previous_rms = 1.0;
+  for (const int order : {2, 3, 4}) {
+    UniformFmmOptions options;
+    options.expansion_order = order;
+    options.tree.max_level = 2;
+    options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
+    options.tree.root_half_width = 1.0;
+    UniformFmm fmm(sources, targets, options);
+    const auto approximate = fmm.evaluate(moments);
+    std::vector<Vec3> approximate_fields;
+    for (const PotentialField &value : approximate) {
+      approximate_fields.push_back(value.H);
+    }
+
+    const ErrorMetrics metrics =
+        compute_error_metrics(approximate_fields, direct_fields);
+    REQUIRE(metrics.rms_relative_error < previous_rms);
+    previous_rms = metrics.rms_relative_error;
+  }
+  REQUIRE(previous_rms < 2.0e-2);
+}
+
+TEST_CASE("Depth-zero complete evaluation is direct in every output mode",
+          "[uniform_fmm]") {
+  const std::vector<Vec3> targets{{0.12, -0.27, 0.34}, {-0.45, 0.16, -0.08}};
+  UniformFmmOptions options;
+  options.expansion_order = 3;
+  options.tree.max_level = 0;
+  UniformFmm fmm(distributed_positions, targets, options);
+
+  for (const OutputFlags output :
+       {OutputFlags::Field, OutputFlags::Potential, OutputFlags::Both}) {
+    const auto actual = fmm.evaluate(distributed_moments, output);
+    const auto direct = direct_p2p_reference(targets, distributed_positions,
+                                             distributed_moments, output);
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+      REQUIRE(actual[i].phi == Catch::Approx(direct[i].phi).margin(1.0e-14));
+      REQUIRE(actual[i].H.x == Catch::Approx(direct[i].H.x).margin(1.0e-14));
+      REQUIRE(actual[i].H.y == Catch::Approx(direct[i].H.y).margin(1.0e-14));
+      REQUIRE(actual[i].H.z == Catch::Approx(direct[i].H.z).margin(1.0e-14));
+    }
+  }
+}
+
+TEST_CASE("Target permutation and repeated evaluation replace downward state",
+          "[uniform_fmm]") {
+  std::vector<Vec3> targets{{0.72, 0.68, 0.61},
+                            {-0.77, -0.66, -0.59},
+                            {0.15, -0.31, 0.47},
+                            {-0.52, 0.63, -0.44}};
+  UniformFmmOptions options;
+  options.expansion_order = 4;
+  options.tree.max_level = 2;
+  options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
+  options.tree.root_half_width = 1.0;
+  UniformFmm fmm(distributed_positions, targets, options);
+
+  const auto first = fmm.evaluate(distributed_moments);
+  const auto direct =
+      direct_p2p_reference(targets, distributed_positions, distributed_moments);
+  for (std::size_t i = 0; i < targets.size(); ++i) {
+    REQUIRE(relative_error(first[i].H, direct[i].H) < 3.0e-2);
+  }
+
+  std::vector<Vec3> zero_moments(distributed_moments.size());
+  const auto second = fmm.evaluate(zero_moments);
+  for (const PotentialField &value : second) {
+    REQUIRE(value.H.x == 0.0);
+    REQUIRE(value.H.y == 0.0);
+    REQUIRE(value.H.z == 0.0);
+  }
+  for (const TreeNode &node : fmm.tree().nodes()) {
+    for (const double coefficient : fmm.local(node.index)) {
+      REQUIRE(coefficient == 0.0);
+    }
+  }
+}
+
+TEST_CASE("Explicit source identities exclude only singular self pairs",
+          "[uniform_fmm]") {
+  const std::vector<Vec3> positions{
+      {-0.2, 0.1, 0.3}, {0.1, 0.2, -0.3}, {0.5, -0.4, 0.2}};
+  const std::vector<Vec3> moments{
+      {0.4, 0.1, -0.2}, {-0.3, 0.7, 0.5}, {0.2, -0.6, 0.8}};
+  UniformFmmOptions options;
+  options.expansion_order = 3;
+  options.tree.max_level = 0;
+  UniformFmm fmm(positions, positions, options);
+  const std::vector<int> identities{0, 1, 2};
+
+  const auto actual = fmm.evaluate(moments, OutputFlags::Both, identities);
+  for (std::size_t target = 0; target < positions.size(); ++target) {
+    const PotentialField expected =
+        p2p_dipole_sum(positions[target], positions, moments, OutputFlags::Both,
+                       static_cast<int>(target));
+    REQUIRE(actual[target].phi == Catch::Approx(expected.phi).margin(1.0e-14));
+    REQUIRE(actual[target].H.x == Catch::Approx(expected.H.x).margin(1.0e-14));
+    REQUIRE(actual[target].H.y == Catch::Approx(expected.H.y).margin(1.0e-14));
+    REQUIRE(actual[target].H.z == Catch::Approx(expected.H.z).margin(1.0e-14));
+  }
+
+  REQUIRE_THROWS_AS(
+      fmm.evaluate(moments, OutputFlags::Field, std::vector<int>{0, 1}),
+      std::invalid_argument);
+  REQUIRE_THROWS_AS(
+      fmm.evaluate(moments, OutputFlags::Field, std::vector<int>{0, 1, 4}),
+      std::invalid_argument);
 }
