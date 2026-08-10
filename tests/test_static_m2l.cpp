@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include <random>
@@ -49,7 +50,8 @@ TEST_CASE("static grouped M2L matches the independent reference traversal")
 
         const auto classes = static_fmm.static_plan_statistics().transfer_classes;
         moments.front().x += 0.25;
-        static_fmm.evaluate(moments);
+        const auto repeated_values = static_fmm.evaluate(moments);
+        REQUIRE(repeated_values.size() == positions.size());
         REQUIRE(static_fmm.static_plan_statistics().transfer_classes == classes);
     }
 }
