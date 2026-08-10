@@ -97,3 +97,19 @@ example dependencies and are not required by the core Python package.
 The Sphinx/MyST site integrates Doxygen API output through Breathe and is ready
 for Read the Docs.  Local documentation build instructions are in the
 [installation guide](docs/installation.md).
+
+## High-performance CPU benchmarks
+
+OpenMP parallel execution, built-in setup/evaluation phase timings, and the
+parameterised uniform-FMM benchmark are available. The Intel oneAPI benchmark
+workflow is:
+
+```console
+cmake --preset benchmark
+cmake --build --preset benchmark
+OMP_NUM_THREADS=16 ./build-bench/benchmarks/benchmark_uniform_fmm --sources 10000 --targets 10000 --depth 4 --order 6 --threads 16 --evaluations 100 --samples 10
+python benchmarks/run_benchmarks.py --profile standard
+```
+
+See the [benchmark guide](docs/benchmarks.md) for profiles, CSV fields, figures,
+setup/evaluation separation, and thread-safety constraints.

@@ -106,6 +106,25 @@ public:
            OutputFlags output = OutputFlags::Field,
            std::span<const int> target_source_indices = {});
 
+  /**
+   * @brief Evaluates into caller-owned storage without allocating result arrays.
+   *
+   * The object owns mutable expansions, scratch storage, and timing state.
+   * Consequently calls on one object must not execute concurrently, although
+   * each call may use OpenMP internally.
+   */
+  void evaluate_into(std::span<const Vec3> dipole_moments,
+                     std::span<PotentialField> results,
+                     OutputFlags output = OutputFlags::Field,
+                     std::span<const int> target_source_indices = {});
+
+  /// @brief Returns timings for the most recent complete evaluation.
+  [[nodiscard]] const EvaluationTimings &last_timings() const;
+  /// @brief Returns accumulated timings since construction or the last reset.
+  [[nodiscard]] const EvaluationTimings &aggregate_timings() const;
+  /// @brief Clears accumulated evaluation timings without changing geometry.
+  void reset_timings();
+
   /// @brief Returns the fixed complete uniform-tree geometry.
   [[nodiscard]] const UniformTree &tree() const;
   /// @brief Returns the Cartesian coefficient basis used by every node.
@@ -131,6 +150,9 @@ private:
   std::vector<CoeffVector> multipoles_{};
   std::vector<CoeffVector> locals_{};
   std::vector<Vec3> sorted_dipole_moments_{};
+  std::vector<PotentialField> sorted_results_{};
+  EvaluationTimings last_timings_{};
+  EvaluationTimings aggregate_timings_{};
 };
 
 } // namespace cdfmm

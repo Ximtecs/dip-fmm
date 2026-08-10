@@ -40,13 +40,14 @@ Connect the existing operators and geometry without introducing optimisation:
 This milestone should establish edge cases such as coincident source/target
 sets, empty boxes, tree depth zero, output modes, and self-interaction policy.
 
-## 4. Reference benchmarking — before static-geometry optimisation
+## 4. CPU performance and reference benchmarking — complete
 
-Replace the current single P2P smoke timing with repeatable benchmarks for:
+Implemented repeatable, OpenMP-aware phase and end-to-end benchmarks for:
 
-- P2M, M2M, M2L, L2L, L2P, and P2P;
-- tree construction;
-- complete reference FMM evaluation.
+- [x] P2M, M2M, M2L, L2L, L2P, and parallel direct P2P;
+- [x] timed, partially parallel tree construction;
+- [x] complete uniform-FMM evaluation, repeated geometry, accuracy, and scaling sweeps;
+- [x] machine-readable results and automatically generated figures.
 
 Sweep expansion order, source count, tree depth, and repeated evaluations on
 unchanged geometry.  Record accuracy alongside time where truncation order is

@@ -347,7 +347,10 @@ PYBIND11_MODULE(cdfmm, module)
                 );
             }
         )
-        .def("leaf_indices", &UniformTree::leaf_indices)
+        .def("leaf_indices", [](const UniformTree& tree) {
+            const auto indices = tree.leaf_indices();
+            return std::vector<int>(indices.begin(), indices.end());
+        })
         .def("leaf_index_for_source", &UniformTree::leaf_index_for_source)
         .def("leaf_index_for_target", &UniformTree::leaf_index_for_target)
         .def("sorted_source_positions", [](const UniformTree& tree) {
