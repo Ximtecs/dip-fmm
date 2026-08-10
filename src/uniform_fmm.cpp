@@ -102,7 +102,8 @@ void UniformFmm::upward_pass(std::span<const Vec3> dipole_moments)
 {
     if (dipole_moments.size() != tree_.sorted_source_positions().size()) {
         throw std::invalid_argument(
-            "UniformFmm::upward_pass requires one moment per source position"
+            "UniformFmm::upward_pass requires one dipole moment per source "
+            "position"
         );
     }
 
