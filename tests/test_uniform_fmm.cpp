@@ -14,6 +14,10 @@
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
 
+#ifdef CDFMM_USE_OPENMP
+#include <omp.h>
+#endif
+
 using namespace cdfmm;
 
 namespace {
@@ -367,26 +371,37 @@ TEST_CASE("Explicit source identities exclude only singular self pairs",
 }
 
 #ifdef CDFMM_USE_OPENMP
-#include <omp.h>
-
-TEST_CASE("OpenMP thread counts preserve complete FMM results", "[uniform_fmm][openmp]") {
+TEST_CASE("OpenMP thread counts preserve complete FMM results",
+          "[uniform_fmm][openmp]") {
   UniformFmmOptions options;
   options.expansion_order = 4;
   options.tree.max_level = 3;
   options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
   options.tree.root_half_width = 1.0;
   UniformFmm fmm(distributed_positions, distributed_positions, options);
+  std::vector<int> source_identities(distributed_positions.size());
+  std::iota(source_identities.begin(), source_identities.end(), 0);
 
   omp_set_num_threads(1);
-  const auto serial = fmm.evaluate(distributed_moments);
+  const auto serial = fmm.evaluate(distributed_moments, OutputFlags::Field,
+                                   source_identities);
   omp_set_num_threads(std::min(4, omp_get_num_procs()));
-  const auto threaded = fmm.evaluate(distributed_moments);
+  const auto threaded = fmm.evaluate(distributed_moments, OutputFlags::Field,
+                                     source_identities);
 
   REQUIRE(threaded.size() == serial.size());
   for (std::size_t index = 0; index < serial.size(); ++index) {
-    REQUIRE(threaded[index].H.x == Catch::Approx(serial[index].H.x).margin(1.0e-14));
-    REQUIRE(threaded[index].H.y == Catch::Approx(serial[index].H.y).margin(1.0e-14));
-    REQUIRE(threaded[index].H.z == Catch::Approx(serial[index].H.z).margin(1.0e-14));
+    // Explicit source identities exclude the coincident self pair so this
+    // comparison checks finite physical fields rather than matching NaNs.
+    REQUIRE(std::isfinite(serial[index].H.x));
+    REQUIRE(std::isfinite(serial[index].H.y));
+    REQUIRE(std::isfinite(serial[index].H.z));
+    REQUIRE(threaded[index].H.x ==
+            Catch::Approx(serial[index].H.x).margin(1.0e-14));
+    REQUIRE(threaded[index].H.y ==
+            Catch::Approx(serial[index].H.y).margin(1.0e-14));
+    REQUIRE(threaded[index].H.z ==
+            Catch::Approx(serial[index].H.z).margin(1.0e-14));
   }
 }
 #endif
