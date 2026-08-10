@@ -72,12 +72,18 @@ std::vector<PotentialField> direct_p2p_reference(
     std::span<const Vec3> target_positions, std::span<const Vec3> source_positions,
     std::span<const Vec3> dipole_moments, OutputFlags output)
 {
-  std::vector<PotentialField> reference;
-  reference.reserve(target_positions.size());
+  std::vector<PotentialField> reference(target_positions.size());
 
-  for (const Vec3 &target_position : target_positions) {
-    reference.push_back(
-        p2p_dipole_sum(target_position, source_positions, dipole_moments, output));
+  // Each target owns an independent accumulation, preserving the serial
+  // source-loop order while distributing complete targets across threads.
+  #pragma omp parallel for schedule(static) if(target_positions.size() >= 8)
+  for (std::ptrdiff_t target_index = 0;
+       target_index < static_cast<std::ptrdiff_t>(target_positions.size());
+       ++target_index) {
+    reference[static_cast<std::size_t>(target_index)] = p2p_dipole_sum(
+        target_positions[static_cast<std::size_t>(target_index)],
+        source_positions, dipole_moments, output
+    );
   }
 
   return reference;

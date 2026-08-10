@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "cdfmm/tree_node.hpp"
+#include "cdfmm/timings.hpp"
 
 namespace cdfmm {
 
@@ -118,7 +119,13 @@ class UniformTree {
     /// @brief Maps original target indices to sorted indices.
     [[nodiscard]] std::span<const int> target_inverse_permutation() const;
     /// @brief Returns the flat indices of all leaf boxes in Morton order.
-    [[nodiscard]] std::vector<int> leaf_indices() const;
+    [[nodiscard]] std::span<const int> leaf_indices() const;
+    /// @brief Returns occupied source leaves cached during geometry setup.
+    [[nodiscard]] std::span<const int> occupied_source_leaves() const;
+    /// @brief Returns occupied target leaves cached during geometry setup.
+    [[nodiscard]] std::span<const int> occupied_target_leaves() const;
+    /// @brief Returns the wall-clock breakdown recorded during construction.
+    [[nodiscard]] const TreeBuildTimings& build_timings() const;
     /// @brief Returns the leaf containing a source at a sorted-array index.
     [[nodiscard]] int leaf_index_for_source(std::size_t sorted_source_index) const;
     /// @brief Returns the leaf containing a target at a sorted-array index.
@@ -134,6 +141,10 @@ class UniformTree {
     std::vector<int> target_permutation_{};
     std::vector<int> target_inverse_permutation_{};
     std::vector<int> target_leaf_indices_{};
+    std::vector<int> leaf_indices_{};
+    std::vector<int> occupied_source_leaves_{};
+    std::vector<int> occupied_target_leaves_{};
+    TreeBuildTimings build_timings_{};
     Vec3 root_centre_{};
     double root_half_width_{0.0};
     int max_level_{0};

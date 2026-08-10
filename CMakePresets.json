@@ -42,20 +42,35 @@
         "CDFMM_BUILD_TESTS": "OFF",
         "CDFMM_BUILD_EXAMPLES": "OFF",
         "CDFMM_BUILD_PYTHON": "OFF",
-        "CDFMM_BUILD_BENCHMARKS": "ON"
+        "CDFMM_BUILD_BENCHMARKS": "ON",
+        "CDFMM_ENABLE_OPENMP": "ON",
+        "CDFMM_ENABLE_IPO": "ON",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG -march=native",
+        "CMAKE_CXX_COMPILER": "icpx"
       }
     }
   ],
   "buildPresets": [
-    { "name": "dev", "configurePreset": "dev" },
-    { "name": "release", "configurePreset": "release" },
-    { "name": "benchmark", "configurePreset": "benchmark" }
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "benchmark",
+      "configurePreset": "benchmark"
+    }
   ],
   "testPresets": [
     {
       "name": "dev",
       "configurePreset": "dev",
-      "output": { "outputOnFailure": true }
+      "output": {
+        "outputOnFailure": true
+      }
     }
   ]
 }

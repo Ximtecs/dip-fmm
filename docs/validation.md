@@ -36,3 +36,12 @@ evaluation, target unsorting, repeated magnetic states, empty complete-tree
 boxes, output modes, and explicit index-based source self exclusion. Python
 tests exercise the same compiled evaluator, array shapes, ordering, and reset
 behaviour.
+
+## Parallel correctness and benchmark accuracy
+
+When OpenMP is enabled, automated tests compare deterministic complete-FMM
+results obtained with one and multiple threads and verify repeated-evaluation
+state reset. The benchmark optionally evaluates the same state with parallel
+direct P2P and writes mean, RMS, and maximum relative field errors beside the
+phase timings. Large automated cases disable the quadratic direct reference
+explicitly rather than reporting a misleading zero error.

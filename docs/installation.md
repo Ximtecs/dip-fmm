@@ -104,7 +104,7 @@ newer.
 
 | Component | Purpose |
 |---|---|
-| Clang/Clang++ | Compile the C++20 `cdfmm_core` library and Python extension |
+| Intel oneAPI `icpx` | Compile the high-performance C++20 library, benchmarks, and Python extension |
 | CMake | Configure the C++ project |
 | Ninja | Provide one cross-platform CMake build backend |
 | Python | Run the bindings and development tools |
@@ -155,21 +155,13 @@ calling the compiled C++ operator implementations for all numerical work.
 
 ### Compiler strategy and platform status
 
-The environment requests conda-forge's `clangxx` package rather than the
-`cxx-compiler` metapackage.  On Linux this provides the Clang/Clang++ programs
-inside the environment and avoids requiring a separately installed GCC.
-`cxx-compiler` is useful for conda-forge package recipes, but its native
-Windows toolchain normally selects MSVC and does not itself make Visual Studio,
-the MSVC libraries, and the Windows SDK disappear as external prerequisites.
-
-Conda-forge also publishes Clang packages for Windows, but a native Windows
-link still needs compatible Windows SDK and C/C++ runtime components.  This
-repository has not yet verified `environment.yml` on a clean Windows machine;
-therefore it does **not** claim a fully self-contained or CI-supported Windows
-toolchain.  Install Visual Studio Build Tools with the **Desktop development
-with C++** workload if Clang reports missing Windows headers, libraries, or a
-linker.  Linux is the current development path; Windows validation is tracked
-in the [roadmap](roadmap.md).
+The environment requests Intel oneAPI's C++ compiler package. On Linux this
+provides `icpx`, the supported compiler for performance development and
+benchmark reproduction. Portable standards-compliant source remains buildable
+with other C++20 compilers, but benchmark comparisons must record the compiler
+metadata emitted by the executable. The oneAPI Conda path in this repository
+has not been validated on native Windows; Windows toolchain validation remains
+tracked in the [roadmap](roadmap.md).
 
 ## CMake builds
 
@@ -358,3 +350,26 @@ installation: install the Visual Studio C++ workload described above if the
 diagnostic concerns SDK headers, libraries, `link.exe`, or runtime components.
 When reporting a problem, include `conda list clangxx`, the compiler version,
 and the complete CMake diagnostic.
+
+## Intel oneAPI performance build and OpenMP
+
+The reference performance compiler is Intel oneAPI `icpx` (the C++ driver, not
+the `ifx` Fortran compiler). `environment.yml` supplies the oneAPI DPC++/C++
+compiler package on the supported Linux development path. Build the optimised
+benchmark configuration with:
+
+```console
+conda activate cdfmm
+cmake --preset benchmark
+cmake --build --preset benchmark
+OMP_NUM_THREADS=16 ./build-bench/benchmarks/benchmark_uniform_fmm --help
+```
+
+The benchmark preset selects `icpx`, OpenMP, Release `-O3`, native CPU tuning,
+and IPO when supported. For explicit configuration, the equivalent core
+settings are `CXX=icpx cmake -S . -B build-bench -G Ninja
+-DCMAKE_BUILD_TYPE=Release -DCDFMM_BUILD_BENCHMARKS=ON
+-DCDFMM_ENABLE_OPENMP=ON`. Disable internal parallelism with
+`-DCDFMM_ENABLE_OPENMP=OFF`; otherwise use `OMP_NUM_THREADS` or the benchmark's
+`--threads` option. See [Performance benchmarks](benchmarks.md) for the complete
+runner workflow.
