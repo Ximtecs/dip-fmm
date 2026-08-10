@@ -81,6 +81,22 @@ cd <path-to>/dip-fmm
 conda activate cdfmm
 ```
 
+### Updating an existing environment
+
+After pulling repository changes, synchronise the existing `cdfmm` environment
+with the current `environment.yml` from `<repo-root>`:
+
+```console
+conda env update --name cdfmm --file environment.yml --prune
+conda activate cdfmm
+```
+
+This installs the newest compatible versions allowed by `environment.yml`, adds
+new dependencies, and, because of `--prune`, removes dependencies that are no
+longer required by the file.  The environment does not need to be deleted and
+created again.  If Mamba is available, `mamba env update --name cdfmm --file
+environment.yml --prune` is an interchangeable, often faster command.
+
 The readable `environment.yml` specifies the direct tools, rather than pinning
 every machine-specific transitive package.  It uses Python 3.11 as the
 reproducible development version; the package metadata supports Python 3.9 and
@@ -187,6 +203,48 @@ The checked-in presets use Ninja and separate binary directories.  They are
 shortcuts, not a separate build system; the explicit commands remain useful
 for understanding or customising a build.
 
+### Recompiling after source changes
+
+After changing a C++ source or header file, rebuild the existing development
+tree from `<repo-root>`:
+
+```console
+conda activate cdfmm
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+The build is incremental: Ninja recompiles only the affected files and then
+relinks the necessary targets.  There is normally no need to delete `build/` or
+repeat the initial CMake configuration.  The preset equivalents are:
+
+```console
+cmake --build --preset dev
+ctest --preset dev
+```
+
+CMake normally detects changes to `CMakeLists.txt` and regenerates the build
+files automatically.  When changing CMake options, or if automatic regeneration
+does not occur, configure again before rebuilding:
+
+```console
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+The manually built Python extension remains under `build/`; it does not replace
+a copy previously installed into the Conda environment.  To run Python code or
+Python tests against the latest C++ changes using the documented installed
+package workflow, rebuild and reinstall the extension before testing:
+
+```console
+python -m pip install . --no-deps --force-reinstall
+python -m pytest python_tests -v
+```
+
+For a change confined to Python test files, no compilation or reinstallation is
+needed; rerun `python -m pytest python_tests -v` directly.
+
 ### C++-only build
 
 This separate build disables Python and tests while retaining examples:
@@ -259,12 +317,9 @@ the Docs uses `.readthedocs.yaml` and the separate `docs/requirements.txt`.
 
 ### The environment already exists
 
-Update it from `<repo-root>` after `environment.yml` changes:
-
-```console
-conda env update -f environment.yml --prune
-conda activate cdfmm
-```
+Do not run `conda env create` again.  Follow
+[Updating an existing environment](#updating-an-existing-environment) to
+synchronise the existing `cdfmm` environment with `environment.yml`.
 
 ### The wrong Python is active
 
