@@ -14,8 +14,16 @@ def test_static_backend_is_default_and_reference_is_selectable():
 
     options.m2l_backend = cdfmm.M2LBackend.Reference
     reference_fmm = cdfmm.UniformFmm(sources, sources, options)
-    static_result = static_fmm.evaluate(moments)
-    reference_result = reference_fmm.evaluate(moments)
+    identities = np.arange(sources.shape[0], dtype=int)
+    static_result = static_fmm.evaluate(
+        moments,
+        target_source_indices=identities,
+    )
+    reference_result = reference_fmm.evaluate(
+        moments,
+        target_source_indices=identities,
+    )
+    assert np.isfinite(static_result["H"]).all()
     np.testing.assert_allclose(static_result["H"], reference_result["H"])
 
 
