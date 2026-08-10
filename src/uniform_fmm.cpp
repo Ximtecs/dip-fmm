@@ -5,6 +5,14 @@
 #include <algorithm>
 #include <chrono>
 #include <stdexcept>
+#include <map>
+#include <tuple>
+
+#include "cdfmm/laplace_derivatives.hpp"
+
+#ifdef CDFMM_USE_MKL
+#include <mkl_cblas.h>
+#endif
 
 #include "cdfmm/operators.hpp"
 
@@ -35,6 +43,9 @@ void accumulate_timings(EvaluationTimings& aggregate,
     accumulate_phase(aggregate.local_reset, value.local_reset);
     accumulate_phase(aggregate.l2l, value.l2l);
     accumulate_phase(aggregate.m2l, value.m2l);
+    accumulate_phase(aggregate.m2l_gather, value.m2l_gather);
+    accumulate_phase(aggregate.m2l_multiply, value.m2l_multiply);
+    accumulate_phase(aggregate.m2l_scatter, value.m2l_scatter);
     accumulate_phase(aggregate.l2p, value.l2p);
     accumulate_phase(aggregate.p2p, value.p2p);
     accumulate_phase(aggregate.result_unpermutation,
@@ -51,7 +62,8 @@ void accumulate_timings(EvaluationTimings& aggregate,
 
 UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
                        const UniformFmmOptions& options)
-    : tree_(source_positions, options.tree), basis_(options.expansion_order)
+    : tree_(source_positions, options.tree), basis_(options.expansion_order),
+      m2l_backend_(options.m2l_backend)
 {
     if (options.expansion_order < 0) {
         throw std::invalid_argument(
@@ -68,6 +80,9 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
         CoeffVector(static_cast<std::size_t>(basis_.size()), 0.0)
     );
     sorted_dipole_moments_.resize(source_positions.size());
+    if (m2l_backend_ == M2LBackend::Static) {
+        build_static_plan();
+    }
 }
 
 UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
@@ -92,6 +107,137 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     );
     sorted_dipole_moments_.resize(source_positions.size());
     sorted_results_.resize(target_positions.size());
+    m2l_backend_ = options.m2l_backend;
+    if (m2l_backend_ == M2LBackend::Static) {
+        build_static_plan();
+    }
+}
+
+void UniformFmm::build_static_plan()
+{
+    const auto total_start = Clock::now();
+    const auto nodes = tree_.nodes();
+    using Key = std::tuple<int, int, int, int>;
+    std::map<Key, std::vector<std::pair<int, int>>> classes;
+
+    auto phase_start = Clock::now();
+    for (const TreeNode& target : nodes) {
+        if (target.level == 0 || target.target_count() == 0) {
+            continue;
+        }
+        for (const int source_index : target.list2) {
+            const TreeNode& source = nodes[static_cast<std::size_t>(source_index)];
+            if (source.source_count() == 0) {
+                continue;
+            }
+            const Key key{target.level, target.ix - source.ix,
+                          target.iy - source.iy, target.iz - source.iz};
+            classes[key].emplace_back(source_index, target.index);
+        }
+    }
+    static_plan_statistics_.transfer_discovery.add(elapsed_seconds(phase_start));
+
+    const int coefficient_count = basis_.size();
+    const MultiIndexSet derivative_basis(2 * basis_.order());
+    phase_start = Clock::now();
+    for (const auto& [key, interactions] : classes) {
+        M2LGroup group;
+        std::tie(group.level, group.dx, group.dy, group.dz) = key;
+        const double box_width = 2.0 * nodes[static_cast<std::size_t>(
+            level_offset(group.level))].half_width;
+        const Vec3 R{box_width * group.dx, box_width * group.dy,
+                     box_width * group.dz};
+        const auto derivatives = laplace_derivatives_raw(derivative_basis, R);
+        group.matrix.resize(static_cast<std::size_t>(coefficient_count) *
+                            coefficient_count);
+        for (int alpha_index = 0; alpha_index < coefficient_count;
+             ++alpha_index) {
+            for (int beta_index = 0; beta_index < coefficient_count;
+                 ++beta_index) {
+                const MultiIndex gamma = add(basis_[alpha_index],
+                                             basis_[beta_index]);
+                group.matrix[static_cast<std::size_t>(beta_index) +
+                             static_cast<std::size_t>(coefficient_count) *
+                                 alpha_index] =
+                    derivatives[static_cast<std::size_t>(
+                        derivative_basis.index(gamma))];
+            }
+        }
+        for (const auto [source, target] : interactions) {
+            group.sources.push_back(source);
+            group.targets.push_back(target);
+        }
+        m2l_groups_.push_back(std::move(group));
+    }
+    static_plan_statistics_.operator_construction.add(
+        elapsed_seconds(phase_start));
+
+    phase_start = Clock::now();
+    for (M2LGroup& group : m2l_groups_) {
+        const std::size_t values = static_cast<std::size_t>(coefficient_count) *
+                                   group.sources.size();
+        group.gathered.resize(values);
+        group.translated.resize(values);
+        static_plan_statistics_.operator_bytes +=
+            group.matrix.size() * sizeof(double);
+        static_plan_statistics_.interaction_bytes +=
+            (group.sources.size() + group.targets.size()) * sizeof(int);
+        static_plan_statistics_.scratch_bytes += 2 * values * sizeof(double);
+        static_plan_statistics_.interactions += group.sources.size();
+    }
+    static_plan_statistics_.transfer_classes = m2l_groups_.size();
+    static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
+    static_plan_statistics_.total.add(elapsed_seconds(total_start));
+}
+
+void UniformFmm::static_m2l(const int level)
+{
+    const int n = basis_.size();
+    for (M2LGroup& group : m2l_groups_) {
+        if (group.level != level) {
+            continue;
+        }
+        auto phase_start = Clock::now();
+        for (std::size_t column = 0; column < group.sources.size(); ++column) {
+            const CoeffVector& M = multipoles_[static_cast<std::size_t>(
+                group.sources[column])];
+            std::copy(M.begin(), M.end(),
+                      group.gathered.begin() + static_cast<std::ptrdiff_t>(column * n));
+        }
+        last_timings_.m2l_gather.add(elapsed_seconds(phase_start));
+
+        phase_start = Clock::now();
+        const int columns = static_cast<int>(group.sources.size());
+#ifdef CDFMM_USE_MKL
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, columns, n,
+                    1.0, group.matrix.data(), n, group.gathered.data(), n,
+                    0.0, group.translated.data(), n);
+#else
+        std::fill(group.translated.begin(), group.translated.end(), 0.0);
+        for (int column = 0; column < columns; ++column) {
+            for (int alpha = 0; alpha < n; ++alpha) {
+                const double value = group.gathered[
+                    static_cast<std::size_t>(alpha + column * n)];
+                for (int beta = 0; beta < n; ++beta) {
+                    group.translated[static_cast<std::size_t>(beta + column * n)] +=
+                        group.matrix[static_cast<std::size_t>(beta + alpha * n)] *
+                        value;
+                }
+            }
+        }
+#endif
+        last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
+
+        phase_start = Clock::now();
+        for (std::size_t column = 0; column < group.targets.size(); ++column) {
+            CoeffVector& L = locals_[static_cast<std::size_t>(group.targets[column])];
+            for (int beta = 0; beta < n; ++beta) {
+                L[static_cast<std::size_t>(beta)] += group.translated[
+                    static_cast<std::size_t>(beta) + column * n];
+            }
+        }
+        last_timings_.m2l_scatter.add(elapsed_seconds(phase_start));
+    }
 }
 
 //------------------------------------------------------------------------------
@@ -209,6 +355,13 @@ void UniformFmm::downward_pass()
                     locals_[static_cast<std::size_t>(target_index)]);
         }
         last_timings_.l2l.add(elapsed_seconds(phase_start));
+
+        if (m2l_backend_ == M2LBackend::Static) {
+            phase_start = Clock::now();
+            static_m2l(level);
+            last_timings_.m2l.add(elapsed_seconds(phase_start));
+            continue;
+        }
 
         phase_start = Clock::now();
         #pragma omp parallel for schedule(static) if(end - begin >= 8)
@@ -382,6 +535,11 @@ void UniformFmm::evaluate_into(
 
 const UniformTree& UniformFmm::tree() const { return tree_; }
 const MultiIndexSet& UniformFmm::basis() const { return basis_; }
+M2LBackend UniformFmm::m2l_backend() const { return m2l_backend_; }
+const StaticPlanStatistics& UniformFmm::static_plan_statistics() const
+{
+    return static_plan_statistics_;
+}
 
 std::span<const double> UniformFmm::multipole(const int node_index) const
 {

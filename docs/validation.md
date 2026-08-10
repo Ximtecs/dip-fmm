@@ -5,6 +5,11 @@ them.  Unit tests cover multi-index counts and ordering, Taylor-jet algebra,
 Laplace derivatives, output modes, axial and transverse direct dipoles, tree
 topology, sorting, ranges, and interaction lists.
 
+The default exact static M2L backend is checked against the independently
+retained `m2l_add()` traversal. Select that validation path explicitly with
+`UniformFmmOptions::m2l_backend = M2LBackend::Reference`; static-plan matrices,
+interaction maps, and scratch storage are constructed only once.
+
 Operator accuracy tests compare these paths with direct P2P:
 
 - **P2M + M2P** checks source coefficients and kernel differentiation;

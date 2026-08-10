@@ -10,6 +10,23 @@ cmake --preset benchmark
 cmake --build --preset benchmark
 ```
 
+For repeated static geometry, construct one evaluator per backend and generate
+all moment states before timing. Compare the default against
+`M2LBackend::Reference`, reporting `static_plan_statistics` separately from
+first and median evaluations. Runtime instrumentation separates `m2l_gather`,
+`m2l_multiply`, and `m2l_scatter`; plan statistics report operator, interaction
+map, and reusable scratch bytes. Cumulative static time is `setup + N *
+median_static`, while reference time is `N * median_reference`; their first
+crossing is the break-even count.
+
+Enable oneMKL with `-DCDFMM_ENABLE_MKL=ON` and record compiler/MKL versions plus
+`OMP_NUM_THREADS` and `MKL_NUM_THREADS`. Run the quick reproducible sweep and
+figures with:
+
+```console
+python benchmarks/run_benchmarks.py --profile quick --max-threads 4
+```
+
 The preset sets `CMAKE_CXX_COMPILER=icpx`, `CDFMM_ENABLE_OPENMP=ON`, and
 `CDFMM_ENABLE_IPO=ON`. A portable serial build remains available with
 `-DCDFMM_ENABLE_OPENMP=OFF`. OpenMP uses the standard runtime controls:

@@ -361,13 +361,18 @@ PYBIND11_MODULE(cdfmm, module)
             return points_to_array(tree.sorted_target_positions());
         });
 
+    py::enum_<M2LBackend>(module, "M2LBackend")
+        .value("Static", M2LBackend::Static)
+        .value("Reference", M2LBackend::Reference);
+
     py::class_<UniformFmmOptions>(module, "UniformFmmOptions")
         .def(py::init<>())
         .def_readwrite(
             "expansion_order",
             &UniformFmmOptions::expansion_order
         )
-        .def_readwrite("tree", &UniformFmmOptions::tree);
+        .def_readwrite("tree", &UniformFmmOptions::tree)
+        .def_readwrite("m2l_backend", &UniformFmmOptions::m2l_backend);
 
     py::class_<UniformFmm>(module, "UniformFmm")
         .def(
@@ -433,7 +438,7 @@ PYBIND11_MODULE(cdfmm, module)
             py::arg("dipole_moments"),
             py::arg("output") = "field",
             py::arg("target_source_indices") = py::none(),
-            "Run the complete reference FMM and return values in target order."
+            "Run the complete FMM and return values in target order."
         )
         .def_property_readonly(
             "tree",
@@ -442,6 +447,19 @@ PYBIND11_MODULE(cdfmm, module)
         )
         .def_property_readonly("expansion_order", [](const UniformFmm& fmm) {
             return fmm.basis().order();
+        })
+        .def_property_readonly("m2l_backend", &UniformFmm::m2l_backend)
+        .def_property_readonly("static_plan_statistics", [](const UniformFmm& fmm) {
+            const StaticPlanStatistics& statistics = fmm.static_plan_statistics();
+            py::dict result;
+            result["transfer_classes"] = statistics.transfer_classes;
+            result["interactions"] = statistics.interactions;
+            result["operator_bytes"] = statistics.operator_bytes;
+            result["interaction_bytes"] = statistics.interaction_bytes;
+            result["scratch_bytes"] = statistics.scratch_bytes;
+            result["total_bytes"] = statistics.total_bytes();
+            result["setup_seconds"] = statistics.total.total_seconds;
+            return result;
         })
         .def_property_readonly("root_multipole", [](const UniformFmm& fmm) {
             const auto coefficients = fmm.root_multipole();
