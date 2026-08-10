@@ -16,6 +16,8 @@ dependencies:
   - ninja
   # Intel oneAPI icpx is the reference high-performance C++20 compiler.
   - dpcpp_linux-64
+  # Supply omp.h and the LLVM OpenMP runtime used by icpx -fopenmp.
+  - llvm-openmp
   - scikit-build-core>=0.8
   - pybind11>=2.13
   - sphinx>=7.2,<9

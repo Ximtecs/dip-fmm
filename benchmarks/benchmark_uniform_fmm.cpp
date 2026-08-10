@@ -67,6 +67,11 @@ Options parse_options(const int argc, char** argv)
         options.order < 0 || options.evaluations < 1 || options.samples < 1) {
         throw std::invalid_argument("Counts, depth, order, and samples are invalid");
     }
+    if (options.targets != options.sources) {
+        throw std::invalid_argument(
+            "The all-to-all benchmark requires equal source and target counts"
+        );
+    }
     return options;
 }
 
@@ -84,6 +89,14 @@ double mean(const std::vector<double>& values)
 {
     return std::accumulate(values.begin(), values.end(), 0.0) /
         static_cast<double>(values.size());
+}
+
+std::string progress_bar(const int completed, const int total,
+                         const int width = 24)
+{
+    const int filled = total > 0 ? (width * completed) / total : width;
+    return "[" + std::string(static_cast<std::size_t>(filled), '=') +
+        std::string(static_cast<std::size_t>(width - filled), ' ') + "]";
 }
 
 std::string compiler_name()
@@ -128,22 +141,29 @@ int main(int argc, char** argv)
         const char* openmp_status = "disabled";
 #endif
 
+        std::cerr << "Running benchmark: sources=" << options.sources
+                  << " targets=" << options.targets
+                  << " order=" << options.order
+                  << " depth=" << options.depth
+                  << " threads=" << thread_count
+                  << " evaluations=" << options.evaluations
+                  << " samples=" << options.samples << "\n";
+
         std::mt19937 generator(options.seed);
         std::uniform_real_distribution<double> distribution(-0.95, 0.95);
         std::vector<Vec3> source_positions(
             static_cast<std::size_t>(options.sources)
         );
-        std::vector<Vec3> target_positions(
-            static_cast<std::size_t>(options.targets)
-        );
         for (Vec3& position : source_positions) {
             position = {distribution(generator), distribution(generator),
                         distribution(generator)};
         }
-        for (Vec3& position : target_positions) {
-            position = {distribution(generator), distribution(generator),
-                        distribution(generator)};
-        }
+
+        // Benchmark source-point evaluation: every particle is both a source
+        // and a target, with its singular self-pair excluded explicitly.
+        const std::vector<Vec3> target_positions = source_positions;
+        std::vector<int> source_identities(source_positions.size());
+        std::iota(source_identities.begin(), source_identities.end(), 0);
 
         const int state_count = options.warmups + options.evaluations;
         std::vector<std::vector<Vec3>> moment_states(
@@ -169,9 +189,12 @@ int main(int argc, char** argv)
             Clock::now() - setup_start
         ).count();
         std::vector<PotentialField> result(target_positions.size());
+        if (options.warmups > 0) {
+            std::cerr << "Warm-up evaluations: " << options.warmups << "\n";
+        }
         for (int warmup = 0; warmup < options.warmups; ++warmup) {
             fmm.evaluate_into(moment_states[static_cast<std::size_t>(warmup)],
-                              result);
+                              result, OutputFlags::Field, source_identities);
         }
 
         fmm.reset_timings();
@@ -183,27 +206,44 @@ int main(int argc, char** argv)
                  ++evaluation) {
                 const int state = options.warmups + evaluation;
                 fmm.evaluate_into(moment_states[static_cast<std::size_t>(state)],
-                                  result);
+                                  result, OutputFlags::Field,
+                                  source_identities);
             }
             sample_seconds.push_back(
                 std::chrono::duration<double>(Clock::now() - start).count() /
                 static_cast<double>(options.evaluations)
             );
+
+            const int completed_samples = sample + 1;
+            const int completed_evaluations =
+                completed_samples * options.evaluations;
+            const int total_evaluations =
+                options.samples * options.evaluations;
+            std::cerr << "\rSamples "
+                      << progress_bar(completed_samples, options.samples)
+                      << " " << completed_samples << "/" << options.samples
+                      << "; timed evaluations " << completed_evaluations
+                      << "/" << total_evaluations << std::flush;
         }
+        std::cerr << "\n";
 
         double direct_seconds = std::numeric_limits<double>::quiet_NaN();
         ErrorMetrics metrics;
         if (options.direct) {
+            std::cerr << "Computing direct all-to-all reference..." << std::flush;
             const auto direct_start = Clock::now();
             const auto reference = direct_p2p_reference(
                 target_positions, source_positions,
-                moment_states[static_cast<std::size_t>(options.warmups)]
+                moment_states[static_cast<std::size_t>(options.warmups)],
+                OutputFlags::Field, source_identities
             );
             direct_seconds = std::chrono::duration<double>(
                 Clock::now() - direct_start
             ).count();
+            std::cerr << " done (" << direct_seconds << " s)\n";
             fmm.evaluate_into(
-                moment_states[static_cast<std::size_t>(options.warmups)], result
+                moment_states[static_cast<std::size_t>(options.warmups)], result,
+                OutputFlags::Field, source_identities
             );
             std::vector<Vec3> approximate_fields(result.size());
             std::vector<Vec3> reference_fields(reference.size());

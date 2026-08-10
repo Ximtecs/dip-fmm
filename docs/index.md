@@ -23,6 +23,7 @@ uniform-tree
 operators
 validation
 examples
+benchmarks
 roadmap
 ```
 

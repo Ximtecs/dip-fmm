@@ -100,8 +100,13 @@ PotentialField p2p_dipole_pair(const Vec3 &target, const Vec3 &source,
 /**
  * @brief Sums direct dipole contributions from all sources at one target.
  *
+ * @param target Target position.
+ * @param sources Source positions.
+ * @param moments Source dipole moments, one per source position.
+ * @param output Requested potential and/or magnetic field components.
  * @param self_index Optional source index to skip for source-point evaluation
  * to avoid singular self-interaction.
+ * @return Sum of all requested non-self source contributions.
  */
 PotentialField p2p_dipole_sum(const Vec3 &target, std::span<const Vec3> sources,
                               std::span<const Vec3> moments,

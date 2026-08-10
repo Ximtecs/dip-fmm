@@ -16,8 +16,11 @@ namespace cdfmm {
  * Taylor expansions.
  */
 struct MultiIndex {
+  /// @brief Derivative order or monomial power along the x-axis.
   int ax{0};
+  /// @brief Derivative order or monomial power along the y-axis.
   int ay{0};
+  /// @brief Derivative order or monomial power along the z-axis.
   int az{0};
 
   /// @brief Returns |alpha| = alpha_x + alpha_y + alpha_z.

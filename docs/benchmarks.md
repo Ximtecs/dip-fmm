@@ -27,21 +27,41 @@ direct-reference accuracy, tree phases, and evaluation phases. Median elapsed
 wall time across samples is the primary result. Input generation, reporting,
 and file output are outside timed regions.
 
+The benchmark is an all-to-all source-point comparison: the source and target
+arrays contain the same particle positions, and both FMM and direct P2P use the
+same explicit identity map to exclude only each particle's singular self-pair.
+Consequently `--sources` and `--targets` must be equal.
+
 ## Automated profiles
 
 ```console
-python benchmarks/run_benchmarks.py --profile quick
-python benchmarks/run_benchmarks.py --profile standard
-python benchmarks/run_benchmarks.py --profile full
+python benchmarks/run_benchmarks.py --profile quick --max-threads 8
+python benchmarks/run_benchmarks.py --profile standard --max-threads 8
+python benchmarks/run_benchmarks.py --profile full --max-threads 8
 ```
 
-Profiles sweep particle count, tree depth, expansion order, and available
-power-of-two thread counts. The driver creates a timestamped directory below
-`benchmark_results/` containing `results.csv`, machine metadata, a measured
-summary, and PNG figures for runtime scaling, direct/FMM comparison,
-order/accuracy tradeoffs, phase breakdowns, setup amortisation, and OpenMP
-scaling. Generated results are ignored by Git and existing runs are not
-overwritten.
+`--max-threads` caps the thread count used by every size/order and tree-depth
+case. It also limits the scaling sweep; for example, `--max-threads 8` tests 1,
+2, 4, and 8 threads even when the machine reports more logical CPUs. Without
+the option, the runner uses all logical CPUs reported by the operating system.
+
+Profiles contain three explicit suites in `results.csv`: `size_order` varies
+particle count and expansion order, `depth` tests every profile tree depth at a
+fixed particle count and order, and `scaling` varies OpenMP threads. The driver
+creates a timestamped directory below `benchmark_results/` containing the CSV,
+machine metadata (including the thread cap), a measured summary, and PNG
+figures. Figure titles state their particle count, order, depth, and thread
+configuration. The phase table in `summary.md` uses the largest particle count
+and the tested expansion order nearest four. Generated results are ignored by
+Git and existing runs are not overwritten.
+
+The terminal reports the exact suite, source/target count, order, depth, and
+thread count before every case. It shows overall case progress, while the C++
+executable updates completed samples and timed evaluations after each sample.
+Progress printing occurs outside the measured interval. A representative phase
+plot remains at `figures/evaluation_breakdown.png`; phase plots for every case
+are stored under `figures/evaluation_breakdowns/` with names such as
+`depth_n300_p4_d2_t8.png`.
 
 ## Setup and repeated evaluation
 

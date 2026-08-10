@@ -32,12 +32,21 @@ endif()
 if(CDFMM_ENABLE_IPO)
   include(CheckIPOSupported)
   check_ipo_supported(RESULT CDFMM_IPO_SUPPORTED OUTPUT CDFMM_IPO_ERROR)
-  if(CDFMM_IPO_SUPPORTED)
-    set_property(TARGET cdfmm_core PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
-  else()
+  if(NOT CDFMM_IPO_SUPPORTED)
     message(WARNING "IPO requested but unavailable: ${CDFMM_IPO_ERROR}")
   endif()
 endif()
+
+function(cdfmm_enable_ipo target_name)
+  if(CDFMM_ENABLE_IPO AND CDFMM_IPO_SUPPORTED)
+    set_property(
+      TARGET ${target_name}
+      PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
+    )
+  endif()
+endfunction()
+
+cdfmm_enable_ipo(cdfmm_core)
 
 if(CDFMM_BUILD_TESTS)
   include(FetchContent)
@@ -70,5 +79,6 @@ if(CDFMM_BUILD_PYTHON)
   pybind11_add_module(cdfmm python/bindings.cpp)
   target_link_libraries(cdfmm PRIVATE cdfmm_core)
   target_include_directories(cdfmm PRIVATE include)
+  cdfmm_enable_ipo(cdfmm)
   install(TARGETS cdfmm LIBRARY DESTINATION .)
 endif()

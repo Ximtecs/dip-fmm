@@ -21,10 +21,15 @@ namespace cdfmm {
  * production FMM traversal logic.
  */
 struct ErrorMetrics {
+  /// @brief Arithmetic mean of the pointwise relative vector errors.
   double mean_relative_error{0.0};
+  /// @brief Root mean square of the pointwise relative vector errors.
   double rms_relative_error{0.0};
+  /// @brief Largest pointwise relative vector error.
   double max_relative_error{0.0};
+  /// @brief Arithmetic mean of the pointwise absolute vector errors.
   double mean_absolute_error{0.0};
+  /// @brief Largest pointwise absolute vector error.
   double max_absolute_error{0.0};
 };
 
@@ -82,11 +87,14 @@ ErrorMetrics compute_error_metrics(std::span<const Vec3> values,
  * @param source_positions Source positions.
  * @param dipole_moments Source dipole moments.
  * @param output Output selection (field by default).
+ * @param target_source_indices Optional target-to-source identity map. Entry
+ * `i` gives the source index to exclude for target `i`, or -1 for no identity.
  * @return Direct per-target potential/field results.
  */
 std::vector<PotentialField> direct_p2p_reference(
     std::span<const Vec3> target_positions, std::span<const Vec3> source_positions,
     std::span<const Vec3> dipole_moments,
-    OutputFlags output = OutputFlags::Field);
+    OutputFlags output = OutputFlags::Field,
+    std::span<const int> target_source_indices = {});
 
 } // namespace cdfmm

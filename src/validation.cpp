@@ -70,8 +70,22 @@ ErrorMetrics compute_error_metrics(std::span<const Vec3> values,
 
 std::vector<PotentialField> direct_p2p_reference(
     std::span<const Vec3> target_positions, std::span<const Vec3> source_positions,
-    std::span<const Vec3> dipole_moments, OutputFlags output)
+    std::span<const Vec3> dipole_moments, OutputFlags output,
+    std::span<const int> target_source_indices)
 {
+  if (!target_source_indices.empty() &&
+      target_source_indices.size() != target_positions.size()) {
+    throw std::invalid_argument(
+        "direct_p2p_reference requires one source identity per target");
+  }
+  for (const int source_index : target_source_indices) {
+    if (source_index < -1 ||
+        source_index >= static_cast<int>(source_positions.size())) {
+      throw std::invalid_argument(
+          "direct_p2p_reference source identity is out of range");
+    }
+  }
+
   std::vector<PotentialField> reference(target_positions.size());
 
   // Each target owns an independent accumulation, preserving the serial
@@ -80,9 +94,12 @@ std::vector<PotentialField> direct_p2p_reference(
   for (std::ptrdiff_t target_index = 0;
        target_index < static_cast<std::ptrdiff_t>(target_positions.size());
        ++target_index) {
+    const int self_index = target_source_indices.empty()
+        ? -1
+        : target_source_indices[static_cast<std::size_t>(target_index)];
     reference[static_cast<std::size_t>(target_index)] = p2p_dipole_sum(
         target_positions[static_cast<std::size_t>(target_index)],
-        source_positions, dipole_moments, output
+        source_positions, dipole_moments, output, self_index
     );
   }
 

@@ -81,6 +81,7 @@ cd <path-to>/dip-fmm
 conda activate cdfmm
 ```
 
+(updating-an-existing-environment)=
 ### Updating an existing environment
 
 After pulling repository changes, synchronise the existing `cdfmm` environment
