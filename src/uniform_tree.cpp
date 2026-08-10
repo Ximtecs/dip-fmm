@@ -354,21 +354,32 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
         }
 
         // A depth-first Morton ordering makes all points below a parent
-        // contiguous.  Taking the minimum child begin and maximum child end
-        // therefore forms the exact parent range, including empty children.
+        // contiguous.  Taking the minimum occupied-child begin and maximum
+        // occupied-child end therefore forms the exact parent range.  Empty
+        // children use the population-size sentinel and must be ignored;
+        // otherwise that sentinel would incorrectly extend a populated
+        // parent's range to the end of the complete sorted array.
         for (int level = max_level_ - 1; level >= 0; --level) {
             const int begin = level_offset(level);
             const int end = level_offset(level + 1);
             for (int idx = begin; idx < end; ++idx) {
                 TreeNode& node = nodes_[idx];
                 std::size_t min_begin = is_source ? source_positions_sorted_.size() : target_positions_sorted_.size();
-                std::size_t max_end = min_begin;
+                std::size_t max_end = 0;
+                bool has_occupied_child = false;
                 for (const int child : node.children) {
                     const TreeNode& child_node = nodes_[child];
                     const std::size_t child_begin = is_source ? child_node.source_begin : child_node.target_begin;
                     const std::size_t child_end = is_source ? child_node.source_end : child_node.target_end;
+                    if (child_begin == child_end) {
+                        continue;
+                    }
+                    has_occupied_child = true;
                     min_begin = std::min(min_begin, child_begin);
                     max_end = std::max(max_end, child_end);
+                }
+                if (!has_occupied_child) {
+                    max_end = min_begin;
                 }
                 if (is_source) {
                     node.source_begin = min_begin;

@@ -16,6 +16,7 @@ add_library(cdfmm_core
     src/operators.cpp
     src/validation.cpp
     src/uniform_tree.cpp
+    src/uniform_fmm.cpp
 )
 target_include_directories(cdfmm_core PUBLIC include)
 set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)

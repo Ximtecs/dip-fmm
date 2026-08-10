@@ -19,10 +19,32 @@ uniform-tree evaluation consists of:
 8. **Unsorting:** map results from Morton order back to the user's target order.
 
 All seven mathematical operators exist and the tree provides the required
-geometry.  Steps 2--8 are **not yet assembled into a traversal**.  Present
-tests compose operators manually on controlled boxes; direct P2P is the only
-complete many-source evaluation path.  Completing this reference uniform FMM
-is the [immediate roadmap milestone](roadmap.md).
+geometry.  `UniformFmm` now implements steps 2 and 3 as a reference upward
+pass.  Its construction fixes the source geometry, while each `upward_pass`
+call accepts a new dipole state in user order.  The remaining steps 4--8 are
+**not yet assembled into a traversal**; direct P2P remains the only complete
+many-source field-evaluation path.
+
+The implemented algorithm is:
+
+```text
+Leaf stage:
+    M_leaf = P2M(particles in leaf)
+
+Upward stage:
+    for level = leaf_level - 1 ... 0:
+        for parent at level:
+            for populated child in parent.children:
+                M_parent += M2M(M_child)
+```
+
+Before the leaf stage, input moments are permuted to the source positions'
+Morton order.  Every node coefficient vector is cleared on each call, so empty
+subtrees stay zero and repeated dipole states cannot contaminate each other.
+For M2M the displacement is `parent centre - child centre`.  Consequently each
+stored node multipole represents the union of all sources below that node,
+expanded about its centre.  In particular, the hierarchical root agrees to
+round-off with direct P2M of all sources about the root centre.
 
 See [Operator reference](operators.md) for each translation and
 [Uniform tree](uniform-tree.md) for the geometric lists.

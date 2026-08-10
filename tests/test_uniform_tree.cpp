@@ -76,4 +76,37 @@ TEST_CASE("Uniform tree topology and lists", "[uniform_tree]")
     REQUIRE(nodes[0].source_end == sources.size());
     REQUIRE(nodes[0].target_begin == 0);
     REQUIRE(nodes[0].target_end == targets.size());
+
+    // Empty-child sentinels must not extend an occupied internal node's range.
+    // Count sorted points whose leaf ancestry contains each node independently
+    // of the stored half-open ranges.
+    for (const TreeNode& node : nodes) {
+        std::size_t expected_source_count = 0;
+        for (std::size_t sorted_index = 0;
+             sorted_index < sources.size();
+             ++sorted_index) {
+            int ancestor = tree.leaf_index_for_source(sorted_index);
+            while (ancestor >= 0 && nodes[ancestor].level > node.level) {
+                ancestor = nodes[ancestor].parent;
+            }
+            if (ancestor == node.index) {
+                ++expected_source_count;
+            }
+        }
+        REQUIRE(node.source_count() == expected_source_count);
+
+        std::size_t expected_target_count = 0;
+        for (std::size_t sorted_index = 0;
+             sorted_index < targets.size();
+             ++sorted_index) {
+            int ancestor = tree.leaf_index_for_target(sorted_index);
+            while (ancestor >= 0 && nodes[ancestor].level > node.level) {
+                ancestor = nodes[ancestor].parent;
+            }
+            if (ancestor == node.index) {
+                ++expected_target_count;
+            }
+        }
+        REQUIRE(node.target_count() == expected_target_count);
+    }
 }

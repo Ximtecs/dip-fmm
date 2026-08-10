@@ -41,9 +41,12 @@ and the uniform Morton-sorted tree. They include mathematical definitions,
 deterministic problem setups, direct-reference comparisons, convergence plots,
 spatial error maps, and optional ipywidgets controls.
 
-The final tree notebook draws actual cube boundaries, Morton-coloured sources,
+The tree notebook draws actual cube boundaries, Morton-coloured sources,
 leaf occupancy, and distinct `list1`/`list2` boxes around a selected node. It
-does not implement an upward pass, downward pass, or complete tree FMM.
+is followed by an upward-pass notebook that draws populated nodes and
+child-to-parent translation arrows, then compares the hierarchical root with
+direct root P2M coefficient by coefficient. Neither notebook implements M2L,
+a downward pass, near-field traversal, or a complete tree FMM.
 
 Start Jupyter from the repository root after activating the development
 environment:
