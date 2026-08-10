@@ -63,15 +63,24 @@ valuable if it substantially reduces thousands of later magnetic-field
 evaluations.  Kernel profiles and end-to-end measurements should determine
 which optimisation work proceeds.
 
-## 5. Persistent geometry plan / static-geometry optimisation — research
+## 5. Persistent geometry plan / static-geometry optimisation — in progress
+
+- [x] immutable geometry-dependent M2L plan;
+- [x] exact per-level Cartesian M2L matrices;
+- [x] integer transfer classes and persistent interaction maps;
+- [x] grouped contiguous gather/DGEMM/scatter execution;
+- [x] portable dense fallback, reference mode, and oneMKL integration;
+- [x] setup, memory, gather, multiply, and scatter instrumentation;
+- [ ] static P2M, M2M, L2L, and fixed-target L2P;
+- [ ] symmetry and optional tolerance-controlled compression.
 
 The target use case repeatedly evaluates a fixed geometry for changing dipole
 moments.  Source positions do not change; target positions normally do not
 change; topology, interaction lists, and expansion order remain fixed.  Only
 the three components of each dipole moment change between evaluations.
 
-This is an investigation after the reference FMM is correct and benchmarked,
-not an implemented feature or predetermined matrix architecture.
+Dense static M2L is now the default repeated-geometry path. The remaining
+operators and alternative representations remain investigations.
 
 ### Static P2M operator
 

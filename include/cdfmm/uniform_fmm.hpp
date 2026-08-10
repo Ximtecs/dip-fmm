@@ -2,6 +2,7 @@
 #pragma once
 
 #include <span>
+#include <cstdint>
 #include <vector>
 
 #include "cdfmm/coefficients.hpp"
@@ -16,7 +17,7 @@ namespace cdfmm {
 //------------------------------------------------------------------------------
 
 /**
- * @brief Options for the reference uniform FMM traversal.
+ * @brief Options for static or reference uniform FMM traversal.
  *
  * Geometry options are kept alongside the expansion order at setup, while
  * dipole moments are supplied separately for each upward evaluation.
@@ -26,10 +27,17 @@ struct UniformFmmOptions {
   int expansion_order{4};
   /// @brief Complete uniform-tree geometry options.
   UniformTreeOptions tree{};
+  /// @brief M2L execution backend; static grouped execution is the default.
+  enum class M2LBackend {
+      Static,
+      Reference
+  } m2l_backend{M2LBackend::Static};
 };
 
+using M2LBackend = UniformFmmOptions::M2LBackend;
+
 /**
- * @brief Functional reference evaluator for a complete uniform FMM tree.
+ * @brief Complete uniform FMM evaluator with reusable static M2L by default.
  *
  * Construction fixes and Morton-sorts the source geometry. Calling
  * `upward_pass` accepts moments in the original user source order and replaces
@@ -129,6 +137,10 @@ public:
   [[nodiscard]] const UniformTree &tree() const;
   /// @brief Returns the Cartesian coefficient basis used by every node.
   [[nodiscard]] const MultiIndexSet &basis() const;
+  /// @brief Returns the selected M2L execution backend.
+  [[nodiscard]] M2LBackend m2l_backend() const;
+  /// @brief Returns one-time static-plan timing and memory information.
+  [[nodiscard]] const StaticPlanStatistics &static_plan_statistics() const;
 
   /**
    * @brief Returns a read-only multipole for a flat tree-node index.
@@ -145,8 +157,26 @@ public:
   [[nodiscard]] std::span<const double> root_multipole() const;
 
 private:
+  struct M2LGroup {
+      int level{0};
+      int dx{0};
+      int dy{0};
+      int dz{0};
+      std::vector<double> matrix{};
+      std::vector<int> sources{};
+      std::vector<int> targets{};
+      std::vector<double> gathered{};
+      std::vector<double> translated{};
+  };
+
+  void build_static_plan();
+  void static_m2l(int level);
+
   UniformTree tree_;
   MultiIndexSet basis_;
+  M2LBackend m2l_backend_{M2LBackend::Static};
+  std::vector<M2LGroup> m2l_groups_{};
+  StaticPlanStatistics static_plan_statistics_{};
   std::vector<CoeffVector> multipoles_{};
   std::vector<CoeffVector> locals_{};
   std::vector<Vec3> sorted_dipole_moments_{};

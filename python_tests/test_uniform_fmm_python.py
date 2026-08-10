@@ -4,6 +4,21 @@ import pytest
 import cdfmm
 
 
+def test_static_backend_is_default_and_reference_is_selectable():
+    sources = np.array([[-0.75, 0.0, 0.0], [0.75, 0.0, 0.0]])
+    moments = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    options = cdfmm.UniformFmmOptions()
+    options.tree.max_level = 2
+    static_fmm = cdfmm.UniformFmm(sources, sources, options)
+    assert static_fmm.m2l_backend == cdfmm.M2LBackend.Static
+
+    options.m2l_backend = cdfmm.M2LBackend.Reference
+    reference_fmm = cdfmm.UniformFmm(sources, sources, options)
+    static_result = static_fmm.evaluate(moments)
+    reference_result = reference_fmm.evaluate(moments)
+    np.testing.assert_allclose(static_result["H"], reference_result["H"])
+
+
 POSITIONS = np.array(
     [
         [-0.83, -0.71, -0.64],

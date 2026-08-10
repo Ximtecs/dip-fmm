@@ -5,6 +5,20 @@ specialised for point-dipole interactions.  It uses
 `G(r) = 1/(4*pi*|r|)` and treats the magnetic field `H = -grad(phi)` as the
 primary result, with optional scalar potential output.
 
+`UniformFmm` builds an immutable static-geometry M2L plan by default. Exact
+translation matrices and integer transfer-class maps are reused across calls
+where only dipole moments change. The independent reference traversal remains
+selectable with `options.m2l_backend = cdfmm::M2LBackend::Reference`.
+
+```cpp
+cdfmm::UniformFmm fmm(source_positions, target_positions, options);
+for (const auto& moments : moment_states) {
+    const auto values = fmm.evaluate(moments);
+}
+```
+
+Python exposes the same default and `cdfmm.M2LBackend.Reference` fallback.
+
 ## Status
 
 The CPU reference operator layer is implemented: P2M, M2M, M2L, L2L, L2P,
@@ -17,8 +31,8 @@ and target geometry to a complete reference traversal: P2M and upward M2M,
 
 The evaluator supports field, potential, or both. Source-point self exclusion
 uses an explicit target-to-source identity index rather than coordinate
-equality, and returned values follow user target order. Adaptive trees,
-persistent/static geometry optimisation, CUDA,
+equality, and returned values follow user target order. Adaptive trees, static
+optimisation of operators other than M2L, CUDA,
 and MagTense/Fortran integration are not implemented.  See the
 [roadmap](docs/roadmap.md) for the next milestone and later research.
 

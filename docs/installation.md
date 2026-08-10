@@ -4,6 +4,21 @@ This guide starts from a clean source checkout.  It assumes only Git, internet
 access, and Conda; [Miniforge](https://github.com/conda-forge/miniforge) is the
 recommended Conda distribution because it uses conda-forge by default.
 
+## Optional oneMKL backend
+
+The portable build uses an exact internal grouped dense kernel. For Intel
+performance builds, use oneMKL's CMake package:
+
+```console
+cmake -S . -B build-mkl -DCMAKE_CXX_COMPILER=icpx \
+  -DCDFMM_ENABLE_MKL=ON -DCDFMM_ENABLE_OPENMP=ON
+cmake --build build-mkl -j
+```
+
+Static M2L issues one DGEMM per transfer class. It does not place an OpenMP
+region around DGEMM, preventing accidental OpenMP-by-MKL multiplication. Set
+and record `OMP_NUM_THREADS` and `MKL_NUM_THREADS` explicitly when benchmarking.
+
 ## Quick start
 
 Clone the project and enter the checkout:

@@ -9,6 +9,7 @@ add_executable(cdfmm_tests
   test_operator_consistency.cpp
   test_uniform_tree.cpp
   test_uniform_fmm.cpp
+  test_static_m2l.cpp
 )
 target_link_libraries(cdfmm_tests PRIVATE cdfmm_core Catch2::Catch2WithMain)
 cdfmm_enable_ipo(cdfmm_tests)

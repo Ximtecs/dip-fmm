@@ -7,6 +7,7 @@ option(CDFMM_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(CDFMM_BUILD_PYTHON "Build Python bindings" ON)
 option(CDFMM_ENABLE_OPENMP "Enable internally parallel CPU execution" ON)
 option(CDFMM_ENABLE_IPO "Enable interprocedural optimisation for Release builds" OFF)
+option(CDFMM_ENABLE_MKL "Use oneMKL DGEMM for grouped static M2L" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,6 +23,12 @@ add_library(cdfmm_core
 )
 target_include_directories(cdfmm_core PUBLIC include)
 set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+if(CDFMM_ENABLE_MKL)
+  find_package(MKL CONFIG REQUIRED)
+  target_link_libraries(cdfmm_core PUBLIC MKL::MKL)
+  target_compile_definitions(cdfmm_core PUBLIC CDFMM_USE_MKL=1)
+endif()
 
 if(CDFMM_ENABLE_OPENMP)
   find_package(OpenMP REQUIRED COMPONENTS CXX)

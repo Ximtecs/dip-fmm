@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 
 namespace cdfmm {
 
@@ -64,6 +65,12 @@ struct EvaluationTimings {
     PhaseTiming l2l{};
     /// @brief Time spent translating well-separated multipoles to locals.
     PhaseTiming m2l{};
+    /// @brief Time spent packing source multipoles for grouped M2L.
+    PhaseTiming m2l_gather{};
+    /// @brief Time spent applying grouped dense M2L matrices.
+    PhaseTiming m2l_multiply{};
+    /// @brief Time spent accumulating grouped results into target locals.
+    PhaseTiming m2l_scatter{};
     /// @brief Time spent evaluating local expansions at targets.
     PhaseTiming l2p{};
     /// @brief Time spent evaluating direct near-field interactions.
@@ -74,6 +81,25 @@ struct EvaluationTimings {
     PhaseTiming total{};
     /// @brief Number of complete evaluations represented by these timings.
     std::uint64_t evaluations{0};
+};
+
+/** @brief One-time cost and storage of the immutable static M2L plan. */
+struct StaticPlanStatistics {
+    PhaseTiming transfer_discovery{};
+    PhaseTiming operator_construction{};
+    PhaseTiming buffer_allocation{};
+    PhaseTiming total{};
+    std::size_t transfer_classes{0};
+    std::size_t interactions{0};
+    std::size_t operator_bytes{0};
+    std::size_t interaction_bytes{0};
+    std::size_t scratch_bytes{0};
+
+    /// @brief Returns the approximate total persistent plan storage.
+    [[nodiscard]] std::size_t total_bytes() const
+    {
+        return operator_bytes + interaction_bytes + scratch_bytes;
+    }
 };
 
 } // namespace cdfmm
