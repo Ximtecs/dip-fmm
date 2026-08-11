@@ -63,6 +63,21 @@ valuable if it substantially reduces thousands of later magnetic-field
 evaluations.  Kernel profiles and end-to-end measurements should determine
 which optimisation work proceeds.
 
+### Better timing strategy
+
+- [x] keep end-to-end wall time as the primary performance measurement;
+- [x] report nested M2L gather, multiply, and scatter timings separately from
+  the parent M2L phase without double-counting them in phase shares;
+- [ ] quantify timer and OpenMP-region overhead for small transfer classes;
+- [ ] record per-sample distributions rather than only aggregate medians;
+- [ ] add optional CPU affinity, frequency, and hardware-counter metadata;
+- [ ] cross-check internal phase totals against an external profiler on
+  representative CPU, oneMKL, and CUDA workloads.
+
+Nested phase timings are diagnostic partitions, not additional top-level work.
+Future timing changes should preserve that hierarchy explicitly in CSV schemas,
+plots, and generated summaries.
+
 ## 5. Persistent geometry plan / static-geometry optimisation — in progress
 
 - [x] immutable geometry-dependent M2L plan;
@@ -71,6 +86,8 @@ which optimisation work proceeds.
   operator-level validation against `m2l_add`;
 - [x] integer transfer classes and persistent interaction maps;
 - [x] grouped contiguous gather/DGEMM/scatter execution;
+- [x] OpenMP transfer-class scheduling with single-threaded per-worker DGEMM
+  calls;
 - [x] portable dense fallback, reference mode, and oneMKL integration;
 - [x] setup, memory, gather, multiply, and scatter instrumentation;
 - [ ] static P2M, M2M, L2L, and fixed-target L2P;

@@ -18,7 +18,7 @@ conda env update \
 
 conda activate cdfmm
 
-rm -rf build build-release build-bench build-bench-mkl
+rm -rf build build-release build-bench build-bench-mkl build-bench-all
 
 cmake --preset dev
 cmake --build --preset dev -j
@@ -59,6 +59,19 @@ verify the active environment with
 Static M2L issues one DGEMM per transfer class. It does not place an OpenMP
 region around DGEMM, preventing accidental OpenMP-by-MKL multiplication. Set
 and record `OMP_NUM_THREADS` and `MKL_NUM_THREADS` explicitly when benchmarking.
+
+For the four-way CPU direct, CUDA direct, portable static-matrix FMM, and
+oneMKL static-matrix FMM comparison, build the combined executable:
+
+```console
+conda env update -n cdfmm -f environment.yml
+conda env update -n cdfmm -f environment-cuda.yml
+conda activate cdfmm
+cmake --fresh --preset benchmark-all
+cmake --build --preset benchmark-all
+python benchmarks/run_benchmarks.py --profile standard --max-threads 8 \
+  --executable build-bench-all/benchmarks/benchmark_uniform_fmm
+```
 
 ## Quick start
 
