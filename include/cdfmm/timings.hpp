@@ -89,8 +89,18 @@ struct EvaluationTimings {
     std::uint64_t evaluations{0};
 };
 
-/** @brief One-time cost and storage of the immutable static M2L plan. */
+/** @brief One-time cost and storage of the immutable static CPU plan. */
 struct StaticPlanStatistics {
+    /// @brief Time spent constructing leaf P2M maps.
+    PhaseTiming p2m_plan{};
+    /// @brief Time spent constructing shared M2M maps.
+    PhaseTiming m2m_plan{};
+    /// @brief Time spent constructing grouped M2L maps.
+    PhaseTiming m2l_plan{};
+    /// @brief Time spent constructing shared L2L maps.
+    PhaseTiming l2l_plan{};
+    /// @brief Time spent constructing target L2P rows.
+    PhaseTiming l2p_plan{};
     PhaseTiming transfer_discovery{};
     PhaseTiming operator_construction{};
     PhaseTiming buffer_allocation{};
@@ -100,6 +110,8 @@ struct StaticPlanStatistics {
     std::size_t operator_bytes{0};
     std::size_t interaction_bytes{0};
     std::size_t scratch_bytes{0};
+    /// @brief Number of times the immutable plan has been constructed.
+    std::uint64_t construction_count{0};
 
     /// @brief Returns the approximate total persistent plan storage.
     [[nodiscard]] std::size_t total_bytes() const

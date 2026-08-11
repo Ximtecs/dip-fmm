@@ -56,6 +56,7 @@ struct WorkloadTiming {
 
 enum class BenchmarkBackend {
     CpuDirect,
+    CpuReference,
     CpuStaticMatrix,
     CpuStaticMatrixMkl,
     CudaDirect
@@ -116,6 +117,9 @@ BenchmarkBackend benchmark_backend(const std::string& name)
     if (name == "cpu-static-matrix") {
         return BenchmarkBackend::CpuStaticMatrix;
     }
+    if (name == "cpu-reference") {
+        return BenchmarkBackend::CpuReference;
+    }
     if (name == "cpu-static-matrix-mkl") {
         if (!cdfmm::one_mkl_available()) {
             throw std::runtime_error(
@@ -132,7 +136,7 @@ BenchmarkBackend benchmark_backend(const std::string& name)
     }
     throw std::invalid_argument(
         "Unknown backend '" + name +
-        "'; expected cpu-direct, cuda-direct, cpu-static-matrix, or "
+        "'; expected cpu-direct, cpu-reference, cuda-direct, cpu-static-matrix, or "
         "cpu-static-matrix-mkl"
     );
 }
@@ -142,6 +146,11 @@ cdfmm::UniformFmmOptions cpu_options(
     const BenchmarkBackend backend)
 {
     cdfmm::UniformFmmOptions selected = base;
+    if (backend == BenchmarkBackend::CpuReference) {
+        selected.backend = cdfmm::ExecutionBackend::CpuReference;
+        selected.m2l_backend = cdfmm::M2LBackend::Reference;
+        return selected;
+    }
     if (backend == BenchmarkBackend::CpuStaticMatrix) {
         selected.backend = cdfmm::ExecutionBackend::CpuStatic;
         selected.m2l_backend = cdfmm::M2LBackend::Static;
@@ -488,7 +497,8 @@ int main(int argc, char** argv)
         fmm_options.tree.root_half_width = 1.0;
 
         UniformFmmOptions selected_options = fmm_options;
-        if (selected_backend == BenchmarkBackend::CpuStaticMatrix ||
+        if (selected_backend == BenchmarkBackend::CpuReference ||
+            selected_backend == BenchmarkBackend::CpuStaticMatrix ||
             selected_backend == BenchmarkBackend::CpuStaticMatrixMkl) {
             selected_options = cpu_options(fmm_options, selected_backend);
         }
@@ -768,7 +778,8 @@ int main(int argc, char** argv)
             selected_backend == BenchmarkBackend::CpuStaticMatrixMkl;
         const std::string m2l_strategy = static_matrix
             ? "cached-dense-m2l-matrix-per-transfer-class"
-            : "not-applicable-direct-p2p";
+            : (selected_backend == BenchmarkBackend::CpuReference
+                ? "reference-operators" : "not-applicable-direct-p2p");
         const std::string multiply_backend = static_multiply_backend(
             selected_backend
         );
@@ -808,7 +819,9 @@ int main(int argc, char** argv)
                "mean_relative_error,rms_relative_error,max_relative_error,total_nodes,"
                "occupied_source_leaves,occupied_target_leaves,m2l_translations,"
                "near_field_pairs,m2l_strategy,static_multiply_backend,mkl_version,"
-               "static_plan_seconds,cached_m2l_matrices,cached_m2l_matrix_bytes,"
+               "static_plan_seconds,p2m_plan_seconds,m2m_plan_seconds,"
+               "m2l_plan_seconds,l2l_plan_seconds,l2p_plan_seconds,"
+               "cached_m2l_matrices,cached_operator_bytes,"
                "static_interaction_bytes,static_scratch_bytes,static_plan_bytes,"
                "workload_1_creation_median,workload_1_evaluation_median,"
                "workload_1_total_median,workload_10_creation_median,"
@@ -868,6 +881,11 @@ int main(int argc, char** argv)
             << m2l_translations << ',' << near_pairs << ','
             << m2l_strategy << ',' << multiply_backend << ',' << multiply_version
             << ',' << static_plan.total.total_seconds
+            << ',' << static_plan.p2m_plan.total_seconds
+            << ',' << static_plan.m2m_plan.total_seconds
+            << ',' << static_plan.m2l_plan.total_seconds
+            << ',' << static_plan.l2l_plan.total_seconds
+            << ',' << static_plan.l2p_plan.total_seconds
             << ',' << static_plan.transfer_classes
             << ',' << static_plan.operator_bytes
             << ',' << static_plan.interaction_bytes

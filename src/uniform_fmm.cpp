@@ -173,6 +173,48 @@ void UniformFmm::build_static_plan()
     std::map<Key, std::vector<std::pair<int, int>>> classes;
 
     auto phase_start = Clock::now();
+    const auto sorted_positions = tree_.sorted_source_positions();
+    for (const int leaf_index : tree_.occupied_source_leaves()) {
+        const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
+        P2MPlan plan;
+        plan.leaf = leaf_index;
+        plan.operator_map = build_static_p2m_operator(
+            basis_, leaf.centre,
+            sorted_positions.subspan(leaf.source_begin, leaf.source_count())
+        );
+        static_plan_statistics_.operator_bytes +=
+            plan.operator_map.entries.size() * sizeof(StaticOperatorEntry);
+        p2m_plans_.push_back(std::move(plan));
+    }
+    static_plan_statistics_.p2m_plan.add(elapsed_seconds(phase_start));
+
+    phase_start = Clock::now();
+    m2m_operators_.resize(static_cast<std::size_t>(tree_.leaf_level() + 1));
+    l2l_operators_.resize(static_cast<std::size_t>(tree_.leaf_level() + 1));
+    for (int level = 1; level <= tree_.leaf_level(); ++level) {
+        const double child_half_width = nodes[static_cast<std::size_t>(
+            level_offset(level))].half_width;
+        for (int child_class = 0; child_class < 8; ++child_class) {
+            const Vec3 child_offset{
+                (child_class & 1) != 0 ? child_half_width : -child_half_width,
+                (child_class & 2) != 0 ? child_half_width : -child_half_width,
+                (child_class & 4) != 0 ? child_half_width : -child_half_width
+            };
+            m2m_operators_[static_cast<std::size_t>(level)][child_class] =
+                build_static_m2m_operator(basis_, child_offset * -1.0);
+            l2l_operators_[static_cast<std::size_t>(level)][child_class] =
+                build_static_l2l_operator(basis_, child_offset);
+            static_plan_statistics_.operator_bytes += 2 *
+                m2m_operators_[static_cast<std::size_t>(level)][child_class]
+                    .entries.size() * sizeof(StaticOperatorEntry);
+        }
+    }
+    static_plan_statistics_.m2m_plan.add(elapsed_seconds(phase_start));
+    // The two triangular families are constructed together from each shared
+    // parent-child displacement class.
+    static_plan_statistics_.l2l_plan = static_plan_statistics_.m2m_plan;
+
+    phase_start = Clock::now();
     for (const TreeNode& target : nodes) {
         if (target.level == 0 || target.target_count() == 0) {
             continue;
@@ -207,6 +249,8 @@ void UniformFmm::build_static_plan()
     }
     static_plan_statistics_.operator_construction.add(
         elapsed_seconds(phase_start));
+    static_plan_statistics_.m2l_plan =
+        static_plan_statistics_.operator_construction;
 
     phase_start = Clock::now();
     for (M2LGroup& group : m2l_groups_) {
@@ -223,7 +267,23 @@ void UniformFmm::build_static_plan()
     }
     static_plan_statistics_.transfer_classes = m2l_groups_.size();
     static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
+    phase_start = Clock::now();
+    const auto targets = tree_.sorted_target_positions();
+    l2p_evaluators_.resize(targets.size());
+    for (const int leaf_index : tree_.occupied_target_leaves()) {
+        const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
+        for (std::size_t target = leaf.target_begin;
+             target < leaf.target_end; ++target) {
+            l2p_evaluators_[target] = build_static_l2p_evaluator(
+                basis_, leaf.centre, targets[target]
+            );
+            static_plan_statistics_.operator_bytes +=
+                4 * static_cast<std::size_t>(basis_.size()) * sizeof(double);
+        }
+    }
+    static_plan_statistics_.l2p_plan.add(elapsed_seconds(phase_start));
     static_plan_statistics_.total.add(elapsed_seconds(total_start));
+    ++static_plan_statistics_.construction_count;
 }
 
 void UniformFmm::static_m2l(const int level)
@@ -377,46 +437,82 @@ void UniformFmm::upward_pass(std::span<const Vec3> dipole_moments)
     last_timings_.moment_permutation.add(elapsed_seconds(phase_start));
 
     const auto nodes = tree_.nodes();
-    const auto sorted_positions = tree_.sorted_source_positions();
     const auto occupied_leaves = tree_.occupied_source_leaves();
     phase_start = Clock::now();
     #pragma omp parallel for schedule(static) if(occupied_leaves.size() >= 8)
     for (std::ptrdiff_t occupied_index = 0;
          occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
          ++occupied_index) {
-        const int leaf_index =
-            occupied_leaves[static_cast<std::size_t>(occupied_index)];
+        const int leaf_index = occupied_leaves[
+            static_cast<std::size_t>(occupied_index)];
         const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
-        multipoles_[static_cast<std::size_t>(leaf_index)] = p2m_dipole(
-            basis_, leaf.centre,
-            sorted_positions.subspan(leaf.source_begin, leaf.source_count()),
-            std::span<const Vec3>(sorted_dipole_moments_)
-                .subspan(leaf.source_begin, leaf.source_count())
-        );
+        if (backend_ == ExecutionBackend::CpuStatic) {
+            const StaticCoefficientOperator& operator_map =
+                p2m_plans_[static_cast<std::size_t>(occupied_index)].operator_map;
+            CoeffVector& M = multipoles_[static_cast<std::size_t>(leaf_index)];
+            for (const StaticOperatorEntry& entry : operator_map.entries) {
+                const Vec3& moment = sorted_dipole_moments_[
+                    leaf.source_begin + static_cast<std::size_t>(entry.input / 3)
+                ];
+                const double component = entry.input % 3 == 0 ? moment.x :
+                    (entry.input % 3 == 1 ? moment.y : moment.z);
+                M[static_cast<std::size_t>(entry.output)] +=
+                    entry.value * component;
+            }
+        } else {
+            multipoles_[static_cast<std::size_t>(leaf_index)] = p2m_dipole(
+                basis_, leaf.centre,
+                tree_.sorted_source_positions().subspan(
+                    leaf.source_begin, leaf.source_count()),
+                std::span<const Vec3>(sorted_dipole_moments_).subspan(
+                    leaf.source_begin, leaf.source_count())
+            );
+        }
     }
     last_timings_.p2m.add(elapsed_seconds(phase_start));
 
     phase_start = Clock::now();
-    for (int level = tree_.leaf_level() - 1; level >= 0; --level) {
-        const int begin = level_offset(level);
-        const int end = level_offset(level + 1);
-        #pragma omp parallel for schedule(static) if(end - begin >= 8)
-        for (int parent_index = begin; parent_index < end; ++parent_index) {
-            const TreeNode& parent = nodes[static_cast<std::size_t>(parent_index)];
-            if (parent.source_count() == 0) {
-                continue;
-            }
-            CoeffVector& parent_M =
-                multipoles_[static_cast<std::size_t>(parent_index)];
-            for (const int child_index : parent.children) {
-                const TreeNode& child = nodes[static_cast<std::size_t>(child_index)];
-                if (child.source_count() == 0) {
+    // One team traverses all dependent levels; the implicit omp-for barrier
+    // makes each parent level complete before its parent is consumed.
+    #pragma omp parallel if(nodes.size() >= 64)
+    {
+        for (int level = tree_.leaf_level() - 1; level >= 0; --level) {
+            const int begin = level_offset(level);
+            const int end = level_offset(level + 1);
+            #pragma omp for schedule(static)
+            for (int parent_index = begin; parent_index < end; ++parent_index) {
+                const TreeNode& parent = nodes[
+                    static_cast<std::size_t>(parent_index)];
+                if (parent.source_count() == 0) {
                     continue;
                 }
-                const Vec3 d = parent.centre - child.centre;
-                m2m_add(basis_, d,
-                        multipoles_[static_cast<std::size_t>(child_index)],
-                        parent_M);
+                CoeffVector& parent_M = multipoles_[
+                    static_cast<std::size_t>(parent_index)];
+                for (const int child_index : parent.children) {
+                    const TreeNode& child = nodes[
+                        static_cast<std::size_t>(child_index)];
+                    if (child.source_count() == 0) {
+                        continue;
+                    }
+                    if (backend_ == ExecutionBackend::CpuStatic) {
+                        const int child_class = (child.ix & 1) |
+                            ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
+                        apply_static_operator(
+                            m2m_operators_[
+                                static_cast<std::size_t>(child.level)
+                            ][child_class],
+                            multipoles_[static_cast<std::size_t>(child_index)],
+                            parent_M
+                        );
+                    } else {
+                        const Vec3 d = parent.centre - child.centre;
+                        m2m_add(
+                            basis_, d,
+                            multipoles_[static_cast<std::size_t>(child_index)],
+                            parent_M
+                        );
+                    }
+                }
             }
         }
     }
@@ -451,9 +547,21 @@ void UniformFmm::downward_pass()
                 continue;
             }
             const TreeNode& parent = nodes[static_cast<std::size_t>(target.parent)];
-            const Vec3 d = target.centre - parent.centre;
-            l2l_add(basis_, d, locals_[static_cast<std::size_t>(target.parent)],
-                    locals_[static_cast<std::size_t>(target_index)]);
+            if (backend_ == ExecutionBackend::CpuStatic) {
+                const int child_class = (target.ix & 1) |
+                    ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
+                apply_static_operator(
+                    l2l_operators_[static_cast<std::size_t>(target.level)]
+                                  [child_class],
+                    locals_[static_cast<std::size_t>(target.parent)],
+                    locals_[static_cast<std::size_t>(target_index)]
+                );
+            } else {
+                const Vec3 d = target.centre - parent.centre;
+                l2l_add(basis_, d,
+                        locals_[static_cast<std::size_t>(target.parent)],
+                        locals_[static_cast<std::size_t>(target_index)]);
+            }
         }
         last_timings_.l2l.add(elapsed_seconds(phase_start));
 
@@ -552,10 +660,17 @@ void UniformFmm::evaluate_into(
         const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
         for (std::size_t target_index = leaf.target_begin;
              target_index < leaf.target_end; ++target_index) {
-            sorted_results_[target_index] = l2p_eval(
-                basis_, leaf.centre, targets[target_index],
-                locals_[static_cast<std::size_t>(leaf_index)], output
-            );
+            if (backend_ == ExecutionBackend::CpuStatic) {
+                sorted_results_[target_index] = apply_static_l2p_evaluator(
+                    l2p_evaluators_[target_index],
+                    locals_[static_cast<std::size_t>(leaf_index)], output
+                );
+            } else {
+                sorted_results_[target_index] = l2p_eval(
+                    basis_, leaf.centre, targets[target_index],
+                    locals_[static_cast<std::size_t>(leaf_index)], output
+                );
+            }
         }
     }
     last_timings_.l2p.add(elapsed_seconds(phase_start));
