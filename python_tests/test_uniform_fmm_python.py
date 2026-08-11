@@ -8,6 +8,7 @@ def test_static_backend_is_default_and_reference_is_selectable():
     sources = np.array([[-0.75, 0.0, 0.0], [0.75, 0.0, 0.0]])
     moments = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     options = cdfmm.UniformFmmOptions()
+    assert options.static_matrix_backend == cdfmm.StaticMatrixBackend.PORTABLE
     options.backend = cdfmm.ExecutionBackend.CPU_STATIC
     options.tree.max_level = 2
     static_fmm = cdfmm.UniformFmm(sources, sources, options)

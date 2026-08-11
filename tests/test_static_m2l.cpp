@@ -85,6 +85,8 @@ TEST_CASE("static grouped M2L matches the independent reference traversal")
         );
 
         REQUIRE(static_fmm.m2l_backend() == M2LBackend::Static);
+        REQUIRE(static_fmm.static_matrix_backend() ==
+                StaticMatrixBackend::Portable);
         REQUIRE(static_fmm.static_plan_statistics().transfer_classes > 0);
         for (std::size_t index = 0; index < positions.size(); ++index) {
             REQUIRE(std::isfinite(static_values[index].H.x));
@@ -107,5 +109,57 @@ TEST_CASE("static grouped M2L matches the independent reference traversal")
         );
         REQUIRE(repeated_values.size() == positions.size());
         REQUIRE(static_fmm.static_plan_statistics().transfer_classes == classes);
+    }
+}
+
+TEST_CASE("oneMKL and portable static matrices agree when oneMKL is enabled")
+{
+    if (!one_mkl_available()) {
+        SUCCEED("This build does not include oneMKL");
+        return;
+    }
+
+    const std::vector<Vec3> positions{
+        {-0.8, -0.6, -0.4},
+        {0.7, -0.5, 0.3},
+        {-0.3, 0.8, 0.6},
+        {0.6, 0.4, -0.7}
+    };
+    const std::vector<Vec3> moments{
+        {0.2, -0.5, 0.7},
+        {-0.6, 0.1, 0.4},
+        {0.8, 0.3, -0.2},
+        {-0.1, -0.7, 0.5}
+    };
+    const std::vector<int> identities{0, 1, 2, 3};
+
+    UniformFmmOptions portable_options;
+    portable_options.expansion_order = 3;
+    portable_options.tree.max_level = 2;
+    portable_options.backend = ExecutionBackend::CpuStatic;
+    UniformFmmOptions mkl_options = portable_options;
+    mkl_options.static_matrix_backend = StaticMatrixBackend::OneMkl;
+
+    UniformFmm portable(positions, positions, portable_options);
+    UniformFmm mkl(positions, positions, mkl_options);
+    const auto portable_values = portable.evaluate(
+        moments,
+        OutputFlags::Field,
+        identities
+    );
+    const auto mkl_values = mkl.evaluate(
+        moments,
+        OutputFlags::Field,
+        identities
+    );
+
+    REQUIRE(mkl.static_matrix_backend() == StaticMatrixBackend::OneMkl);
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        REQUIRE(mkl_values[index].H.x ==
+                Catch::Approx(portable_values[index].H.x).epsilon(2.0e-13));
+        REQUIRE(mkl_values[index].H.y ==
+                Catch::Approx(portable_values[index].H.y).epsilon(2.0e-13));
+        REQUIRE(mkl_values[index].H.z ==
+                Catch::Approx(portable_values[index].H.z).epsilon(2.0e-13));
     }
 }

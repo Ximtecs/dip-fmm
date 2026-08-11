@@ -11,7 +11,11 @@
 #include "cdfmm/laplace_derivatives.hpp"
 
 #ifdef CDFMM_USE_MKL
-#include <mkl_cblas.h>
+#include <mkl.h>
+#endif
+
+#ifdef CDFMM_USE_OPENMP
+#include <omp.h>
 #endif
 
 #include "cdfmm/operators.hpp"
@@ -68,7 +72,8 @@ void accumulate_timings(EvaluationTimings& aggregate,
 UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
                        const UniformFmmOptions& options)
     : tree_(source_positions, options.tree), basis_(options.expansion_order),
-      m2l_backend_(options.m2l_backend)
+      m2l_backend_(options.m2l_backend),
+      static_matrix_backend_(options.static_matrix_backend)
 {
     if (options.expansion_order < 0) {
         throw std::invalid_argument(
@@ -89,6 +94,13 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     }
     m2l_backend_ = backend_ == ExecutionBackend::CpuReference
         ? M2LBackend::Reference : M2LBackend::Static;
+    if (m2l_backend_ == M2LBackend::Static &&
+        static_matrix_backend_ == StaticMatrixBackend::OneMkl &&
+        !one_mkl_available()) {
+        throw std::runtime_error(
+            "The oneMKL static-matrix backend is unavailable in this build"
+        );
+    }
 
     multipoles_.assign(
         tree_.nodes().size(),
@@ -108,7 +120,8 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
                        const std::vector<Vec3>& target_positions,
                        const UniformFmmOptions& options)
     : tree_(source_positions, target_positions, options.tree),
-      basis_(options.expansion_order)
+      basis_(options.expansion_order),
+      static_matrix_backend_(options.static_matrix_backend)
 {
     if (options.expansion_order < 0) {
         throw std::invalid_argument(
@@ -129,6 +142,13 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     }
     m2l_backend_ = backend_ == ExecutionBackend::CpuReference
         ? M2LBackend::Reference : M2LBackend::Static;
+    if (m2l_backend_ == M2LBackend::Static &&
+        static_matrix_backend_ == StaticMatrixBackend::OneMkl &&
+        !one_mkl_available()) {
+        throw std::runtime_error(
+            "The oneMKL static-matrix backend is unavailable in this build"
+        );
+    }
 
     multipoles_.assign(
         tree_.nodes().size(),
@@ -209,51 +229,116 @@ void UniformFmm::build_static_plan()
 void UniformFmm::static_m2l(const int level)
 {
     const int n = basis_.size();
+    const std::ptrdiff_t group_count = static_cast<std::ptrdiff_t>(
+        m2l_groups_.size()
+    );
+
+    // Gathering and matrix application write only group-owned buffers, so
+    // transfer classes can run independently. Scattering remains serial
+    // because different classes can contribute to the same target local.
+    auto phase_start = Clock::now();
+    #pragma omp parallel for schedule(dynamic, 1) if(group_count >= 8)
+    for (std::ptrdiff_t group_index = 0;
+         group_index < group_count;
+         ++group_index) {
+        M2LGroup& group = m2l_groups_[static_cast<std::size_t>(group_index)];
+        if (group.level != level) {
+            continue;
+        }
+        for (std::size_t column = 0; column < group.sources.size(); ++column) {
+            const CoeffVector& M = multipoles_[static_cast<std::size_t>(
+                group.sources[column])];
+            std::copy(
+                M.begin(),
+                M.end(),
+                group.gathered.begin() +
+                    static_cast<std::ptrdiff_t>(column * n)
+            );
+        }
+    }
+    last_timings_.m2l_gather.add(elapsed_seconds(phase_start));
+
+    phase_start = Clock::now();
+    if (static_matrix_backend_ == StaticMatrixBackend::OneMkl) {
+#ifdef CDFMM_USE_MKL
+        #pragma omp parallel if(group_count >= 8)
+        {
+            const int previous_mkl_threads = mkl_set_num_threads_local(1);
+            #pragma omp for schedule(dynamic, 1)
+            for (std::ptrdiff_t group_index = 0;
+                 group_index < group_count;
+                 ++group_index) {
+                M2LGroup& group = m2l_groups_[
+                    static_cast<std::size_t>(group_index)
+                ];
+                if (group.level != level) {
+                    continue;
+                }
+                const int columns = static_cast<int>(group.sources.size());
+                cblas_dgemm(
+                    CblasColMajor,
+                    CblasNoTrans,
+                    CblasNoTrans,
+                    n,
+                    columns,
+                    n,
+                    1.0,
+                    group.matrix.data(),
+                    n,
+                    group.gathered.data(),
+                    n,
+                    0.0,
+                    group.translated.data(),
+                    n
+                );
+            }
+            mkl_set_num_threads_local(previous_mkl_threads);
+        }
+#endif
+    } else {
+        #pragma omp parallel for schedule(dynamic, 1) if(group_count >= 8)
+        for (std::ptrdiff_t group_index = 0;
+             group_index < group_count;
+             ++group_index) {
+            M2LGroup& group = m2l_groups_[
+                static_cast<std::size_t>(group_index)
+            ];
+            if (group.level != level) {
+                continue;
+            }
+            const int columns = static_cast<int>(group.sources.size());
+            std::fill(group.translated.begin(), group.translated.end(), 0.0);
+            for (int column = 0; column < columns; ++column) {
+                double* translated = group.translated.data() + column * n;
+                for (int alpha = 0; alpha < n; ++alpha) {
+                    const double value = group.gathered[
+                        static_cast<std::size_t>(alpha + column * n)];
+                    for (int beta = 0; beta < n; ++beta) {
+                        translated[beta] += group.matrix[
+                            static_cast<std::size_t>(beta + alpha * n)
+                        ] * value;
+                    }
+                }
+            }
+        }
+    }
+    last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
+
+    phase_start = Clock::now();
     for (M2LGroup& group : m2l_groups_) {
         if (group.level != level) {
             continue;
         }
-        auto phase_start = Clock::now();
-        for (std::size_t column = 0; column < group.sources.size(); ++column) {
-            const CoeffVector& M = multipoles_[static_cast<std::size_t>(
-                group.sources[column])];
-            std::copy(M.begin(), M.end(),
-                      group.gathered.begin() + static_cast<std::ptrdiff_t>(column * n));
-        }
-        last_timings_.m2l_gather.add(elapsed_seconds(phase_start));
-
-        phase_start = Clock::now();
-        const int columns = static_cast<int>(group.sources.size());
-#ifdef CDFMM_USE_MKL
-        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, columns, n,
-                    1.0, group.matrix.data(), n, group.gathered.data(), n,
-                    0.0, group.translated.data(), n);
-#else
-        std::fill(group.translated.begin(), group.translated.end(), 0.0);
-        for (int column = 0; column < columns; ++column) {
-            for (int alpha = 0; alpha < n; ++alpha) {
-                const double value = group.gathered[
-                    static_cast<std::size_t>(alpha + column * n)];
-                for (int beta = 0; beta < n; ++beta) {
-                    group.translated[static_cast<std::size_t>(beta + column * n)] +=
-                        group.matrix[static_cast<std::size_t>(beta + alpha * n)] *
-                        value;
-                }
-            }
-        }
-#endif
-        last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
-
-        phase_start = Clock::now();
         for (std::size_t column = 0; column < group.targets.size(); ++column) {
-            CoeffVector& L = locals_[static_cast<std::size_t>(group.targets[column])];
+            CoeffVector& L = locals_[static_cast<std::size_t>(
+                group.targets[column])];
             for (int beta = 0; beta < n; ++beta) {
                 L[static_cast<std::size_t>(beta)] += group.translated[
                     static_cast<std::size_t>(beta) + column * n];
             }
         }
-        last_timings_.m2l_scatter.add(elapsed_seconds(phase_start));
     }
+    last_timings_.m2l_scatter.add(elapsed_seconds(phase_start));
 }
 
 //------------------------------------------------------------------------------
@@ -552,6 +637,10 @@ void UniformFmm::evaluate_into(
 const UniformTree& UniformFmm::tree() const { return tree_; }
 const MultiIndexSet& UniformFmm::basis() const { return basis_; }
 M2LBackend UniformFmm::m2l_backend() const { return m2l_backend_; }
+StaticMatrixBackend UniformFmm::static_matrix_backend() const
+{
+    return static_matrix_backend_;
+}
 ExecutionBackend UniformFmm::backend() const { return backend_; }
 const CudaPlanStatistics& UniformFmm::cuda_plan_statistics() const
 {
@@ -595,6 +684,15 @@ void UniformFmm::reset_timings()
 UniformFmm::~UniformFmm() = default;
 UniformFmm::UniformFmm(UniformFmm&&) noexcept = default;
 UniformFmm& UniformFmm::operator=(UniformFmm&&) noexcept = default;
+
+bool one_mkl_available() noexcept
+{
+#ifdef CDFMM_USE_MKL
+    return true;
+#else
+    return false;
+#endif
+}
 
 bool cuda_available() noexcept
 {

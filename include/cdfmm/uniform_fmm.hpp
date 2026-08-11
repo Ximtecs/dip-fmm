@@ -21,6 +21,15 @@ enum class ExecutionBackend {
     CudaFarField
 };
 
+/** @brief Dense multiplication implementation for cached static M2L matrices. */
+enum class StaticMatrixBackend {
+    Portable,
+    OneMkl
+};
+
+/** @brief Reports whether this build includes the oneMKL matrix backend. */
+[[nodiscard]] bool one_mkl_available() noexcept;
+
 /** @brief Reports whether the library was compiled with CUDA support. */
 [[nodiscard]] bool cuda_compiled() noexcept;
 
@@ -59,6 +68,8 @@ struct UniformFmmOptions {
       Static,
       Reference
   } m2l_backend{M2LBackend::Static};
+  /// @brief Multiplication implementation used by cached static M2L matrices.
+  StaticMatrixBackend static_matrix_backend{StaticMatrixBackend::Portable};
   /// @brief Complete evaluation backend. Auto safely selects CPU static.
   ExecutionBackend backend{ExecutionBackend::Auto};
 };
@@ -173,6 +184,8 @@ public:
   [[nodiscard]] const MultiIndexSet &basis() const;
   /// @brief Returns the selected M2L execution backend.
   [[nodiscard]] M2LBackend m2l_backend() const;
+  /// @brief Returns the selected cached static-matrix multiplication backend.
+  [[nodiscard]] StaticMatrixBackend static_matrix_backend() const;
   /// @brief Returns the resolved backend used by this evaluator.
   [[nodiscard]] ExecutionBackend backend() const;
   /// @brief Returns CUDA traffic and persistent-allocation diagnostics.
@@ -213,6 +226,7 @@ private:
   UniformTree tree_;
   MultiIndexSet basis_;
   M2LBackend m2l_backend_{M2LBackend::Static};
+  StaticMatrixBackend static_matrix_backend_{StaticMatrixBackend::Portable};
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
   CudaPlanStatistics empty_cuda_statistics_{};
   std::vector<M2LGroup> m2l_groups_{};

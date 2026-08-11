@@ -9,7 +9,8 @@ option(CDFMM_INSTALL_PYTHON_TO_ENV
        "Install Python bindings into the configured interpreter environment" OFF)
 option(CDFMM_ENABLE_OPENMP "Enable internally parallel CPU execution" ON)
 option(CDFMM_ENABLE_IPO "Enable interprocedural optimisation for Release builds" OFF)
-option(CDFMM_ENABLE_MKL "Use oneMKL DGEMM for grouped static M2L" OFF)
+option(CDFMM_ENABLE_MKL
+       "Include a runtime-selectable oneMKL DGEMM backend for static M2L" OFF)
 option(CDFMM_ENABLE_CUDA "Enable optional NVIDIA CUDA execution backends" OFF)
 
 set(CMAKE_CXX_STANDARD 20)

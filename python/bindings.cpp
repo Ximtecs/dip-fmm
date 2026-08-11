@@ -366,6 +366,10 @@ PYBIND11_MODULE(cdfmm, module)
         .value("Static", M2LBackend::Static)
         .value("Reference", M2LBackend::Reference);
 
+    py::enum_<StaticMatrixBackend>(module, "StaticMatrixBackend")
+        .value("PORTABLE", StaticMatrixBackend::Portable)
+        .value("ONE_MKL", StaticMatrixBackend::OneMkl);
+
     py::enum_<ExecutionBackend>(module, "ExecutionBackend")
         .value("AUTO", ExecutionBackend::Auto)
         .value("CPU_REFERENCE", ExecutionBackend::CpuReference)
@@ -373,6 +377,7 @@ PYBIND11_MODULE(cdfmm, module)
         .value("CUDA_FAR_FIELD", ExecutionBackend::CudaFarField);
 
     module.def("cuda_compiled", &cuda_compiled);
+    module.def("one_mkl_available", &one_mkl_available);
     module.def("cuda_available", &cuda_available);
     module.def("cuda_direct_available", &cuda_direct_available);
     module.def("cuda_farfield_available", &cuda_farfield_available);
@@ -387,6 +392,10 @@ PYBIND11_MODULE(cdfmm, module)
         )
         .def_readwrite("tree", &UniformFmmOptions::tree)
         .def_readwrite("m2l_backend", &UniformFmmOptions::m2l_backend)
+        .def_readwrite(
+            "static_matrix_backend",
+            &UniformFmmOptions::static_matrix_backend
+        )
         .def_readwrite("backend", &UniformFmmOptions::backend);
 
     py::class_<UniformFmm>(module, "UniformFmm")
