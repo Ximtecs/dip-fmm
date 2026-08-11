@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cuda_fmm_plan.hpp"
+#include "cdfmm/cuda_direct.hpp"
 
 #include <cuda_runtime.h>
 
@@ -84,7 +85,7 @@ __global__ void dipole_field_kernel(const Vec3* targets,
 } // namespace
 
 struct CudaFmmPlan::Implementation {
-    ExecutionBackend backend{ExecutionBackend::CudaFull};
+    ExecutionBackend backend{ExecutionBackend::CpuStatic};
     std::size_t source_count{0};
     std::size_t target_count{0};
     Vec3* device_sources{nullptr};
@@ -115,6 +116,21 @@ bool cuda_runtime_available() noexcept
 bool cuda_compiled() noexcept
 {
     return true;
+}
+
+bool cuda_direct_available() noexcept
+{
+    return cuda_runtime_available();
+}
+
+bool cuda_farfield_available() noexcept
+{
+    return false;
+}
+
+bool cuda_full_available() noexcept
+{
+    return false;
 }
 
 std::string cuda_runtime_description()
@@ -338,6 +354,31 @@ const CudaEvaluationTimings&
 CudaFmmPlan::evaluation_timings() const noexcept
 {
     return implementation_->evaluation_timings;
+}
+
+std::vector<PotentialField> cuda_direct_p2p_reference(
+    const std::span<const Vec3> targets,
+    const std::span<const Vec3> sources,
+    const std::span<const Vec3> moments,
+    const OutputFlags output,
+    const std::span<const int> target_source_indices)
+{
+    if (moments.size() != sources.size()) {
+        throw std::invalid_argument(
+            "cuda_direct_p2p_reference requires one moment per source"
+        );
+    }
+    if (!target_source_indices.empty() &&
+        target_source_indices.size() != targets.size()) {
+        throw std::invalid_argument(
+            "cuda_direct_p2p_reference identity map has incorrect length"
+        );
+    }
+
+    CudaFmmPlan plan(sources, targets);
+    std::vector<PotentialField> results(targets.size());
+    plan.evaluate(moments, results, output, target_source_indices);
+    return results;
 }
 
 } // namespace cdfmm

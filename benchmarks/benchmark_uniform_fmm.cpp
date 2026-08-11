@@ -108,15 +108,15 @@ cdfmm::ExecutionBackend execution_backend(const std::string& name)
     if (name == "cpu-static") {
         return ExecutionBackend::CpuStatic;
     }
-    if (name == "cuda-m2l") {
-        return ExecutionBackend::CudaM2L;
-    }
-    if (name == "cuda-full") {
-        return ExecutionBackend::CudaFull;
+    if (name == "cuda-farfield-fmm") {
+        if (!cdfmm::cuda_farfield_available()) {
+            throw std::runtime_error("CUDA far-field FMM is unavailable");
+        }
+        return ExecutionBackend::CudaFarField;
     }
     throw std::invalid_argument(
         "Unknown backend '" + name +
-        "'; expected cpu-reference, cpu-static, cuda-m2l, or cuda-full"
+        "'; expected cpu-reference, cpu-static, or cuda-farfield-fmm"
     );
 }
 

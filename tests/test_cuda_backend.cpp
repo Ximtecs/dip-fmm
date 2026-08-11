@@ -7,11 +7,12 @@
 #include <vector>
 
 #include "cdfmm/uniform_fmm.hpp"
+#include "cdfmm/cuda_direct.hpp"
 #include "cdfmm/validation.hpp"
 
 using namespace cdfmm;
 
-TEST_CASE("explicit CUDA backends agree with direct P2P", "[cuda]")
+TEST_CASE("CUDA direct P2P agrees with the CPU direct reference", "[cuda]")
 {
     if (!cuda_available()) {
         SUCCEED("No CUDA-capable device is available");
@@ -42,27 +43,12 @@ TEST_CASE("explicit CUDA backends agree with direct P2P", "[cuda]")
         OutputFlags::Both
     );
 
-    for (const ExecutionBackend backend : {
-             ExecutionBackend::CudaM2L,
-             ExecutionBackend::CudaFull
-         }) {
-        UniformFmmOptions options;
-        options.backend = backend;
-        options.tree.max_level = 2;
-        UniformFmm fmm(sources, targets, options);
-        const auto actual = fmm.evaluate(moments, OutputFlags::Both);
-
-        REQUIRE(fmm.backend() == backend);
-        REQUIRE(fmm.cuda_plan_statistics().plan_generation_count == 1);
-        REQUIRE(fmm.cuda_plan_statistics().evaluation_h2d_calls >= 1);
-        REQUIRE(fmm.cuda_plan_statistics().evaluation_d2h_calls == 2);
-        REQUIRE(fmm.last_timings().cuda_h2d.calls == 1);
-        REQUIRE(fmm.last_timings().cuda_kernel.calls == 1);
-        REQUIRE(fmm.last_timings().cuda_d2h.calls == 1);
-        REQUIRE(fmm.last_timings().cuda_h2d.total_seconds >= 0.0);
-        REQUIRE(fmm.last_timings().cuda_kernel.total_seconds > 0.0);
-        REQUIRE(fmm.last_timings().cuda_d2h.total_seconds >= 0.0);
-        for (std::size_t index = 0; index < targets.size(); ++index) {
+    const auto actual = cuda_direct_p2p_reference(
+        targets, sources, moments, OutputFlags::Both
+    );
+    REQUIRE(cuda_direct_available());
+    REQUIRE_FALSE(cuda_full_available());
+    for (std::size_t index = 0; index < targets.size(); ++index) {
             REQUIRE(actual[index].phi ==
                     Catch::Approx(direct[index].phi).epsilon(2.0e-13));
             REQUIRE(actual[index].H.x ==
@@ -71,6 +57,5 @@ TEST_CASE("explicit CUDA backends agree with direct P2P", "[cuda]")
                     Catch::Approx(direct[index].H.y).epsilon(2.0e-13));
             REQUIRE(actual[index].H.z ==
                     Catch::Approx(direct[index].H.z).epsilon(2.0e-13));
-        }
     }
 }

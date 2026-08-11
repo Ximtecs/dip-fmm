@@ -14,14 +14,11 @@
 
 namespace cdfmm {
 
-class CudaFmmPlan;
-
 enum class ExecutionBackend {
     Auto,
     CpuReference,
     CpuStatic,
-    CudaM2L,
-    CudaFull
+    CudaFarField
 };
 
 /** @brief Reports whether the library was compiled with CUDA support. */
@@ -29,6 +26,15 @@ enum class ExecutionBackend {
 
 /** @brief Reports whether this build can access a CUDA device. */
 [[nodiscard]] bool cuda_available() noexcept;
+
+/** @brief Reports whether the O(N^2) CUDA direct reference is available. */
+[[nodiscard]] bool cuda_direct_available() noexcept;
+
+/** @brief Reports whether GPU P2M, M2M, and M2L are implemented. */
+[[nodiscard]] bool cuda_farfield_available() noexcept;
+
+/** @brief Reports whether a complete device-resident CUDA FMM is implemented. */
+[[nodiscard]] bool cuda_full_available() noexcept;
 
 /** @brief Returns a concise description of the selected CUDA device. */
 [[nodiscard]] std::string cuda_device_description();
@@ -53,7 +59,7 @@ struct UniformFmmOptions {
       Static,
       Reference
   } m2l_backend{M2LBackend::Static};
-  /// @brief Complete evaluation backend. Auto selects CUDA full when available.
+  /// @brief Complete evaluation backend. Auto safely selects CPU static.
   ExecutionBackend backend{ExecutionBackend::Auto};
 };
 
@@ -208,7 +214,6 @@ private:
   MultiIndexSet basis_;
   M2LBackend m2l_backend_{M2LBackend::Static};
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
-  std::unique_ptr<CudaFmmPlan> cuda_plan_{};
   CudaPlanStatistics empty_cuda_statistics_{};
   std::vector<M2LGroup> m2l_groups_{};
   StaticPlanStatistics static_plan_statistics_{};

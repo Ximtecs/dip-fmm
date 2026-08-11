@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cuda_fmm_plan.hpp"
+#include "cdfmm/cuda_direct.hpp"
 
 #include <stdexcept>
 
@@ -12,6 +13,21 @@ bool cuda_compiled() noexcept
 }
 
 bool cuda_runtime_available() noexcept
+{
+    return false;
+}
+
+bool cuda_direct_available() noexcept
+{
+    return false;
+}
+
+bool cuda_farfield_available() noexcept
+{
+    return false;
+}
+
+bool cuda_full_available() noexcept
 {
     return false;
 }
@@ -48,6 +64,15 @@ const CudaEvaluationTimings& CudaFmmPlan::evaluation_timings() const noexcept
 {
     static const CudaEvaluationTimings empty{};
     return empty;
+}
+
+std::vector<PotentialField> cuda_direct_p2p_reference(
+    std::span<const Vec3>, std::span<const Vec3>, std::span<const Vec3>,
+    OutputFlags, std::span<const int>)
+{
+    throw std::runtime_error(
+        "CUDA direct P2P requested, but CDFMM_ENABLE_CUDA is OFF"
+    );
 }
 
 } // namespace cdfmm

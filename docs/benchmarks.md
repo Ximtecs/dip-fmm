@@ -10,11 +10,11 @@ python benchmarks/run_benchmarks.py --profile quick --max-threads 4
 ```
 
 The runner prefers the CUDA-preset executable when it exists and probes it
-before planning any measurements. A CPU-only executable runs every ordinary
-geometry with `cpu-static`. A CUDA-compiled executable must have an accessible
-device and runs every parameter-grid, scaling, and comparison geometry three times:
-`cpu-static`, `cuda-m2l`, and `cuda-full`, using the same deterministic geometry
-and moment states. It never silently omits CUDA measurements from a CUDA build.
+before planning any measurements. The FMM runner currently schedules only the
+implemented `cpu-static` backend. CUDA compilation alone does not add invented
+`cuda-m2l` or `cuda-full` rows. The O(N^2) CUDA direct reference is validated
+separately; a future runner update may add `cuda-farfield-fmm` only when its
+P2M, M2M, and M2L capability query reports true.
 The deliberately expensive `cpu-reference` traversal remains confined to the
 single dedicated comparison workload.
 

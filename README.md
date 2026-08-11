@@ -19,12 +19,12 @@ for (const auto& moments : moment_states) {
 
 Python exposes the same default and `cdfmm.M2LBackend.Reference` fallback.
 
-Execution can also be selected with `options.backend`: `CpuReference`,
-`CpuStatic`, `CudaM2L`, or `CudaFull` in C++, and the corresponding uppercase
-`cdfmm.ExecutionBackend` values in Python. `Auto` selects CUDA full when a CUDA
-device is available and CPU static otherwise. An explicitly requested CUDA
-backend fails rather than silently falling back. CUDA is an optional manual
-hardware build; see the installation and validation guides.
+Execution can be selected with `options.backend`: `CpuReference` or
+`CpuStatic`. `Auto` deliberately selects `CpuStatic`; it can never substitute
+an O(N^2) direct calculation for an FMM traversal. `CudaFarField` is reserved
+for the genuine GPU P2M + M2M + M2L path and currently fails explicitly rather
+than overstating the direct kernel. The separately exposed
+`cuda_direct_p2p_reference` is the O(N^2) GPU numerical reference.
 
 ## Status
 
@@ -40,7 +40,9 @@ The evaluator supports field, potential, or both. Source-point self exclusion
 uses an explicit target-to-source identity index rather than coordinate
 equality, and returned values follow user target order. Adaptive trees, static
 optimisation of operators other than M2L, CUDA,
-and MagTense/Fortran integration are not implemented.  See the
+and MagTense/Fortran integration are not implemented. CUDA currently provides
+only the truthfully named direct O(N^2) reference; CUDA far-field and full FMM
+remain unimplemented. See the
 [roadmap](docs/roadmap.md) for the next milestone and later research.
 
 ## Build and test

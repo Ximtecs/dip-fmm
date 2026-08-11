@@ -67,6 +67,8 @@ which optimisation work proceeds.
 
 - [x] immutable geometry-dependent M2L plan;
 - [x] exact per-level Cartesian M2L matrices;
+- [x] canonical backend-independent M2L matrix construction and direct
+  operator-level validation against `m2l_add`;
 - [x] integer transfer classes and persistent interaction maps;
 - [x] grouped contiguous gather/DGEMM/scatter execution;
 - [x] portable dense fallback, reference mode, and oneMKL integration;
@@ -204,23 +206,24 @@ development workflow.
 # CUDA acceleration
 
 - [x] optional `CDFMM_ENABLE_CUDA` build and supplemental Conda environment
-- [x] explicit CPU-reference, CPU-static, CUDA-M2L, and CUDA-full selection API
+- [x] truthful CPU-reference and CPU-static selection API
 - [x] persistent device geometry, input, output, stream, and pinned staging buffers
-- [x] minimal field-only steady-state transfer accounting
+- [x] direct all-to-all CUDA dipole reference
 - [ ] transfer-class grouped CUDA M2L and resident Cartesian operators
 - [ ] device P2M, M2M, L2L, and L2P kernels
-- [x] device near-field/direct dipole kernel and user-order output
+- [x] persistent CUDA direct-P2P buffers and user-order output
 - [ ] device Morton permutations
 - [ ] custom-versus-cuBLAS M2L microbenchmarks
 - [ ] CUDA Graph investigation and retention if measurements justify it
 - [ ] CPU-static versus hybrid versus full-CUDA crossover study
 - [x] manual CUDA validation workflow (CUDA remains excluded from GitHub CI)
 
-The first CUDA landing establishes the optional toolchain, persistent ownership,
-strict field-only moment/result transfer path, backend API, and exact device
-dipole kernel. The unchecked items are deliberately not represented as complete:
-the direct device path is a correctness baseline while the Cartesian FMM stages
-and genuine M2L-only transfer path are implemented and profiled.
+The first CUDA landing establishes the optional toolchain, persistent direct
+buffers, timing infrastructure, and exact device dipole kernel. This is an
+O(N^2) correctness baseline, not M2L or FMM. `Auto` remains CPU static and the
+far-field capability remains false until P2M, M2M, and grouped M2L genuinely
+execute on the device. GPU L2L, L2P, near-field P2P, and a true full CUDA FMM
+remain later milestones.
 
 ## Future milestone: true periodic magnetostatics
 

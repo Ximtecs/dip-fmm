@@ -11,12 +11,12 @@
 
 namespace cdfmm {
 
-/** @brief Persistent device-resident plan used by CUDA execution backends. */
+/** @brief Persistent device-resident O(N^2) direct-reference plan. */
 class CudaFmmPlan {
 public:
     CudaFmmPlan(std::span<const Vec3> source_positions,
                 std::span<const Vec3> target_positions,
-                ExecutionBackend backend);
+                ExecutionBackend backend = ExecutionBackend::CpuStatic);
     ~CudaFmmPlan();
 
     CudaFmmPlan(const CudaFmmPlan&) = delete;

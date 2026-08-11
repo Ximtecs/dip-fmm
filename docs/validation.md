@@ -12,15 +12,14 @@ ctest --preset cuda
 python -m pytest python_tests -v
 ```
 
-The C++ suite selects CPU reference/static backends explicitly for tests of
-their numerical behaviour and exercises `CudaM2L` and `CudaFull` in a dedicated
-test whenever `cuda_available()` is true.
+The C++ suite selects CPU reference/static backends explicitly and compares
+`cuda_direct_p2p_reference` with the CPU direct reference whenever
+`cuda_direct_available()` is true. CUDA far-field and full-FMM capabilities
+are reported separately and are not inferred merely from CUDA compilation.
 
-For field-only repeated evaluation, inspect `cuda_plan_statistics`: after an
-unchanged identity map is resident, H2D traffic is exactly one user-order
-moment array and D2H traffic is exactly one user-order field array. Potential
-traffic is added only when requested. Plan generation and static upload counters
-make accidental setup reconstruction visible.
+The CUDA direct convenience evaluator is an O(N^2) validation reference, not
+an FMM backend. It uploads geometry when called and must not be used to claim a
+moment-only repeated far-field transfer contract.
 
 `EvaluationTimings` records CUDA H2D, kernel, and D2H device-stream durations
 with CUDA events. Their sum excludes host packing and result-copy overhead;

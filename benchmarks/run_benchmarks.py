@@ -119,10 +119,8 @@ def benchmark_backends(status: CudaStatus) -> list[str]:
             "The benchmark was compiled with CUDA, but no CUDA device is "
             "available"
         )
-    backends = ["cpu-static"]
-    if status.compiled:
-        backends.extend(["cuda-m2l", "cuda-full"])
-    return backends
+    # Device presence is not a substitute for an implemented FMM capability.
+    return ["cpu-static"]
 
 
 def expanded_cases(cases: list[BenchmarkCase], backends: list[str]):

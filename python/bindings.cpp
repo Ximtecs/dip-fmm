@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "cdfmm/operators.hpp"
+#include "cdfmm/cuda_direct.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/uniform_tree.hpp"
 
@@ -369,11 +370,13 @@ PYBIND11_MODULE(cdfmm, module)
         .value("AUTO", ExecutionBackend::Auto)
         .value("CPU_REFERENCE", ExecutionBackend::CpuReference)
         .value("CPU_STATIC", ExecutionBackend::CpuStatic)
-        .value("CUDA_M2L", ExecutionBackend::CudaM2L)
-        .value("CUDA_FULL", ExecutionBackend::CudaFull);
+        .value("CUDA_FAR_FIELD", ExecutionBackend::CudaFarField);
 
     module.def("cuda_compiled", &cuda_compiled);
     module.def("cuda_available", &cuda_available);
+    module.def("cuda_direct_available", &cuda_direct_available);
+    module.def("cuda_farfield_available", &cuda_farfield_available);
+    module.def("cuda_full_available", &cuda_full_available);
     module.def("cuda_device_description", &cuda_device_description);
 
     py::class_<UniformFmmOptions>(module, "UniformFmmOptions")
