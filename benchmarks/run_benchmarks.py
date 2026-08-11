@@ -16,8 +16,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 PROFILES = {
-    "quick": dict(sizes=[100, 300], orders=[2, 4], depths=[2, 3], evaluations=2, samples=2),
-    "standard": dict(sizes=[500, 2000, 5000], orders=[2, 3, 4, 5, 6, 8], depths=[2, 3, 4], evaluations=20, samples=5),
+    "quick": dict(sizes=[500, 1000], orders=[2, 4], depths=[2, 3], evaluations=2, samples=2),
+    "standard": dict(sizes=[1000, 2000, 5000], orders=[2, 3, 4, 5, 6, 8], depths=[2, 3, 4], evaluations=20, samples=5),
     "full": dict(sizes=[1000, 5000, 20000, 50000], orders=[2, 3, 4, 5, 6, 8], depths=[3, 4, 5], evaluations=100, samples=7),
 }
 
@@ -32,6 +32,9 @@ EVALUATION_PHASES = [
     ("l2p", "L2P"),
     ("p2p", "P2P"),
     ("result_unpermutation", "Result unpermutation"),
+    ("cuda_h2d", "CUDA H2D"),
+    ("cuda_kernel", "CUDA kernel"),
+    ("cuda_d2h", "CUDA D2H"),
 ]
 
 
@@ -43,6 +46,13 @@ class BenchmarkCase:
     depth: int
     threads: int
     direct: bool
+
+
+@dataclass(frozen=True)
+class CudaStatus:
+    compiled: bool
+    available: bool
+    device: str
 
 
 def positive_int(value: str) -> int:
@@ -102,10 +112,63 @@ def build_cases(profile: dict, max_threads: int) -> list[BenchmarkCase]:
     return cases
 
 
+def benchmark_backends(status: CudaStatus) -> list[str]:
+    """Return every backend required for one benchmark geometry."""
+    if status.compiled and not status.available:
+        raise RuntimeError(
+            "The benchmark was compiled with CUDA, but no CUDA device is "
+            "available"
+        )
+    backends = ["cpu-static"]
+    if status.compiled:
+        backends.extend(["cuda-m2l", "cuda-full"])
+    return backends
+
+
+def expanded_cases(cases: list[BenchmarkCase], backends: list[str]):
+    """Pair every planned geometry with every required execution backend."""
+    return [(case, backend) for case in cases for backend in backends]
+
+
+def probe_cuda(executable: Path) -> CudaStatus:
+    if not executable.is_file():
+        raise FileNotFoundError(f"Benchmark executable not found at {executable}")
+    result = subprocess.run(
+        [str(executable), "--cuda-status"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    values = dict(
+        line.split("=", maxsplit=1)
+        for line in result.stdout.splitlines()
+        if "=" in line
+    )
+    return CudaStatus(
+        compiled=values.get("cuda_compiled") == "1",
+        available=values.get("cuda_available") == "1",
+        device=values.get("cuda_device", ""),
+    )
+
+
+def default_executable() -> Path:
+    cuda_executable = Path("build-cuda/benchmarks/benchmark_uniform_fmm")
+    if cuda_executable.is_file():
+        return cuda_executable
+    return Path("build-bench/benchmarks/benchmark_uniform_fmm")
+
+
 def representative_case(rows: list[dict[str, str]]) -> dict[str, str]:
     base = [row for row in rows if row["suite"] == "parameter_grid"]
     if not base:
         raise ValueError("No parameter-grid benchmark rows are available")
+    cpu_rows = [
+        row
+        for row in base
+        if row.get("execution_backend", "cpu-static") == "cpu-static"
+    ]
+    if cpu_rows:
+        base = cpu_rows
 
     largest_size = max(int(row["sources"]) for row in base)
     candidates = [row for row in base if int(row["sources"]) == largest_size]
@@ -139,12 +202,14 @@ def comparison_case(rows: list[dict[str, str]]) -> dict[str, str]:
 def case_description(row: dict[str, str]) -> str:
     return (
         f"N={row['sources']}, order={row['order']}, depth={row['depth']}, "
-        f"threads={row['threads']}"
+        f"threads={row['threads']}, "
+        f"backend={row.get('execution_backend', 'cpu-static')}"
     )
 
 
 def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
            threads: int, evaluations: int, samples: int, direct: bool,
+           backend: str = "cpu-static",
            workload_comparison: bool = False) -> dict[str, str]:
     if not executable.is_file():
         raise FileNotFoundError(
@@ -156,7 +221,8 @@ def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
     command = [str(executable), "--sources", str(size), "--targets", str(size),
                "--order", str(order), "--depth", str(depth), "--threads", str(threads),
                "--evaluations", str(evaluations), "--samples", str(samples),
-               "--warmups", "1", "--seed", "314159", "--output", str(output)]
+               "--warmups", "1", "--seed", "314159", "--backend", backend,
+               "--output", str(output)]
     if not direct:
         command.append("--no-direct")
     if not workload_comparison:
@@ -201,7 +267,8 @@ def plot_line(rows, x, y, group, path, title, xlabel, ylabel, log=False):
 def phase_breakdown_filename(row: dict[str, str]) -> str:
     return (
         f"{row['suite']}_n{row['sources']}_p{row['order']}_"
-        f"d{row['depth']}_t{row['threads']}.png"
+        f"d{row['depth']}_t{row['threads']}_"
+        f"{row.get('execution_backend', 'cpu-static')}.png"
     )
 
 
@@ -252,7 +319,7 @@ def generate_work_breakdown(row: dict[str, str], path: Path) -> None:
 
 
 def generate_setup_breakdown(row: dict[str, str], path: Path) -> None:
-    setup = float(row["tree_total"])
+    setup = float(row.get("fmm_setup_seconds", row["tree_total"]))
     evaluation = float(row["evaluation_median"])
     plt.figure(figsize=(7, 5))
     plt.bar(["one construction + one evaluation"], [setup], label="Tree setup")
@@ -273,11 +340,16 @@ def generate_setup_breakdown(row: dict[str, str], path: Path) -> None:
 def configuration_groups(rows: list[dict[str, str]]):
     keys = sorted(
         {
-            (int(row["sources"]), int(row["order"]), int(row["threads"]))
+            (
+                int(row["sources"]),
+                int(row["order"]),
+                int(row["threads"]),
+                row.get("execution_backend", "cpu-static"),
+            )
             for row in rows
         }
     )
-    for size, order, threads in keys:
+    for size, order, threads, backend in keys:
         selected = sorted(
             (
                 row
@@ -285,10 +357,11 @@ def configuration_groups(rows: list[dict[str, str]]):
                 if int(row["sources"]) == size
                 and int(row["order"]) == order
                 and int(row["threads"]) == threads
+                and row.get("execution_backend", "cpu-static") == backend
             ),
             key=lambda row: int(row["depth"]),
         )
-        yield size, order, threads, selected
+        yield size, order, threads, backend, selected
 
 
 def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
@@ -340,6 +413,21 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
         float(comparison["reference_10_total_median"]),
         float(comparison["static_10_total_median"]),
     ]
+    comparison_rows = [
+        row
+        for row in rows
+        if row["suite"] == "comparison"
+        and row.get("execution_backend", "cpu-static").startswith("cuda-")
+    ]
+    for row in comparison_rows:
+        backend = row["execution_backend"]
+        evaluation = float(row["evaluation_median"])
+        setup = (
+            float(row["amortised_seconds"]) - evaluation
+        ) * int(row["evaluations"])
+        methods.append(backend)
+        single_totals.append(setup + evaluation)
+        repeated_totals.append(setup + 10.0 * evaluation)
     positions = np.arange(len(methods))
     width = 0.36
     plt.figure(figsize=(9, 5))
@@ -355,8 +443,8 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
 
     # Combined runtime, accuracy, and work views contain every grid case.
     figure, axes = plt.subplots(2, 2, figsize=(14, 10))
-    for size, order, _, selected in configuration_groups(grid):
-        label = f"N={size}, p={order}"
+    for size, order, _, backend, selected in configuration_groups(grid):
+        label = f"N={size}, p={order}, {backend}"
         depths = [int(row["depth"]) for row in selected]
         axes[0, 0].plot(
             depths,
@@ -436,9 +524,9 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     ]:
         directory.mkdir(parents=True, exist_ok=True)
 
-    for size, order, threads, selected in configuration_groups(grid):
+    for size, order, threads, backend, selected in configuration_groups(grid):
         depths = [int(row["depth"]) for row in selected]
-        stem = f"n{size}_p{order}_t{threads}.png"
+        stem = f"n{size}_p{order}_t{threads}_{backend}.png"
 
         plt.figure()
         plt.plot(
@@ -449,7 +537,10 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
         plt.yscale("log")
         plt.xlabel("Tree depth")
         plt.ylabel("Median evaluation time (s)")
-        plt.title(f"Depth/runtime\nN={size}, order={order}, threads={threads}")
+        plt.title(
+            f"Depth/runtime\nN={size}, order={order}, threads={threads}, "
+            f"backend={backend}"
+        )
         plt.tight_layout()
         plt.savefig(runtime_depth_directory / stem)
         plt.close()
@@ -469,7 +560,8 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
             plt.xlabel("Tree depth")
             plt.ylabel("RMS relative field error")
             plt.title(
-                f"Depth/accuracy\nN={size}, order={order}, threads={threads}"
+                f"Depth/accuracy\nN={size}, order={order}, threads={threads}, "
+                f"backend={backend}"
             )
             plt.tight_layout()
             plt.savefig(accuracy_depth_directory / stem)
@@ -498,7 +590,8 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
             title="Near-field work",
         )
         figure.suptitle(
-            f"Depth/work balance: N={size}, order={order}, threads={threads}"
+            f"Depth/work balance: N={size}, order={order}, threads={threads}, "
+            f"backend={backend}"
         )
         figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.90))
         figure.savefig(work_depth_directory / stem)
@@ -512,69 +605,87 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     direct_directory.mkdir(parents=True, exist_ok=True)
     orders = sorted({int(row["order"]) for row in grid})
     depths = sorted({int(row["depth"]) for row in grid})
-    for order in orders:
-        for depth in depths:
-            selected = sorted(
-                (
-                    row for row in grid
-                    if int(row["order"]) == order
-                    and int(row["depth"]) == depth
-                ),
-                key=lambda row: int(row["sources"]),
-            )
-            stem = f"p{order}_d{depth}_t{benchmark_threads}.png"
+    backends = sorted(
+        {row.get("execution_backend", "cpu-static") for row in grid}
+    )
+    configurations = [
+        (backend, order, depth)
+        for backend in backends
+        for order in orders
+        for depth in depths
+    ]
+    for backend, order, depth in configurations:
+        selected = sorted(
+            (
+                row for row in grid
+                if int(row["order"]) == order
+                and int(row["depth"]) == depth
+                and row.get("execution_backend", "cpu-static") == backend
+            ),
+            key=lambda row: int(row["sources"]),
+        )
+        stem = f"p{order}_d{depth}_t{benchmark_threads}_{backend}.png"
+        plt.figure()
+        plt.loglog(
+            [int(row["sources"]) for row in selected],
+            [float(row["evaluation_median"]) for row in selected],
+            "o-",
+        )
+        plt.xlabel("Sources and targets, N")
+        plt.ylabel("Median evaluation time (s)")
+        plt.title(
+            f"Runtime/particles: order={order}, depth={depth}, "
+            f"threads={benchmark_threads}, backend={backend}"
+        )
+        plt.tight_layout()
+        plt.savefig(runtime_particle_directory / stem)
+        plt.close()
+
+        accurate = [
+            row for row in selected
+            if np.isfinite(float(row["direct_seconds"]))
+        ]
+        if accurate:
             plt.figure()
             plt.loglog(
-                [int(row["sources"]) for row in selected],
-                [float(row["evaluation_median"]) for row in selected],
+                [int(row["sources"]) for row in accurate],
+                [float(row["evaluation_median"]) for row in accurate],
                 "o-",
+                label=backend,
+            )
+            plt.loglog(
+                [int(row["sources"]) for row in accurate],
+                [float(row["direct_seconds"]) for row in accurate],
+                "o-",
+                label="Direct all-to-all P2P",
             )
             plt.xlabel("Sources and targets, N")
-            plt.ylabel("Median evaluation time (s)")
+            plt.ylabel("Wall time (s)")
             plt.title(
-                f"Runtime/particles: order={order}, depth={depth}, "
-                f"threads={benchmark_threads}"
+                f"Direct/FMM: order={order}, depth={depth}, "
+                f"threads={benchmark_threads}, backend={backend}"
             )
+            plt.legend()
             plt.tight_layout()
-            plt.savefig(runtime_particle_directory / stem)
+            plt.savefig(direct_directory / stem)
             plt.close()
 
-            accurate = [
-                row for row in selected
-                if np.isfinite(float(row["direct_seconds"]))
-            ]
-            if accurate:
-                plt.figure()
-                plt.loglog(
-                    [int(row["sources"]) for row in accurate],
-                    [float(row["evaluation_median"]) for row in accurate],
-                    "o-",
-                    label="Static FMM",
-                )
-                plt.loglog(
-                    [int(row["sources"]) for row in accurate],
-                    [float(row["direct_seconds"]) for row in accurate],
-                    "o-",
-                    label="Direct all-to-all P2P",
-                )
-                plt.xlabel("Sources and targets, N")
-                plt.ylabel("Wall time (s)")
-                plt.title(
-                    f"Direct/FMM: order={order}, depth={depth}, "
-                    f"threads={benchmark_threads}"
-                )
-                plt.legend()
-                plt.tight_layout()
-                plt.savefig(direct_directory / stem)
-                plt.close()
-
     largest = max(int(row["sources"]) for row in grid)
-    trade = [row for row in grid if int(row["sources"]) == largest]
+    trade = []
+    for row in grid:
+        if int(row["sources"]) != largest:
+            continue
+        labelled = dict(row)
+        labelled["series"] = (
+            f"{row.get('execution_backend', 'cpu-static')}, "
+            f"depth={row['depth']}"
+        )
+        trade.append(labelled)
     plot_line(
         trade,
         "order",
         "evaluation_median",
-        "depth",
+        "series",
         directories["runtime"] / "order_runtime_combined.png",
         f"Order/runtime tradeoff (N={largest}, threads={benchmark_threads})",
         "Expansion order",
@@ -589,7 +700,7 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
             accurate_trade,
             "order",
             "rms_relative_error",
-            "depth",
+            "series",
             directories["accuracy"] / "order_accuracy_combined.png",
             f"Order/accuracy tradeoff (N={largest}, threads={benchmark_threads})",
             "Expansion order",
@@ -597,7 +708,9 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
             True,
         )
 
-    setup = float(representative["tree_total"])
+    setup = float(
+        representative.get("fmm_setup_seconds", representative["tree_total"])
+    )
     evaluation = float(representative["evaluation_median"])
     counts = np.array([1, 2, 5, 10, 100], dtype=float)
     plt.figure()
@@ -610,14 +723,20 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     plt.savefig(directories["setup"] / "amortisation_representative.png")
     plt.close()
 
-    scaling = sorted(
-        (row for row in rows if row["suite"] == "scaling"),
-        key=lambda row: int(row["threads"]),
-    )
-    if scaling:
+    scaling_rows = [row for row in rows if row["suite"] == "scaling"]
+    for backend in sorted(
+        {row.get("execution_backend", "cpu-static") for row in scaling_rows}
+    ):
+        scaling = sorted(
+            (
+                row for row in scaling_rows
+                if row.get("execution_backend", "cpu-static") == backend
+            ),
+            key=lambda row: int(row["threads"]),
+        )
         scaling_description = (
             f"N={scaling[0]['sources']}, order={scaling[0]['order']}, "
-            f"depth={scaling[0]['depth']}"
+            f"depth={scaling[0]['depth']}, backend={backend}"
         )
         thread_values = np.array([int(row["threads"]) for row in scaling])
         times = np.array([float(row["evaluation_median"]) for row in scaling])
@@ -639,7 +758,9 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
         axes[1].legend()
         figure.suptitle(f"Thread scaling ({scaling_description})")
         figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
-        figure.savefig(directories["scaling"] / "openmp_scaling.png")
+        figure.savefig(
+            directories["scaling"] / f"thread_scaling_{backend}.png"
+        )
         plt.close(figure)
 
 
@@ -649,7 +770,7 @@ def main() -> None:
     parser.add_argument(
         "--executable",
         type=Path,
-        default=Path("build-bench/benchmarks/benchmark_uniform_fmm"),
+        default=None,
     )
     parser.add_argument(
         "--output-root",
@@ -663,6 +784,9 @@ def main() -> None:
         help="cap both benchmark evaluations and the thread-scaling sweep",
     )
     args = parser.parse_args()
+    executable = args.executable or default_executable()
+    cuda_status = probe_cuda(executable)
+    backends = benchmark_backends(cuda_status)
     profile = PROFILES[args.profile]
     stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir = args.output_root / stamp
@@ -673,21 +797,28 @@ def main() -> None:
     available = os.cpu_count() or 1
     max_threads = min(args.max_threads or available, available)
     cases = build_cases(profile, max_threads)
-    total_cases = len(cases) + 1
+    planned_cases = expanded_cases(cases, backends)
+    total_cases = len(planned_cases) + len(backends)
     print(
+        f"Benchmark executable: {executable}\n"
+        f"CUDA compiled={cuda_status.compiled}, "
+        f"available={cuda_status.available}, device={cuda_status.device or 'none'}\n"
+        f"Backends: {', '.join(backends)}\n"
         f"Planned {total_cases} benchmark tests; maximum threads={max_threads}.",
         flush=True,
     )
 
-    for case_index, case in enumerate(cases, start=1):
+    completed = 0
+    for case, backend in planned_cases:
+        completed += 1
         print(
-            f"\nRunning test {case_index}/{total_cases}: suite={case.suite}, "
+            f"\nRunning test {completed}/{total_cases}: suite={case.suite}, "
             f"sources={case.size}, targets={case.size}, order={case.order}, "
-            f"depth={case.depth}, threads={case.threads}",
+            f"depth={case.depth}, threads={case.threads}, backend={backend}",
             flush=True,
         )
         row = invoke(
-            args.executable,
+            executable,
             temporary,
             size=case.size,
             order=case.order,
@@ -696,13 +827,14 @@ def main() -> None:
             evaluations=profile["evaluations"],
             samples=profile["samples"],
             direct=case.direct,
+            backend=backend,
             workload_comparison=False,
         )
         row["suite"] = case.suite
         rows.append(row)
         print(
-            f"Overall {progress_bar(case_index, total_cases)} "
-            f"{case_index}/{total_cases} tests complete",
+            f"Overall {progress_bar(completed, total_cases)} "
+            f"{completed}/{total_cases} tests complete",
             flush=True,
         )
 
@@ -716,32 +848,35 @@ def main() -> None:
         profile["orders"],
         key=lambda order: abs(order - 4),
     )
-    print(
-        f"\nRunning test {total_cases}/{total_cases}: suite=comparison, "
-        f"sources={comparison_size}, targets={comparison_size}, "
-        f"order={comparison_order}, depth={comparison_depth}, "
-        f"threads={max_threads}",
-        flush=True,
-    )
-    comparison_row = invoke(
-        args.executable,
-        temporary,
-        size=comparison_size,
-        order=comparison_order,
-        depth=comparison_depth,
-        threads=max_threads,
-        evaluations=profile["evaluations"],
-        samples=profile["samples"],
-        direct=True,
-        workload_comparison=True,
-    )
-    comparison_row["suite"] = "comparison"
-    rows.append(comparison_row)
-    print(
-        f"Overall {progress_bar(total_cases, total_cases)} "
-        f"{total_cases}/{total_cases} tests complete",
-        flush=True,
-    )
+    for backend in backends:
+        completed += 1
+        print(
+            f"\nRunning test {completed}/{total_cases}: suite=comparison, "
+            f"sources={comparison_size}, targets={comparison_size}, "
+            f"order={comparison_order}, depth={comparison_depth}, "
+            f"threads={max_threads}, backend={backend}",
+            flush=True,
+        )
+        comparison_row = invoke(
+            executable,
+            temporary,
+            size=comparison_size,
+            order=comparison_order,
+            depth=comparison_depth,
+            threads=max_threads,
+            evaluations=profile["evaluations"],
+            samples=profile["samples"],
+            direct=True,
+            backend=backend,
+            workload_comparison=backend == "cpu-static",
+        )
+        comparison_row["suite"] = "comparison"
+        rows.append(comparison_row)
+        print(
+            f"Overall {progress_bar(completed, total_cases)} "
+            f"{completed}/{total_cases} tests complete",
+            flush=True,
+        )
     temporary.unlink(missing_ok=True)
     with (run_dir / "results.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
@@ -753,7 +888,11 @@ def main() -> None:
         f"host={platform.node()}\n"
         f"platform={platform.platform()}\n"
         f"logical_cpus={available}\n"
-        f"max_threads={max_threads}\n",
+        f"max_threads={max_threads}\n"
+        f"cuda_compiled={cuda_status.compiled}\n"
+        f"cuda_available={cuda_status.available}\n"
+        f"cuda_device={cuda_status.device}\n"
+        f"backends={','.join(backends)}\n",
         encoding="utf-8",
     )
     generate_figures(rows, figures)

@@ -40,6 +40,8 @@ struct Options {
     unsigned int seed{314159U};
     bool direct{true};
     bool workload_comparison{true};
+    bool cuda_status{false};
+    std::string backend{"cpu-static"};
     std::string output{};
 };
 
@@ -62,6 +64,10 @@ Options parse_options(const int argc, char** argv)
             options.workload_comparison = false;
             continue;
         }
+        if (key == "--cuda-status") {
+            options.cuda_status = true;
+            continue;
+        }
         if (index + 1 >= argc) {
             throw std::invalid_argument("Missing value for " + key);
         }
@@ -76,6 +82,7 @@ Options parse_options(const int argc, char** argv)
         else if (key == "--threads") options.threads = std::stoi(value);
         else if (key == "--seed") options.seed =
             static_cast<unsigned int>(std::stoul(value));
+        else if (key == "--backend") options.backend = value;
         else if (key == "--output") options.output = value;
         else throw std::invalid_argument("Unknown option: " + key);
     }
@@ -89,6 +96,28 @@ Options parse_options(const int argc, char** argv)
         );
     }
     return options;
+}
+
+cdfmm::ExecutionBackend execution_backend(const std::string& name)
+{
+    using cdfmm::ExecutionBackend;
+
+    if (name == "cpu-reference") {
+        return ExecutionBackend::CpuReference;
+    }
+    if (name == "cpu-static") {
+        return ExecutionBackend::CpuStatic;
+    }
+    if (name == "cuda-m2l") {
+        return ExecutionBackend::CudaM2L;
+    }
+    if (name == "cuda-full") {
+        return ExecutionBackend::CudaFull;
+    }
+    throw std::invalid_argument(
+        "Unknown backend '" + name +
+        "'; expected cpu-reference, cpu-static, cuda-m2l, or cuda-full"
+    );
 }
 
 double median(std::vector<double> values)
@@ -262,6 +291,16 @@ int main(int argc, char** argv)
     using namespace cdfmm;
     try {
         const Options options = parse_options(argc, argv);
+        if (options.cuda_status) {
+            std::cout << "cuda_compiled=" << (cuda_compiled() ? 1 : 0) << '\n'
+                      << "cuda_available=" << (cuda_available() ? 1 : 0) << '\n'
+                      << "cuda_device=";
+            if (cuda_available()) {
+                std::cout << cuda_device_description();
+            }
+            std::cout << '\n';
+            return 0;
+        }
 #ifdef CDFMM_USE_OPENMP
         if (options.threads > 0) {
             omp_set_num_threads(options.threads);
@@ -279,6 +318,7 @@ int main(int argc, char** argv)
                   << " targets=" << options.targets
                   << " order=" << options.order
                   << " depth=" << options.depth
+                  << " backend=" << options.backend
                   << " threads=" << thread_count
                   << " evaluations=" << options.evaluations
                   << " samples=" << options.samples << "\n";
@@ -321,10 +361,15 @@ int main(int argc, char** argv)
         fmm_options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
         fmm_options.tree.root_half_width = 1.0;
 
+        UniformFmmOptions selected_options = fmm_options;
+        selected_options.backend = execution_backend(options.backend);
+
         UniformFmmOptions reference_options = fmm_options;
         reference_options.m2l_backend = M2LBackend::Reference;
+        reference_options.backend = ExecutionBackend::CpuReference;
         UniformFmmOptions static_options = fmm_options;
         static_options.m2l_backend = M2LBackend::Static;
+        static_options.backend = ExecutionBackend::CpuStatic;
 
         const double missing = std::numeric_limits<double>::quiet_NaN();
         WorkloadTiming p2p_single{0.0, missing, missing};
@@ -403,7 +448,7 @@ int main(int argc, char** argv)
         }
 
         const auto setup_start = Clock::now();
-        UniformFmm fmm(source_positions, target_positions, static_options);
+        UniformFmm fmm(source_positions, target_positions, selected_options);
         const double setup_seconds = std::chrono::duration<double>(
             Clock::now() - setup_start
         ).count();
@@ -533,12 +578,14 @@ int main(int argc, char** argv)
         }
         std::ostream& out = *output_stream;
         out << "sources,targets,depth,order,threads,seed,evaluations,samples,"
+               "execution_backend,cuda_compiled,cuda_available,cuda_device,"
                "compiler,compiler_version,build_type,openmp_status,openmp_version,"
-               "tree_total,root_bounds,node_construction,topology,source_morton,"
+               "fmm_setup_seconds,tree_total,root_bounds,node_construction,topology,source_morton,"
                "source_sorting,target_morton,target_sorting,ranges,interaction_lists,"
                "evaluation_median,evaluation_mean,evaluations_per_second,"
                "amortised_seconds,moment_permutation,multipole_reset,p2m,m2m,"
-               "local_reset,l2l,m2l,l2p,p2p,result_unpermutation,direct_seconds,"
+               "local_reset,l2l,m2l,l2p,p2p,result_unpermutation,cuda_h2d,"
+               "cuda_kernel,cuda_d2h,direct_seconds,"
                "mean_relative_error,rms_relative_error,max_relative_error,total_nodes,"
                "occupied_source_leaves,occupied_target_leaves,m2l_translations,"
                "near_field_pairs,static_multiply_backend,mkl_version,"
@@ -551,7 +598,9 @@ int main(int argc, char** argv)
                "static_1_total_median,static_10_creation_median,"
                "static_10_evaluation_median,static_10_total_median,"
                "reference_mean_relative_error,reference_rms_relative_error,"
-               "reference_max_relative_error\n";
+               "reference_max_relative_error,cuda_setup_h2d_bytes,"
+               "cuda_evaluation_h2d_bytes,cuda_evaluation_d2h_bytes,"
+               "cuda_persistent_device_bytes\n";
         const char* build_type =
 #ifdef NDEBUG
             "Release";
@@ -561,10 +610,15 @@ int main(int argc, char** argv)
         out << options.sources << ',' << options.targets << ',' << options.depth
             << ',' << options.order << ',' << thread_count << ',' << options.seed
             << ',' << options.evaluations << ',' << options.samples << ','
+            << options.backend << ',' << (cuda_compiled() ? 1 : 0) << ','
+            << (cuda_available() ? 1 : 0) << ",\""
+            << (cuda_available() ? cuda_device_description() : std::string{})
+            << "\","
             << compiler_name() << ",\"" << compiler_version() << "\","
             << build_type
             << ',' << openmp_status << ',' << openmp_version << ','
-            << tree.total.total_seconds << ',' << tree.root_bounds.total_seconds << ','
+            << setup_seconds << ',' << tree.total.total_seconds << ','
+            << tree.root_bounds.total_seconds << ','
             << tree.node_construction.total_seconds << ','
             << tree.topology.total_seconds << ','
             << tree.source_morton.total_seconds << ','
@@ -583,7 +637,10 @@ int main(int argc, char** argv)
             << phase_mean(timing.local_reset) << ',' << phase_mean(timing.l2l)
             << ',' << phase_mean(timing.m2l) << ',' << phase_mean(timing.l2p)
             << ',' << phase_mean(timing.p2p) << ','
-            << phase_mean(timing.result_unpermutation) << ',' << direct_seconds
+            << phase_mean(timing.result_unpermutation) << ','
+            << phase_mean(timing.cuda_h2d) << ','
+            << phase_mean(timing.cuda_kernel) << ','
+            << phase_mean(timing.cuda_d2h) << ',' << direct_seconds
             << ',' << metrics.mean_relative_error << ','
             << metrics.rms_relative_error << ',' << metrics.max_relative_error
             << ',' << fmm.tree().nodes().size() << ','
@@ -599,12 +656,18 @@ int main(int argc, char** argv)
         write_workload(out, static_repeated);
         out << ',' << reference_metrics.mean_relative_error
             << ',' << reference_metrics.rms_relative_error
-            << ',' << reference_metrics.max_relative_error << '\n';
+            << ',' << reference_metrics.max_relative_error;
+        const auto& cuda_statistics = fmm.cuda_plan_statistics();
+        out << ',' << cuda_statistics.setup_h2d_bytes
+            << ',' << cuda_statistics.evaluation_h2d_bytes
+            << ',' << cuda_statistics.evaluation_d2h_bytes
+            << ',' << cuda_statistics.persistent_device_bytes << '\n';
 
         if (!options.output.empty()) {
             std::cout << "Wrote " << options.output << "\n";
         }
         std::cerr << "compiler=" << compiler_name()
+                  << " backend=" << options.backend
                   << " openmp=" << openmp_status
                   << " threads=" << thread_count
                   << " median_ms=" << evaluation_median * 1.0e3 << '\n';

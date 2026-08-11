@@ -1,6 +1,12 @@
+import pytest
+
 from benchmarks.run_benchmarks import (
+    CudaStatus,
+    EVALUATION_PHASES,
+    benchmark_backends,
     build_cases,
     comparison_case,
+    expanded_cases,
     phase_breakdown_filename,
     progress_bar,
     representative_case,
@@ -94,4 +100,55 @@ def test_progress_and_phase_filename_identify_the_case():
     }
 
     assert progress_bar(2, 4) == "[============            ]"
-    assert phase_breakdown_filename(row) == "parameter_grid_n300_p4_d2_t8.png"
+    assert phase_breakdown_filename(row) == (
+        "parameter_grid_n300_p4_d2_t8_cpu-static.png"
+    )
+
+
+def test_cuda_build_runs_every_case_with_static_and_cuda_backends():
+    cases = build_cases(
+        {
+            "sizes": [100],
+            "orders": [4],
+            "depths": [2],
+            "evaluations": 1,
+            "samples": 1,
+        },
+        max_threads=1,
+    )
+    backends = benchmark_backends(
+        CudaStatus(compiled=True, available=True, device="Test GPU")
+    )
+
+    assert backends == ["cpu-static", "cuda-m2l", "cuda-full"]
+    expanded = expanded_cases(cases, backends)
+    for case in cases:
+        selected = {
+            (candidate, backend)
+            for candidate, backend in expanded
+            if candidate == case
+        }
+        assert selected == {
+            (case, "cpu-static"),
+            (case, "cuda-m2l"),
+            (case, "cuda-full"),
+        }
+
+
+def test_cpu_build_runs_only_static_benchmarks():
+    status = CudaStatus(compiled=False, available=False, device="")
+    assert benchmark_backends(status) == ["cpu-static"]
+
+
+def test_cuda_benchmark_fails_clearly_without_a_device():
+    status = CudaStatus(compiled=True, available=False, device="")
+    with pytest.raises(RuntimeError, match="no CUDA device"):
+        benchmark_backends(status)
+
+
+def test_phase_plots_include_cuda_transfer_and_kernel_timings():
+    assert EVALUATION_PHASES[-3:] == [
+        ("cuda_h2d", "CUDA H2D"),
+        ("cuda_kernel", "CUDA kernel"),
+        ("cuda_d2h", "CUDA D2H"),
+    ]

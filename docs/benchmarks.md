@@ -2,14 +2,29 @@
 
 ## CUDA measurements
 
-Build CUDA benchmarks manually with `cmake --preset cuda` and
-`cmake --build --preset cuda`. Run the uniform workload executable with the
-same pre-generated geometry and moment states for CPU static, CUDA M2L, and
-CUDA full. Record caller wall time together with setup bytes, per-evaluation
-H2D/D2H bytes and calls, and persistent device bytes from
-`cuda_plan_statistics`. CUDA results are hardware-specific and are never
-generated in GitHub Actions. Do not report crossover or amortisation claims
-without measured output from an actual GPU.
+Build CUDA benchmarks with `cmake --fresh --preset cuda` and
+`cmake --build --preset cuda`, then run:
+
+```console
+python benchmarks/run_benchmarks.py --profile quick --max-threads 4
+```
+
+The runner prefers the CUDA-preset executable when it exists and probes it
+before planning any measurements. A CPU-only executable runs every ordinary
+geometry with `cpu-static`. A CUDA-compiled executable must have an accessible
+device and runs every parameter-grid, scaling, and comparison geometry three times:
+`cpu-static`, `cuda-m2l`, and `cuda-full`, using the same deterministic geometry
+and moment states. It never silently omits CUDA measurements from a CUDA build.
+The deliberately expensive `cpu-reference` traversal remains confined to the
+single dedicated comparison workload.
+
+CSV rows identify `execution_backend`, compile/runtime CUDA status, device,
+setup bytes, per-evaluation H2D/D2H bytes, and persistent device bytes. CUDA
+rows also report device-stream H2D, kernel, and D2H times measured with CUDA
+events; these phases appear in the same phase plots as the CPU traversal
+phases. Caller wall time remains the primary end-to-end measurement. CUDA
+results are hardware-specific and are never generated in GitHub Actions. Do
+not report crossover or amortisation claims without measured GPU output.
 
 The performance path uses Intel oneAPI `icpx`, Release optimisation, native CPU
 code generation, IPO where supported, and OpenMP. Configure it from the
@@ -84,7 +99,8 @@ geometry object, so its construction time is zero. Both FMM paths report error
 metrics against the same direct all-to-all state. `backend_workloads.png` and
 the generated summary
 compare performance and accuracy for that case at the available expansion order
-nearest four. Other sweep cases skip this costly reference comparison.
+nearest four. Other sweep cases skip both the reference traversal and the
+additional one-versus-ten construction comparison.
 
 The benchmark is an all-to-all source-point comparison: the source and target
 arrays contain the same particle positions, and both FMM and direct P2P use the
@@ -111,13 +127,16 @@ configured particle-count, expansion-order, and tree-depth combination. The
 10-evaluation workloads. The driver
 creates a timestamped directory below `benchmark_results/` containing the CSV,
 machine metadata (including the thread cap), a measured summary, and PNG
-figures. Figure titles state their particle count, order, depth, and thread
-configuration. The phase table in `summary.md` uses the fastest depth at the
-largest particle count and tested expansion order nearest four. Generated
+figures. Figure titles state their particle count, order, depth, backend, and
+thread configuration. The phase table in `summary.md` deliberately uses the
+CPU-static row at the fastest depth for the largest particle count and tested
+expansion order nearest four; per-run phase plots cover static and CUDA
+backends. The comparison outputs cover the reference traversal. Generated
 results are ignored by Git and existing runs are not overwritten.
 
-The terminal reports the exact suite, source/target count, order, depth, and
-thread count before every case. It shows overall case progress, while the C++
+The terminal reports the exact suite, source/target count, order, depth,
+backend, and thread count before every case. It shows overall case progress,
+while the C++
 executable updates completed samples and timed evaluations after each sample.
 Progress printing occurs outside the measured interval. Figures are grouped by
 result type under `figures/runtime/`, `accuracy/`, `work/`, `phases/`,
