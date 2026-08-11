@@ -372,6 +372,7 @@ PYBIND11_MODULE(cdfmm, module)
         .value("CUDA_M2L", ExecutionBackend::CudaM2L)
         .value("CUDA_FULL", ExecutionBackend::CudaFull);
 
+    module.def("cuda_compiled", &cuda_compiled);
     module.def("cuda_available", &cuda_available);
     module.def("cuda_device_description", &cuda_device_description);
 

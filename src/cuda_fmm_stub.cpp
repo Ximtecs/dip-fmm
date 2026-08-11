@@ -6,6 +6,11 @@
 
 namespace cdfmm {
 
+bool cuda_compiled() noexcept
+{
+    return false;
+}
+
 bool cuda_runtime_available() noexcept
 {
     return false;
@@ -36,6 +41,12 @@ void CudaFmmPlan::evaluate(std::span<const Vec3>,
 const CudaPlanStatistics& CudaFmmPlan::statistics() const noexcept
 {
     static const CudaPlanStatistics empty{};
+    return empty;
+}
+
+const CudaEvaluationTimings& CudaFmmPlan::evaluation_timings() const noexcept
+{
+    static const CudaEvaluationTimings empty{};
     return empty;
 }
 

@@ -28,6 +28,7 @@ public:
                   std::span<const int> target_source_indices);
 
     [[nodiscard]] const CudaPlanStatistics& statistics() const noexcept;
+    [[nodiscard]] const CudaEvaluationTimings& evaluation_timings() const noexcept;
 
 private:
     struct Implementation;

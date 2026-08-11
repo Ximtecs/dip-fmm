@@ -77,6 +77,12 @@ struct EvaluationTimings {
     PhaseTiming p2p{};
     /// @brief Time spent restoring results to user target order.
     PhaseTiming result_unpermutation{};
+    /// @brief Device-stream time spent uploading per-evaluation CUDA inputs.
+    PhaseTiming cuda_h2d{};
+    /// @brief Device-stream time spent executing the CUDA evaluation kernel.
+    PhaseTiming cuda_kernel{};
+    /// @brief Device-stream time spent downloading requested CUDA outputs.
+    PhaseTiming cuda_d2h{};
     /// @brief Total complete-evaluation time.
     PhaseTiming total{};
     /// @brief Number of complete evaluations represented by these timings.
@@ -113,6 +119,13 @@ struct CudaPlanStatistics {
     std::uint64_t plan_generation_count{0};
     std::uint64_t static_upload_count{0};
     std::uint64_t static_m2l_upload_count{0};
+};
+
+/** @brief Device-stream phase timings for the most recent CUDA evaluation. */
+struct CudaEvaluationTimings {
+    double h2d_seconds{0.0};
+    double kernel_seconds{0.0};
+    double d2h_seconds{0.0};
 };
 
 } // namespace cdfmm

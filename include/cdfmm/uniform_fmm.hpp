@@ -24,6 +24,9 @@ enum class ExecutionBackend {
     CudaFull
 };
 
+/** @brief Reports whether the library was compiled with CUDA support. */
+[[nodiscard]] bool cuda_compiled() noexcept;
+
 /** @brief Reports whether this build can access a CUDA device. */
 [[nodiscard]] bool cuda_available() noexcept;
 

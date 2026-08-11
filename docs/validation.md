@@ -6,17 +6,26 @@ CUDA tests are intentionally not executed by GitHub Actions. They must be run
 manually on an NVIDIA CUDA-capable system:
 
 ```console
-cmake --preset cuda
+cmake --fresh --preset cuda
 cmake --build --preset cuda
 ctest --preset cuda
 python -m pytest python_tests -v
 ```
+
+The C++ suite selects CPU reference/static backends explicitly for tests of
+their numerical behaviour and exercises `CudaM2L` and `CudaFull` in a dedicated
+test whenever `cuda_available()` is true.
 
 For field-only repeated evaluation, inspect `cuda_plan_statistics`: after an
 unchanged identity map is resident, H2D traffic is exactly one user-order
 moment array and D2H traffic is exactly one user-order field array. Potential
 traffic is added only when requested. Plan generation and static upload counters
 make accidental setup reconstruction visible.
+
+`EvaluationTimings` records CUDA H2D, kernel, and D2H device-stream durations
+with CUDA events. Their sum excludes host packing and result-copy overhead;
+compare it with the complete caller wall time in `total` when diagnosing
+launch, synchronisation, and other host-side costs.
 
 The project validates small mathematical pieces analytically before composing
 them.  Unit tests cover multi-index counts and ordering, Taylor-jet algebra,

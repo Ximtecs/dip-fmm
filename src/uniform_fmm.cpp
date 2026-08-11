@@ -51,6 +51,9 @@ void accumulate_timings(EvaluationTimings& aggregate,
     accumulate_phase(aggregate.p2p, value.p2p);
     accumulate_phase(aggregate.result_unpermutation,
                      value.result_unpermutation);
+    accumulate_phase(aggregate.cuda_h2d, value.cuda_h2d);
+    accumulate_phase(aggregate.cuda_kernel, value.cuda_kernel);
+    accumulate_phase(aggregate.cuda_d2h, value.cuda_d2h);
     accumulate_phase(aggregate.total, value.total);
     aggregate.evaluations += value.evaluations;
 }
@@ -466,6 +469,10 @@ void UniformFmm::evaluate_into(
         cuda_plan_->evaluate(dipole_moments, results, output,
                              target_source_indices);
         last_timings_ = {};
+        const auto& cuda_timings = cuda_plan_->evaluation_timings();
+        last_timings_.cuda_h2d.add(cuda_timings.h2d_seconds);
+        last_timings_.cuda_kernel.add(cuda_timings.kernel_seconds);
+        last_timings_.cuda_d2h.add(cuda_timings.d2h_seconds);
         last_timings_.total.add(elapsed_seconds(evaluation_start));
         last_timings_.evaluations = 1;
         accumulate_timings(aggregate_timings_, last_timings_);

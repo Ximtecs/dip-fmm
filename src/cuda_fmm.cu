@@ -98,13 +98,23 @@ struct CudaFmmPlan::Implementation {
     double* pinned_potentials{nullptr};
     std::vector<int> self_indices{};
     cudaStream_t stream{nullptr};
+    cudaEvent_t evaluation_start{nullptr};
+    cudaEvent_t h2d_complete{nullptr};
+    cudaEvent_t kernel_complete{nullptr};
+    cudaEvent_t d2h_complete{nullptr};
     CudaPlanStatistics statistics{};
+    CudaEvaluationTimings evaluation_timings{};
 };
 
 bool cuda_runtime_available() noexcept
 {
     int count = 0;
     return cudaGetDeviceCount(&count) == cudaSuccess && count > 0;
+}
+
+bool cuda_compiled() noexcept
+{
+    return true;
 }
 
 std::string cuda_runtime_description()
@@ -138,6 +148,14 @@ CudaFmmPlan::CudaFmmPlan(const std::span<const Vec3> source_positions,
     plan.self_indices.assign(plan.target_count, -1);
     check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
                "cudaStreamCreateWithFlags");
+    check_cuda(cudaEventCreate(&plan.evaluation_start),
+               "cudaEventCreate evaluation start");
+    check_cuda(cudaEventCreate(&plan.h2d_complete),
+               "cudaEventCreate H2D complete");
+    check_cuda(cudaEventCreate(&plan.kernel_complete),
+               "cudaEventCreate kernel complete");
+    check_cuda(cudaEventCreate(&plan.d2h_complete),
+               "cudaEventCreate D2H complete");
 
     const std::size_t source_bytes = plan.source_count * sizeof(Vec3);
     const std::size_t target_bytes = plan.target_count * sizeof(Vec3);
@@ -197,6 +215,10 @@ CudaFmmPlan::~CudaFmmPlan()
     cudaFreeHost(plan.pinned_moments);
     cudaFreeHost(plan.pinned_fields);
     cudaFreeHost(plan.pinned_potentials);
+    cudaEventDestroy(plan.evaluation_start);
+    cudaEventDestroy(plan.h2d_complete);
+    cudaEventDestroy(plan.kernel_complete);
+    cudaEventDestroy(plan.d2h_complete);
     cudaStreamDestroy(plan.stream);
     delete implementation_;
 }
@@ -212,6 +234,8 @@ void CudaFmmPlan::evaluate(const std::span<const Vec3> moments,
     }
     std::copy(moments.begin(), moments.end(), plan.pinned_moments);
     const std::size_t moment_bytes = plan.source_count * sizeof(Vec3);
+    check_cuda(cudaEventRecord(plan.evaluation_start, plan.stream),
+               "record CUDA evaluation start");
     check_cuda(cudaMemcpyAsync(plan.device_moments, plan.pinned_moments,
                                moment_bytes, cudaMemcpyHostToDevice, plan.stream),
                "upload dipole moments");
@@ -232,6 +256,8 @@ void CudaFmmPlan::evaluate(const std::span<const Vec3> moments,
             plan.target_count * sizeof(int);
         ++plan.statistics.evaluation_h2d_calls;
     }
+    check_cuda(cudaEventRecord(plan.h2d_complete, plan.stream),
+               "record CUDA H2D completion");
 
     constexpr int threads = 128;
     const int blocks = static_cast<int>((plan.target_count + threads - 1) / threads);
@@ -245,6 +271,8 @@ void CudaFmmPlan::evaluate(const std::span<const Vec3> moments,
         );
         check_cuda(cudaGetLastError(), "launch CUDA FMM evaluation");
     }
+    check_cuda(cudaEventRecord(plan.kernel_complete, plan.stream),
+               "record CUDA kernel completion");
 
     plan.statistics.evaluation_d2h_bytes = 0;
     plan.statistics.evaluation_d2h_calls = 0;
@@ -264,7 +292,37 @@ void CudaFmmPlan::evaluate(const std::span<const Vec3> moments,
         plan.statistics.evaluation_d2h_bytes += potential_bytes;
         ++plan.statistics.evaluation_d2h_calls;
     }
-    check_cuda(cudaStreamSynchronize(plan.stream), "complete CUDA evaluation");
+    check_cuda(cudaEventRecord(plan.d2h_complete, plan.stream),
+               "record CUDA D2H completion");
+    check_cuda(cudaEventSynchronize(plan.d2h_complete),
+               "complete CUDA evaluation");
+    float h2d_milliseconds = 0.0F;
+    float kernel_milliseconds = 0.0F;
+    float d2h_milliseconds = 0.0F;
+    check_cuda(cudaEventElapsedTime(
+                   &h2d_milliseconds,
+                   plan.evaluation_start,
+                   plan.h2d_complete
+               ),
+               "measure CUDA H2D time");
+    check_cuda(cudaEventElapsedTime(
+                   &kernel_milliseconds,
+                   plan.h2d_complete,
+                   plan.kernel_complete
+               ),
+               "measure CUDA kernel time");
+    check_cuda(cudaEventElapsedTime(
+                   &d2h_milliseconds,
+                   plan.kernel_complete,
+                   plan.d2h_complete
+               ),
+               "measure CUDA D2H time");
+    plan.evaluation_timings.h2d_seconds =
+        static_cast<double>(h2d_milliseconds) * 1.0e-3;
+    plan.evaluation_timings.kernel_seconds =
+        static_cast<double>(kernel_milliseconds) * 1.0e-3;
+    plan.evaluation_timings.d2h_seconds =
+        static_cast<double>(d2h_milliseconds) * 1.0e-3;
     for (std::size_t index = 0; index < plan.target_count; ++index) {
         results[index].H = field ? plan.pinned_fields[index] : Vec3{};
         results[index].phi = potential ? plan.pinned_potentials[index] : 0.0;
@@ -274,6 +332,12 @@ void CudaFmmPlan::evaluate(const std::span<const Vec3> moments,
 const CudaPlanStatistics& CudaFmmPlan::statistics() const noexcept
 {
     return implementation_->statistics;
+}
+
+const CudaEvaluationTimings&
+CudaFmmPlan::evaluation_timings() const noexcept
+{
+    return implementation_->evaluation_timings;
 }
 
 } // namespace cdfmm
