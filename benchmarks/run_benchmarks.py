@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 PROFILES = {
+    "minimal": dict(sizes=[500], orders=[2, 4], depths=[2], evaluations=1, samples=1),
     "quick": dict(sizes=[500, 1000], orders=[2, 4], depths=[2, 3], evaluations=2, samples=2),
     "standard": dict(sizes=[1000, 2000, 5000], orders=[2, 3, 4, 5, 6, 8], depths=[2, 3, 4], evaluations=20, samples=5),
     "full": dict(sizes=[1000, 5000, 20000, 50000], orders=[2, 3, 4, 5, 6, 8], depths=[3, 4, 5], evaluations=100, samples=7),
@@ -37,6 +38,12 @@ EVALUATION_PHASES = [
     ("cuda_d2h", "CUDA D2H"),
 ]
 
+M2L_SUBPHASES = [
+    ("m2l_gather", "Gather"),
+    ("m2l_multiply", "Matrix multiply"),
+    ("m2l_scatter", "Scatter"),
+]
+
 
 @dataclass(frozen=True)
 class BenchmarkCase:
@@ -52,6 +59,10 @@ class BenchmarkCase:
 class CudaStatus:
     compiled: bool
     available: bool
+    direct_available: bool
+    farfield_available: bool
+    full_available: bool
+    mkl_available: bool
     device: str
 
 
@@ -119,8 +130,13 @@ def benchmark_backends(status: CudaStatus) -> list[str]:
             "The benchmark was compiled with CUDA, but no CUDA device is "
             "available"
         )
-    # Device presence is not a substitute for an implemented FMM capability.
-    return ["cpu-static"]
+    backends = ["cpu-direct"]
+    if status.direct_available:
+        backends.append("cuda-direct")
+    backends.append("cpu-static-matrix")
+    if status.mkl_available:
+        backends.append("cpu-static-matrix-mkl")
+    return backends
 
 
 def expanded_cases(cases: list[BenchmarkCase], backends: list[str]):
@@ -145,11 +161,20 @@ def probe_cuda(executable: Path) -> CudaStatus:
     return CudaStatus(
         compiled=values.get("cuda_compiled") == "1",
         available=values.get("cuda_available") == "1",
+        direct_available=values.get("cuda_direct_available") == "1",
+        farfield_available=values.get("cuda_farfield_available") == "1",
+        full_available=values.get("cuda_full_available") == "1",
+        mkl_available=values.get("one_mkl_available") == "1",
         device=values.get("cuda_device", ""),
     )
 
 
 def default_executable() -> Path:
+    combined_executable = Path(
+        "build-bench-all/benchmarks/benchmark_uniform_fmm"
+    )
+    if combined_executable.is_file():
+        return combined_executable
     cuda_executable = Path("build-cuda/benchmarks/benchmark_uniform_fmm")
     if cuda_executable.is_file():
         return cuda_executable
@@ -163,7 +188,8 @@ def representative_case(rows: list[dict[str, str]]) -> dict[str, str]:
     cpu_rows = [
         row
         for row in base
-        if row.get("execution_backend", "cpu-static") == "cpu-static"
+        if row.get("execution_backend", "cpu-static-matrix")
+        == "cpu-static-matrix"
     ]
     if cpu_rows:
         base = cpu_rows
@@ -187,10 +213,10 @@ def comparison_case(rows: list[dict[str, str]]) -> dict[str, str]:
         row
         for row in rows
         if row["suite"] == "comparison"
-        and np.isfinite(float(row["p2p_1_total_median"]))
+        and np.isfinite(float(row["workload_1_total_median"]))
     ]
     if not candidates:
-        raise ValueError("No direct-enabled benchmark rows are available")
+        raise ValueError("No completed comparison workload rows are available")
 
     largest_size = max(int(row["sources"]) for row in candidates)
     largest = [row for row in candidates if int(row["sources"]) == largest_size]
@@ -201,14 +227,14 @@ def case_description(row: dict[str, str]) -> str:
     return (
         f"N={row['sources']}, order={row['order']}, depth={row['depth']}, "
         f"threads={row['threads']}, "
-        f"backend={row.get('execution_backend', 'cpu-static')}"
+        f"backend={row.get('execution_backend', 'cpu-static-matrix')}"
     )
 
 
 def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
            threads: int, evaluations: int, samples: int, direct: bool,
-           backend: str = "cpu-static",
-           workload_comparison: bool = False) -> dict[str, str]:
+           backend: str = "cpu-static-matrix",
+           workload_comparison: bool = True) -> dict[str, str]:
     if not executable.is_file():
         raise FileNotFoundError(
             f"Benchmark executable not found at {executable}; run "
@@ -225,7 +251,10 @@ def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
         command.append("--no-direct")
     if not workload_comparison:
         command.append("--no-workload-comparison")
-    subprocess.run(command, check=True)
+    environment = os.environ.copy()
+    environment["OMP_NUM_THREADS"] = str(threads)
+    environment["MKL_NUM_THREADS"] = "1"
+    subprocess.run(command, check=True, env=environment)
     if not output.is_file():
         raise RuntimeError(
             f"{executable} did not create {output}; rebuild the benchmark "
@@ -266,7 +295,7 @@ def phase_breakdown_filename(row: dict[str, str]) -> str:
     return (
         f"{row['suite']}_n{row['sources']}_p{row['order']}_"
         f"d{row['depth']}_t{row['threads']}_"
-        f"{row.get('execution_backend', 'cpu-static')}.png"
+        f"{row.get('execution_backend', 'cpu-static-matrix')}.png"
     )
 
 
@@ -274,27 +303,48 @@ def generate_phase_breakdown(row: dict[str, str], path: Path) -> None:
     phase_names = [label for _, label in EVALUATION_PHASES]
     phase_values = [float(row[column]) for column, _ in EVALUATION_PHASES]
     recorded_phase_total = sum(phase_values)
+    m2l_names = [label for _, label in M2L_SUBPHASES]
+    m2l_values = [float(row[column]) for column, _ in M2L_SUBPHASES]
+    m2l_recorded_total = sum(m2l_values)
 
-    plt.figure(figsize=(10, 6))
-    bars = plt.barh(phase_names, phase_values)
-    for bar, value in zip(bars, phase_values):
-        fraction = value / recorded_phase_total if recorded_phase_total else 0.0
-        plt.annotate(
-            f"{value:.4g} s ({fraction:.1%})",
-            (bar.get_width(), bar.get_y() + bar.get_height() / 2),
-            xytext=(5, 0),
-            textcoords="offset points",
-            va="center",
-        )
-    if phase_values and max(phase_values) > 0.0:
-        plt.xlim(0.0, max(phase_values) * 1.35)
-    plt.xlabel("Mean phase time per evaluation (s)")
-    plt.title(
-        f"Evaluation phases: suite={row['suite']}\n{case_description(row)}"
+    figure, axes = plt.subplots(1, 2, figsize=(15, 6))
+
+    def draw_breakdown(axis, names, values, total, title):
+        bars = axis.barh(names, values)
+        for bar, value in zip(bars, values):
+            fraction = value / total if total else 0.0
+            axis.annotate(
+                f"{value:.4g} s ({fraction:.1%})",
+                (bar.get_width(), bar.get_y() + bar.get_height() / 2),
+                xytext=(5, 0),
+                textcoords="offset points",
+                va="center",
+            )
+        if values and max(values) > 0.0:
+            axis.set_xlim(0.0, max(values) * 1.45)
+        axis.set_xlabel("Mean time per evaluation (s)")
+        axis.set_title(title)
+
+    draw_breakdown(
+        axes[0],
+        phase_names,
+        phase_values,
+        recorded_phase_total,
+        "Top-level evaluation phases",
     )
-    plt.tight_layout()
-    plt.savefig(path)
-    plt.close()
+    draw_breakdown(
+        axes[1],
+        m2l_names,
+        m2l_values,
+        m2l_recorded_total,
+        "Nested M2L matrix sub-phases",
+    )
+    figure.suptitle(
+        f"Evaluation timing: suite={row['suite']}\n{case_description(row)}"
+    )
+    figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.91))
+    figure.savefig(path)
+    plt.close(figure)
 
 
 def generate_work_breakdown(row: dict[str, str], path: Path) -> None:
@@ -318,18 +368,32 @@ def generate_work_breakdown(row: dict[str, str], path: Path) -> None:
 
 def generate_setup_breakdown(row: dict[str, str], path: Path) -> None:
     setup = float(row.get("fmm_setup_seconds", row["tree_total"]))
-    evaluation = float(row["evaluation_median"])
-    plt.figure(figsize=(7, 5))
-    plt.bar(["one construction + one evaluation"], [setup], label="Tree setup")
-    plt.bar(
-        ["one construction + one evaluation"],
-        [evaluation],
-        bottom=[setup],
-        label="Evaluation",
+    tree = min(float(row["tree_total"]), setup)
+    static_plan = min(
+        float(row.get("static_plan_seconds", 0.0)),
+        max(setup - tree, 0.0),
     )
-    plt.ylabel("Wall time (s)")
-    plt.title(f"Setup and evaluation\n{case_description(row)}")
-    plt.legend()
+    other_setup = max(setup - tree - static_plan, 0.0)
+    evaluation = float(row["evaluation_median"])
+    components = [
+        ("Tree construction", tree),
+        ("Static M2L matrix plan", static_plan),
+        ("Other backend construction", other_setup),
+        ("One evaluation", evaluation),
+    ]
+
+    positive_components = [item for item in components if item[1] > 0.0]
+    labels = [item[0] for item in positive_components]
+    values = [item[1] for item in positive_components]
+    figure, axis = plt.subplots(figsize=(8, 5))
+    bars = axis.barh(labels, values)
+    axis.bar_label(bars, labels=[f"{value:.4g} s" for value in values], padding=3)
+    axis.set_xscale("log")
+    axis.set_xlabel("Wall time (s, logarithmic scale)")
+    axis.set_title(
+        f"Construction components and one evaluation\n{case_description(row)}"
+    )
+    axis.margins(x=0.18)
     plt.tight_layout()
     plt.savefig(path)
     plt.close()
@@ -342,7 +406,7 @@ def configuration_groups(rows: list[dict[str, str]]):
                 int(row["sources"]),
                 int(row["order"]),
                 int(row["threads"]),
-                row.get("execution_backend", "cpu-static"),
+                row.get("execution_backend", "cpu-static-matrix"),
             )
             for row in rows
         }
@@ -355,11 +419,23 @@ def configuration_groups(rows: list[dict[str, str]]):
                 if int(row["sources"]) == size
                 and int(row["order"]) == order
                 and int(row["threads"]) == threads
-                and row.get("execution_backend", "cpu-static") == backend
+                and row.get("execution_backend", "cpu-static-matrix") == backend
             ),
             key=lambda row: int(row["depth"]),
         )
         yield size, order, threads, backend, selected
+
+
+def workload_values(
+    rows: list[dict[str, str]],
+    include_creation: bool,
+) -> tuple[list[float], list[float]]:
+    """Return total one- and ten-evaluation workload times."""
+    component = "total" if include_creation else "evaluation"
+    return (
+        [float(row[f"workload_1_{component}_median"]) for row in rows],
+        [float(row[f"workload_10_{component}_median"]) for row in rows],
+    )
 
 
 def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
@@ -397,47 +473,60 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
         directories["phases"] / "representative.png",
     )
 
-    comparison = comparison_case(rows)
-    methods = ["Direct all-to-all P2P", "Reference FMM", "Static FMM"]
-    static_backend = comparison["static_multiply_backend"]
-    methods[-1] += f" ({static_backend})"
-    single_totals = [
-        float(comparison["p2p_1_total_median"]),
-        float(comparison["reference_1_total_median"]),
-        float(comparison["static_1_total_median"]),
-    ]
-    repeated_totals = [
-        float(comparison["p2p_10_total_median"]),
-        float(comparison["reference_10_total_median"]),
-        float(comparison["static_10_total_median"]),
-    ]
     comparison_rows = [
         row
         for row in rows
         if row["suite"] == "comparison"
-        and row.get("execution_backend", "cpu-static").startswith("cuda-")
     ]
-    for row in comparison_rows:
-        backend = row["execution_backend"]
-        evaluation = float(row["evaluation_median"])
-        setup = (
-            float(row["amortised_seconds"]) - evaluation
-        ) * int(row["evaluations"])
-        methods.append(backend)
-        single_totals.append(setup + evaluation)
-        repeated_totals.append(setup + 10.0 * evaluation)
+    comparison = comparison_case(rows)
+    comparison_description = (
+        f"N={comparison['sources']}, order={comparison['order']}, "
+        f"depth={comparison['depth']}, threads={comparison['threads']}"
+    )
+    method_labels = {
+        "cpu-direct": "CPU direct P2P",
+        "cuda-direct": "CUDA direct P2P",
+        "cpu-static-matrix": "FMM static matrix",
+        "cpu-static-matrix-mkl": "FMM static matrix + oneMKL",
+    }
+    methods = [
+        method_labels.get(row["execution_backend"], row["execution_backend"])
+        for row in comparison_rows
+    ]
     positions = np.arange(len(methods))
     width = 0.36
-    plt.figure(figsize=(9, 5))
-    plt.bar(positions - width / 2, single_totals, width, label="1 creation + 1 evaluation")
-    plt.bar(positions + width / 2, repeated_totals, width, label="1 creation + 10 evaluations")
-    plt.xticks(positions, methods)
-    plt.ylabel("Median total wall time (s)")
-    plt.title(f"Evaluation strategy comparison\n{case_description(comparison)}")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(directories["comparison"] / "backend_workloads.png")
-    plt.close()
+    workload_plots = [
+        (
+            True,
+            "backend_workloads_with_creation.png",
+            "Construction-inclusive workloads",
+            "1 construction + 1 evaluation",
+            "1 construction + 10 evaluations",
+        ),
+        (
+            False,
+            "backend_workloads_evaluation_only.png",
+            "Evaluation-only workloads (construction excluded)",
+            "1 evaluation",
+            "10 evaluations",
+        ),
+    ]
+    for include_creation, filename, title, single_label, repeated_label in workload_plots:
+        single_values, repeated_values = workload_values(
+            comparison_rows,
+            include_creation,
+        )
+        plt.figure(figsize=(9, 5))
+        plt.bar(positions - width / 2, single_values, width, label=single_label)
+        plt.bar(positions + width / 2, repeated_values, width, label=repeated_label)
+        plt.xticks(positions, methods)
+        plt.yscale("log")
+        plt.ylabel("Median total wall time (s, logarithmic scale)")
+        plt.title(f"{title}\n{comparison_description}")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(directories["comparison"] / filename)
+        plt.close()
 
     # Combined runtime, accuracy, and work views contain every grid case.
     figure, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -454,7 +543,9 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
             row for row in selected
             if np.isfinite(float(row["rms_relative_error"]))
         ]
-        if accurate:
+        # CPU direct is itself the all-to-all reference, so plotting it twice
+        # would create two differently sampled curves for the same algorithm.
+        if accurate and backend != "cpu-direct":
             axes[0, 1].plot(
                 [int(row["depth"]) for row in accurate],
                 [float(row["rms_relative_error"]) for row in accurate],
@@ -547,7 +638,9 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
             row for row in selected
             if np.isfinite(float(row["rms_relative_error"]))
         ]
-        if accurate:
+        # CPU direct is the reference itself, so a second curve would only
+        # compare two timing samples of the same all-to-all implementation.
+        if accurate and backend != "cpu-direct":
             plt.figure()
             plt.plot(
                 [int(row["depth"]) for row in accurate],
@@ -604,7 +697,7 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     orders = sorted({int(row["order"]) for row in grid})
     depths = sorted({int(row["depth"]) for row in grid})
     backends = sorted(
-        {row.get("execution_backend", "cpu-static") for row in grid}
+        {row.get("execution_backend", "cpu-static-matrix") for row in grid}
     )
     configurations = [
         (backend, order, depth)
@@ -618,7 +711,7 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
                 row for row in grid
                 if int(row["order"]) == order
                 and int(row["depth"]) == depth
-                and row.get("execution_backend", "cpu-static") == backend
+                and row.get("execution_backend", "cpu-static-matrix") == backend
             ),
             key=lambda row: int(row["sources"]),
         )
@@ -643,7 +736,9 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
             row for row in selected
             if np.isfinite(float(row["direct_seconds"]))
         ]
-        if accurate:
+        # CPU direct is the reference itself, so a second curve would only
+        # compare two timing samples of the same all-to-all implementation.
+        if accurate and backend != "cpu-direct":
             plt.figure()
             plt.loglog(
                 [int(row["sources"]) for row in accurate],
@@ -655,7 +750,7 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
                 [int(row["sources"]) for row in accurate],
                 [float(row["direct_seconds"]) for row in accurate],
                 "o-",
-                label="Direct all-to-all P2P",
+                label="CPU direct all-to-all P2P",
             )
             plt.xlabel("Sources and targets, N")
             plt.ylabel("Wall time (s)")
@@ -675,7 +770,7 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
             continue
         labelled = dict(row)
         labelled["series"] = (
-            f"{row.get('execution_backend', 'cpu-static')}, "
+            f"{row.get('execution_backend', 'cpu-static-matrix')}, "
             f"depth={row['depth']}"
         )
         trade.append(labelled)
@@ -723,12 +818,15 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
 
     scaling_rows = [row for row in rows if row["suite"] == "scaling"]
     for backend in sorted(
-        {row.get("execution_backend", "cpu-static") for row in scaling_rows}
+        {
+            row.get("execution_backend", "cpu-static-matrix")
+            for row in scaling_rows
+        }
     ):
         scaling = sorted(
             (
                 row for row in scaling_rows
-                if row.get("execution_backend", "cpu-static") == backend
+                if row.get("execution_backend", "cpu-static-matrix") == backend
             ),
             key=lambda row: int(row["threads"]),
         )
@@ -800,7 +898,12 @@ def main() -> None:
     print(
         f"Benchmark executable: {executable}\n"
         f"CUDA compiled={cuda_status.compiled}, "
-        f"available={cuda_status.available}, device={cuda_status.device or 'none'}\n"
+        f"available={cuda_status.available}, "
+        f"direct={cuda_status.direct_available}, "
+        f"far-field={cuda_status.farfield_available}, "
+        f"full={cuda_status.full_available}, "
+        f"oneMKL={cuda_status.mkl_available}, "
+        f"device={cuda_status.device or 'none'}\n"
         f"Backends: {', '.join(backends)}\n"
         f"Planned {total_cases} benchmark tests; maximum threads={max_threads}.",
         flush=True,
@@ -826,7 +929,7 @@ def main() -> None:
             samples=profile["samples"],
             direct=case.direct,
             backend=backend,
-            workload_comparison=False,
+            workload_comparison=True,
         )
         row["suite"] = case.suite
         rows.append(row)
@@ -866,7 +969,7 @@ def main() -> None:
             samples=profile["samples"],
             direct=True,
             backend=backend,
-            workload_comparison=backend == "cpu-static",
+            workload_comparison=True,
         )
         comparison_row["suite"] = "comparison"
         rows.append(comparison_row)
@@ -889,6 +992,10 @@ def main() -> None:
         f"max_threads={max_threads}\n"
         f"cuda_compiled={cuda_status.compiled}\n"
         f"cuda_available={cuda_status.available}\n"
+        f"cuda_direct_available={cuda_status.direct_available}\n"
+        f"cuda_farfield_available={cuda_status.farfield_available}\n"
+        f"cuda_full_available={cuda_status.full_available}\n"
+        f"one_mkl_available={cuda_status.mkl_available}\n"
         f"cuda_device={cuda_status.device}\n"
         f"backends={','.join(backends)}\n",
         encoding="utf-8",
@@ -905,6 +1012,25 @@ def main() -> None:
         seconds = float(representative[column])
         fraction = seconds / phase_total if phase_total else 0.0
         phase_rows.append(f"| {label} | {seconds:.6g} | {fraction:.1%} |")
+    m2l_phase_rows = []
+    m2l_phase_total = sum(
+        float(representative[column]) for column, _ in M2L_SUBPHASES
+    )
+    for column, label in M2L_SUBPHASES:
+        seconds = float(representative[column])
+        fraction = seconds / m2l_phase_total if m2l_phase_total else 0.0
+        m2l_phase_rows.append(
+            f"| {label} | {seconds:.6g} | {fraction:.1%} |"
+        )
+    comparison_rows = [row for row in rows if row["suite"] == "comparison"]
+    workload_rows = []
+    for row in comparison_rows:
+        workload_rows.append(
+            f"| {row['execution_backend']} | {row['m2l_strategy']} | "
+            f"{float(row['workload_1_total_median']):.6g} | "
+            f"{float(row['workload_10_total_median']):.6g} | "
+            f"{float(row['rms_relative_error']):.6g} |"
+        )
 
     (run_dir / "summary.md").write_text(
         "# Benchmark summary\n\n"
@@ -913,27 +1039,27 @@ def main() -> None:
         f"- Representative case: **{case_description(representative)}**.\n"
         f"- Median complete evaluation: **{evaluation:.6g} s**.\n\n"
         "## Creation/evaluation workloads\n\n"
-        f"Comparison case: **{case_description(comparison)}**. Static multiply "
-        f"backend: **{comparison['static_multiply_backend']}**. Times are median "
-        "totals and include construction where applicable. Direct all-to-all "
-        "P2P has no reusable construction phase.\n\n"
-        "| Method | 1 creation + 1 evaluation (s) | 1 creation + 10 evaluations (s) | RMS relative error |\n"
-        "|---|---:|---:|---:|\n"
-        f"| Direct all-to-all P2P | "
-        f"{float(comparison['p2p_1_total_median']):.6g} | "
-        f"{float(comparison['p2p_10_total_median']):.6g} | 0 |\n"
-        f"| Reference FMM | {float(comparison['reference_1_total_median']):.6g} | "
-        f"{float(comparison['reference_10_total_median']):.6g} | "
-        f"{float(comparison['reference_rms_relative_error']):.6g} |\n"
-        f"| Static FMM | {float(comparison['static_1_total_median']):.6g} | "
-        f"{float(comparison['static_10_total_median']):.6g} | "
-        f"{float(comparison['rms_relative_error']):.6g} |\n\n"
+        f"Comparison geometry: **N={comparison['sources']}, "
+        f"order={comparison['order']}, depth={comparison['depth']}, "
+        f"threads={comparison['threads']}**. Times are median totals and "
+        "include construction.\n\n"
+        "| Backend | Stored operator data | 1 creation + 1 evaluation (s) | 1 creation + 10 evaluations (s) | RMS relative error |\n"
+        "|---|---|---:|---:|---:|\n"
+        + "\n".join(workload_rows)
+        + "\n\n"
         "## Representative evaluation phases\n\n"
         "Shares are normalised over the recorded phase timers. The median "
         "complete evaluation above is measured independently.\n\n"
         "| Phase | Seconds per evaluation | Recorded share |\n"
         "|---|---:|---:|\n"
         + "\n".join(phase_rows)
+        + "\n\n"
+        "### Nested M2L matrix phases\n\n"
+        "These rows partition the M2L parent phase and are not added to the "
+        "top-level phase total.\n\n"
+        "| M2L sub-phase | Seconds per evaluation | M2L recorded share |\n"
+        "|---|---:|---:|\n"
+        + "\n".join(m2l_phase_rows)
         + "\n\n"
         "The full size/order/depth sweep is stored with "
         "`suite=parameter_grid`. `figures/combined_overview.png` provides the "
