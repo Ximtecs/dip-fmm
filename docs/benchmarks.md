@@ -107,16 +107,26 @@ and file output are outside timed regions.
 `m2l` is a top-level parent phase. `m2l_gather`, `m2l_multiply`, and
 `m2l_scatter` partition its static-matrix work and appear in a separate nested
 breakdown. They are excluded from top-level phase-share normalisation so the
-same M2L time is not counted twice.
+same M2L time is not counted twice. For hybrid CUDA M2L, multipole H2D and
+local-coefficient D2H are included in this nested partition as well;
+`cuda_kernel` is a diagnostic sum and is not counted as another top-level
+phase.
 
 Every automated benchmark row records two end-to-end workloads: exactly one
 construction plus one evaluation, and exactly one construction plus ten
 evaluations with changing dipole moments. Construction, evaluation, and total
 median times are stored separately. This applies independently to CPU direct,
-GPU direct, portable static-matrix FMM, and oneMKL static-matrix FMM. In the
-GPU 1+10 workload the positions remain device-resident and only moments and
-results cross the PCIe boundary between evaluations. OpenMP, CUDA, and oneMKL
-runtime initialisation is warmed before these workloads are timed.
+GPU direct, portable static-matrix FMM, oneMKL static-matrix FMM, and hybrid
+CUDA M2L FMM. In the
+GPU-direct 1+10 workload, positions remain device-resident and only moments
+and results cross the PCIe boundary between evaluations. Hybrid CUDA M2L keeps
+static matrices and interaction metadata resident while transferring packed
+multipoles and raw M2L locals per evaluation. OpenMP, CUDA, and oneMKL
+runtime initialisation is warmed before these workloads are timed. This removes
+process-global driver and library first-use costs. Timed construction still
+includes everything owned by an evaluator: tree and static-plan construction,
+CUDA handle and stream creation, device allocation, and static operator or
+geometry uploads.
 
 The comparison suite uses one representative geometry to produce two backend
 workload figures. `backend_workloads_with_creation.png` includes backend
@@ -138,6 +148,23 @@ same explicit identity map to exclude only each particle's singular self-pair.
 Consequently `--sources` and `--targets` must be equal.
 
 ## Automated profiles
+
+For a deliberately coarse five-backend comparison, use the `rough` profile:
+
+```console
+python benchmarks/run_benchmarks.py --profile rough --max-threads 8 \
+  --executable build-bench-all/benchmarks/benchmark_uniform_fmm
+```
+
+It runs exactly 20 processes: 20,000 and 30,000 particles at depths two and
+three, with expansion order four, across CPU direct P2P, CUDA direct P2P,
+portable CPU FMM, oneMKL CPU FMM, and hybrid CUDA M2L FMM. Each process records
+one warmed timed evaluation with one sample, plus independent 1+1 and 1+10
+construction/evaluation workloads. The profile deliberately omits thread
+scaling, the extra comparison suite, and direct accuracy references. It still
+produces construction-inclusive, evaluation-only, and setup-amortisation plots
+for every geometry, including projections through 10,000 evaluations. It fails
+explicitly unless all five backends are available.
 
 ```console
 python benchmarks/run_benchmarks.py --profile quick --max-threads 8
