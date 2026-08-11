@@ -20,6 +20,13 @@
 
 using namespace cdfmm;
 
+TEST_CASE("automatic FMM execution resolves to a truthful CPU backend")
+{
+    const std::vector<Vec3> positions{{-0.25, 0.0, 0.0}, {0.25, 0.0, 0.0}};
+    UniformFmm fmm(positions);
+    REQUIRE(fmm.backend() == ExecutionBackend::CpuStatic);
+}
+
 namespace {
 
 void require_coefficients_equal(std::span<const double> actual,

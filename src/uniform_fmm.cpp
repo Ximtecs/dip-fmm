@@ -15,6 +15,7 @@
 #endif
 
 #include "cdfmm/operators.hpp"
+#include "cdfmm/static_operators.hpp"
 #include "cuda_fmm_plan.hpp"
 
 namespace cdfmm {
@@ -79,17 +80,15 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     if (backend_ == ExecutionBackend::Auto) {
         backend_ = options.m2l_backend == M2LBackend::Reference
             ? ExecutionBackend::CpuReference
-            : (cuda_available() ? ExecutionBackend::CudaFull
-                                : ExecutionBackend::CpuStatic);
+            : ExecutionBackend::CpuStatic;
+    }
+    if (backend_ == ExecutionBackend::CudaFarField) {
+        throw std::runtime_error(
+            "CudaFarField is not implemented in this build"
+        );
     }
     m2l_backend_ = backend_ == ExecutionBackend::CpuReference
         ? M2LBackend::Reference : M2LBackend::Static;
-    if (backend_ == ExecutionBackend::CudaM2L ||
-        backend_ == ExecutionBackend::CudaFull) {
-        cuda_plan_ = std::make_unique<CudaFmmPlan>(
-            source_positions, std::span<const Vec3>{}, backend_
-        );
-    }
 
     multipoles_.assign(
         tree_.nodes().size(),
@@ -100,7 +99,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
         CoeffVector(static_cast<std::size_t>(basis_.size()), 0.0)
     );
     sorted_dipole_moments_.resize(source_positions.size());
-    if (m2l_backend_ == M2LBackend::Static && !cuda_plan_) {
+    if (m2l_backend_ == M2LBackend::Static) {
         build_static_plan();
     }
 }
@@ -121,17 +120,15 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     if (backend_ == ExecutionBackend::Auto) {
         backend_ = options.m2l_backend == M2LBackend::Reference
             ? ExecutionBackend::CpuReference
-            : (cuda_available() ? ExecutionBackend::CudaFull
-                                : ExecutionBackend::CpuStatic);
+            : ExecutionBackend::CpuStatic;
+    }
+    if (backend_ == ExecutionBackend::CudaFarField) {
+        throw std::runtime_error(
+            "CudaFarField is not implemented in this build"
+        );
     }
     m2l_backend_ = backend_ == ExecutionBackend::CpuReference
         ? M2LBackend::Reference : M2LBackend::Static;
-    if (backend_ == ExecutionBackend::CudaM2L ||
-        backend_ == ExecutionBackend::CudaFull) {
-        cuda_plan_ = std::make_unique<CudaFmmPlan>(
-            source_positions, target_positions, backend_
-        );
-    }
 
     multipoles_.assign(
         tree_.nodes().size(),
@@ -143,7 +140,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     );
     sorted_dipole_moments_.resize(source_positions.size());
     sorted_results_.resize(target_positions.size());
-    if (m2l_backend_ == M2LBackend::Static && !cuda_plan_) {
+    if (m2l_backend_ == M2LBackend::Static) {
         build_static_plan();
     }
 }
@@ -173,7 +170,6 @@ void UniformFmm::build_static_plan()
     static_plan_statistics_.transfer_discovery.add(elapsed_seconds(phase_start));
 
     const int coefficient_count = basis_.size();
-    const MultiIndexSet derivative_basis(2 * basis_.order());
     phase_start = Clock::now();
     for (const auto& [key, interactions] : classes) {
         M2LGroup group;
@@ -182,22 +178,7 @@ void UniformFmm::build_static_plan()
             level_offset(group.level))].half_width;
         const Vec3 R{box_width * group.dx, box_width * group.dy,
                      box_width * group.dz};
-        const auto derivatives = laplace_derivatives_raw(derivative_basis, R);
-        group.matrix.resize(static_cast<std::size_t>(coefficient_count) *
-                            coefficient_count);
-        for (int alpha_index = 0; alpha_index < coefficient_count;
-             ++alpha_index) {
-            for (int beta_index = 0; beta_index < coefficient_count;
-                 ++beta_index) {
-                const MultiIndex gamma = add(basis_[alpha_index],
-                                             basis_[beta_index]);
-                group.matrix[static_cast<std::size_t>(beta_index) +
-                             static_cast<std::size_t>(coefficient_count) *
-                                 alpha_index] =
-                    derivatives[static_cast<std::size_t>(
-                        derivative_basis.index(gamma))];
-            }
-        }
+        group.matrix = build_static_m2l_matrix(basis_, R);
         for (const auto [source, target] : interactions) {
             group.sources.push_back(source);
             group.targets.push_back(target);
@@ -464,21 +445,6 @@ void UniformFmm::evaluate_into(
         }
     }
 
-    if (cuda_plan_) {
-        const auto evaluation_start = Clock::now();
-        cuda_plan_->evaluate(dipole_moments, results, output,
-                             target_source_indices);
-        last_timings_ = {};
-        const auto& cuda_timings = cuda_plan_->evaluation_timings();
-        last_timings_.cuda_h2d.add(cuda_timings.h2d_seconds);
-        last_timings_.cuda_kernel.add(cuda_timings.kernel_seconds);
-        last_timings_.cuda_d2h.add(cuda_timings.d2h_seconds);
-        last_timings_.total.add(elapsed_seconds(evaluation_start));
-        last_timings_.evaluations = 1;
-        accumulate_timings(aggregate_timings_, last_timings_);
-        return;
-    }
-
     last_timings_ = {};
     const auto evaluation_start = Clock::now();
     upward_pass(dipole_moments);
@@ -589,7 +555,7 @@ M2LBackend UniformFmm::m2l_backend() const { return m2l_backend_; }
 ExecutionBackend UniformFmm::backend() const { return backend_; }
 const CudaPlanStatistics& UniformFmm::cuda_plan_statistics() const
 {
-    return cuda_plan_ ? cuda_plan_->statistics() : empty_cuda_statistics_;
+    return empty_cuda_statistics_;
 }
 const StaticPlanStatistics& UniformFmm::static_plan_statistics() const
 {

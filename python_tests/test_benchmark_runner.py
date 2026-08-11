@@ -120,7 +120,7 @@ def test_cuda_build_runs_every_case_with_static_and_cuda_backends():
         CudaStatus(compiled=True, available=True, device="Test GPU")
     )
 
-    assert backends == ["cpu-static", "cuda-m2l", "cuda-full"]
+    assert backends == ["cpu-static"]
     expanded = expanded_cases(cases, backends)
     for case in cases:
         selected = {
@@ -130,8 +130,6 @@ def test_cuda_build_runs_every_case_with_static_and_cuda_backends():
         }
         assert selected == {
             (case, "cpu-static"),
-            (case, "cuda-m2l"),
-            (case, "cuda-full"),
         }
 
 

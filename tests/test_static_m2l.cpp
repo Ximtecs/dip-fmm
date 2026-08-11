@@ -9,8 +9,41 @@
 #include <vector>
 
 #include "cdfmm/uniform_fmm.hpp"
+#include "cdfmm/operators.hpp"
+#include "cdfmm/static_operators.hpp"
 
 using namespace cdfmm;
+
+TEST_CASE("canonical static M2L matrices match independent m2l_add")
+{
+    std::mt19937 generator(9182);
+    std::uniform_real_distribution<double> coefficient(-1.0, 1.0);
+
+    for (const int order : {1, 2, 3, 4, 6}) {
+        const MultiIndexSet basis(order);
+        for (const Vec3 R : {
+                 Vec3{2.0, -3.0, 1.0},
+                 Vec3{-0.75, 1.25, 1.5},
+                 Vec3{4.0, 3.0, -2.0}
+             }) {
+            CoeffVector M(static_cast<std::size_t>(basis.size()));
+            for (double& value : M) {
+                value = coefficient(generator);
+            }
+            CoeffVector expected(M.size(), 0.0);
+            CoeffVector actual(M.size(), 0.0);
+            m2l_add(basis, R, M, expected);
+            const auto matrix = build_static_m2l_matrix(basis, R);
+            apply_static_coefficient_matrix(matrix, M, actual);
+
+            for (std::size_t index = 0; index < actual.size(); ++index) {
+                REQUIRE(actual[index] == Catch::Approx(expected[index])
+                    .margin(2.0e-14)
+                    .epsilon(4.0e-13));
+            }
+        }
+    }
+}
 
 TEST_CASE("static grouped M2L matches the independent reference traversal")
 {

@@ -20,6 +20,7 @@ add_library(cdfmm_core
     src/taylor_jet.cpp
     src/laplace_derivatives.cpp
     src/operators.cpp
+    src/static_operators.cpp
     src/validation.cpp
     src/uniform_tree.cpp
     src/uniform_fmm.cpp
