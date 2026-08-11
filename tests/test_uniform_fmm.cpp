@@ -265,6 +265,7 @@ TEST_CASE("Complete uniform FMM converges towards direct P2P",
   for (const int order : {2, 3, 4}) {
     UniformFmmOptions options;
     options.expansion_order = order;
+    options.backend = ExecutionBackend::CpuStatic;
     options.tree.max_level = 2;
     options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
     options.tree.root_half_width = 1.0;
@@ -288,6 +289,7 @@ TEST_CASE("Depth-zero complete evaluation is direct in every output mode",
   const std::vector<Vec3> targets{{0.12, -0.27, 0.34}, {-0.45, 0.16, -0.08}};
   UniformFmmOptions options;
   options.expansion_order = 3;
+  options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 0;
   UniformFmm fmm(distributed_positions, targets, options);
 
@@ -313,6 +315,7 @@ TEST_CASE("Target permutation and repeated evaluation replace downward state",
                             {-0.52, 0.63, -0.44}};
   UniformFmmOptions options;
   options.expansion_order = 4;
+  options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 2;
   options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
   options.tree.root_half_width = 1.0;
@@ -347,6 +350,7 @@ TEST_CASE("Explicit source identities exclude only singular self pairs",
       {0.4, 0.1, -0.2}, {-0.3, 0.7, 0.5}, {0.2, -0.6, 0.8}};
   UniformFmmOptions options;
   options.expansion_order = 3;
+  options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 0;
   UniformFmm fmm(positions, positions, options);
   const std::vector<int> identities{0, 1, 2};
@@ -375,6 +379,7 @@ TEST_CASE("OpenMP thread counts preserve complete FMM results",
           "[uniform_fmm][openmp]") {
   UniformFmmOptions options;
   options.expansion_order = 4;
+  options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 3;
   options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
   options.tree.root_half_width = 1.0;
@@ -408,6 +413,7 @@ TEST_CASE("OpenMP thread counts preserve complete FMM results",
 
 TEST_CASE("Evaluation timings aggregate and reset", "[uniform_fmm][timing]") {
   UniformFmmOptions options;
+  options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 2;
   UniformFmm fmm(distributed_positions, distributed_positions, options);
   std::vector<PotentialField> results(distributed_positions.size());

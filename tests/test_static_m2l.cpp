@@ -33,8 +33,10 @@ TEST_CASE("static grouped M2L matches the independent reference traversal")
         UniformFmmOptions static_options;
         static_options.expansion_order = order;
         static_options.tree.max_level = 3;
+        static_options.backend = ExecutionBackend::CpuStatic;
         UniformFmmOptions reference_options = static_options;
         reference_options.m2l_backend = M2LBackend::Reference;
+        reference_options.backend = ExecutionBackend::CpuReference;
 
         UniformFmm static_fmm(positions, positions, static_options);
         UniformFmm reference_fmm(positions, positions, reference_options);

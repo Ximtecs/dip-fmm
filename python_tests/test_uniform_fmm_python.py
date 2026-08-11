@@ -8,11 +8,13 @@ def test_static_backend_is_default_and_reference_is_selectable():
     sources = np.array([[-0.75, 0.0, 0.0], [0.75, 0.0, 0.0]])
     moments = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     options = cdfmm.UniformFmmOptions()
+    options.backend = cdfmm.ExecutionBackend.CPU_STATIC
     options.tree.max_level = 2
     static_fmm = cdfmm.UniformFmm(sources, sources, options)
     assert static_fmm.m2l_backend == cdfmm.M2LBackend.Static
 
     options.m2l_backend = cdfmm.M2LBackend.Reference
+    options.backend = cdfmm.ExecutionBackend.CPU_REFERENCE
     reference_fmm = cdfmm.UniformFmm(sources, sources, options)
     identities = np.arange(sources.shape[0], dtype=int)
     static_result = static_fmm.evaluate(
@@ -125,6 +127,7 @@ def test_complete_evaluation_shapes_ordering_and_repeated_state():
     )
     options = cdfmm.UniformFmmOptions()
     options.expansion_order = 4
+    options.backend = cdfmm.ExecutionBackend.CPU_STATIC
     options.tree.max_level = 2
     options.tree.root_centre = cdfmm.Vec3(0.0, 0.0, 0.0)
     options.tree.root_half_width = 1.0
@@ -150,6 +153,7 @@ def test_complete_evaluation_shapes_ordering_and_repeated_state():
 def test_complete_source_point_evaluation_uses_explicit_identities():
     options = cdfmm.UniformFmmOptions()
     options.expansion_order = 3
+    options.backend = cdfmm.ExecutionBackend.CPU_STATIC
     options.tree.max_level = 0
     fmm = cdfmm.UniformFmm(POSITIONS, POSITIONS, options)
     identities = np.arange(len(POSITIONS), dtype=int)
