@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <numeric>
 #include <vector>
 
 #include "cdfmm/uniform_fmm.hpp"
@@ -80,6 +81,8 @@ TEST_CASE("CUDA M2L hybrid agrees with CPU static", "[cuda][manual]")
         moments.push_back({std::sin(value), std::cos(0.7 * value),
                            std::sin(0.3 * value)});
     }
+    std::vector<int> source_identities(positions.size());
+    std::iota(source_identities.begin(), source_identities.end(), 0);
 
     for (const int order : {2, 4, 6}) {
         for (const int depth : {2, 3}) {
@@ -94,8 +97,16 @@ TEST_CASE("CUDA M2L hybrid agrees with CPU static", "[cuda][manual]")
 
             UniformFmm cpu(positions, positions, cpu_options);
             UniformFmm cuda(positions, positions, cuda_options);
-            const auto expected = cpu.evaluate(moments, OutputFlags::Both);
-            const auto actual = cuda.evaluate(moments, OutputFlags::Both);
+            const auto expected = cpu.evaluate(
+                moments,
+                OutputFlags::Both,
+                source_identities
+            );
+            const auto actual = cuda.evaluate(
+                moments,
+                OutputFlags::Both,
+                source_identities
+            );
             REQUIRE(cuda.cuda_plan_statistics().static_m2l_upload_count == 1);
             for (std::size_t index = 0; index < actual.size(); ++index) {
                 REQUIRE(actual[index].phi ==
