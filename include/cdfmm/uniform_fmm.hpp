@@ -4,6 +4,8 @@
 #include <span>
 #include <cstdint>
 #include <vector>
+#include <memory>
+#include <string>
 
 #include "cdfmm/coefficients.hpp"
 #include "cdfmm/multi_index.hpp"
@@ -11,6 +13,22 @@
 #include "cdfmm/uniform_tree.hpp"
 
 namespace cdfmm {
+
+class CudaFmmPlan;
+
+enum class ExecutionBackend {
+    Auto,
+    CpuReference,
+    CpuStatic,
+    CudaM2L,
+    CudaFull
+};
+
+/** @brief Reports whether this build can access a CUDA device. */
+[[nodiscard]] bool cuda_available() noexcept;
+
+/** @brief Returns a concise description of the selected CUDA device. */
+[[nodiscard]] std::string cuda_device_description();
 
 //------------------------------------------------------------------------------
 // Public types
@@ -32,6 +50,8 @@ struct UniformFmmOptions {
       Static,
       Reference
   } m2l_backend{M2LBackend::Static};
+  /// @brief Complete evaluation backend. Auto selects CUDA full when available.
+  ExecutionBackend backend{ExecutionBackend::Auto};
 };
 
 using M2LBackend = UniformFmmOptions::M2LBackend;
@@ -52,6 +72,11 @@ using M2LBackend = UniformFmmOptions::M2LBackend;
  */
 class UniformFmm {
 public:
+  ~UniformFmm();
+  UniformFmm(UniformFmm&&) noexcept;
+  UniformFmm& operator=(UniformFmm&&) noexcept;
+  UniformFmm(const UniformFmm&) = delete;
+  UniformFmm& operator=(const UniformFmm&) = delete;
   /**
    * @brief Constructs fixed source geometry for repeated upward passes.
    *
@@ -139,6 +164,10 @@ public:
   [[nodiscard]] const MultiIndexSet &basis() const;
   /// @brief Returns the selected M2L execution backend.
   [[nodiscard]] M2LBackend m2l_backend() const;
+  /// @brief Returns the resolved backend used by this evaluator.
+  [[nodiscard]] ExecutionBackend backend() const;
+  /// @brief Returns CUDA traffic and persistent-allocation diagnostics.
+  [[nodiscard]] const CudaPlanStatistics &cuda_plan_statistics() const;
   /// @brief Returns one-time static-plan timing and memory information.
   [[nodiscard]] const StaticPlanStatistics &static_plan_statistics() const;
 
@@ -175,6 +204,9 @@ private:
   UniformTree tree_;
   MultiIndexSet basis_;
   M2LBackend m2l_backend_{M2LBackend::Static};
+  ExecutionBackend backend_{ExecutionBackend::CpuStatic};
+  std::unique_ptr<CudaFmmPlan> cuda_plan_{};
+  CudaPlanStatistics empty_cuda_statistics_{};
   std::vector<M2LGroup> m2l_groups_{};
   StaticPlanStatistics static_plan_statistics_{};
   std::vector<CoeffVector> multipoles_{};

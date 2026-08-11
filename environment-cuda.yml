@@ -1,0 +1,9 @@
+name: cdfmm
+channels:
+  - nvidia
+  - conda-forge
+dependencies:
+  - cuda-compiler
+  - cuda-cudart-dev
+  - cuda-libraries-dev
+  - libcublas-dev

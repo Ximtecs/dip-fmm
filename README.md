@@ -19,6 +19,13 @@ for (const auto& moments : moment_states) {
 
 Python exposes the same default and `cdfmm.M2LBackend.Reference` fallback.
 
+Execution can also be selected with `options.backend`: `CpuReference`,
+`CpuStatic`, `CudaM2L`, or `CudaFull` in C++, and the corresponding uppercase
+`cdfmm.ExecutionBackend` values in Python. `Auto` selects CUDA full when a CUDA
+device is available and CPU static otherwise. An explicitly requested CUDA
+backend fails rather than silently falling back. CUDA is an optional manual
+hardware build; see the installation and validation guides.
+
 ## Status
 
 The CPU reference operator layer is implemented: P2M, M2M, M2L, L2L, L2P,

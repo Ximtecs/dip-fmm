@@ -348,6 +348,34 @@ are `cmake --preset benchmark` and `cmake --build --preset benchmark`.
 
 ## Building the documentation
 
+## Optional CUDA environment and build
+
+CUDA dependencies are supplemental and do not affect normal CPU development:
+
+```console
+conda env update -n cdfmm -f environment.yml
+conda env update -n cdfmm -f environment-cuda.yml
+conda activate cdfmm
+nvcc --version
+nvidia-smi
+cmake --preset cuda
+cmake --build --preset cuda
+ctest --preset cuda
+```
+
+The NVIDIA-channel environment provides the compiler, runtime development
+files, headers, and cuBLAS development package. CMake discovers these through
+`find_package(CUDAToolkit)` and imported targets; no library paths are fixed in
+the project. The installed NVIDIA driver must support the selected toolkit and
+GPU. CMake 3.20 or newer and a CUDA-capable GPU are required. CUDA host-compiler
+compatibility is governed by the installed toolkit; if `icpx` is unsupported,
+use the toolkit's supported host compiler for the CUDA preset.
+
+Verify `cuda_available()` and `cuda_device_description()` from Python after
+installing the CUDA build. GitHub Actions explicitly configures
+`CDFMM_ENABLE_CUDA=OFF`: CUDA compilation, tests, and performance measurements
+are intentionally manual and require a real NVIDIA CUDA-capable system.
+
 All documentation dependencies, including Doxygen, are already in the Conda
 environment.  From `<repo-root>`, run:
 

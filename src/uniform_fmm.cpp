@@ -15,6 +15,7 @@
 #endif
 
 #include "cdfmm/operators.hpp"
+#include "cuda_fmm_plan.hpp"
 
 namespace cdfmm {
 
@@ -71,6 +72,22 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
         );
     }
 
+    backend_ = options.backend;
+    if (backend_ == ExecutionBackend::Auto) {
+        backend_ = options.m2l_backend == M2LBackend::Reference
+            ? ExecutionBackend::CpuReference
+            : (cuda_available() ? ExecutionBackend::CudaFull
+                                : ExecutionBackend::CpuStatic);
+    }
+    m2l_backend_ = backend_ == ExecutionBackend::CpuReference
+        ? M2LBackend::Reference : M2LBackend::Static;
+    if (backend_ == ExecutionBackend::CudaM2L ||
+        backend_ == ExecutionBackend::CudaFull) {
+        cuda_plan_ = std::make_unique<CudaFmmPlan>(
+            source_positions, std::span<const Vec3>{}, backend_
+        );
+    }
+
     multipoles_.assign(
         tree_.nodes().size(),
         CoeffVector(static_cast<std::size_t>(basis_.size()), 0.0)
@@ -80,7 +97,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
         CoeffVector(static_cast<std::size_t>(basis_.size()), 0.0)
     );
     sorted_dipole_moments_.resize(source_positions.size());
-    if (m2l_backend_ == M2LBackend::Static) {
+    if (m2l_backend_ == M2LBackend::Static && !cuda_plan_) {
         build_static_plan();
     }
 }
@@ -97,6 +114,22 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
         );
     }
 
+    backend_ = options.backend;
+    if (backend_ == ExecutionBackend::Auto) {
+        backend_ = options.m2l_backend == M2LBackend::Reference
+            ? ExecutionBackend::CpuReference
+            : (cuda_available() ? ExecutionBackend::CudaFull
+                                : ExecutionBackend::CpuStatic);
+    }
+    m2l_backend_ = backend_ == ExecutionBackend::CpuReference
+        ? M2LBackend::Reference : M2LBackend::Static;
+    if (backend_ == ExecutionBackend::CudaM2L ||
+        backend_ == ExecutionBackend::CudaFull) {
+        cuda_plan_ = std::make_unique<CudaFmmPlan>(
+            source_positions, target_positions, backend_
+        );
+    }
+
     multipoles_.assign(
         tree_.nodes().size(),
         CoeffVector(static_cast<std::size_t>(basis_.size()), 0.0)
@@ -107,8 +140,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     );
     sorted_dipole_moments_.resize(source_positions.size());
     sorted_results_.resize(target_positions.size());
-    m2l_backend_ = options.m2l_backend;
-    if (m2l_backend_ == M2LBackend::Static) {
+    if (m2l_backend_ == M2LBackend::Static && !cuda_plan_) {
         build_static_plan();
     }
 }
@@ -429,6 +461,17 @@ void UniformFmm::evaluate_into(
         }
     }
 
+    if (cuda_plan_) {
+        const auto evaluation_start = Clock::now();
+        cuda_plan_->evaluate(dipole_moments, results, output,
+                             target_source_indices);
+        last_timings_ = {};
+        last_timings_.total.add(elapsed_seconds(evaluation_start));
+        last_timings_.evaluations = 1;
+        accumulate_timings(aggregate_timings_, last_timings_);
+        return;
+    }
+
     last_timings_ = {};
     const auto evaluation_start = Clock::now();
     upward_pass(dipole_moments);
@@ -536,6 +579,11 @@ void UniformFmm::evaluate_into(
 const UniformTree& UniformFmm::tree() const { return tree_; }
 const MultiIndexSet& UniformFmm::basis() const { return basis_; }
 M2LBackend UniformFmm::m2l_backend() const { return m2l_backend_; }
+ExecutionBackend UniformFmm::backend() const { return backend_; }
+const CudaPlanStatistics& UniformFmm::cuda_plan_statistics() const
+{
+    return cuda_plan_ ? cuda_plan_->statistics() : empty_cuda_statistics_;
+}
 const StaticPlanStatistics& UniformFmm::static_plan_statistics() const
 {
     return static_plan_statistics_;
@@ -569,6 +617,20 @@ const EvaluationTimings& UniformFmm::aggregate_timings() const
 void UniformFmm::reset_timings()
 {
     aggregate_timings_ = {};
+}
+
+UniformFmm::~UniformFmm() = default;
+UniformFmm::UniformFmm(UniformFmm&&) noexcept = default;
+UniformFmm& UniformFmm::operator=(UniformFmm&&) noexcept = default;
+
+bool cuda_available() noexcept
+{
+    return cuda_runtime_available();
+}
+
+std::string cuda_device_description()
+{
+    return cuda_runtime_description();
 }
 
 } // namespace cdfmm
