@@ -201,3 +201,67 @@ Once source-build portability is continuously tested, investigate:
 
 These are future shipping goals, not capabilities of the current source-only
 development workflow.
+# CUDA acceleration
+
+- [x] optional `CDFMM_ENABLE_CUDA` build and supplemental Conda environment
+- [x] explicit CPU-reference, CPU-static, CUDA-M2L, and CUDA-full selection API
+- [x] persistent device geometry, input, output, stream, and pinned staging buffers
+- [x] minimal field-only steady-state transfer accounting
+- [ ] transfer-class grouped CUDA M2L and resident Cartesian operators
+- [ ] device P2M, M2M, L2L, and L2P kernels
+- [x] device near-field/direct dipole kernel and user-order output
+- [ ] device Morton permutations
+- [ ] custom-versus-cuBLAS M2L microbenchmarks
+- [ ] CUDA Graph investigation and retention if measurements justify it
+- [ ] CPU-static versus hybrid versus full-CUDA crossover study
+- [x] manual CUDA validation workflow (CUDA remains excluded from GitHub CI)
+
+The first CUDA landing establishes the optional toolchain, persistent ownership,
+strict field-only moment/result transfer path, backend API, and exact device
+dipole kernel. The unchecked items are deliberately not represented as complete:
+the direct device path is a correctness baseline while the Cartesian FMM stages
+and genuine M2L-only transfer path are implemented and profiled.
+
+## Future milestone: true periodic magnetostatics
+
+Periodic boundaries must cover one periodic axis, two-dimensional slabs, and
+fully three-dimensional cells. A finite collection of manually replicated image
+cells is useful for tests but is **not** true infinite periodicity. Before an API
+or implementation is accepted, it must define the unit-cell lattice vectors,
+periodic axes, lattice-sum convention, zero/far mode, macroscopic magnetic
+boundary condition, and treatment of mean magnetisation or net cell dipole.
+Electrostatic neutrality rules must not be assumed to apply unchanged to
+magnetostatics.
+
+The leading architecture to investigate is a small near-image region evaluated
+by the existing free-space FMM plus a precomputed operator representing every
+remaining image. That operator would act as a root/local M2L-like correction
+before the ordinary downward pass. It depends on lattice, periodic axes, kernel,
+and order but not changing moments, making it suitable for the CPU static plan,
+persistent GPU residency, and repeated application. The Cartesian dipole/Taylor
+operator must be derived rather than copied from a kernel-independent formula.
+
+Validation must include small explicit image sums, independent Ewald/reference
+calculations, analytic and symmetry cases, translation invariance within the
+cell, matching across opposite faces, 1-D/2-D/3-D cases, convergence in FMM
+order, and convergence of the far-periodic construction. Micromagnetic tests
+must detect accidental finite-sample shape effects when true periodicity is
+requested.
+
+Literature starting points are:
+
+- Lambert, Darden & Board, *JCP* 126 (1996), DOI `10.1006/jcph.1996.0137`.
+- Challacombe, White & Head-Gordon, *JCP* 107 (1997), DOI `10.1063/1.474150`.
+- Kudin & Scuseria, *CPL* 283 (1998), DOI `10.1016/S0009-2614(97)01329-8`;
+  and *JCP* 121 (2004), DOI `10.1063/1.1771634`.
+- Apalkov & Visscher, periodic micromagnetic FMM with a Taylor representation
+  of the distant infinite array, *IEEE Trans. Magn.* 39 (2003), DOI
+  `10.1109/TMAG.2003.819461`.
+- Yan & Shelley, periodic M2L separation, arXiv `1705.02043`.
+- Pei, Askham, Greengard & Jiang, arbitrary 2-D lattices, *JCP* 474 (2023),
+  DOI `10.1016/j.jcp.2022.111792`.
+- Lebecki, Donahue & Gutowski, *J. Phys. D* 41 (2008), DOI
+  `10.1088/0022-3727/41/17/175005`; Wysocki & Antropov, *JMMM* 428 (2017),
+  DOI `10.1016/j.jmmm.2016.11.128`; and Bruckner et al., *Scientific Reports*
+  11 (2021), DOI `10.1038/s41598-021-88541-9`, as independent micromagnetic
+  periodic validation approaches.

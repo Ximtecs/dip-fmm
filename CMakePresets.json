@@ -7,6 +7,20 @@
   },
   "configurePresets": [
     {
+      "name": "cuda",
+      "displayName": "Manual CUDA validation build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-cuda",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CDFMM_ENABLE_CUDA": "ON",
+        "CDFMM_BUILD_TESTS": "ON",
+        "CDFMM_BUILD_EXAMPLES": "OFF",
+        "CDFMM_BUILD_PYTHON": "ON",
+        "CDFMM_BUILD_BENCHMARKS": "ON"
+      }
+    },
+    {
       "name": "dev",
       "displayName": "Developer build",
       "generator": "Ninja",
@@ -62,6 +76,10 @@
   ],
   "buildPresets": [
     {
+      "name": "cuda",
+      "configurePreset": "cuda"
+    },
+    {
       "name": "dev",
       "configurePreset": "dev"
     },
@@ -79,6 +97,13 @@
     }
   ],
   "testPresets": [
+    {
+      "name": "cuda",
+      "configurePreset": "cuda",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
     {
       "name": "dev",
       "configurePreset": "dev",

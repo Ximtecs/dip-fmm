@@ -1,5 +1,16 @@
 # Performance benchmarks
 
+## CUDA measurements
+
+Build CUDA benchmarks manually with `cmake --preset cuda` and
+`cmake --build --preset cuda`. Run the uniform workload executable with the
+same pre-generated geometry and moment states for CPU static, CUDA M2L, and
+CUDA full. Record caller wall time together with setup bytes, per-evaluation
+H2D/D2H bytes and calls, and persistent device bytes from
+`cuda_plan_statistics`. CUDA results are hardware-specific and are never
+generated in GitHub Actions. Do not report crossover or amortisation claims
+without measured output from an actual GPU.
+
 The performance path uses Intel oneAPI `icpx`, Release optimisation, native CPU
 code generation, IPO where supported, and OpenMP. Configure it from the
 repository root:

@@ -8,6 +8,7 @@ option(CDFMM_BUILD_PYTHON "Build Python bindings" ON)
 option(CDFMM_ENABLE_OPENMP "Enable internally parallel CPU execution" ON)
 option(CDFMM_ENABLE_IPO "Enable interprocedural optimisation for Release builds" OFF)
 option(CDFMM_ENABLE_MKL "Use oneMKL DGEMM for grouped static M2L" OFF)
+option(CDFMM_ENABLE_CUDA "Enable optional NVIDIA CUDA execution backends" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +22,19 @@ add_library(cdfmm_core
     src/uniform_tree.cpp
     src/uniform_fmm.cpp
 )
+if(CDFMM_ENABLE_CUDA)
+  enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  target_sources(cdfmm_core PRIVATE src/cuda_fmm.cu)
+  target_link_libraries(cdfmm_core PUBLIC CUDA::cudart CUDA::cublas)
+  target_compile_definitions(cdfmm_core PUBLIC CDFMM_ENABLE_CUDA=1)
+  set_target_properties(cdfmm_core PROPERTIES
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON
+  )
+else()
+  target_sources(cdfmm_core PRIVATE src/cuda_fmm_stub.cpp)
+endif()
 target_include_directories(cdfmm_core PUBLIC include)
 set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

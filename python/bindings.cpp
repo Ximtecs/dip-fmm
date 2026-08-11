@@ -365,6 +365,16 @@ PYBIND11_MODULE(cdfmm, module)
         .value("Static", M2LBackend::Static)
         .value("Reference", M2LBackend::Reference);
 
+    py::enum_<ExecutionBackend>(module, "ExecutionBackend")
+        .value("AUTO", ExecutionBackend::Auto)
+        .value("CPU_REFERENCE", ExecutionBackend::CpuReference)
+        .value("CPU_STATIC", ExecutionBackend::CpuStatic)
+        .value("CUDA_M2L", ExecutionBackend::CudaM2L)
+        .value("CUDA_FULL", ExecutionBackend::CudaFull);
+
+    module.def("cuda_available", &cuda_available);
+    module.def("cuda_device_description", &cuda_device_description);
+
     py::class_<UniformFmmOptions>(module, "UniformFmmOptions")
         .def(py::init<>())
         .def_readwrite(
@@ -372,7 +382,8 @@ PYBIND11_MODULE(cdfmm, module)
             &UniformFmmOptions::expansion_order
         )
         .def_readwrite("tree", &UniformFmmOptions::tree)
-        .def_readwrite("m2l_backend", &UniformFmmOptions::m2l_backend);
+        .def_readwrite("m2l_backend", &UniformFmmOptions::m2l_backend)
+        .def_readwrite("backend", &UniformFmmOptions::backend);
 
     py::class_<UniformFmm>(module, "UniformFmm")
         .def(
@@ -449,6 +460,21 @@ PYBIND11_MODULE(cdfmm, module)
             return fmm.basis().order();
         })
         .def_property_readonly("m2l_backend", &UniformFmm::m2l_backend)
+        .def_property_readonly("backend", &UniformFmm::backend)
+        .def_property_readonly("cuda_plan_statistics", [](const UniformFmm& fmm) {
+            const CudaPlanStatistics& statistics = fmm.cuda_plan_statistics();
+            py::dict result;
+            result["setup_h2d_bytes"] = statistics.setup_h2d_bytes;
+            result["evaluation_h2d_bytes"] = statistics.evaluation_h2d_bytes;
+            result["evaluation_d2h_bytes"] = statistics.evaluation_d2h_bytes;
+            result["evaluation_h2d_calls"] = statistics.evaluation_h2d_calls;
+            result["evaluation_d2h_calls"] = statistics.evaluation_d2h_calls;
+            result["persistent_device_bytes"] = statistics.persistent_device_bytes;
+            result["plan_generation_count"] = statistics.plan_generation_count;
+            result["static_upload_count"] = statistics.static_upload_count;
+            result["static_m2l_upload_count"] = statistics.static_m2l_upload_count;
+            return result;
+        })
         .def_property_readonly("static_plan_statistics", [](const UniformFmm& fmm) {
             const StaticPlanStatistics& statistics = fmm.static_plan_statistics();
             py::dict result;

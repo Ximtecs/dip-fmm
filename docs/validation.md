@@ -1,5 +1,23 @@
 # Validation and testing
 
+## Manual CUDA validation
+
+CUDA tests are intentionally not executed by GitHub Actions. They must be run
+manually on an NVIDIA CUDA-capable system:
+
+```console
+cmake --preset cuda
+cmake --build --preset cuda
+ctest --preset cuda
+python -m pytest python_tests -v
+```
+
+For field-only repeated evaluation, inspect `cuda_plan_statistics`: after an
+unchanged identity map is resident, H2D traffic is exactly one user-order
+moment array and D2H traffic is exactly one user-order field array. Potential
+traffic is added only when requested. Plan generation and static upload counters
+make accidental setup reconstruction visible.
+
 The project validates small mathematical pieces analytically before composing
 them.  Unit tests cover multi-index counts and ordering, Taylor-jet algebra,
 Laplace derivatives, output modes, axial and transverse direct dipoles, tree

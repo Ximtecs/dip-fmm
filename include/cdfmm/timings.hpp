@@ -102,4 +102,17 @@ struct StaticPlanStatistics {
     }
 };
 
+/** @brief Host/device traffic and persistent storage for a CUDA plan. */
+struct CudaPlanStatistics {
+    std::size_t setup_h2d_bytes{0};
+    std::size_t evaluation_h2d_bytes{0};
+    std::size_t evaluation_d2h_bytes{0};
+    std::uint64_t evaluation_h2d_calls{0};
+    std::uint64_t evaluation_d2h_calls{0};
+    std::size_t persistent_device_bytes{0};
+    std::uint64_t plan_generation_count{0};
+    std::uint64_t static_upload_count{0};
+    std::uint64_t static_m2l_upload_count{0};
+};
+
 } // namespace cdfmm
