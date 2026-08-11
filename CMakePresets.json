@@ -79,6 +79,31 @@
         "CDFMM_ENABLE_MKL": "ON",
         "MKL_DIR": "$env{CONDA_PREFIX}/lib/cmake/mkl"
       }
+    },
+    {
+      "name": "benchmark-all",
+      "displayName": "Combined CPU, CUDA direct, and oneMKL benchmark build",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-bench-all",
+      "environment": {
+        "NVCC_PREPEND_FLAGS": ""
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_CUDA_HOST_COMPILER": "g++",
+        "CMAKE_CUDA_ARCHITECTURES": "native",
+        "CDFMM_BUILD_TESTS": "OFF",
+        "CDFMM_BUILD_EXAMPLES": "OFF",
+        "CDFMM_BUILD_PYTHON": "OFF",
+        "CDFMM_BUILD_BENCHMARKS": "ON",
+        "CDFMM_ENABLE_OPENMP": "ON",
+        "CDFMM_ENABLE_CUDA": "ON",
+        "CDFMM_ENABLE_MKL": "ON",
+        "MKL_DIR": "$env{CONDA_PREFIX}/lib/cmake/mkl",
+        "MKL_INTERFACE": "lp64",
+        "MKL_THREADING": "gnu_thread"
+      }
     }
   ],
   "buildPresets": [
@@ -102,6 +127,10 @@
     {
       "name": "benchmark-mkl",
       "configurePreset": "benchmark-mkl"
+    },
+    {
+      "name": "benchmark-all",
+      "configurePreset": "benchmark-all"
     }
   ],
   "testPresets": [

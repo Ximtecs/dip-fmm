@@ -2,6 +2,7 @@
 
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
+#include "cuda_fmm_plan.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <stdexcept>
@@ -20,6 +22,7 @@
 #endif
 
 #ifdef CDFMM_USE_MKL
+#include <mkl.h>
 #include <mkl_version.h>
 #endif
 
@@ -41,7 +44,7 @@ struct Options {
     bool direct{true};
     bool workload_comparison{true};
     bool cuda_status{false};
-    std::string backend{"cpu-static"};
+    std::string backend{"cpu-static-matrix"};
     std::string output{};
 };
 
@@ -49,6 +52,13 @@ struct WorkloadTiming {
     double construction_seconds{0.0};
     double evaluation_seconds{0.0};
     double total_seconds{0.0};
+};
+
+enum class BenchmarkBackend {
+    CpuDirect,
+    CpuStaticMatrix,
+    CpuStaticMatrixMkl,
+    CudaDirect
 };
 
 Options parse_options(const int argc, char** argv)
@@ -98,26 +108,53 @@ Options parse_options(const int argc, char** argv)
     return options;
 }
 
-cdfmm::ExecutionBackend execution_backend(const std::string& name)
+BenchmarkBackend benchmark_backend(const std::string& name)
 {
-    using cdfmm::ExecutionBackend;
-
-    if (name == "cpu-reference") {
-        return ExecutionBackend::CpuReference;
+    if (name == "cpu-direct") {
+        return BenchmarkBackend::CpuDirect;
     }
-    if (name == "cpu-static") {
-        return ExecutionBackend::CpuStatic;
+    if (name == "cpu-static-matrix") {
+        return BenchmarkBackend::CpuStaticMatrix;
     }
-    if (name == "cuda-farfield-fmm") {
-        if (!cdfmm::cuda_farfield_available()) {
-            throw std::runtime_error("CUDA far-field FMM is unavailable");
+    if (name == "cpu-static-matrix-mkl") {
+        if (!cdfmm::one_mkl_available()) {
+            throw std::runtime_error(
+                "The oneMKL static-matrix backend is unavailable"
+            );
         }
-        return ExecutionBackend::CudaFarField;
+        return BenchmarkBackend::CpuStaticMatrixMkl;
+    }
+    if (name == "cuda-direct") {
+        if (!cdfmm::cuda_direct_available()) {
+            throw std::runtime_error("CUDA direct P2P is unavailable");
+        }
+        return BenchmarkBackend::CudaDirect;
     }
     throw std::invalid_argument(
         "Unknown backend '" + name +
-        "'; expected cpu-reference, cpu-static, or cuda-farfield-fmm"
+        "'; expected cpu-direct, cuda-direct, cpu-static-matrix, or "
+        "cpu-static-matrix-mkl"
     );
+}
+
+cdfmm::UniformFmmOptions cpu_options(
+    const cdfmm::UniformFmmOptions& base,
+    const BenchmarkBackend backend)
+{
+    cdfmm::UniformFmmOptions selected = base;
+    if (backend == BenchmarkBackend::CpuStaticMatrix) {
+        selected.backend = cdfmm::ExecutionBackend::CpuStatic;
+        selected.m2l_backend = cdfmm::M2LBackend::Static;
+        selected.static_matrix_backend = cdfmm::StaticMatrixBackend::Portable;
+        return selected;
+    }
+    if (backend == BenchmarkBackend::CpuStaticMatrixMkl) {
+        selected.backend = cdfmm::ExecutionBackend::CpuStatic;
+        selected.m2l_backend = cdfmm::M2LBackend::Static;
+        selected.static_matrix_backend = cdfmm::StaticMatrixBackend::OneMkl;
+        return selected;
+    }
+    throw std::invalid_argument("Direct backends do not use UniformFmmOptions");
 }
 
 double median(std::vector<double> values)
@@ -194,7 +231,48 @@ WorkloadTiming benchmark_fmm_workload(
     return median_timing(timings);
 }
 
-WorkloadTiming benchmark_p2p_workload(
+WorkloadTiming benchmark_cuda_direct_workload(
+    const std::vector<Vec3>& source_positions,
+    const std::vector<Vec3>& target_positions,
+    const std::vector<std::vector<Vec3>>& moment_states,
+    const std::vector<int>& source_identities,
+    const int evaluation_count,
+    const int samples)
+{
+    std::vector<WorkloadTiming> timings;
+    timings.reserve(static_cast<std::size_t>(samples));
+    for (int sample = 0; sample < samples; ++sample) {
+        const auto total_start = Clock::now();
+        const auto construction_start = Clock::now();
+        cdfmm::CudaFmmPlan plan(source_positions, target_positions);
+        std::vector<cdfmm::PotentialField> results(target_positions.size());
+        const double construction_seconds = std::chrono::duration<double>(
+            Clock::now() - construction_start
+        ).count();
+
+        const auto evaluation_start = Clock::now();
+        for (int evaluation = 0; evaluation < evaluation_count; ++evaluation) {
+            plan.evaluate(
+                moment_states[static_cast<std::size_t>(evaluation)],
+                results,
+                cdfmm::OutputFlags::Field,
+                source_identities
+            );
+        }
+        const double evaluation_seconds = std::chrono::duration<double>(
+            Clock::now() - evaluation_start
+        ).count();
+        const double total_seconds = std::chrono::duration<double>(
+            Clock::now() - total_start
+        ).count();
+        timings.push_back(
+            {construction_seconds, evaluation_seconds, total_seconds}
+        );
+    }
+    return median_timing(timings);
+}
+
+WorkloadTiming benchmark_cpu_direct_workload(
     const std::vector<Vec3>& source_positions,
     const std::vector<Vec3>& target_positions,
     const std::vector<std::vector<Vec3>>& moment_states,
@@ -215,13 +293,12 @@ WorkloadTiming benchmark_p2p_workload(
                 source_identities
             );
             if (results.size() != target_positions.size()) {
-                throw std::runtime_error("Direct P2P returned an invalid result");
+                throw std::runtime_error("CPU direct P2P returned invalid output");
             }
         }
         const double evaluation_seconds = std::chrono::duration<double>(
             Clock::now() - evaluation_start
         ).count();
-        // Direct P2P has no reusable geometry object, so construction is zero.
         timings.push_back({0.0, evaluation_seconds, evaluation_seconds});
     }
     return median_timing(timings);
@@ -264,13 +341,15 @@ std::string compiler_version()
 #endif
 }
 
-std::string static_multiply_backend()
+std::string static_multiply_backend(const BenchmarkBackend backend)
 {
-#ifdef CDFMM_USE_MKL
-    return "oneMKL";
-#else
-    return "portable";
-#endif
+    if (backend == BenchmarkBackend::CpuStaticMatrixMkl) {
+        return "oneMKL";
+    }
+    if (backend == BenchmarkBackend::CpuStaticMatrix) {
+        return "portable";
+    }
+    return "not_applicable";
 }
 
 std::string mkl_version()
@@ -284,6 +363,33 @@ std::string mkl_version()
 #endif
 }
 
+void warm_mkl_runtime()
+{
+#ifdef CDFMM_USE_MKL
+    double left = 1.0;
+    double right = 1.0;
+    double product = 0.0;
+    const int previous_threads = mkl_set_num_threads_local(1);
+    cblas_dgemm(
+        CblasColMajor,
+        CblasNoTrans,
+        CblasNoTrans,
+        1,
+        1,
+        1,
+        1.0,
+        &left,
+        1,
+        &right,
+        1,
+        0.0,
+        &product,
+        1
+    );
+    mkl_set_num_threads_local(previous_threads);
+#endif
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -294,6 +400,14 @@ int main(int argc, char** argv)
         if (options.cuda_status) {
             std::cout << "cuda_compiled=" << (cuda_compiled() ? 1 : 0) << '\n'
                       << "cuda_available=" << (cuda_available() ? 1 : 0) << '\n'
+                      << "cuda_direct_available="
+                      << (cuda_direct_available() ? 1 : 0) << '\n'
+                      << "cuda_farfield_available="
+                      << (cuda_farfield_available() ? 1 : 0) << '\n'
+                      << "cuda_full_available="
+                      << (cuda_full_available() ? 1 : 0) << '\n'
+                      << "one_mkl_available="
+                      << (one_mkl_available() ? 1 : 0) << '\n'
                       << "cuda_device=";
             if (cuda_available()) {
                 std::cout << cuda_device_description();
@@ -301,6 +415,9 @@ int main(int argc, char** argv)
             std::cout << '\n';
             return 0;
         }
+        const BenchmarkBackend selected_backend = benchmark_backend(
+            options.backend
+        );
 #ifdef CDFMM_USE_OPENMP
         if (options.threads > 0) {
             omp_set_num_threads(options.threads);
@@ -312,6 +429,15 @@ int main(int argc, char** argv)
         const int thread_count = 1;
         const int openmp_version = 0;
         const char* openmp_status = "disabled";
+#endif
+
+#ifdef CDFMM_USE_OPENMP
+        int warmed_threads = 0;
+        #pragma omp parallel reduction(+:warmed_threads)
+        warmed_threads += 1;
+        if (warmed_threads != thread_count) {
+            throw std::runtime_error("OpenMP runtime warm-up used wrong team size");
+        }
 #endif
 
         std::cerr << "Running benchmark: sources=" << options.sources
@@ -362,26 +488,36 @@ int main(int argc, char** argv)
         fmm_options.tree.root_half_width = 1.0;
 
         UniformFmmOptions selected_options = fmm_options;
-        selected_options.backend = execution_backend(options.backend);
-
-        UniformFmmOptions reference_options = fmm_options;
-        reference_options.m2l_backend = M2LBackend::Reference;
-        reference_options.backend = ExecutionBackend::CpuReference;
-        UniformFmmOptions static_options = fmm_options;
-        static_options.m2l_backend = M2LBackend::Static;
-        static_options.backend = ExecutionBackend::CpuStatic;
+        if (selected_backend == BenchmarkBackend::CpuStaticMatrix ||
+            selected_backend == BenchmarkBackend::CpuStaticMatrixMkl) {
+            selected_options = cpu_options(fmm_options, selected_backend);
+        }
 
         const double missing = std::numeric_limits<double>::quiet_NaN();
-        WorkloadTiming p2p_single{0.0, missing, missing};
-        WorkloadTiming p2p_repeated{0.0, missing, missing};
-        WorkloadTiming reference_single{missing, missing, missing};
-        WorkloadTiming reference_repeated{missing, missing, missing};
-        WorkloadTiming static_single{missing, missing, missing};
-        WorkloadTiming static_repeated{missing, missing, missing};
+        WorkloadTiming selected_single{missing, missing, missing};
+        WorkloadTiming selected_repeated{missing, missing, missing};
         if (options.workload_comparison) {
-            std::cerr << "Benchmarking creation/evaluation workloads...\n";
-            if (options.direct) {
-                p2p_single = benchmark_p2p_workload(
+            if (selected_backend == BenchmarkBackend::CudaDirect) {
+                // Exclude one-time CUDA context and kernel initialisation from
+                // both persistent-plan construction workloads.
+                CudaFmmPlan warmup_plan(source_positions, target_positions);
+                std::vector<PotentialField> warmup_results(
+                    target_positions.size()
+                );
+                warmup_plan.evaluate(
+                    moment_states.front(),
+                    warmup_results,
+                    OutputFlags::Field,
+                    source_identities
+                );
+            }
+            if (selected_backend == BenchmarkBackend::CpuStaticMatrixMkl) {
+                warm_mkl_runtime();
+            }
+            std::cerr << "Benchmarking selected 1- and 10-evaluation "
+                         "workloads...\n";
+            if (selected_backend == BenchmarkBackend::CudaDirect) {
+                selected_single = benchmark_cuda_direct_workload(
                     source_positions,
                     target_positions,
                     moment_states,
@@ -389,7 +525,7 @@ int main(int argc, char** argv)
                     1,
                     options.samples
                 );
-                p2p_repeated = benchmark_p2p_workload(
+                selected_repeated = benchmark_cuda_direct_workload(
                     source_positions,
                     target_positions,
                     moment_states,
@@ -397,81 +533,134 @@ int main(int argc, char** argv)
                     repeated_evaluation_count,
                     options.samples
                 );
+            } else if (selected_backend == BenchmarkBackend::CpuDirect) {
+                selected_single = benchmark_cpu_direct_workload(
+                    source_positions,
+                    target_positions,
+                    moment_states,
+                    source_identities,
+                    1,
+                    options.samples
+                );
+                selected_repeated = benchmark_cpu_direct_workload(
+                    source_positions,
+                    target_positions,
+                    moment_states,
+                    source_identities,
+                    repeated_evaluation_count,
+                    options.samples
+                );
+            } else {
+                selected_single = benchmark_fmm_workload(
+                    source_positions,
+                    target_positions,
+                    moment_states,
+                    source_identities,
+                    selected_options,
+                    1,
+                    options.samples
+                );
+                selected_repeated = benchmark_fmm_workload(
+                    source_positions,
+                    target_positions,
+                    moment_states,
+                    source_identities,
+                    selected_options,
+                    repeated_evaluation_count,
+                    options.samples
+                );
             }
-            reference_single = benchmark_fmm_workload(
-                source_positions,
-                target_positions,
-                moment_states,
-                source_identities,
-                reference_options,
-                1,
-                options.samples
-            );
-            reference_repeated = benchmark_fmm_workload(
-                source_positions,
-                target_positions,
-                moment_states,
-                source_identities,
-                reference_options,
-                repeated_evaluation_count,
-                options.samples
-            );
-            static_single = benchmark_fmm_workload(
-                source_positions,
-                target_positions,
-                moment_states,
-                source_identities,
-                static_options,
-                1,
-                options.samples
-            );
-            static_repeated = benchmark_fmm_workload(
-                source_positions,
-                target_positions,
-                moment_states,
-                source_identities,
-                static_options,
-                repeated_evaluation_count,
-                options.samples
-            );
             std::cerr
                 << "Workload median totals (1 evaluation / 10 evaluations):\n"
-                << "  direct all-to-all P2P: "
-                << p2p_single.total_seconds << " s / "
-                << p2p_repeated.total_seconds << " s\n"
-                << "  reference FMM: "
-                << reference_single.total_seconds << " s / "
-                << reference_repeated.total_seconds << " s\n"
-                << "  static FMM (" << static_multiply_backend() << "): "
-                << static_single.total_seconds << " s / "
-                << static_repeated.total_seconds << " s\n";
+                << "  " << options.backend << ": "
+                << selected_single.total_seconds << " s / "
+                << selected_repeated.total_seconds << " s\n";
         }
 
+        std::unique_ptr<UniformFmm> fmm;
+        std::unique_ptr<CudaFmmPlan> cuda_direct_plan;
         const auto setup_start = Clock::now();
-        UniformFmm fmm(source_positions, target_positions, selected_options);
+        if (selected_backend == BenchmarkBackend::CudaDirect) {
+            cuda_direct_plan = std::make_unique<CudaFmmPlan>(
+                source_positions,
+                target_positions
+            );
+        } else if (selected_backend != BenchmarkBackend::CpuDirect) {
+            fmm = std::make_unique<UniformFmm>(
+                source_positions,
+                target_positions,
+                selected_options
+            );
+        }
         const double setup_seconds = std::chrono::duration<double>(
             Clock::now() - setup_start
         ).count();
         std::vector<PotentialField> result(target_positions.size());
+        EvaluationTimings direct_timings;
+        const auto evaluate_selected = [&](const std::span<const Vec3> moments) {
+            if (fmm) {
+                fmm->evaluate_into(
+                    moments,
+                    result,
+                    OutputFlags::Field,
+                    source_identities
+                );
+                return;
+            }
+            if (selected_backend == BenchmarkBackend::CpuDirect) {
+                const auto evaluation_start = Clock::now();
+                result = direct_p2p_reference(
+                    target_positions,
+                    source_positions,
+                    moments,
+                    OutputFlags::Field,
+                    source_identities
+                );
+                const double elapsed = std::chrono::duration<double>(
+                    Clock::now() - evaluation_start
+                ).count();
+                direct_timings.p2p.add(elapsed);
+                direct_timings.total.add(elapsed);
+                ++direct_timings.evaluations;
+                return;
+            }
+            const auto evaluation_start = Clock::now();
+            cuda_direct_plan->evaluate(
+                moments,
+                result,
+                OutputFlags::Field,
+                source_identities
+            );
+            const auto& device = cuda_direct_plan->evaluation_timings();
+            direct_timings.cuda_h2d.add(device.h2d_seconds);
+            direct_timings.cuda_kernel.add(device.kernel_seconds);
+            direct_timings.cuda_d2h.add(device.d2h_seconds);
+            direct_timings.total.add(std::chrono::duration<double>(
+                Clock::now() - evaluation_start
+            ).count());
+            ++direct_timings.evaluations;
+        };
         if (options.warmups > 0) {
             std::cerr << "Warm-up evaluations: " << options.warmups << "\n";
         }
         for (int warmup = 0; warmup < options.warmups; ++warmup) {
-            fmm.evaluate_into(moment_states[static_cast<std::size_t>(warmup)],
-                              result, OutputFlags::Field, source_identities);
+            evaluate_selected(moment_states[static_cast<std::size_t>(warmup)]);
         }
 
-        fmm.reset_timings();
+        if (fmm) {
+            fmm->reset_timings();
+        }
+        direct_timings = {};
         std::vector<double> sample_seconds;
         sample_seconds.reserve(static_cast<std::size_t>(options.samples));
         for (int sample = 0; sample < options.samples; ++sample) {
             const auto start = Clock::now();
             for (int evaluation = 0; evaluation < options.evaluations;
-                 ++evaluation) {
+                ++evaluation) {
                 const int state = options.warmups + evaluation;
-                fmm.evaluate_into(moment_states[static_cast<std::size_t>(state)],
-                                  result, OutputFlags::Field,
-                                  source_identities);
+                evaluate_selected(
+                    moment_states[static_cast<std::size_t>(state)]
+                );
             }
             sample_seconds.push_back(
                 std::chrono::duration<double>(Clock::now() - start).count() /
@@ -491,53 +680,43 @@ int main(int argc, char** argv)
         }
         std::cerr << "\n";
 
+        const EvaluationTimings timing = fmm
+            ? fmm->aggregate_timings()
+            : direct_timings;
+
         double direct_seconds = std::numeric_limits<double>::quiet_NaN();
         ErrorMetrics metrics;
-        ErrorMetrics reference_metrics;
         if (options.direct) {
-            std::cerr << "Computing direct all-to-all reference..." << std::flush;
-            const auto direct_start = Clock::now();
-            const auto reference = direct_p2p_reference(
-                target_positions, source_positions,
-                moment_states[static_cast<std::size_t>(options.warmups)],
-                OutputFlags::Field, source_identities
-            );
-            direct_seconds = std::chrono::duration<double>(
-                Clock::now() - direct_start
-            ).count();
-            std::cerr << " done (" << direct_seconds << " s)\n";
-            fmm.evaluate_into(
-                moment_states[static_cast<std::size_t>(options.warmups)], result,
-                OutputFlags::Field, source_identities
-            );
-            std::vector<Vec3> approximate_fields(result.size());
-            std::vector<Vec3> reference_fields(reference.size());
-            for (std::size_t index = 0; index < result.size(); ++index) {
-                approximate_fields[index] = result[index].H;
-                reference_fields[index] = reference[index].H;
-            }
-            metrics = compute_error_metrics(approximate_fields, reference_fields);
-
-            if (options.workload_comparison) {
-                UniformFmm reference_fmm(
-                    source_positions,
-                    target_positions,
-                    reference_options
-                );
-                const auto reference_fmm_values = reference_fmm.evaluate(
+            if (selected_backend == BenchmarkBackend::CpuDirect) {
+                // The selected algorithm is already the CPU reference. Reusing
+                // its median avoids timing the same all-to-all kernel twice.
+                direct_seconds = median(sample_seconds);
+                std::cerr << "CPU direct backend is the all-to-all reference; "
+                             "skipping duplicate reference evaluation.\n";
+            } else {
+                std::cerr << "Computing direct all-to-all reference..."
+                          << std::flush;
+                const auto direct_start = Clock::now();
+                const auto reference = direct_p2p_reference(
+                    target_positions, source_positions,
                     moment_states[static_cast<std::size_t>(options.warmups)],
-                    OutputFlags::Field,
-                    source_identities
+                    OutputFlags::Field, source_identities
                 );
-                std::vector<Vec3> reference_fmm_fields(
-                    reference_fmm_values.size()
+                direct_seconds = std::chrono::duration<double>(
+                    Clock::now() - direct_start
+                ).count();
+                std::cerr << " done (" << direct_seconds << " s)\n";
+                evaluate_selected(
+                    moment_states[static_cast<std::size_t>(options.warmups)]
                 );
-                for (std::size_t index = 0;
-                     index < reference_fmm_values.size(); ++index) {
-                    reference_fmm_fields[index] = reference_fmm_values[index].H;
+                std::vector<Vec3> approximate_fields(result.size());
+                std::vector<Vec3> reference_fields(reference.size());
+                for (std::size_t index = 0; index < result.size(); ++index) {
+                    approximate_fields[index] = result[index].H;
+                    reference_fields[index] = reference[index].H;
                 }
-                reference_metrics = compute_error_metrics(
-                    reference_fmm_fields,
+                metrics = compute_error_metrics(
+                    approximate_fields,
                     reference_fields
                 );
             }
@@ -545,30 +724,68 @@ int main(int argc, char** argv)
 
         std::uint64_t m2l_translations = 0;
         std::uint64_t near_pairs = 0;
-        for (const TreeNode& node : fmm.tree().nodes()) {
-            if (node.target_count() == 0) continue;
-            for (const int source_index : node.list2) {
-                if (fmm.tree().nodes()[static_cast<std::size_t>(source_index)]
-                        .source_count() > 0) {
-                    ++m2l_translations;
+        if (fmm) {
+            for (const TreeNode& node : fmm->tree().nodes()) {
+                if (node.target_count() == 0) {
+                    continue;
+                }
+                for (const int source_index : node.list2) {
+                    if (fmm->tree().nodes()[
+                            static_cast<std::size_t>(source_index)
+                        ].source_count() > 0) {
+                        ++m2l_translations;
+                    }
+                }
+                if (!node.is_leaf()) {
+                    continue;
+                }
+                for (const int source_index : node.list1) {
+                    near_pairs += node.target_count() *
+                        fmm->tree().nodes()[
+                            static_cast<std::size_t>(source_index)
+                        ].source_count();
                 }
             }
-            if (!node.is_leaf()) continue;
-            for (const int source_index : node.list1) {
-                near_pairs += node.target_count() *
-                    fmm.tree().nodes()[static_cast<std::size_t>(source_index)]
-                        .source_count();
-            }
+        } else {
+            near_pairs = static_cast<std::uint64_t>(options.targets) *
+                static_cast<std::uint64_t>(std::max(0, options.sources - 1));
         }
 
-        const auto& tree = fmm.tree().build_timings();
-        const auto& timing = fmm.aggregate_timings();
+        const TreeBuildTimings tree = fmm
+            ? fmm->tree().build_timings()
+            : TreeBuildTimings{};
+        const StaticPlanStatistics static_plan = fmm
+            ? fmm->static_plan_statistics()
+            : StaticPlanStatistics{};
         const double evaluation_median = median(sample_seconds);
         const double evaluation_mean = mean(sample_seconds);
         const double timed_calls = static_cast<double>(timing.evaluations);
         const auto phase_mean = [timed_calls](const PhaseTiming& phase) {
             return timed_calls > 0.0 ? phase.total_seconds / timed_calls : 0.0;
         };
+        const bool static_matrix =
+            selected_backend == BenchmarkBackend::CpuStaticMatrix ||
+            selected_backend == BenchmarkBackend::CpuStaticMatrixMkl;
+        const std::string m2l_strategy = static_matrix
+            ? "cached-dense-m2l-matrix-per-transfer-class"
+            : "not-applicable-direct-p2p";
+        const std::string multiply_backend = static_multiply_backend(
+            selected_backend
+        );
+        const std::string multiply_version =
+            selected_backend == BenchmarkBackend::CpuStaticMatrixMkl
+            ? mkl_version()
+            : "not_applicable";
+        const std::size_t total_nodes = fmm ? fmm->tree().nodes().size() : 0;
+        const std::size_t occupied_source_leaves = fmm
+            ? fmm->tree().occupied_source_leaves().size()
+            : 0;
+        const std::size_t occupied_target_leaves = fmm
+            ? fmm->tree().occupied_target_leaves().size()
+            : 0;
+        const CudaPlanStatistics cuda_statistics = cuda_direct_plan
+            ? cuda_direct_plan->statistics()
+            : CudaPlanStatistics{};
 
         std::ostream* output_stream = &std::cout;
         std::ofstream output_file;
@@ -579,26 +796,24 @@ int main(int argc, char** argv)
         std::ostream& out = *output_stream;
         out << "sources,targets,depth,order,threads,seed,evaluations,samples,"
                "execution_backend,cuda_compiled,cuda_available,cuda_device,"
+               "one_mkl_available,"
                "compiler,compiler_version,build_type,openmp_status,openmp_version,"
                "fmm_setup_seconds,tree_total,root_bounds,node_construction,topology,source_morton,"
                "source_sorting,target_morton,target_sorting,ranges,interaction_lists,"
                "evaluation_median,evaluation_mean,evaluations_per_second,"
                "amortised_seconds,moment_permutation,multipole_reset,p2m,m2m,"
-               "local_reset,l2l,m2l,l2p,p2p,result_unpermutation,cuda_h2d,"
+               "local_reset,l2l,m2l,m2l_gather,m2l_multiply,m2l_scatter,"
+               "l2p,p2p,result_unpermutation,cuda_h2d,"
                "cuda_kernel,cuda_d2h,direct_seconds,"
                "mean_relative_error,rms_relative_error,max_relative_error,total_nodes,"
                "occupied_source_leaves,occupied_target_leaves,m2l_translations,"
-               "near_field_pairs,static_multiply_backend,mkl_version,"
-               "p2p_1_creation_median,p2p_1_evaluation_median,p2p_1_total_median,"
-               "p2p_10_creation_median,p2p_10_evaluation_median,p2p_10_total_median,"
-               "reference_1_creation_median,reference_1_evaluation_median,"
-               "reference_1_total_median,reference_10_creation_median,"
-               "reference_10_evaluation_median,reference_10_total_median,"
-               "static_1_creation_median,static_1_evaluation_median,"
-               "static_1_total_median,static_10_creation_median,"
-               "static_10_evaluation_median,static_10_total_median,"
-               "reference_mean_relative_error,reference_rms_relative_error,"
-               "reference_max_relative_error,cuda_setup_h2d_bytes,"
+               "near_field_pairs,m2l_strategy,static_multiply_backend,mkl_version,"
+               "static_plan_seconds,cached_m2l_matrices,cached_m2l_matrix_bytes,"
+               "static_interaction_bytes,static_scratch_bytes,static_plan_bytes,"
+               "workload_1_creation_median,workload_1_evaluation_median,"
+               "workload_1_total_median,workload_10_creation_median,"
+               "workload_10_evaluation_median,workload_10_total_median,"
+               "cuda_setup_h2d_bytes,"
                "cuda_evaluation_h2d_bytes,cuda_evaluation_d2h_bytes,"
                "cuda_persistent_device_bytes\n";
         const char* build_type =
@@ -613,7 +828,7 @@ int main(int argc, char** argv)
             << options.backend << ',' << (cuda_compiled() ? 1 : 0) << ','
             << (cuda_available() ? 1 : 0) << ",\""
             << (cuda_available() ? cuda_device_description() : std::string{})
-            << "\","
+            << "\"," << (one_mkl_available() ? 1 : 0) << ','
             << compiler_name() << ",\"" << compiler_version() << "\","
             << build_type
             << ',' << openmp_status << ',' << openmp_version << ','
@@ -635,7 +850,11 @@ int main(int argc, char** argv)
             << phase_mean(timing.multipole_reset) << ','
             << phase_mean(timing.p2m) << ',' << phase_mean(timing.m2m) << ','
             << phase_mean(timing.local_reset) << ',' << phase_mean(timing.l2l)
-            << ',' << phase_mean(timing.m2l) << ',' << phase_mean(timing.l2p)
+            << ',' << phase_mean(timing.m2l)
+            << ',' << phase_mean(timing.m2l_gather)
+            << ',' << phase_mean(timing.m2l_multiply)
+            << ',' << phase_mean(timing.m2l_scatter)
+            << ',' << phase_mean(timing.l2p)
             << ',' << phase_mean(timing.p2p) << ','
             << phase_mean(timing.result_unpermutation) << ','
             << phase_mean(timing.cuda_h2d) << ','
@@ -643,21 +862,19 @@ int main(int argc, char** argv)
             << phase_mean(timing.cuda_d2h) << ',' << direct_seconds
             << ',' << metrics.mean_relative_error << ','
             << metrics.rms_relative_error << ',' << metrics.max_relative_error
-            << ',' << fmm.tree().nodes().size() << ','
-            << fmm.tree().occupied_source_leaves().size() << ','
-            << fmm.tree().occupied_target_leaves().size() << ','
+            << ',' << total_nodes << ','
+            << occupied_source_leaves << ','
+            << occupied_target_leaves << ','
             << m2l_translations << ',' << near_pairs << ','
-            << static_multiply_backend() << ',' << mkl_version();
-        write_workload(out, p2p_single);
-        write_workload(out, p2p_repeated);
-        write_workload(out, reference_single);
-        write_workload(out, reference_repeated);
-        write_workload(out, static_single);
-        write_workload(out, static_repeated);
-        out << ',' << reference_metrics.mean_relative_error
-            << ',' << reference_metrics.rms_relative_error
-            << ',' << reference_metrics.max_relative_error;
-        const auto& cuda_statistics = fmm.cuda_plan_statistics();
+            << m2l_strategy << ',' << multiply_backend << ',' << multiply_version
+            << ',' << static_plan.total.total_seconds
+            << ',' << static_plan.transfer_classes
+            << ',' << static_plan.operator_bytes
+            << ',' << static_plan.interaction_bytes
+            << ',' << static_plan.scratch_bytes
+            << ',' << static_plan.total_bytes();
+        write_workload(out, selected_single);
+        write_workload(out, selected_repeated);
         out << ',' << cuda_statistics.setup_h2d_bytes
             << ',' << cuda_statistics.evaluation_h2d_bytes
             << ',' << cuda_statistics.evaluation_d2h_bytes
