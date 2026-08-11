@@ -353,26 +353,41 @@ are `cmake --preset benchmark` and `cmake --build --preset benchmark`.
 CUDA dependencies are supplemental and do not affect normal CPU development:
 
 ```console
-conda env update -n cdfmm -f environment.yml
+conda env update -n cdfmm -f environment.yml --prune
 conda env update -n cdfmm -f environment-cuda.yml
 conda activate cdfmm
 nvcc --version
 nvidia-smi
-cmake --preset cuda
+cmake --fresh --preset cuda
 cmake --build --preset cuda
 ctest --preset cuda
+python -m pytest python_tests -v
 ```
 
 The NVIDIA-channel environment provides the compiler, runtime development
-files, headers, and cuBLAS development package. CMake discovers these through
-`find_package(CUDAToolkit)` and imported targets; no library paths are fixed in
-the project. The installed NVIDIA driver must support the selected toolkit and
-GPU. CMake 3.20 or newer and a CUDA-capable GPU are required. CUDA host-compiler
-compatibility is governed by the installed toolkit; if `icpx` is unsupported,
-use the toolkit's supported host compiler for the CUDA preset.
+files, headers, and cuBLAS development package. The supplemental file pins all
+CUDA components to release 13.3 so an existing environment cannot retain an
+older `nvcc` beside newer headers. The installed NVIDIA driver must be
+compatible with the CUDA 13 toolkit and the machine must provide a
+CUDA-capable GPU.
 
+The CUDA preset deliberately clears Conda's `NVCC_PREPEND_FLAGS`, selects a
+supported `g++` from `PATH` for both C++ and CUDA host compilation, and compiles
+for the locally installed GPU through `CMAKE_CUDA_ARCHITECTURES=native`.
+Consequently the preset requires CMake 3.24 or newer and a GCC version supported
+by the selected CUDA toolkit. `--fresh` prevents compiler paths from an earlier
+CPU or failed CUDA configuration remaining in the CMake cache.
+
+The CUDA build preset targets `install`, placing the newly built extension in
+the active Conda environment's Python platform-library directory. Plain
+`import cdfmm` and `python -m pytest` therefore use the current CUDA build;
+`PYTHONPATH` is neither required nor recommended. Activate `cdfmm` before
+configuring so the install target is derived from the intended interpreter.
+
+The C++ suite contains an explicit CUDA test which is skipped in CPU-only
+builds and exercises both CUDA backend selections when a device is present.
 Verify `cuda_available()` and `cuda_device_description()` from Python after
-installing the CUDA build. GitHub Actions explicitly configures
+building. GitHub Actions explicitly configures
 `CDFMM_ENABLE_CUDA=OFF`: CUDA compilation, tests, and performance measurements
 are intentionally manual and require a real NVIDIA CUDA-capable system.
 

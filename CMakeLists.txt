@@ -5,6 +5,8 @@ option(CDFMM_BUILD_TESTS "Build C++ tests" ON)
 option(CDFMM_BUILD_EXAMPLES "Build examples" ON)
 option(CDFMM_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(CDFMM_BUILD_PYTHON "Build Python bindings" ON)
+option(CDFMM_INSTALL_PYTHON_TO_ENV
+       "Install Python bindings into the configured interpreter environment" OFF)
 option(CDFMM_ENABLE_OPENMP "Enable internally parallel CPU execution" ON)
 option(CDFMM_ENABLE_IPO "Enable interprocedural optimisation for Release builds" OFF)
 option(CDFMM_ENABLE_MKL "Use oneMKL DGEMM for grouped static M2L" OFF)
@@ -101,5 +103,16 @@ if(CDFMM_BUILD_PYTHON)
   target_link_libraries(cdfmm PRIVATE cdfmm_core)
   target_include_directories(cdfmm PRIVATE include)
   cdfmm_enable_ipo(cdfmm)
-  install(TARGETS cdfmm LIBRARY DESTINATION .)
+  if(CDFMM_INSTALL_PYTHON_TO_ENV)
+    execute_process(
+      COMMAND "${PYTHON_EXECUTABLE}" -c
+              "import sysconfig; print(sysconfig.get_path('platlib'))"
+      OUTPUT_VARIABLE CDFMM_PYTHON_INSTALL_DIR
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      COMMAND_ERROR_IS_FATAL ANY
+    )
+  else()
+    set(CDFMM_PYTHON_INSTALL_DIR .)
+  endif()
+  install(TARGETS cdfmm LIBRARY DESTINATION "${CDFMM_PYTHON_INSTALL_DIR}")
 endif()

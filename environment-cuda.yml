@@ -3,7 +3,11 @@ channels:
   - nvidia
   - conda-forge
 dependencies:
-  - cuda-compiler
-  - cuda-cudart-dev
-  - cuda-libraries-dev
+  # Keep the compiler, headers, and runtime on one toolkit release. Unpinned
+  # component updates can otherwise retain an older nvcc in an existing env.
+  - cuda-version=13.3
+  - cuda-compiler=13.3.*
+  - cuda-nvcc=13.3.*
+  - cuda-cudart-dev=13.3.*
+  - cuda-libraries-dev=13.3.*
   - libcublas-dev
