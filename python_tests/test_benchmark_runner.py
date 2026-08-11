@@ -4,14 +4,18 @@ from benchmarks.run_benchmarks import (
     CudaStatus,
     EVALUATION_PHASES,
     M2L_SUBPHASES,
+    PROFILES,
     benchmark_backends,
     build_cases,
     comparison_case,
     expanded_cases,
     phase_breakdown_filename,
+    profile_backends,
     progress_bar,
     representative_case,
+    nested_m2l_phases,
     thread_counts_up_to,
+    top_level_evaluation_phases,
     workload_values,
 )
 
@@ -104,6 +108,58 @@ def test_case_plan_contains_full_parameter_grid_and_capped_scaling_suite():
         4,
         6,
     ]
+
+
+def test_rough_profile_contains_exactly_four_geometries_and_no_scaling():
+    profile = PROFILES["rough"]
+    cases = build_cases(profile, max_threads=8)
+
+    assert profile["evaluations"] == 1
+    assert profile["samples"] == 1
+    assert profile["warmups"] == 1
+    assert profile["workload_comparison"] is True
+    assert len(cases) == 4
+    assert all(case.suite == "parameter_grid" for case in cases)
+    assert all(case.order == 4 for case in cases)
+    assert all(case.threads == 8 for case in cases)
+    assert all(not case.direct for case in cases)
+    assert {
+        (case.size, case.depth)
+        for case in cases
+    } == {
+        (20_000, 2),
+        (20_000, 3),
+        (30_000, 2),
+        (30_000, 3),
+    }
+
+
+def test_rough_profile_requires_five_backends_and_expands_to_twenty_runs():
+    profile = PROFILES["rough"]
+    available = [
+        "cpu-direct",
+        "cuda-direct",
+        "cuda-m2l",
+        "cpu-static-matrix",
+        "cpu-static-matrix-mkl",
+    ]
+    selected = profile_backends("rough", profile, available)
+
+    assert selected == profile["backends"]
+    assert len(expanded_cases(build_cases(profile, 8), selected)) == 20
+
+
+def test_rough_profile_rejects_a_build_without_cuda_m2l():
+    profile = PROFILES["rough"]
+    available = [
+        "cpu-direct",
+        "cuda-direct",
+        "cpu-static-matrix",
+        "cpu-static-matrix-mkl",
+    ]
+
+    with pytest.raises(RuntimeError, match="cuda-m2l"):
+        profile_backends("rough", profile, available)
 
 
 def test_progress_and_phase_filename_identify_the_case():
@@ -207,3 +263,25 @@ def test_phase_plots_expose_static_matrix_work():
         ("m2l_scatter", "Scatter"),
     ]
     assert all(column != "m2l_multiply" for column, _ in EVALUATION_PHASES)
+
+
+def test_cuda_m2l_device_phases_are_nested_without_double_counting():
+    row = {"execution_backend": "cuda-m2l"}
+    top_level_columns = {
+        column for column, _ in top_level_evaluation_phases(row)
+    }
+    nested_columns = {
+        column for column, _ in nested_m2l_phases(row)
+    }
+
+    assert "m2l" in top_level_columns
+    assert "cuda_h2d" not in top_level_columns
+    assert "cuda_kernel" not in top_level_columns
+    assert "cuda_d2h" not in top_level_columns
+    assert nested_columns == {
+        "cuda_h2d",
+        "m2l_gather",
+        "m2l_multiply",
+        "m2l_scatter",
+        "cuda_d2h",
+    }

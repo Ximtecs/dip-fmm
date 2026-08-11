@@ -18,6 +18,24 @@ import numpy as np
 PROFILES = {
     "minimal": dict(sizes=[500], orders=[2, 4], depths=[2], evaluations=1, samples=1),
     "quick": dict(sizes=[500, 1000], orders=[2, 4], depths=[2, 3], evaluations=2, samples=2),
+    "rough": dict(
+        sizes=[20_000, 30_000],
+        orders=[4],
+        depths=[2, 3],
+        evaluations=1,
+        samples=1,
+        warmups=1,
+        scaling=False,
+        comparison=False,
+        workload_comparison=True,
+        backends=[
+            "cpu-direct",
+            "cuda-direct",
+            "cpu-static-matrix-mkl",
+            "cpu-static-matrix",
+            "cuda-m2l",
+        ],
+    ),
     "standard": dict(sizes=[1000, 2000, 5000], orders=[2, 3, 4, 5, 6, 8], depths=[2, 3, 4], evaluations=20, samples=5),
     "full": dict(sizes=[1000, 5000, 20000, 50000], orders=[2, 3, 4, 5, 6, 8], depths=[3, 4, 5], evaluations=100, samples=7),
 }
@@ -43,6 +61,39 @@ M2L_SUBPHASES = [
     ("m2l_multiply", "Matrix multiply"),
     ("m2l_scatter", "Scatter"),
 ]
+
+BACKEND_LABELS = {
+    "cpu-direct": "CPU direct P2P",
+    "cuda-direct": "CUDA direct P2P",
+    "cuda-m2l": "Hybrid CUDA M2L FMM",
+    "cpu-static-matrix": "FMM static matrix",
+    "cpu-static-matrix-mkl": "FMM static matrix + oneMKL",
+}
+
+
+def top_level_evaluation_phases(
+    row: dict[str, str],
+) -> list[tuple[str, str]]:
+    """Return non-overlapping top-level phases for one backend row."""
+    if row.get("execution_backend") == "cuda-m2l":
+        nested_cuda = {"cuda_h2d", "cuda_kernel", "cuda_d2h"}
+        return [
+            phase
+            for phase in EVALUATION_PHASES
+            if phase[0] not in nested_cuda
+        ]
+    return EVALUATION_PHASES
+
+
+def nested_m2l_phases(row: dict[str, str]) -> list[tuple[str, str]]:
+    """Return the diagnostic partition of the parent M2L phase."""
+    if row.get("execution_backend") == "cuda-m2l":
+        return [
+            ("cuda_h2d", "Multipole H2D"),
+            *M2L_SUBPHASES,
+            ("cuda_d2h", "Local D2H"),
+        ]
+    return M2L_SUBPHASES
 
 
 @dataclass(frozen=True)
@@ -105,20 +156,21 @@ def build_cases(profile: dict, max_threads: int) -> list[BenchmarkCase]:
                     )
                 )
 
-    scale_size = profile["sizes"][-1]
-    scale_order = min(profile["orders"], key=lambda order: abs(order - 4))
-    scale_depth = profile["depths"][-1]
-    for threads in thread_counts_up_to(max_threads):
-        cases.append(
-            BenchmarkCase(
-                suite="scaling",
-                size=scale_size,
-                order=scale_order,
-                depth=scale_depth,
-                threads=threads,
-                direct=False,
+    if profile.get("scaling", True):
+        scale_size = profile["sizes"][-1]
+        scale_order = min(profile["orders"], key=lambda order: abs(order - 4))
+        scale_depth = profile["depths"][-1]
+        for threads in thread_counts_up_to(max_threads):
+            cases.append(
+                BenchmarkCase(
+                    suite="scaling",
+                    size=scale_size,
+                    order=scale_order,
+                    depth=scale_depth,
+                    threads=threads,
+                    direct=False,
+                )
             )
-        )
 
     return cases
 
@@ -139,6 +191,26 @@ def benchmark_backends(status: CudaStatus) -> list[str]:
     if status.mkl_available:
         backends.append("cpu-static-matrix-mkl")
     return backends
+
+
+def profile_backends(
+    profile_name: str,
+    profile: dict,
+    available_backends: list[str],
+) -> list[str]:
+    """Resolve and validate the backend list requested by a profile."""
+    requested_backends = profile.get("backends", available_backends)
+    missing_backends = [
+        backend
+        for backend in requested_backends
+        if backend not in available_backends
+    ]
+    if missing_backends:
+        raise RuntimeError(
+            f"Profile '{profile_name}' requires unavailable backends: "
+            + ", ".join(missing_backends)
+        )
+    return requested_backends
 
 
 def expanded_cases(cases: list[BenchmarkCase], backends: list[str]):
@@ -236,7 +308,8 @@ def case_description(row: dict[str, str]) -> str:
 def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
            threads: int, evaluations: int, samples: int, direct: bool,
            backend: str = "cpu-static-matrix",
-           workload_comparison: bool = True) -> dict[str, str]:
+           workload_comparison: bool = True,
+           warmups: int = 1) -> dict[str, str]:
     if not executable.is_file():
         raise FileNotFoundError(
             f"Benchmark executable not found at {executable}; run "
@@ -247,7 +320,7 @@ def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
     command = [str(executable), "--sources", str(size), "--targets", str(size),
                "--order", str(order), "--depth", str(depth), "--threads", str(threads),
                "--evaluations", str(evaluations), "--samples", str(samples),
-               "--warmups", "1", "--seed", "314159", "--backend", backend,
+               "--warmups", str(warmups), "--seed", "314159", "--backend", backend,
                "--output", str(output)]
     if not direct:
         command.append("--no-direct")
@@ -302,11 +375,16 @@ def phase_breakdown_filename(row: dict[str, str]) -> str:
 
 
 def generate_phase_breakdown(row: dict[str, str], path: Path) -> None:
-    phase_names = [label for _, label in EVALUATION_PHASES]
-    phase_values = [float(row[column]) for column, _ in EVALUATION_PHASES]
+    top_level_phases = top_level_evaluation_phases(row)
+    phase_names = [label for _, label in top_level_phases]
+    phase_values = [float(row[column]) for column, _ in top_level_phases]
     recorded_phase_total = sum(phase_values)
-    m2l_names = [label for _, label in M2L_SUBPHASES]
-    m2l_values = [float(row[column]) for column, _ in M2L_SUBPHASES]
+    diagnostic_m2l_phases = nested_m2l_phases(row)
+    m2l_names = [label for _, label in diagnostic_m2l_phases]
+    m2l_values = [
+        float(row[column])
+        for column, _ in diagnostic_m2l_phases
+    ]
     m2l_recorded_total = sum(m2l_values)
 
     figure, axes = plt.subplots(1, 2, figsize=(15, 6))
@@ -379,7 +457,7 @@ def generate_setup_breakdown(row: dict[str, str], path: Path) -> None:
     evaluation = float(row["evaluation_median"])
     components = [
         ("Tree construction", tree),
-        ("Static M2L matrix plan", static_plan),
+        ("Static operator plan", static_plan),
         ("Other backend construction", other_setup),
         ("One evaluation", evaluation),
     ]
@@ -440,6 +518,95 @@ def workload_values(
     )
 
 
+def generate_backend_workload_figures(
+    rows: list[dict[str, str]],
+    directory: Path,
+    description: str,
+    suffix: str = "",
+) -> None:
+    """Plot construction-inclusive and evaluation-only backend workloads."""
+    methods = [
+        BACKEND_LABELS.get(
+            row["execution_backend"],
+            row["execution_backend"],
+        )
+        for row in rows
+    ]
+    positions = np.arange(len(methods))
+    width = 0.36
+    workload_plots = [
+        (
+            True,
+            "backend_workloads_with_creation",
+            "Construction-inclusive workloads",
+            "1 construction + 1 evaluation",
+            "1 construction + 10 evaluations",
+        ),
+        (
+            False,
+            "backend_workloads_evaluation_only",
+            "Evaluation-only workloads (construction excluded)",
+            "1 evaluation",
+            "10 evaluations",
+        ),
+    ]
+    for (include_creation, stem, title, single_label,
+         repeated_label) in workload_plots:
+        single_values, repeated_values = workload_values(
+            rows,
+            include_creation,
+        )
+        plt.figure(figsize=(11, 5.5))
+        plt.bar(
+            positions - width / 2,
+            single_values,
+            width,
+            label=single_label,
+        )
+        plt.bar(
+            positions + width / 2,
+            repeated_values,
+            width,
+            label=repeated_label,
+        )
+        plt.xticks(positions, methods, rotation=15, ha="right")
+        plt.yscale("log")
+        plt.ylabel("Median total wall time (s, logarithmic scale)")
+        plt.title(f"{title}\n{description}")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(directory / f"{stem}{suffix}.png")
+        plt.close()
+
+
+def generate_backend_amortisation_figure(
+    rows: list[dict[str, str]],
+    directory: Path,
+    description: str,
+    suffix: str = "",
+) -> None:
+    """Plot setup amortisation over long fixed-geometry evaluations."""
+    counts = np.array([1, 10, 100, 1_000, 10_000], dtype=float)
+    plt.figure(figsize=(9, 5))
+    for row in rows:
+        setup = float(row["fmm_setup_seconds"])
+        evaluation = float(row["evaluation_median"])
+        backend = row["execution_backend"]
+        plt.loglog(
+            counts,
+            evaluation + setup / counts,
+            "o-",
+            label=BACKEND_LABELS.get(backend, backend),
+        )
+    plt.xlabel("Evaluations per fixed geometry")
+    plt.ylabel("Amortised wall time per evaluation (s)")
+    plt.title(f"Backend setup amortisation\n{description}")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(directory / f"backend_amortisation{suffix}.png")
+    plt.close()
+
+
 def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     grid = [row for row in rows if row["suite"] == "parameter_grid"]
     representative = representative_case(rows)
@@ -480,56 +647,58 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
         for row in rows
         if row["suite"] == "comparison"
     ]
-    comparison = comparison_case(rows)
-    comparison_description = (
-        f"N={comparison['sources']}, order={comparison['order']}, "
-        f"depth={comparison['depth']}, threads={comparison['threads']}"
-    )
-    method_labels = {
-        "cpu-direct": "CPU direct P2P",
-        "cuda-direct": "CUDA direct P2P",
-        "cuda-m2l": "Hybrid CUDA M2L FMM",
-        "cpu-static-matrix": "FMM static matrix",
-        "cpu-static-matrix-mkl": "FMM static matrix + oneMKL",
-    }
-    methods = [
-        method_labels.get(row["execution_backend"], row["execution_backend"])
-        for row in comparison_rows
-    ]
-    positions = np.arange(len(methods))
-    width = 0.36
-    workload_plots = [
-        (
-            True,
-            "backend_workloads_with_creation.png",
-            "Construction-inclusive workloads",
-            "1 construction + 1 evaluation",
-            "1 construction + 10 evaluations",
-        ),
-        (
-            False,
-            "backend_workloads_evaluation_only.png",
-            "Evaluation-only workloads (construction excluded)",
-            "1 evaluation",
-            "10 evaluations",
-        ),
-    ]
-    for include_creation, filename, title, single_label, repeated_label in workload_plots:
-        single_values, repeated_values = workload_values(
-            comparison_rows,
-            include_creation,
+    if comparison_rows:
+        comparison = comparison_case(rows)
+        comparison_description = (
+            f"N={comparison['sources']}, order={comparison['order']}, "
+            f"depth={comparison['depth']}, threads={comparison['threads']}"
         )
-        plt.figure(figsize=(9, 5))
-        plt.bar(positions - width / 2, single_values, width, label=single_label)
-        plt.bar(positions + width / 2, repeated_values, width, label=repeated_label)
-        plt.xticks(positions, methods)
-        plt.yscale("log")
-        plt.ylabel("Median total wall time (s, logarithmic scale)")
-        plt.title(f"{title}\n{comparison_description}")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(directories["comparison"] / filename)
-        plt.close()
+        generate_backend_workload_figures(
+            comparison_rows,
+            directories["comparison"],
+            comparison_description,
+        )
+        generate_backend_amortisation_figure(
+            comparison_rows,
+            directories["comparison"],
+            comparison_description,
+        )
+    else:
+        workload_keys = sorted({
+            (
+                int(row["sources"]),
+                int(row["order"]),
+                int(row["depth"]),
+                int(row["threads"]),
+            )
+            for row in grid
+            if np.isfinite(float(row["workload_1_total_median"]))
+        })
+        for size, order, depth, threads in workload_keys:
+            workload_rows = [
+                row
+                for row in grid
+                if int(row["sources"]) == size
+                and int(row["order"]) == order
+                and int(row["depth"]) == depth
+                and int(row["threads"]) == threads
+            ]
+            description = (
+                f"N={size}, order={order}, depth={depth}, threads={threads}"
+            )
+            suffix = f"_n{size}_p{order}_d{depth}_t{threads}"
+            generate_backend_workload_figures(
+                workload_rows,
+                directories["comparison"],
+                description,
+                suffix,
+            )
+            generate_backend_amortisation_figure(
+                workload_rows,
+                directories["comparison"],
+                description,
+                suffix,
+            )
 
     # Combined runtime, accuracy, and work views contain every grid case.
     figure, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -808,7 +977,7 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
         representative.get("fmm_setup_seconds", representative["tree_total"])
     )
     evaluation = float(representative["evaluation_median"])
-    counts = np.array([1, 2, 5, 10, 100], dtype=float)
+    counts = np.array([1, 10, 100, 1_000, 10_000], dtype=float)
     plt.figure()
     plt.plot(counts, evaluation + setup / counts, "o-")
     plt.xscale("log")
@@ -885,8 +1054,13 @@ def main() -> None:
     args = parser.parse_args()
     executable = args.executable or default_executable()
     cuda_status = probe_cuda(executable)
-    backends = benchmark_backends(cuda_status)
     profile = PROFILES[args.profile]
+    available_backends = benchmark_backends(cuda_status)
+    backends = profile_backends(
+        args.profile,
+        profile,
+        available_backends,
+    )
     stamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     run_dir = args.output_root / stamp
     figures = run_dir / "figures"
@@ -897,7 +1071,12 @@ def main() -> None:
     max_threads = min(args.max_threads or available, available)
     cases = build_cases(profile, max_threads)
     planned_cases = expanded_cases(cases, backends)
-    total_cases = len(planned_cases) + len(backends)
+    include_comparison = profile.get("comparison", True)
+    workload_comparison = profile.get("workload_comparison", True)
+    warmups = profile.get("warmups", 1)
+    total_cases = len(planned_cases) + (
+        len(backends) if include_comparison else 0
+    )
     print(
         f"Benchmark executable: {executable}\n"
         f"CUDA compiled={cuda_status.compiled}, "
@@ -932,7 +1111,8 @@ def main() -> None:
             samples=profile["samples"],
             direct=case.direct,
             backend=backend,
-            workload_comparison=True,
+            workload_comparison=workload_comparison,
+            warmups=warmups,
         )
         row["suite"] = case.suite
         rows.append(row)
@@ -942,45 +1122,48 @@ def main() -> None:
             flush=True,
         )
 
-    direct_sizes = [size for size in profile["sizes"] if size <= 5000]
-    comparison_size = min(direct_sizes)
-    comparison_size_index = profile["sizes"].index(comparison_size)
-    comparison_depth = profile["depths"][
-        min(len(profile["depths"]) - 1, comparison_size_index)
-    ]
-    comparison_order = min(
-        profile["orders"],
-        key=lambda order: abs(order - 4),
-    )
-    for backend in backends:
-        completed += 1
-        print(
-            f"\nRunning test {completed}/{total_cases}: suite=comparison, "
-            f"sources={comparison_size}, targets={comparison_size}, "
-            f"order={comparison_order}, depth={comparison_depth}, "
-            f"threads={max_threads}, backend={backend}",
-            flush=True,
+    if include_comparison:
+        direct_sizes = [size for size in profile["sizes"] if size <= 5000]
+        comparison_size = min(direct_sizes)
+        comparison_size_index = profile["sizes"].index(comparison_size)
+        comparison_depth = profile["depths"][
+            min(len(profile["depths"]) - 1, comparison_size_index)
+        ]
+        comparison_order = min(
+            profile["orders"],
+            key=lambda order: abs(order - 4),
         )
-        comparison_row = invoke(
-            executable,
-            temporary,
-            size=comparison_size,
-            order=comparison_order,
-            depth=comparison_depth,
-            threads=max_threads,
-            evaluations=profile["evaluations"],
-            samples=profile["samples"],
-            direct=True,
-            backend=backend,
-            workload_comparison=True,
-        )
-        comparison_row["suite"] = "comparison"
-        rows.append(comparison_row)
-        print(
-            f"Overall {progress_bar(completed, total_cases)} "
-            f"{completed}/{total_cases} tests complete",
-            flush=True,
-        )
+        for backend in backends:
+            completed += 1
+            print(
+                f"\nRunning test {completed}/{total_cases}: "
+                f"suite=comparison, sources={comparison_size}, "
+                f"targets={comparison_size}, order={comparison_order}, "
+                f"depth={comparison_depth}, threads={max_threads}, "
+                f"backend={backend}",
+                flush=True,
+            )
+            comparison_row = invoke(
+                executable,
+                temporary,
+                size=comparison_size,
+                order=comparison_order,
+                depth=comparison_depth,
+                threads=max_threads,
+                evaluations=profile["evaluations"],
+                samples=profile["samples"],
+                direct=True,
+                backend=backend,
+                workload_comparison=workload_comparison,
+                warmups=warmups,
+            )
+            comparison_row["suite"] = "comparison"
+            rows.append(comparison_row)
+            print(
+                f"Overall {progress_bar(completed, total_cases)} "
+                f"{completed}/{total_cases} tests complete",
+                flush=True,
+            )
     temporary.unlink(missing_ok=True)
     with (run_dir / "results.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
@@ -1005,34 +1188,73 @@ def main() -> None:
     )
     generate_figures(rows, figures)
     representative = representative_case(rows)
-    comparison = comparison_case(rows)
     evaluation = float(representative["evaluation_median"])
+    representative_phases = top_level_evaluation_phases(representative)
     phase_rows = []
     phase_total = sum(
-        float(representative[column]) for column, _ in EVALUATION_PHASES
+        float(representative[column]) for column, _ in representative_phases
     )
-    for column, label in EVALUATION_PHASES:
+    for column, label in representative_phases:
         seconds = float(representative[column])
         fraction = seconds / phase_total if phase_total else 0.0
         phase_rows.append(f"| {label} | {seconds:.6g} | {fraction:.1%} |")
     m2l_phase_rows = []
+    representative_m2l_phases = nested_m2l_phases(representative)
     m2l_phase_total = sum(
-        float(representative[column]) for column, _ in M2L_SUBPHASES
+        float(representative[column])
+        for column, _ in representative_m2l_phases
     )
-    for column, label in M2L_SUBPHASES:
+    for column, label in representative_m2l_phases:
         seconds = float(representative[column])
         fraction = seconds / m2l_phase_total if m2l_phase_total else 0.0
         m2l_phase_rows.append(
             f"| {label} | {seconds:.6g} | {fraction:.1%} |"
         )
     comparison_rows = [row for row in rows if row["suite"] == "comparison"]
-    workload_rows = []
-    for row in comparison_rows:
-        workload_rows.append(
-            f"| {row['execution_backend']} | {row['m2l_strategy']} | "
-            f"{float(row['workload_1_total_median']):.6g} | "
-            f"{float(row['workload_10_total_median']):.6g} | "
-            f"{float(row['rms_relative_error']):.6g} |"
+    if comparison_rows:
+        comparison = comparison_case(rows)
+        workload_rows = []
+        for row in comparison_rows:
+            workload_rows.append(
+                f"| {row['execution_backend']} | {row['m2l_strategy']} | "
+                f"{float(row['workload_1_total_median']):.6g} | "
+                f"{float(row['workload_10_total_median']):.6g} | "
+                f"{float(row['rms_relative_error']):.6g} |"
+            )
+        comparison_summary = (
+            "## Creation/evaluation workloads\n\n"
+            f"Comparison geometry: **N={comparison['sources']}, "
+            f"order={comparison['order']}, depth={comparison['depth']}, "
+            f"threads={comparison['threads']}**. Times are median totals and "
+            "include construction.\n\n"
+            "| Backend | Stored operator data | 1 creation + 1 evaluation "
+            "(s) | 1 creation + 10 evaluations (s) | RMS relative error |\n"
+            "|---|---|---:|---:|---:|\n"
+            + "\n".join(workload_rows)
+            + "\n\n"
+        )
+    else:
+        rough_rows = []
+        for row in rows:
+            rough_rows.append(
+                f"| {row['sources']} | {row['depth']} | "
+                f"{row['execution_backend']} | "
+                f"{float(row['fmm_setup_seconds']):.6g} | "
+                f"{float(row['evaluation_median']):.6g} | "
+                f"{float(row['workload_1_total_median']):.6g} | "
+                f"{float(row['workload_10_total_median']):.6g} |"
+            )
+        comparison_summary = (
+            "## Rough backend sweep\n\n"
+            "This profile deliberately omits the additional comparison, "
+            "thread-scaling, and accuracy-reference suites. Every process "
+            "records setup separately, one warmed timed evaluation, and "
+            "independent 1+1 and 1+10 construction/evaluation workloads.\n\n"
+            "| N | Depth | Backend | Setup (s) | Evaluation (s) | 1+1 total "
+            "(s) | 1+10 total (s) |\n"
+            "|---:|---:|---|---:|---:|---:|---:|\n"
+            + "\n".join(rough_rows)
+            + "\n\n"
         )
 
     (run_dir / "summary.md").write_text(
@@ -1041,16 +1263,8 @@ def main() -> None:
         f"- Maximum thread count: **{max_threads}** of {available} logical CPUs.\n"
         f"- Representative case: **{case_description(representative)}**.\n"
         f"- Median complete evaluation: **{evaluation:.6g} s**.\n\n"
-        "## Creation/evaluation workloads\n\n"
-        f"Comparison geometry: **N={comparison['sources']}, "
-        f"order={comparison['order']}, depth={comparison['depth']}, "
-        f"threads={comparison['threads']}**. Times are median totals and "
-        "include construction.\n\n"
-        "| Backend | Stored operator data | 1 creation + 1 evaluation (s) | 1 creation + 10 evaluations (s) | RMS relative error |\n"
-        "|---|---|---:|---:|---:|\n"
-        + "\n".join(workload_rows)
-        + "\n\n"
-        "## Representative evaluation phases\n\n"
+        + comparison_summary
+        + "## Representative evaluation phases\n\n"
         "Shares are normalised over the recorded phase timers. The median "
         "complete evaluation above is measured independently.\n\n"
         "| Phase | Seconds per evaluation | Recorded share |\n"
