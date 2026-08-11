@@ -14,6 +14,112 @@
 
 using namespace cdfmm;
 
+TEST_CASE("static P2M matches the independent dipole operator")
+{
+    std::mt19937 generator(731);
+    std::uniform_real_distribution<double> random(-0.8, 0.8);
+    const Vec3 centre{0.1, -0.2, 0.3};
+    const std::vector<Vec3> positions{
+        {-0.4, 0.2, 0.5}, {0.3, -0.6, 0.1}, {0.7, 0.4, -0.2}
+    };
+    for (const int order : {1, 2, 4, 6}) {
+        const MultiIndexSet basis(order);
+        const auto operator_map = build_static_p2m_operator(
+            basis, centre, positions
+        );
+        for (int state = 0; state < 4; ++state) {
+            std::vector<Vec3> moments(positions.size());
+            std::vector<double> flat(3 * positions.size());
+            for (std::size_t source = 0; source < moments.size(); ++source) {
+                moments[source] = {random(generator), random(generator),
+                                   random(generator)};
+                flat[3 * source] = moments[source].x;
+                flat[3 * source + 1] = moments[source].y;
+                flat[3 * source + 2] = moments[source].z;
+            }
+            const CoeffVector expected = p2m_dipole(
+                basis, centre, positions, moments
+            );
+            CoeffVector actual(expected.size(), 0.0);
+            apply_static_operator(operator_map, flat, actual);
+            for (std::size_t index = 0; index < actual.size(); ++index) {
+                REQUIRE(actual[index] == Catch::Approx(expected[index])
+                    .margin(2.0e-14));
+            }
+        }
+    }
+}
+
+TEST_CASE("static triangular translations match M2M and L2L references")
+{
+    std::mt19937 generator(882);
+    std::uniform_real_distribution<double> random(-1.0, 1.0);
+    for (const int order : {1, 3, 5}) {
+        const MultiIndexSet basis(order);
+        for (int child_class = 0; child_class < 8; ++child_class) {
+            const Vec3 child_offset{
+                (child_class & 1) != 0 ? 0.25 : -0.25,
+                (child_class & 2) != 0 ? 0.25 : -0.25,
+                (child_class & 4) != 0 ? 0.25 : -0.25
+            };
+            CoeffVector input(static_cast<std::size_t>(basis.size()));
+            for (double& value : input) {
+                value = random(generator);
+            }
+            CoeffVector expected(input.size(), 0.0);
+            CoeffVector actual(input.size(), 0.0);
+            m2m_add(basis, child_offset * -1.0, input, expected);
+            apply_static_operator(
+                build_static_m2m_operator(basis, child_offset * -1.0),
+                input, actual
+            );
+            REQUIRE(actual == expected);
+
+            std::fill(expected.begin(), expected.end(), 0.0);
+            std::fill(actual.begin(), actual.end(), 0.0);
+            l2l_add(basis, child_offset, input, expected);
+            apply_static_operator(
+                build_static_l2l_operator(basis, child_offset), input, actual
+            );
+            REQUIRE(actual == expected);
+        }
+    }
+}
+
+TEST_CASE("static L2P matches every reference output mode")
+{
+    std::mt19937 generator(192);
+    std::uniform_real_distribution<double> random(-1.0, 1.0);
+    const Vec3 centre{-0.2, 0.3, 0.1};
+    for (const int order : {1, 2, 4, 6}) {
+        const MultiIndexSet basis(order);
+        CoeffVector L(static_cast<std::size_t>(basis.size()));
+        for (double& value : L) {
+            value = random(generator);
+        }
+        for (const Vec3 target : {Vec3{0.1, 0.2, -0.1},
+                                  Vec3{-0.4, 0.7, 0.3}}) {
+            const auto evaluator = build_static_l2p_evaluator(
+                basis, centre, target
+            );
+            for (const OutputFlags output : {OutputFlags::Field,
+                                             OutputFlags::Potential,
+                                             OutputFlags::Both}) {
+                const PotentialField expected = l2p_eval(
+                    basis, centre, target, L, output
+                );
+                const PotentialField actual = apply_static_l2p_evaluator(
+                    evaluator, L, output
+                );
+                REQUIRE(actual.phi == Catch::Approx(expected.phi));
+                REQUIRE(actual.H.x == Catch::Approx(expected.H.x));
+                REQUIRE(actual.H.y == Catch::Approx(expected.H.y));
+                REQUIRE(actual.H.z == Catch::Approx(expected.H.z));
+            }
+        }
+    }
+}
+
 TEST_CASE("canonical static M2L matrices match independent m2l_add")
 {
     std::mt19937 generator(9182);
@@ -101,6 +207,9 @@ TEST_CASE("static grouped M2L matches the independent reference traversal")
         }
 
         const auto classes = static_fmm.static_plan_statistics().transfer_classes;
+        const auto construction_count =
+            static_fmm.static_plan_statistics().construction_count;
+        const auto plan_bytes = static_fmm.static_plan_statistics().total_bytes();
         moments.front().x += 0.25;
         const auto repeated_values = static_fmm.evaluate(
             moments,
@@ -109,6 +218,9 @@ TEST_CASE("static grouped M2L matches the independent reference traversal")
         );
         REQUIRE(repeated_values.size() == positions.size());
         REQUIRE(static_fmm.static_plan_statistics().transfer_classes == classes);
+        REQUIRE(static_fmm.static_plan_statistics().construction_count ==
+                construction_count);
+        REQUIRE(static_fmm.static_plan_statistics().total_bytes() == plan_bytes);
     }
 }
 

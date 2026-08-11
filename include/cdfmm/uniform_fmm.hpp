@@ -11,6 +11,7 @@
 #include "cdfmm/multi_index.hpp"
 #include "cdfmm/output_flags.hpp"
 #include "cdfmm/uniform_tree.hpp"
+#include "cdfmm/static_operators.hpp"
 
 namespace cdfmm {
 
@@ -208,6 +209,10 @@ public:
   [[nodiscard]] std::span<const double> root_multipole() const;
 
 private:
+  struct P2MPlan {
+      int leaf{0};
+      StaticCoefficientOperator operator_map{};
+  };
   struct M2LGroup {
       int level{0};
       int dx{0};
@@ -230,6 +235,10 @@ private:
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
   CudaPlanStatistics empty_cuda_statistics_{};
   std::vector<M2LGroup> m2l_groups_{};
+  std::vector<P2MPlan> p2m_plans_{};
+  std::vector<std::array<StaticCoefficientOperator, 8>> m2m_operators_{};
+  std::vector<std::array<StaticCoefficientOperator, 8>> l2l_operators_{};
+  std::vector<StaticL2PEvaluator> l2p_evaluators_{};
   StaticPlanStatistics static_plan_statistics_{};
   std::vector<CoeffVector> multipoles_{};
   std::vector<CoeffVector> locals_{};

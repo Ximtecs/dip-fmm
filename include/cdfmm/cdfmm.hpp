@@ -7,6 +7,7 @@
 #include "cdfmm/multi_index.hpp"
 #include "cdfmm/operators.hpp"
 #include "cdfmm/output_flags.hpp"
+#include "cdfmm/static_operators.hpp"
 #include "cdfmm/taylor_jet.hpp"
 #include "cdfmm/vec3.hpp"
 #include "cdfmm/tree_node.hpp"

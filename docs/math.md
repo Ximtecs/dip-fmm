@@ -105,6 +105,77 @@ H_k(x)=-\sum_\alpha M_\alpha D_{\alpha+e_k}G(R).$$
 
 Field evaluation therefore generates kernel derivatives through order $p+1$.
 
+## Static geometry-dependent linear maps
+
+Every far-field stage is linear in the changing moments or in the expansion
+coefficients.  For P2M, concatenate the moment components as
+$m=(m_{1x},m_{1y},m_{1z},m_{2x},\ldots)^T$.  The P2M equation above then gives
+
+$$M=P m,\qquad
+P_{\alpha,(j,k)}=(-1)^{|\alpha|}
+\begin{cases}
+d_j^{\alpha-e_k}/(\alpha-e_k)!,&\alpha_k>0,\\
+0,&\alpha_k=0.
+\end{cases}$$
+
+The two tree shifts are likewise exact linear maps:
+
+$$M_{\mathrm{parent}}\mathrel{+}=A(d)M_{\mathrm{child}},\qquad
+A_{\alpha,\eta}(d)=
+\begin{cases}
+d^{\alpha-\eta}/(\alpha-\eta)!,&\eta\le\alpha,\\
+0,&\text{otherwise},
+\end{cases}$$
+
+$$L_{\mathrm{child}}\mathrel{+}=B(d)L_{\mathrm{parent}},\qquad
+B_{\beta,\eta}(d)=
+\begin{cases}
+d^{\eta-\beta}/(\eta-\beta)!,&\beta\le\eta,\\
+0,&\text{otherwise}.
+\end{cases}$$
+
+For M2L,
+
+$$L=T(R)M,\qquad T_{\beta,\alpha}(R)=D_{\alpha+\beta}G(R),
+\qquad R=c_{\mathrm{target}}-c_{\mathrm{source}}.$$
+
+Finally a fixed target offset has evaluation rows
+
+$$\phi=E_\phi(dx)L,\qquad H=E_H(dx)L,$$
+
+$$E_{\phi,\beta}=dx^\beta/\beta!,\qquad
+(E_H)_{k,\beta}=
+\begin{cases}
+-dx^{\beta-e_k}/(\beta-e_k)!,&\beta_k>0,\\
+0,&\beta_k=0.
+\end{cases}$$
+
+> When positions, expansion centres, tree structure and expansion order are
+> fixed, all of these matrices/operators depend only on geometry. Therefore
+> they can be constructed once and reused for every new dipole-moment state.
+
+The implementation stores compact non-zero entry lists for the triangular and
+sparse maps even though matrix notation is convenient mathematically.  M2L
+retains its grouped dense representation.
+
+```text
+changing quantities:
+    dipole moments
+        ↓ static P2M
+    multipoles
+        ↓ static M2M
+    coarser multipoles
+        ↓ static M2L
+    local expansions
+        ↓ static L2L
+    leaf locals
+        ↓ static L2P
+    far-field H
+```
+
+Operator setup occurs once per geometry; operator application occurs once per
+moment state.
+
 ## P2P
 
 P2P applies the pair formulas in the first section and sums them without

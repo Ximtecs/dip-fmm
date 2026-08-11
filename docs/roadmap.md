@@ -80,6 +80,8 @@ plots, and generated summaries.
 
 ## 5. Persistent geometry plan / static-geometry optimisation — in progress
 
+- [x] static P2M;
+- [x] static M2M;
 - [x] immutable geometry-dependent M2L plan;
 - [x] exact per-level Cartesian M2L matrices;
 - [x] canonical backend-independent M2L matrix construction and direct
@@ -90,33 +92,33 @@ plots, and generated summaries.
   calls;
 - [x] portable dense fallback, reference mode, and oneMKL integration;
 - [x] setup, memory, gather, multiply, and scatter instrumentation;
-- [ ] static P2M, M2M, L2L, and fixed-target L2P;
-- [ ] symmetry and optional tolerance-controlled compression.
+- [x] static L2L;
+- [x] fixed-target static L2P;
+- [ ] static near-field P2P tensor;
+- [ ] further symmetry and optional tolerance-controlled compression.
 
 The target use case repeatedly evaluates a fixed geometry for changing dipole
 moments.  Source positions do not change; target positions normally do not
 change; topology, interaction lists, and expansion order remain fixed.  Only
 the three components of each dipole moment change between evaluations.
 
-Dense static M2L is now the default repeated-geometry path. The remaining
-operators and alternative representations remain investigations.
+The complete far-field static pipeline is now the default repeated-geometry
+path.  The independent reference path remains available for validation.
 
 ### Static P2M operator
 
 For fixed source offsets within a leaf, P2M is linear in moment components.
-Investigate precomputing geometry coefficients so repeated evaluation becomes
+The plan precomputes compact geometry coefficients so repeated evaluation becomes
 
 $$M=P\,m,$$
 
-where $m$ contains the changing dipole components.  Compare an explicit matrix
-with blocked or generated loops, including its setup and storage costs.
+where $m$ contains the changing dipole components.
 
 ### Precomputed M2M translations
 
 A complete uniform octree has only eight child-to-parent relative positions per
-level.  Investigate reusable M2M translation matrices instead of repeatedly
-forming monomial and factorial terms.  Determine whether scale-normalised
-coefficients permit reuse across levels without harming conditioning.
+level.  Compact M2M translation maps are reused by displacement class within
+each level instead of repeatedly forming monomial and factorial terms.
 
 ### Precomputed M2L translations
 
@@ -137,13 +139,13 @@ Investigate:
 
 ### Precomputed L2L translations
 
-Investigate reusable parent-to-child matrices for the eight displacement
-classes, including the same scale-normalisation question as M2M.
+Reusable compact parent-to-child maps cover the eight displacement classes at
+each level.
 
 ### Fixed-target L2P
 
-When target offsets within leaves are fixed, investigate precomputing the
-geometry-dependent map from local coefficients to target potential and field.
+When target offsets within leaves are fixed, the plan precomputes the
+geometry-dependent rows from local coefficients to target potential and field.
 
 ### Optional near-field geometry caching
 
@@ -183,6 +185,14 @@ After the reference and persistent-geometry investigations:
    than inherited accidentally from the complete tree;
 2. CUDA acceleration for profiled P2P and M2L bottlenecks;
 3. MagTense integration and a Fortran interface.
+
+### Uniformly magnetised cubes
+
+Extend the present point-dipole source model to uniformly magnetised cubes.
+This requires deriving and validating cube-source near- and far-field
+operators, including limiting and touching-cell cases, rather than treating a
+cube as an undocumented point approximation.  Preserve the dipole operators
+as an independently selectable reference capability.
 
 These phases are intentionally outside the current CPU reference scope.
 
