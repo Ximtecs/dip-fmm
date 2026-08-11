@@ -136,6 +136,9 @@ struct CudaPlanStatistics {
 /** @brief Device-stream phase timings for the most recent CUDA evaluation. */
 struct CudaEvaluationTimings {
     double h2d_seconds{0.0};
+    double gather_seconds{0.0};
+    double multiply_seconds{0.0};
+    double scatter_seconds{0.0};
     double kernel_seconds{0.0};
     double d2h_seconds{0.0};
 };

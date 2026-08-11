@@ -21,6 +21,7 @@
 #include "cdfmm/operators.hpp"
 #include "cdfmm/static_operators.hpp"
 #include "cuda_fmm_plan.hpp"
+#include "cuda_m2l_plan.hpp"
 
 namespace cdfmm {
 
@@ -65,6 +66,16 @@ void accumulate_timings(EvaluationTimings& aggregate,
 
 } // namespace
 
+class UniformFmm::CudaM2LPlanOwner {
+public:
+    explicit CudaM2LPlanOwner(std::unique_ptr<CudaM2LPlan> value)
+        : plan(std::move(value))
+    {
+    }
+
+    std::unique_ptr<CudaM2LPlan> plan;
+};
+
 //------------------------------------------------------------------------------
 // Construction
 //------------------------------------------------------------------------------
@@ -87,10 +98,8 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
             ? ExecutionBackend::CpuReference
             : ExecutionBackend::CpuStatic;
     }
-    if (backend_ == ExecutionBackend::CudaFarField) {
-        throw std::runtime_error(
-            "CudaFarField is not implemented in this build"
-        );
+    if (backend_ == ExecutionBackend::CudaM2L && !cuda_m2l_available()) {
+        throw std::runtime_error("CudaM2L is unavailable in this build");
     }
     m2l_backend_ = backend_ == ExecutionBackend::CpuReference
         ? M2LBackend::Reference : M2LBackend::Static;
@@ -114,6 +123,16 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     if (m2l_backend_ == M2LBackend::Static) {
         build_static_plan();
     }
+    if (backend_ == ExecutionBackend::CudaM2L) {
+        std::vector<CudaM2LGroupView> groups;
+        groups.reserve(m2l_groups_.size());
+        for (const M2LGroup& group : m2l_groups_) {
+            groups.push_back({group.matrix, group.sources, group.targets});
+        }
+        cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
+            std::make_unique<CudaM2LPlan>(basis_.size(), groups)
+        );
+    }
 }
 
 UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
@@ -135,10 +154,8 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
             ? ExecutionBackend::CpuReference
             : ExecutionBackend::CpuStatic;
     }
-    if (backend_ == ExecutionBackend::CudaFarField) {
-        throw std::runtime_error(
-            "CudaFarField is not implemented in this build"
-        );
+    if (backend_ == ExecutionBackend::CudaM2L && !cuda_m2l_available()) {
+        throw std::runtime_error("CudaM2L is unavailable in this build");
     }
     m2l_backend_ = backend_ == ExecutionBackend::CpuReference
         ? M2LBackend::Reference : M2LBackend::Static;
@@ -162,6 +179,16 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     sorted_results_.resize(target_positions.size());
     if (m2l_backend_ == M2LBackend::Static) {
         build_static_plan();
+    }
+    if (backend_ == ExecutionBackend::CudaM2L) {
+        std::vector<CudaM2LGroupView> groups;
+        groups.reserve(m2l_groups_.size());
+        for (const M2LGroup& group : m2l_groups_) {
+            groups.push_back({group.matrix, group.sources, group.targets});
+        }
+        cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
+            std::make_unique<CudaM2LPlan>(basis_.size(), groups)
+        );
     }
 }
 
@@ -446,7 +473,7 @@ void UniformFmm::upward_pass(std::span<const Vec3> dipole_moments)
         const int leaf_index = occupied_leaves[
             static_cast<std::size_t>(occupied_index)];
         const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
-        if (backend_ == ExecutionBackend::CpuStatic) {
+        if (backend_ != ExecutionBackend::CpuReference) {
             const StaticCoefficientOperator& operator_map =
                 p2m_plans_[static_cast<std::size_t>(occupied_index)].operator_map;
             CoeffVector& M = multipoles_[static_cast<std::size_t>(leaf_index)];
@@ -494,7 +521,7 @@ void UniformFmm::upward_pass(std::span<const Vec3> dipole_moments)
                     if (child.source_count() == 0) {
                         continue;
                     }
-                    if (backend_ == ExecutionBackend::CpuStatic) {
+                    if (backend_ != ExecutionBackend::CpuReference) {
                         const int child_class = (child.ix & 1) |
                             ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
                         apply_static_operator(
@@ -534,6 +561,12 @@ void UniformFmm::downward_pass()
     }
     last_timings_.local_reset.add(elapsed_seconds(phase_start));
 
+    if (backend_ == ExecutionBackend::CudaM2L) {
+        cuda_m2l();
+        l2l_downward();
+        return;
+    }
+
     const auto nodes = tree_.nodes();
     for (int level = 1; level <= tree_.leaf_level(); ++level) {
         const int begin = level_offset(level);
@@ -547,7 +580,7 @@ void UniformFmm::downward_pass()
                 continue;
             }
             const TreeNode& parent = nodes[static_cast<std::size_t>(target.parent)];
-            if (backend_ == ExecutionBackend::CpuStatic) {
+            if (backend_ != ExecutionBackend::CpuReference) {
                 const int child_class = (target.ix & 1) |
                     ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
                 apply_static_operator(
@@ -592,6 +625,46 @@ void UniformFmm::downward_pass()
             }
         }
         last_timings_.m2l.add(elapsed_seconds(phase_start));
+    }
+}
+
+void UniformFmm::cuda_m2l()
+{
+    const auto phase_start = Clock::now();
+    cuda_m2l_plan_->plan->evaluate(multipoles_, locals_);
+    const CudaEvaluationTimings& device = cuda_m2l_plan_->plan->timings();
+    last_timings_.cuda_h2d.add(device.h2d_seconds);
+    last_timings_.m2l_gather.add(device.gather_seconds);
+    last_timings_.m2l_multiply.add(device.multiply_seconds);
+    last_timings_.m2l_scatter.add(device.scatter_seconds);
+    last_timings_.cuda_kernel.add(device.kernel_seconds);
+    last_timings_.cuda_d2h.add(device.d2h_seconds);
+    last_timings_.m2l.add(elapsed_seconds(phase_start));
+}
+
+void UniformFmm::l2l_downward()
+{
+    const auto nodes = tree_.nodes();
+    for (int level = 1; level <= tree_.leaf_level(); ++level) {
+        const int begin = level_offset(level);
+        const int end = level_offset(level + 1);
+        const auto phase_start = Clock::now();
+        #pragma omp parallel for schedule(static) if(end - begin >= 8)
+        for (int target_index = begin; target_index < end; ++target_index) {
+            const TreeNode& target = nodes[static_cast<std::size_t>(target_index)];
+            if (target.target_count() == 0) {
+                continue;
+            }
+            const int child_class = (target.ix & 1) |
+                ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
+            apply_static_operator(
+                l2l_operators_[static_cast<std::size_t>(target.level)]
+                              [child_class],
+                locals_[static_cast<std::size_t>(target.parent)],
+                locals_[static_cast<std::size_t>(target_index)]
+            );
+        }
+        last_timings_.l2l.add(elapsed_seconds(phase_start));
     }
 }
 
@@ -660,7 +733,7 @@ void UniformFmm::evaluate_into(
         const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
         for (std::size_t target_index = leaf.target_begin;
              target_index < leaf.target_end; ++target_index) {
-            if (backend_ == ExecutionBackend::CpuStatic) {
+            if (backend_ != ExecutionBackend::CpuReference) {
                 sorted_results_[target_index] = apply_static_l2p_evaluator(
                     l2p_evaluators_[target_index],
                     locals_[static_cast<std::size_t>(leaf_index)], output
@@ -759,7 +832,8 @@ StaticMatrixBackend UniformFmm::static_matrix_backend() const
 ExecutionBackend UniformFmm::backend() const { return backend_; }
 const CudaPlanStatistics& UniformFmm::cuda_plan_statistics() const
 {
-    return empty_cuda_statistics_;
+    return cuda_m2l_plan_ ? cuda_m2l_plan_->plan->statistics()
+                          : empty_cuda_statistics_;
 }
 const StaticPlanStatistics& UniformFmm::static_plan_statistics() const
 {
