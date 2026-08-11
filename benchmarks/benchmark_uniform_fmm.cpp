@@ -523,24 +523,41 @@ int main(int argc, char** argv)
         const double missing = std::numeric_limits<double>::quiet_NaN();
         WorkloadTiming selected_single{missing, missing, missing};
         WorkloadTiming selected_repeated{missing, missing, missing};
+        // Initialise process-global runtimes before any timed construction or
+        // evaluation. Timed setup still includes all per-plan allocation,
+        // handle creation, static uploads, and geometry-plan construction.
+        if (selected_backend == BenchmarkBackend::CudaDirect) {
+            CudaFmmPlan warmup_plan(source_positions, target_positions);
+            std::vector<PotentialField> warmup_results(
+                target_positions.size()
+            );
+            warmup_plan.evaluate(
+                moment_states.front(),
+                warmup_results,
+                OutputFlags::Field,
+                source_identities
+            );
+        } else if (selected_backend == BenchmarkBackend::CudaM2L) {
+            UniformFmm warmup_fmm(
+                source_positions,
+                target_positions,
+                selected_options
+            );
+            const auto warmup_results = warmup_fmm.evaluate(
+                moment_states.front(),
+                OutputFlags::Field,
+                source_identities
+            );
+            if (warmup_results.size() != target_positions.size()) {
+                throw std::runtime_error(
+                    "CUDA M2L runtime warm-up returned the wrong result size"
+                );
+            }
+        } else if (selected_backend == BenchmarkBackend::CpuStaticMatrixMkl) {
+            warm_mkl_runtime();
+        }
+
         if (options.workload_comparison) {
-            if (selected_backend == BenchmarkBackend::CudaDirect) {
-                // Exclude one-time CUDA context and kernel initialisation from
-                // both persistent-plan construction workloads.
-                CudaFmmPlan warmup_plan(source_positions, target_positions);
-                std::vector<PotentialField> warmup_results(
-                    target_positions.size()
-                );
-                warmup_plan.evaluate(
-                    moment_states.front(),
-                    warmup_results,
-                    OutputFlags::Field,
-                    source_identities
-                );
-            }
-            if (selected_backend == BenchmarkBackend::CpuStaticMatrixMkl) {
-                warm_mkl_runtime();
-            }
             std::cerr << "Benchmarking selected 1- and 10-evaluation "
                          "workloads...\n";
             if (selected_backend == BenchmarkBackend::CudaDirect) {
