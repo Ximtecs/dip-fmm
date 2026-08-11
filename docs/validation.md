@@ -12,16 +12,39 @@ ctest --preset cuda
 python -m pytest python_tests -v
 ```
 
+Run the fixed-geometry problem-size and expansion-order sweep (including
+`cuda-m2l` only when capability probing succeeds) with:
+
+```console
+cmake --build --preset cuda --target benchmark_uniform_fmm
+python benchmarks/run_benchmarks.py --profile standard
+```
+
+For a focused repeated-evaluation comparison, use identical arguments and
+moment generation for each backend:
+
+```console
+build-cuda/benchmarks/benchmark_uniform_fmm --backend cpu-static-matrix --sources 20000 --targets 20000 --depth 4 --order 6 --evaluations 20 --samples 5 --output cpu.csv
+build-cuda/benchmarks/benchmark_uniform_fmm --backend cuda-m2l --sources 20000 --targets 20000 --depth 4 --order 6 --evaluations 20 --samples 5 --output cuda-m2l.csv
+```
+
 The C++ suite selects CPU reference/static backends explicitly and compares
 `cuda_direct_p2p_reference` with the CPU direct reference whenever
-`cuda_direct_available()` is true. CUDA far-field and full-FMM capabilities
-are reported separately and are not inferred merely from CUDA compilation.
+`cuda_direct_available()` is true. Manual CUDA tests also compare `CudaM2L`
+with `CpuStatic`; the full-FMM capability remains false.
+
+The hybrid path performs CPU moment permutation, P2M and M2M; GPU gather,
+static M2L cuBLAS multiplication and scatter; then CPU L2L, L2P and near-field
+P2P. Repeated evaluation transfers packed multipole coefficients H2D and raw
+M2L local coefficients D2H. Static matrices and interaction metadata are
+uploaded only during plan construction, and all levels share those two dynamic
+transfers.
 
 The CUDA direct convenience evaluator is an O(N^2) validation reference, not
 an FMM backend. It uploads geometry when called and must not be used to claim a
 moment-only repeated far-field transfer contract.
 
-`EvaluationTimings` records CUDA H2D, kernel, and D2H device-stream durations
+`EvaluationTimings` records CUDA H2D, gather, multiply, scatter, and D2H durations
 with CUDA events. Their sum excludes host packing and result-copy overhead;
 compare it with the complete caller wall time in `total` when diagnosing
 launch, synchronisation, and other host-side costs.

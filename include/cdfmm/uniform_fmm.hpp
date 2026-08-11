@@ -19,7 +19,7 @@ enum class ExecutionBackend {
     Auto,
     CpuReference,
     CpuStatic,
-    CudaFarField
+    CudaM2L
 };
 
 /** @brief Dense multiplication implementation for cached static M2L matrices. */
@@ -40,8 +40,8 @@ enum class StaticMatrixBackend {
 /** @brief Reports whether the O(N^2) CUDA direct reference is available. */
 [[nodiscard]] bool cuda_direct_available() noexcept;
 
-/** @brief Reports whether GPU P2M, M2M, and M2L are implemented. */
-[[nodiscard]] bool cuda_farfield_available() noexcept;
+/** @brief Reports whether the hybrid CUDA static-M2L backend is available. */
+[[nodiscard]] bool cuda_m2l_available() noexcept;
 
 /** @brief Reports whether a complete device-resident CUDA FMM is implemented. */
 [[nodiscard]] bool cuda_full_available() noexcept;
@@ -209,6 +209,7 @@ public:
   [[nodiscard]] std::span<const double> root_multipole() const;
 
 private:
+  class CudaM2LPlanOwner;
   struct P2MPlan {
       int leaf{0};
       StaticCoefficientOperator operator_map{};
@@ -227,6 +228,8 @@ private:
 
   void build_static_plan();
   void static_m2l(int level);
+  void cuda_m2l();
+  void l2l_downward();
 
   UniformTree tree_;
   MultiIndexSet basis_;
@@ -234,6 +237,7 @@ private:
   StaticMatrixBackend static_matrix_backend_{StaticMatrixBackend::Portable};
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
   CudaPlanStatistics empty_cuda_statistics_{};
+  std::unique_ptr<CudaM2LPlanOwner> cuda_m2l_plan_{};
   std::vector<M2LGroup> m2l_groups_{};
   std::vector<P2MPlan> p2m_plans_{};
   std::vector<std::array<StaticCoefficientOperator, 8>> m2m_operators_{};

@@ -59,6 +59,7 @@ enum class BenchmarkBackend {
     CpuReference,
     CpuStaticMatrix,
     CpuStaticMatrixMkl,
+    CudaM2L,
     CudaDirect
 };
 
@@ -134,9 +135,16 @@ BenchmarkBackend benchmark_backend(const std::string& name)
         }
         return BenchmarkBackend::CudaDirect;
     }
+    if (name == "cuda-m2l") {
+        if (!cdfmm::cuda_m2l_available()) {
+            throw std::runtime_error("CUDA M2L is unavailable");
+        }
+        return BenchmarkBackend::CudaM2L;
+    }
     throw std::invalid_argument(
         "Unknown backend '" + name +
-        "'; expected cpu-direct, cpu-reference, cuda-direct, cpu-static-matrix, or "
+        "'; expected cpu-direct, cpu-reference, cuda-direct, cuda-m2l, "
+        "cpu-static-matrix, or "
         "cpu-static-matrix-mkl"
     );
 }
@@ -161,6 +169,11 @@ cdfmm::UniformFmmOptions cpu_options(
         selected.backend = cdfmm::ExecutionBackend::CpuStatic;
         selected.m2l_backend = cdfmm::M2LBackend::Static;
         selected.static_matrix_backend = cdfmm::StaticMatrixBackend::OneMkl;
+        return selected;
+    }
+    if (backend == BenchmarkBackend::CudaM2L) {
+        selected.backend = cdfmm::ExecutionBackend::CudaM2L;
+        selected.m2l_backend = cdfmm::M2LBackend::Static;
         return selected;
     }
     throw std::invalid_argument("Direct backends do not use UniformFmmOptions");
@@ -358,6 +371,9 @@ std::string static_multiply_backend(const BenchmarkBackend backend)
     if (backend == BenchmarkBackend::CpuStaticMatrix) {
         return "portable";
     }
+    if (backend == BenchmarkBackend::CudaM2L) {
+        return "cuBLAS";
+    }
     return "not_applicable";
 }
 
@@ -411,8 +427,8 @@ int main(int argc, char** argv)
                       << "cuda_available=" << (cuda_available() ? 1 : 0) << '\n'
                       << "cuda_direct_available="
                       << (cuda_direct_available() ? 1 : 0) << '\n'
-                      << "cuda_farfield_available="
-                      << (cuda_farfield_available() ? 1 : 0) << '\n'
+                      << "cuda_m2l_available="
+                      << (cuda_m2l_available() ? 1 : 0) << '\n'
                       << "cuda_full_available="
                       << (cuda_full_available() ? 1 : 0) << '\n'
                       << "one_mkl_available="
@@ -499,7 +515,8 @@ int main(int argc, char** argv)
         UniformFmmOptions selected_options = fmm_options;
         if (selected_backend == BenchmarkBackend::CpuReference ||
             selected_backend == BenchmarkBackend::CpuStaticMatrix ||
-            selected_backend == BenchmarkBackend::CpuStaticMatrixMkl) {
+            selected_backend == BenchmarkBackend::CpuStaticMatrixMkl ||
+            selected_backend == BenchmarkBackend::CudaM2L) {
             selected_options = cpu_options(fmm_options, selected_backend);
         }
 
@@ -775,7 +792,8 @@ int main(int argc, char** argv)
         };
         const bool static_matrix =
             selected_backend == BenchmarkBackend::CpuStaticMatrix ||
-            selected_backend == BenchmarkBackend::CpuStaticMatrixMkl;
+            selected_backend == BenchmarkBackend::CpuStaticMatrixMkl ||
+            selected_backend == BenchmarkBackend::CudaM2L;
         const std::string m2l_strategy = static_matrix
             ? "cached-dense-m2l-matrix-per-transfer-class"
             : (selected_backend == BenchmarkBackend::CpuReference
@@ -796,7 +814,7 @@ int main(int argc, char** argv)
             : 0;
         const CudaPlanStatistics cuda_statistics = cuda_direct_plan
             ? cuda_direct_plan->statistics()
-            : CudaPlanStatistics{};
+            : (fmm ? fmm->cuda_plan_statistics() : CudaPlanStatistics{});
 
         std::ostream* output_stream = &std::cout;
         std::ofstream output_file;
@@ -828,6 +846,7 @@ int main(int argc, char** argv)
                "workload_10_evaluation_median,workload_10_total_median,"
                "cuda_setup_h2d_bytes,"
                "cuda_evaluation_h2d_bytes,cuda_evaluation_d2h_bytes,"
+               "cuda_evaluation_h2d_calls,cuda_evaluation_d2h_calls,"
                "cuda_persistent_device_bytes\n";
         const char* build_type =
 #ifdef NDEBUG
@@ -896,6 +915,8 @@ int main(int argc, char** argv)
         out << ',' << cuda_statistics.setup_h2d_bytes
             << ',' << cuda_statistics.evaluation_h2d_bytes
             << ',' << cuda_statistics.evaluation_d2h_bytes
+            << ',' << cuda_statistics.evaluation_h2d_calls
+            << ',' << cuda_statistics.evaluation_d2h_calls
             << ',' << cuda_statistics.persistent_device_bytes << '\n';
 
         if (!options.output.empty()) {

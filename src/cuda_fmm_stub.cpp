@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cuda_fmm_plan.hpp"
+#include "cuda_m2l_plan.hpp"
 #include "cdfmm/cuda_direct.hpp"
 
 #include <stdexcept>
@@ -22,7 +23,7 @@ bool cuda_direct_available() noexcept
     return false;
 }
 
-bool cuda_farfield_available() noexcept
+bool cuda_m2l_available() noexcept
 {
     return false;
 }
@@ -61,6 +62,33 @@ const CudaPlanStatistics& CudaFmmPlan::statistics() const noexcept
 }
 
 const CudaEvaluationTimings& CudaFmmPlan::evaluation_timings() const noexcept
+{
+    static const CudaEvaluationTimings empty{};
+    return empty;
+}
+
+CudaM2LPlan::CudaM2LPlan(int, std::span<const CudaM2LGroupView>)
+{
+    throw std::runtime_error(
+        "CUDA M2L requested, but CDFMM_ENABLE_CUDA is OFF"
+    );
+}
+
+CudaM2LPlan::~CudaM2LPlan() = default;
+
+void CudaM2LPlan::evaluate(std::span<const std::vector<double>>,
+                           std::span<std::vector<double>>)
+{
+    throw std::runtime_error("CUDA M2L backend is unavailable");
+}
+
+const CudaPlanStatistics& CudaM2LPlan::statistics() const noexcept
+{
+    static const CudaPlanStatistics empty{};
+    return empty;
+}
+
+const CudaEvaluationTimings& CudaM2LPlan::timings() const noexcept
 {
     static const CudaEvaluationTimings empty{};
     return empty;

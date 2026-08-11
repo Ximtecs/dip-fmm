@@ -374,13 +374,13 @@ PYBIND11_MODULE(cdfmm, module)
         .value("AUTO", ExecutionBackend::Auto)
         .value("CPU_REFERENCE", ExecutionBackend::CpuReference)
         .value("CPU_STATIC", ExecutionBackend::CpuStatic)
-        .value("CUDA_FAR_FIELD", ExecutionBackend::CudaFarField);
+        .value("CUDA_M2L", ExecutionBackend::CudaM2L);
 
     module.def("cuda_compiled", &cuda_compiled);
     module.def("one_mkl_available", &one_mkl_available);
     module.def("cuda_available", &cuda_available);
     module.def("cuda_direct_available", &cuda_direct_available);
-    module.def("cuda_farfield_available", &cuda_farfield_available);
+    module.def("cuda_m2l_available", &cuda_m2l_available);
     module.def("cuda_full_available", &cuda_full_available);
     module.def("cuda_device_description", &cuda_device_description);
 

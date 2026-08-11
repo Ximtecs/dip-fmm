@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cuda_fmm_plan.hpp"
+#include "cuda_m2l_plan.hpp"
 #include "cdfmm/cuda_direct.hpp"
 
 #include <cuda_runtime.h>
+#include <cublas_v2.h>
 
 #include <algorithm>
 #include <numbers>
@@ -20,6 +22,52 @@ void check_cuda(const cudaError_t status, const char* operation)
             std::string(operation) + ": " + cudaGetErrorString(status)
         );
     }
+}
+
+void check_cublas(const cublasStatus_t status, const char* operation)
+{
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        throw std::runtime_error(std::string(operation) + " failed");
+    }
+}
+
+__global__ void gather_m2l_kernel(const double* multipoles,
+                                  const int* sources,
+                                  const std::size_t interaction_count,
+                                  const int coefficient_count,
+                                  double* gathered)
+{
+    const std::size_t value = blockIdx.x * blockDim.x + threadIdx.x;
+    const std::size_t value_count = interaction_count * coefficient_count;
+    if (value >= value_count) {
+        return;
+    }
+    const std::size_t interaction = value / coefficient_count;
+    const int coefficient = static_cast<int>(value % coefficient_count);
+    gathered[value] = multipoles[
+        static_cast<std::size_t>(sources[interaction]) * coefficient_count +
+        coefficient
+    ];
+}
+
+__global__ void scatter_m2l_kernel(const double* translated,
+                                   const int* targets,
+                                   const std::size_t interaction_count,
+                                   const int coefficient_count,
+                                   double* locals)
+{
+    const std::size_t value = blockIdx.x * blockDim.x + threadIdx.x;
+    const std::size_t value_count = interaction_count * coefficient_count;
+    if (value >= value_count) {
+        return;
+    }
+    const std::size_t interaction = value / coefficient_count;
+    const int coefficient = static_cast<int>(value % coefficient_count);
+    atomicAdd(
+        locals + static_cast<std::size_t>(targets[interaction]) *
+            coefficient_count + coefficient,
+        translated[value]
+    );
 }
 
 __global__ void dipole_field_kernel(const Vec3* targets,
@@ -123,9 +171,9 @@ bool cuda_direct_available() noexcept
     return cuda_runtime_available();
 }
 
-bool cuda_farfield_available() noexcept
+bool cuda_m2l_available() noexcept
 {
-    return false;
+    return cuda_runtime_available();
 }
 
 bool cuda_full_available() noexcept
@@ -379,6 +427,274 @@ std::vector<PotentialField> cuda_direct_p2p_reference(
     std::vector<PotentialField> results(targets.size());
     plan.evaluate(moments, results, output, target_source_indices);
     return results;
+}
+
+//------------------------------------------------------------------------------
+// Hybrid static M2L plan
+//------------------------------------------------------------------------------
+
+struct CudaM2LPlan::Implementation {
+    struct Group {
+        std::size_t matrix_offset{0};
+        std::size_t interaction_offset{0};
+        int columns{0};
+    };
+
+    int coefficient_count{0};
+    std::vector<int> source_nodes{};
+    std::vector<int> target_nodes{};
+    std::vector<Group> groups{};
+    std::vector<double> host_multipoles{};
+    std::vector<double> host_locals{};
+    double* matrices{nullptr};
+    int* sources{nullptr};
+    int* targets{nullptr};
+    double* multipoles{nullptr};
+    double* locals{nullptr};
+    double* gathered{nullptr};
+    double* translated{nullptr};
+    cudaStream_t stream{nullptr};
+    cublasHandle_t cublas{nullptr};
+    cudaEvent_t start{nullptr};
+    cudaEvent_t h2d{nullptr};
+    cudaEvent_t gather{nullptr};
+    cudaEvent_t multiply{nullptr};
+    cudaEvent_t scatter{nullptr};
+    cudaEvent_t d2h{nullptr};
+    CudaPlanStatistics statistics{};
+    CudaEvaluationTimings timings{};
+};
+
+CudaM2LPlan::CudaM2LPlan(
+    const int coefficient_count,
+    const std::span<const CudaM2LGroupView> group_views)
+    : implementation_(new Implementation{})
+{
+    if (!cuda_runtime_available()) {
+        delete implementation_;
+        implementation_ = nullptr;
+        throw std::runtime_error("CudaM2L requires an available CUDA device");
+    }
+    Implementation& plan = *implementation_;
+    plan.coefficient_count = coefficient_count;
+
+    std::vector<double> matrices;
+    std::vector<int> sources;
+    std::vector<int> targets;
+    for (const CudaM2LGroupView& view : group_views) {
+        Implementation::Group group;
+        group.matrix_offset = matrices.size();
+        group.interaction_offset = sources.size();
+        group.columns = static_cast<int>(view.sources.size());
+        plan.groups.push_back(group);
+        matrices.insert(matrices.end(), view.matrix.begin(), view.matrix.end());
+        sources.insert(sources.end(), view.sources.begin(), view.sources.end());
+        targets.insert(targets.end(), view.targets.begin(), view.targets.end());
+    }
+
+    // Compact node indices make the dynamic transfers contain coefficients
+    // required by M2L rather than the complete uniform tree.
+    plan.source_nodes = sources;
+    plan.target_nodes = targets;
+    std::sort(plan.source_nodes.begin(), plan.source_nodes.end());
+    plan.source_nodes.erase(
+        std::unique(plan.source_nodes.begin(), plan.source_nodes.end()),
+        plan.source_nodes.end()
+    );
+    std::sort(plan.target_nodes.begin(), plan.target_nodes.end());
+    plan.target_nodes.erase(
+        std::unique(plan.target_nodes.begin(), plan.target_nodes.end()),
+        plan.target_nodes.end()
+    );
+    for (int& source : sources) {
+        source = static_cast<int>(std::lower_bound(
+            plan.source_nodes.begin(), plan.source_nodes.end(), source
+        ) - plan.source_nodes.begin());
+    }
+    for (int& target : targets) {
+        target = static_cast<int>(std::lower_bound(
+            plan.target_nodes.begin(), plan.target_nodes.end(), target
+        ) - plan.target_nodes.begin());
+    }
+
+    const std::size_t source_values = plan.source_nodes.size() *
+        static_cast<std::size_t>(coefficient_count);
+    const std::size_t target_values = plan.target_nodes.size() *
+        static_cast<std::size_t>(coefficient_count);
+    const std::size_t interaction_values = sources.size() *
+        static_cast<std::size_t>(coefficient_count);
+    plan.host_multipoles.resize(source_values);
+    plan.host_locals.resize(target_values);
+
+    check_cuda(cudaStreamCreate(&plan.stream), "cudaStreamCreate M2L");
+    check_cublas(cublasCreate(&plan.cublas), "cublasCreate");
+    check_cublas(cublasSetStream(plan.cublas, plan.stream), "cublasSetStream");
+    check_cuda(cudaEventCreate(&plan.start), "cudaEventCreate");
+    check_cuda(cudaEventCreate(&plan.h2d), "cudaEventCreate");
+    check_cuda(cudaEventCreate(&plan.gather), "cudaEventCreate");
+    check_cuda(cudaEventCreate(&plan.multiply), "cudaEventCreate");
+    check_cuda(cudaEventCreate(&plan.scatter), "cudaEventCreate");
+    check_cuda(cudaEventCreate(&plan.d2h), "cudaEventCreate");
+
+    const auto allocate = [](auto** pointer, const std::size_t bytes) {
+        if (bytes != 0) {
+            check_cuda(cudaMalloc(reinterpret_cast<void**>(pointer), bytes),
+                       "cudaMalloc M2L buffer");
+        }
+    };
+    allocate(&plan.matrices, matrices.size() * sizeof(double));
+    allocate(&plan.sources, sources.size() * sizeof(int));
+    allocate(&plan.targets, targets.size() * sizeof(int));
+    allocate(&plan.multipoles, source_values * sizeof(double));
+    allocate(&plan.locals, target_values * sizeof(double));
+    allocate(&plan.gathered, interaction_values * sizeof(double));
+    allocate(&plan.translated, interaction_values * sizeof(double));
+
+    if (!matrices.empty()) {
+        check_cuda(cudaMemcpyAsync(plan.matrices, matrices.data(),
+            matrices.size() * sizeof(double), cudaMemcpyHostToDevice,
+            plan.stream), "upload static M2L matrices");
+    }
+    if (!sources.empty()) {
+        check_cuda(cudaMemcpyAsync(plan.sources, sources.data(),
+            sources.size() * sizeof(int), cudaMemcpyHostToDevice, plan.stream),
+            "upload static M2L sources");
+        check_cuda(cudaMemcpyAsync(plan.targets, targets.data(),
+            targets.size() * sizeof(int), cudaMemcpyHostToDevice, plan.stream),
+            "upload static M2L targets");
+    }
+    check_cuda(cudaStreamSynchronize(plan.stream), "finish static M2L upload");
+    plan.statistics.setup_h2d_bytes = matrices.size() * sizeof(double) +
+        (sources.size() + targets.size()) * sizeof(int);
+    plan.statistics.persistent_device_bytes =
+        plan.statistics.setup_h2d_bytes +
+        (source_values + target_values + 2 * interaction_values) * sizeof(double);
+    plan.statistics.plan_generation_count = 1;
+    plan.statistics.static_upload_count = 1;
+    plan.statistics.static_m2l_upload_count = 1;
+}
+
+CudaM2LPlan::~CudaM2LPlan()
+{
+    if (implementation_ == nullptr) {
+        return;
+    }
+    Implementation& plan = *implementation_;
+    cudaFree(plan.matrices);
+    cudaFree(plan.sources);
+    cudaFree(plan.targets);
+    cudaFree(plan.multipoles);
+    cudaFree(plan.locals);
+    cudaFree(plan.gathered);
+    cudaFree(plan.translated);
+    cudaEventDestroy(plan.start);
+    cudaEventDestroy(plan.h2d);
+    cudaEventDestroy(plan.gather);
+    cudaEventDestroy(plan.multiply);
+    cudaEventDestroy(plan.scatter);
+    cudaEventDestroy(plan.d2h);
+    cublasDestroy(plan.cublas);
+    cudaStreamDestroy(plan.stream);
+    delete implementation_;
+}
+
+void CudaM2LPlan::evaluate(
+    const std::span<const std::vector<double>> multipoles,
+    const std::span<std::vector<double>> raw_locals)
+{
+    Implementation& plan = *implementation_;
+    const std::size_t n = static_cast<std::size_t>(plan.coefficient_count);
+    for (std::size_t packed = 0; packed < plan.source_nodes.size(); ++packed) {
+        std::copy(multipoles[static_cast<std::size_t>(plan.source_nodes[packed])].begin(),
+                  multipoles[static_cast<std::size_t>(plan.source_nodes[packed])].end(),
+                  plan.host_multipoles.begin() + static_cast<std::ptrdiff_t>(packed * n));
+    }
+
+    check_cuda(cudaEventRecord(plan.start, plan.stream), "record M2L start");
+    if (!plan.host_multipoles.empty()) {
+        check_cuda(cudaMemcpyAsync(plan.multipoles, plan.host_multipoles.data(),
+            plan.host_multipoles.size() * sizeof(double), cudaMemcpyHostToDevice,
+            plan.stream), "upload multipoles");
+    }
+    check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record M2L H2D");
+    const std::size_t interactions = plan.groups.empty() ? 0 :
+        plan.groups.back().interaction_offset + plan.groups.back().columns;
+    if (interactions != 0) {
+        constexpr int threads = 256;
+        const std::size_t values = interactions * n;
+        gather_m2l_kernel<<<(values + threads - 1) / threads, threads, 0,
+            plan.stream>>>(plan.multipoles, plan.sources, interactions,
+                           plan.coefficient_count, plan.gathered);
+    }
+    check_cuda(cudaEventRecord(plan.gather, plan.stream), "record M2L gather");
+    constexpr double one = 1.0;
+    constexpr double zero = 0.0;
+    for (const Implementation::Group& group : plan.groups) {
+        check_cublas(cublasDgemm(
+            plan.cublas, CUBLAS_OP_N, CUBLAS_OP_N,
+            plan.coefficient_count, group.columns, plan.coefficient_count,
+            &one, plan.matrices + group.matrix_offset, plan.coefficient_count,
+            plan.gathered + group.interaction_offset * n, plan.coefficient_count,
+            &zero, plan.translated + group.interaction_offset * n,
+            plan.coefficient_count
+        ), "cublasDgemm static M2L");
+    }
+    check_cuda(cudaEventRecord(plan.multiply, plan.stream), "record M2L multiply");
+    if (!plan.host_locals.empty()) {
+        check_cuda(cudaMemsetAsync(plan.locals, 0,
+            plan.host_locals.size() * sizeof(double), plan.stream),
+            "clear raw M2L locals");
+    }
+    if (interactions != 0) {
+        constexpr int threads = 256;
+        const std::size_t values = interactions * n;
+        scatter_m2l_kernel<<<(values + threads - 1) / threads, threads, 0,
+            plan.stream>>>(plan.translated, plan.targets, interactions,
+                           plan.coefficient_count, plan.locals);
+    }
+    check_cuda(cudaEventRecord(plan.scatter, plan.stream), "record M2L scatter");
+    if (!plan.host_locals.empty()) {
+        check_cuda(cudaMemcpyAsync(plan.host_locals.data(), plan.locals,
+            plan.host_locals.size() * sizeof(double), cudaMemcpyDeviceToHost,
+            plan.stream), "download raw M2L locals");
+    }
+    check_cuda(cudaEventRecord(plan.d2h, plan.stream), "record M2L D2H");
+    check_cuda(cudaEventSynchronize(plan.d2h), "wait for CUDA M2L");
+
+    for (std::size_t packed = 0; packed < plan.target_nodes.size(); ++packed) {
+        std::copy(plan.host_locals.begin() + static_cast<std::ptrdiff_t>(packed * n),
+                  plan.host_locals.begin() + static_cast<std::ptrdiff_t>((packed + 1) * n),
+                  raw_locals[static_cast<std::size_t>(plan.target_nodes[packed])].begin());
+    }
+    const auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
+        float milliseconds = 0.0F;
+        check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
+                   "time CUDA M2L phase");
+        return static_cast<double>(milliseconds) * 1.0e-3;
+    };
+    plan.timings.h2d_seconds = elapsed(plan.start, plan.h2d);
+    plan.timings.gather_seconds = elapsed(plan.h2d, plan.gather);
+    plan.timings.multiply_seconds = elapsed(plan.gather, plan.multiply);
+    plan.timings.scatter_seconds = elapsed(plan.multiply, plan.scatter);
+    plan.timings.d2h_seconds = elapsed(plan.scatter, plan.d2h);
+    plan.timings.kernel_seconds = plan.timings.gather_seconds +
+        plan.timings.multiply_seconds + plan.timings.scatter_seconds;
+    plan.statistics.evaluation_h2d_bytes =
+        plan.host_multipoles.size() * sizeof(double);
+    plan.statistics.evaluation_d2h_bytes =
+        plan.host_locals.size() * sizeof(double);
+    plan.statistics.evaluation_h2d_calls = 1;
+    plan.statistics.evaluation_d2h_calls = 1;
+}
+
+const CudaPlanStatistics& CudaM2LPlan::statistics() const noexcept
+{
+    return implementation_->statistics;
+}
+
+const CudaEvaluationTimings& CudaM2LPlan::timings() const noexcept
+{
+    return implementation_->timings;
 }
 
 } // namespace cdfmm

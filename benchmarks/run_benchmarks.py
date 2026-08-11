@@ -60,7 +60,7 @@ class CudaStatus:
     compiled: bool
     available: bool
     direct_available: bool
-    farfield_available: bool
+    m2l_available: bool
     full_available: bool
     mkl_available: bool
     device: str
@@ -133,6 +133,8 @@ def benchmark_backends(status: CudaStatus) -> list[str]:
     backends = ["cpu-direct"]
     if status.direct_available:
         backends.append("cuda-direct")
+    if status.m2l_available:
+        backends.append("cuda-m2l")
     backends.append("cpu-static-matrix")
     if status.mkl_available:
         backends.append("cpu-static-matrix-mkl")
@@ -162,7 +164,7 @@ def probe_cuda(executable: Path) -> CudaStatus:
         compiled=values.get("cuda_compiled") == "1",
         available=values.get("cuda_available") == "1",
         direct_available=values.get("cuda_direct_available") == "1",
-        farfield_available=values.get("cuda_farfield_available") == "1",
+        m2l_available=values.get("cuda_m2l_available") == "1",
         full_available=values.get("cuda_full_available") == "1",
         mkl_available=values.get("one_mkl_available") == "1",
         device=values.get("cuda_device", ""),
@@ -486,6 +488,7 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     method_labels = {
         "cpu-direct": "CPU direct P2P",
         "cuda-direct": "CUDA direct P2P",
+        "cuda-m2l": "Hybrid CUDA M2L FMM",
         "cpu-static-matrix": "FMM static matrix",
         "cpu-static-matrix-mkl": "FMM static matrix + oneMKL",
     }
@@ -900,7 +903,7 @@ def main() -> None:
         f"CUDA compiled={cuda_status.compiled}, "
         f"available={cuda_status.available}, "
         f"direct={cuda_status.direct_available}, "
-        f"far-field={cuda_status.farfield_available}, "
+        f"cuda-m2l={cuda_status.m2l_available}, "
         f"full={cuda_status.full_available}, "
         f"oneMKL={cuda_status.mkl_available}, "
         f"device={cuda_status.device or 'none'}\n"
@@ -993,7 +996,7 @@ def main() -> None:
         f"cuda_compiled={cuda_status.compiled}\n"
         f"cuda_available={cuda_status.available}\n"
         f"cuda_direct_available={cuda_status.direct_available}\n"
-        f"cuda_farfield_available={cuda_status.farfield_available}\n"
+        f"cuda_m2l_available={cuda_status.m2l_available}\n"
         f"cuda_full_available={cuda_status.full_available}\n"
         f"one_mkl_available={cuda_status.mkl_available}\n"
         f"cuda_device={cuda_status.device}\n"
