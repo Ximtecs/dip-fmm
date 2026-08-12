@@ -21,10 +21,11 @@ PROFILES = {
     "rough": dict(
         sizes=[20_000, 30_000],
         orders=[4],
-        depths=[2, 3],
+        depths=[3, 4],
         evaluations=1,
         samples=1,
         warmups=1,
+        accuracy_targets=128,
         scaling=False,
         comparison=False,
         workload_comparison=True,
@@ -33,7 +34,7 @@ PROFILES = {
             "cuda-direct",
             "cpu-static-matrix-mkl",
             "cpu-static-matrix",
-            "cuda-m2l",
+            "cuda-m2l-p2p",
         ],
     ),
     "standard": dict(sizes=[1000, 2000, 5000], orders=[2, 3, 4, 5, 6, 8], depths=[2, 3, 4], evaluations=20, samples=5),
@@ -62,38 +63,56 @@ M2L_SUBPHASES = [
     ("m2l_scatter", "Scatter"),
 ]
 
+CUDA_P2P_PHASES = [
+    ("cuda_p2p_h2d", "Moment/identity H2D"),
+    ("cuda_p2p_kernel", "Sparse list-1 tensor"),
+    ("cuda_p2p_d2h", "Field D2H"),
+    ("cuda_p2p_wait", "Final host wait"),
+]
+
 BACKEND_LABELS = {
     "cpu-direct": "CPU direct P2P",
     "cuda-direct": "CUDA direct P2P",
-    "cuda-m2l": "Hybrid CUDA M2L FMM",
+    "cuda-m2l-p2p": "Hybrid CUDA M2L/P2P FMM",
     "cpu-static-matrix": "FMM static matrix",
     "cpu-static-matrix-mkl": "FMM static matrix + oneMKL",
 }
+
+DIRECT_BACKENDS = {"cpu-direct", "cuda-direct"}
 
 
 def top_level_evaluation_phases(
     row: dict[str, str],
 ) -> list[tuple[str, str]]:
     """Return non-overlapping top-level phases for one backend row."""
-    if row.get("execution_backend") == "cuda-m2l":
-        nested_cuda = {"cuda_h2d", "cuda_kernel", "cuda_d2h"}
+    if row.get("execution_backend") == "cuda-m2l-p2p":
+        overlapping_cuda = {"p2p", "cuda_h2d", "cuda_kernel", "cuda_d2h"}
         return [
             phase
             for phase in EVALUATION_PHASES
-            if phase[0] not in nested_cuda
+            if phase[0] not in overlapping_cuda
         ]
     return EVALUATION_PHASES
 
 
 def nested_m2l_phases(row: dict[str, str]) -> list[tuple[str, str]]:
     """Return the diagnostic partition of the parent M2L phase."""
-    if row.get("execution_backend") == "cuda-m2l":
+    if row.get("execution_backend") == "cuda-m2l-p2p":
         return [
-            ("cuda_h2d", "Multipole H2D"),
+            ("cuda_m2l_h2d", "Multipole H2D"),
             *M2L_SUBPHASES,
-            ("cuda_d2h", "Local D2H"),
+            ("cuda_m2l_d2h", "Local D2H"),
         ]
     return M2L_SUBPHASES
+
+
+def independent_p2p_phases(
+    row: dict[str, str],
+) -> list[tuple[str, str]]:
+    """Return the independently scheduled CUDA P2P lane."""
+    if row.get("execution_backend") == "cuda-m2l-p2p":
+        return CUDA_P2P_PHASES
+    return []
 
 
 @dataclass(frozen=True)
@@ -186,7 +205,7 @@ def benchmark_backends(status: CudaStatus) -> list[str]:
     if status.direct_available:
         backends.append("cuda-direct")
     if status.m2l_available:
-        backends.append("cuda-m2l")
+        backends.append("cuda-m2l-p2p")
     backends.append("cpu-static-matrix")
     if status.mkl_available:
         backends.append("cpu-static-matrix-mkl")
@@ -214,8 +233,40 @@ def profile_backends(
 
 
 def expanded_cases(cases: list[BenchmarkCase], backends: list[str]):
-    """Pair every planned geometry with every required execution backend."""
-    return [(case, backend) for case in cases for backend in backends]
+    """Expand tree cases and add one order-independent direct case per size."""
+    tree_backends = [
+        backend for backend in backends if backend not in DIRECT_BACKENDS
+    ]
+    planned = [
+        (case, backend)
+        for case in cases
+        for backend in tree_backends
+    ]
+
+    # Direct all-to-all P2P depends only on the particle count. Use zero as the
+    # explicit not-applicable value for expansion order and tree depth in CSV.
+    direct_cases_by_size = {}
+    for case in cases:
+        if case.suite != "parameter_grid":
+            continue
+        direct_cases_by_size.setdefault(
+            case.size,
+            BenchmarkCase(
+                suite="direct",
+                size=case.size,
+                order=0,
+                depth=0,
+                threads=case.threads,
+                direct=case.direct,
+            ),
+        )
+    planned.extend(
+        (direct_cases_by_size[size], backend)
+        for size in sorted(direct_cases_by_size)
+        for backend in backends
+        if backend in DIRECT_BACKENDS
+    )
+    return planned
 
 
 def probe_cuda(executable: Path) -> CudaStatus:
@@ -236,7 +287,10 @@ def probe_cuda(executable: Path) -> CudaStatus:
         compiled=values.get("cuda_compiled") == "1",
         available=values.get("cuda_available") == "1",
         direct_available=values.get("cuda_direct_available") == "1",
-        m2l_available=values.get("cuda_m2l_available") == "1",
+        m2l_available=(
+            values.get("cuda_m2l_p2p_available",
+                       values.get("cuda_m2l_available")) == "1"
+        ),
         full_available=values.get("cuda_full_available") == "1",
         mkl_available=values.get("one_mkl_available") == "1",
         device=values.get("cuda_device", ""),
@@ -298,10 +352,16 @@ def comparison_case(rows: list[dict[str, str]]) -> dict[str, str]:
 
 
 def case_description(row: dict[str, str]) -> str:
+    backend = row.get("execution_backend", "cpu-static-matrix")
+    if backend in DIRECT_BACKENDS:
+        return (
+            f"N={row['sources']}, threads={row['threads']}, "
+            f"backend={backend}"
+        )
     return (
         f"N={row['sources']}, order={row['order']}, depth={row['depth']}, "
         f"threads={row['threads']}, "
-        f"backend={row.get('execution_backend', 'cpu-static-matrix')}"
+        f"backend={backend}"
     )
 
 
@@ -309,7 +369,8 @@ def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
            threads: int, evaluations: int, samples: int, direct: bool,
            backend: str = "cpu-static-matrix",
            workload_comparison: bool = True,
-           warmups: int = 1) -> dict[str, str]:
+           warmups: int = 1,
+           accuracy_targets: int = 0) -> dict[str, str]:
     if not executable.is_file():
         raise FileNotFoundError(
             f"Benchmark executable not found at {executable}; run "
@@ -322,6 +383,8 @@ def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
                "--evaluations", str(evaluations), "--samples", str(samples),
                "--warmups", str(warmups), "--seed", "314159", "--backend", backend,
                "--output", str(output)]
+    if accuracy_targets > 0:
+        command.extend(["--accuracy-targets", str(accuracy_targets)])
     if not direct:
         command.append("--no-direct")
     if not workload_comparison:
@@ -367,10 +430,16 @@ def plot_line(rows, x, y, group, path, title, xlabel, ylabel, log=False):
 
 
 def phase_breakdown_filename(row: dict[str, str]) -> str:
+    backend = row.get("execution_backend", "cpu-static-matrix")
+    if backend in DIRECT_BACKENDS:
+        return (
+            f"{row['suite']}_n{row['sources']}_t{row['threads']}_"
+            f"{backend}.png"
+        )
     return (
         f"{row['suite']}_n{row['sources']}_p{row['order']}_"
         f"d{row['depth']}_t{row['threads']}_"
-        f"{row.get('execution_backend', 'cpu-static-matrix')}.png"
+        f"{backend}.png"
     )
 
 
@@ -386,15 +455,25 @@ def generate_phase_breakdown(row: dict[str, str], path: Path) -> None:
         for column, _ in diagnostic_m2l_phases
     ]
     m2l_recorded_total = sum(m2l_values)
+    diagnostic_p2p_phases = independent_p2p_phases(row)
+    p2p_names = [label for _, label in diagnostic_p2p_phases]
+    p2p_values = [float(row[column]) for column, _ in diagnostic_p2p_phases]
+    p2p_recorded_total = sum(p2p_values)
 
-    figure, axes = plt.subplots(1, 2, figsize=(15, 6))
+    panel_count = 3 if diagnostic_p2p_phases else 2
+    figure, axes = plt.subplots(1, panel_count, figsize=(7.5 * panel_count, 6))
 
-    def draw_breakdown(axis, names, values, total, title):
+    def draw_breakdown(
+        axis, names, values, total, title, *, show_fraction=True
+    ):
         bars = axis.barh(names, values)
         for bar, value in zip(bars, values):
             fraction = value / total if total else 0.0
+            annotation = f"{value:.4g} s"
+            if show_fraction:
+                annotation += f" ({fraction:.1%})"
             axis.annotate(
-                f"{value:.4g} s ({fraction:.1%})",
+                annotation,
                 (bar.get_width(), bar.get_y() + bar.get_height() / 2),
                 xytext=(5, 0),
                 textcoords="offset points",
@@ -419,6 +498,15 @@ def generate_phase_breakdown(row: dict[str, str], path: Path) -> None:
         m2l_recorded_total,
         "Nested M2L matrix sub-phases",
     )
+    if diagnostic_p2p_phases:
+        draw_breakdown(
+            axes[2],
+            p2p_names,
+            p2p_values,
+            p2p_recorded_total,
+            "Independent CUDA P2P lane",
+            show_fraction=False,
+        )
     figure.suptitle(
         f"Evaluation timing: suite={row['suite']}\n{case_description(row)}"
     )
@@ -609,6 +697,7 @@ def generate_backend_amortisation_figure(
 
 def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     grid = [row for row in rows if row["suite"] == "parameter_grid"]
+    direct_rows = [row for row in rows if row["suite"] == "direct"]
     representative = representative_case(rows)
     benchmark_threads = representative["threads"]
 
@@ -635,7 +724,8 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
         filename = phase_breakdown_filename(row)
         generate_phase_breakdown(row, per_run_directories["phases"] / filename)
         generate_setup_breakdown(row, per_run_directories["setup"] / filename)
-        generate_work_breakdown(row, per_run_directories["work"] / filename)
+        if row["suite"] != "direct":
+            generate_work_breakdown(row, per_run_directories["work"] / filename)
 
     generate_phase_breakdown(
         representative,
@@ -649,6 +739,11 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     ]
     if comparison_rows:
         comparison = comparison_case(rows)
+        comparison_rows.extend(
+            row
+            for row in direct_rows
+            if row["sources"] == comparison["sources"]
+        )
         comparison_description = (
             f"N={comparison['sources']}, order={comparison['order']}, "
             f"depth={comparison['depth']}, threads={comparison['threads']}"
@@ -683,6 +778,12 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
                 and int(row["depth"]) == depth
                 and int(row["threads"]) == threads
             ]
+            workload_rows.extend(
+                row
+                for row in direct_rows
+                if int(row["sources"]) == size
+                and int(row["threads"]) == threads
+            )
             description = (
                 f"N={size}, order={order}, depth={depth}, threads={threads}"
             )
@@ -866,6 +967,31 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     direct_directory = directories["comparison"] / "direct_vs_fmm"
     runtime_particle_directory.mkdir(parents=True, exist_ok=True)
     direct_directory.mkdir(parents=True, exist_ok=True)
+    for backend in sorted({row["execution_backend"] for row in direct_rows}):
+        selected_direct = sorted(
+            (
+                row
+                for row in direct_rows
+                if row["execution_backend"] == backend
+            ),
+            key=lambda row: int(row["sources"]),
+        )
+        plt.figure()
+        plt.loglog(
+            [int(row["sources"]) for row in selected_direct],
+            [float(row["evaluation_median"]) for row in selected_direct],
+            "o-",
+        )
+        plt.xlabel("Sources and targets, N")
+        plt.ylabel("Median evaluation time (s)")
+        plt.title(
+            f"Direct runtime/particles: threads={benchmark_threads}, "
+            f"backend={backend}"
+        )
+        plt.tight_layout()
+        plt.savefig(runtime_particle_directory / f"direct_{backend}.png")
+        plt.close()
+
     orders = sorted({int(row["order"]) for row in grid})
     depths = sorted({int(row["depth"]) for row in grid})
     backends = sorted(
@@ -1074,15 +1200,19 @@ def main() -> None:
     include_comparison = profile.get("comparison", True)
     workload_comparison = profile.get("workload_comparison", True)
     warmups = profile.get("warmups", 1)
+    accuracy_targets = profile.get("accuracy_targets", 0)
+    comparison_backends = [
+        backend for backend in backends if backend not in DIRECT_BACKENDS
+    ]
     total_cases = len(planned_cases) + (
-        len(backends) if include_comparison else 0
+        len(comparison_backends) if include_comparison else 0
     )
     print(
         f"Benchmark executable: {executable}\n"
         f"CUDA compiled={cuda_status.compiled}, "
         f"available={cuda_status.available}, "
         f"direct={cuda_status.direct_available}, "
-        f"cuda-m2l={cuda_status.m2l_available}, "
+        f"cuda-m2l-p2p={cuda_status.m2l_available}, "
         f"full={cuda_status.full_available}, "
         f"oneMKL={cuda_status.mkl_available}, "
         f"device={cuda_status.device or 'none'}\n"
@@ -1113,6 +1243,7 @@ def main() -> None:
             backend=backend,
             workload_comparison=workload_comparison,
             warmups=warmups,
+            accuracy_targets=accuracy_targets,
         )
         row["suite"] = case.suite
         rows.append(row)
@@ -1122,7 +1253,7 @@ def main() -> None:
             flush=True,
         )
 
-    if include_comparison:
+    if include_comparison and comparison_backends:
         direct_sizes = [size for size in profile["sizes"] if size <= 5000]
         comparison_size = min(direct_sizes)
         comparison_size_index = profile["sizes"].index(comparison_size)
@@ -1133,7 +1264,7 @@ def main() -> None:
             profile["orders"],
             key=lambda order: abs(order - 4),
         )
-        for backend in backends:
+        for backend in comparison_backends:
             completed += 1
             print(
                 f"\nRunning test {completed}/{total_cases}: "
@@ -1156,6 +1287,7 @@ def main() -> None:
                 backend=backend,
                 workload_comparison=workload_comparison,
                 warmups=warmups,
+                accuracy_targets=accuracy_targets,
             )
             comparison_row["suite"] = "comparison"
             rows.append(comparison_row)
@@ -1180,6 +1312,7 @@ def main() -> None:
         f"cuda_available={cuda_status.available}\n"
         f"cuda_direct_available={cuda_status.direct_available}\n"
         f"cuda_m2l_available={cuda_status.m2l_available}\n"
+        f"cuda_m2l_p2p_available={cuda_status.m2l_available}\n"
         f"cuda_full_available={cuda_status.full_available}\n"
         f"one_mkl_available={cuda_status.mkl_available}\n"
         f"cuda_device={cuda_status.device}\n"
@@ -1210,9 +1343,20 @@ def main() -> None:
         m2l_phase_rows.append(
             f"| {label} | {seconds:.6g} | {fraction:.1%} |"
         )
+    p2p_phase_rows = []
+    representative_p2p_phases = independent_p2p_phases(representative)
+    for column, label in representative_p2p_phases:
+        seconds = float(representative[column])
+        p2p_phase_rows.append(f"| {label} | {seconds:.6g} |")
     comparison_rows = [row for row in rows if row["suite"] == "comparison"]
     if comparison_rows:
         comparison = comparison_case(rows)
+        comparison_rows.extend(
+            row
+            for row in rows
+            if row["suite"] == "direct"
+            and row["sources"] == comparison["sources"]
+        )
         workload_rows = []
         for row in comparison_rows:
             workload_rows.append(
@@ -1236,23 +1380,29 @@ def main() -> None:
     else:
         rough_rows = []
         for row in rows:
+            depth = "-" if row["suite"] == "direct" else row["depth"]
             rough_rows.append(
-                f"| {row['sources']} | {row['depth']} | "
+                f"| {row['sources']} | {depth} | "
                 f"{row['execution_backend']} | "
                 f"{float(row['fmm_setup_seconds']):.6g} | "
                 f"{float(row['evaluation_median']):.6g} | "
                 f"{float(row['workload_1_total_median']):.6g} | "
-                f"{float(row['workload_10_total_median']):.6g} |"
+                f"{float(row['workload_10_total_median']):.6g} | "
+                f"{row['accuracy_targets']} | "
+                f"{float(row['rms_relative_error']):.6g} | "
+                f"{float(row['max_relative_error']):.6g} |"
             )
         comparison_summary = (
             "## Rough backend sweep\n\n"
             "This profile deliberately omits the additional comparison, "
-            "thread-scaling, and accuracy-reference suites. Every process "
-            "records setup separately, one warmed timed evaluation, and "
+            "thread-scaling and the additional full-reference suite. Every "
+            "process records setup separately, one warmed timed evaluation, "
+            "a deterministic sampled direct-reference accuracy check, and "
             "independent 1+1 and 1+10 construction/evaluation workloads.\n\n"
             "| N | Depth | Backend | Setup (s) | Evaluation (s) | 1+1 total "
-            "(s) | 1+10 total (s) |\n"
-            "|---:|---:|---|---:|---:|---:|---:|\n"
+            "(s) | 1+10 total (s) | Accuracy targets | RMS relative error | "
+            "Max relative error |\n"
+            "|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|\n"
             + "\n".join(rough_rows)
             + "\n\n"
         )
@@ -1278,8 +1428,20 @@ def main() -> None:
         "|---|---:|---:|\n"
         + "\n".join(m2l_phase_rows)
         + "\n\n"
-        "The full size/order/depth sweep is stored with "
-        "`suite=parameter_grid`. `figures/combined_overview.png` provides the "
+        + ("### Independent CUDA P2P lane\n\n"
+           "This lane overlaps the dependent far-field chain and is not "
+           "added to the top-level phase total. The final host wait reports "
+           "only residual blocking at the merge point.\n\n"
+           "Device phases and host wait overlap, so they are diagnostic "
+           "values rather than an additive partition.\n\n"
+           "| P2P diagnostic | Seconds per evaluation |\n"
+           "|---|---:|\n"
+           + "\n".join(p2p_phase_rows)
+           + "\n\n" if p2p_phase_rows else "")
+        + "The full size/order/depth FMM sweep is stored with "
+        "`suite=parameter_grid`; the one-per-size direct measurements use "
+        "`suite=direct` with order and depth set to zero (not applicable). "
+        "`figures/combined_overview.png` provides the "
         "top-level comparison. Figures are organised by result type under "
         "`runtime/`, `accuracy/`, `work/`, `phases/`, `setup/`, `scaling/`, "
         "and `comparison/`; per-run plots are in each applicable `per_run/` "

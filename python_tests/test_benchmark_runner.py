@@ -2,6 +2,7 @@ import pytest
 
 from benchmarks.run_benchmarks import (
     CudaStatus,
+    CUDA_P2P_PHASES,
     EVALUATION_PHASES,
     M2L_SUBPHASES,
     PROFILES,
@@ -14,6 +15,7 @@ from benchmarks.run_benchmarks import (
     progress_bar,
     representative_case,
     nested_m2l_phases,
+    independent_p2p_phases,
     thread_counts_up_to,
     top_level_evaluation_phases,
     workload_values,
@@ -117,6 +119,7 @@ def test_rough_profile_contains_exactly_four_geometries_and_no_scaling():
     assert profile["evaluations"] == 1
     assert profile["samples"] == 1
     assert profile["warmups"] == 1
+    assert profile["accuracy_targets"] == 128
     assert profile["workload_comparison"] is True
     assert len(cases) == 4
     assert all(case.suite == "parameter_grid" for case in cases)
@@ -127,26 +130,42 @@ def test_rough_profile_contains_exactly_four_geometries_and_no_scaling():
         (case.size, case.depth)
         for case in cases
     } == {
-        (20_000, 2),
         (20_000, 3),
-        (30_000, 2),
+        (20_000, 4),
         (30_000, 3),
+        (30_000, 4),
     }
 
 
-def test_rough_profile_requires_five_backends_and_expands_to_twenty_runs():
+def test_rough_profile_runs_direct_backends_once_per_particle_count():
     profile = PROFILES["rough"]
     available = [
         "cpu-direct",
         "cuda-direct",
-        "cuda-m2l",
+        "cuda-m2l-p2p",
         "cpu-static-matrix",
         "cpu-static-matrix-mkl",
     ]
     selected = profile_backends("rough", profile, available)
 
     assert selected == profile["backends"]
-    assert len(expanded_cases(build_cases(profile, 8), selected)) == 20
+    expanded = expanded_cases(build_cases(profile, 8), selected)
+    assert len(expanded) == 16
+    direct = [
+        (case, backend)
+        for case, backend in expanded
+        if backend in {"cpu-direct", "cuda-direct"}
+    ]
+    assert len(direct) == 4
+    assert {
+        (case.size, case.order, case.depth, backend)
+        for case, backend in direct
+    } == {
+        (20_000, 0, 0, "cpu-direct"),
+        (20_000, 0, 0, "cuda-direct"),
+        (30_000, 0, 0, "cpu-direct"),
+        (30_000, 0, 0, "cuda-direct"),
+    }
 
 
 def test_rough_profile_rejects_a_build_without_cuda_m2l():
@@ -158,7 +177,7 @@ def test_rough_profile_rejects_a_build_without_cuda_m2l():
         "cpu-static-matrix-mkl",
     ]
 
-    with pytest.raises(RuntimeError, match="cuda-m2l"):
+    with pytest.raises(RuntimeError, match="cuda-m2l-p2p"):
         profile_backends("rough", profile, available)
 
 
@@ -177,12 +196,12 @@ def test_progress_and_phase_filename_identify_the_case():
     )
 
 
-def test_cuda_build_runs_every_case_with_cpu_and_direct_backends():
+def test_cuda_build_runs_direct_backends_once_per_particle_count():
     cases = build_cases(
         {
             "sizes": [100],
-            "orders": [4],
-            "depths": [2],
+            "orders": [2, 4],
+            "depths": [2, 3],
             "evaluations": 1,
             "samples": 1,
         },
@@ -207,6 +226,18 @@ def test_cuda_build_runs_every_case_with_cpu_and_direct_backends():
         "cpu-static-matrix-mkl",
     ]
     expanded = expanded_cases(cases, backends)
+    direct_runs = [
+        (case, backend)
+        for case, backend in expanded
+        if backend in {"cpu-direct", "cuda-direct"}
+    ]
+    assert [
+        (case.suite, case.size, case.order, case.depth, backend)
+        for case, backend in direct_runs
+    ] == [
+        ("direct", 100, 0, 0, "cpu-direct"),
+        ("direct", 100, 0, 0, "cuda-direct"),
+    ]
     for case in cases:
         selected = {
             (candidate, backend)
@@ -214,11 +245,29 @@ def test_cuda_build_runs_every_case_with_cpu_and_direct_backends():
             if candidate == case
         }
         assert selected == {
-            (case, "cpu-direct"),
             (case, "cpu-static-matrix"),
             (case, "cpu-static-matrix-mkl"),
-            (case, "cuda-direct"),
         }
+
+
+def test_cuda_m2l_capability_selects_combined_m2l_p2p_backend():
+    status = CudaStatus(
+        compiled=True,
+        available=True,
+        direct_available=True,
+        m2l_available=True,
+        full_available=False,
+        mkl_available=True,
+        device="Test GPU",
+    )
+
+    assert benchmark_backends(status) == [
+        "cpu-direct",
+        "cuda-direct",
+        "cuda-m2l-p2p",
+        "cpu-static-matrix",
+        "cpu-static-matrix-mkl",
+    ]
 
 
 def test_cpu_build_runs_only_static_benchmarks():
@@ -266,7 +315,7 @@ def test_phase_plots_expose_static_matrix_work():
 
 
 def test_cuda_m2l_device_phases_are_nested_without_double_counting():
-    row = {"execution_backend": "cuda-m2l"}
+    row = {"execution_backend": "cuda-m2l-p2p"}
     top_level_columns = {
         column for column, _ in top_level_evaluation_phases(row)
     }
@@ -279,9 +328,20 @@ def test_cuda_m2l_device_phases_are_nested_without_double_counting():
     assert "cuda_kernel" not in top_level_columns
     assert "cuda_d2h" not in top_level_columns
     assert nested_columns == {
-        "cuda_h2d",
+        "cuda_m2l_h2d",
         "m2l_gather",
         "m2l_multiply",
         "m2l_scatter",
-        "cuda_d2h",
+        "cuda_m2l_d2h",
     }
+
+
+def test_cuda_p2p_is_reported_as_an_independent_overlapping_lane():
+    row = {"execution_backend": "cuda-m2l-p2p"}
+    top_level_columns = {
+        column for column, _ in top_level_evaluation_phases(row)
+    }
+
+    assert "p2p" not in top_level_columns
+    assert independent_p2p_phases(row) == CUDA_P2P_PHASES
+    assert CUDA_P2P_PHASES[-1] == ("cuda_p2p_wait", "Final host wait")
