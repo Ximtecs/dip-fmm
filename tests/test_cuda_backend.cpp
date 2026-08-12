@@ -14,6 +14,14 @@
 
 using namespace cdfmm;
 
+TEST_CASE("CUDA M2L/P2P compatibility names resolve to one backend", "[cuda]")
+{
+    REQUIRE(ExecutionBackend::CudaM2L == ExecutionBackend::CudaM2LP2P);
+    REQUIRE(ExecutionBackend::CudaM2LStaticP2P ==
+            ExecutionBackend::CudaM2LP2P);
+    REQUIRE(cuda_m2l_available() == cuda_m2l_p2p_available());
+}
+
 TEST_CASE("CUDA direct P2P agrees with the CPU direct reference", "[cuda]")
 {
     if (!cuda_available()) {
@@ -62,10 +70,10 @@ TEST_CASE("CUDA direct P2P agrees with the CPU direct reference", "[cuda]")
     }
 }
 
-TEST_CASE("CUDA M2L hybrid agrees with CPU static", "[cuda][manual]")
+TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
 {
-    if (!cuda_m2l_available()) {
-        SUCCEED("CUDA M2L is unavailable");
+    if (!cuda_m2l_p2p_available()) {
+        SUCCEED("CUDA M2L/P2P is unavailable");
         return;
     }
 
@@ -93,7 +101,7 @@ TEST_CASE("CUDA M2L hybrid agrees with CPU static", "[cuda][manual]")
             cpu_options.tree.root_half_width = 1.0;
             cpu_options.backend = ExecutionBackend::CpuStatic;
             UniformFmmOptions cuda_options = cpu_options;
-            cuda_options.backend = ExecutionBackend::CudaM2LStaticP2P;
+            cuda_options.backend = ExecutionBackend::CudaM2LP2P;
 
             UniformFmm cpu(positions, positions, cpu_options);
             UniformFmm cuda(positions, positions, cuda_options);
@@ -109,6 +117,8 @@ TEST_CASE("CUDA M2L hybrid agrees with CPU static", "[cuda][manual]")
             );
             REQUIRE(cuda.cuda_plan_statistics().static_m2l_upload_count == 1);
             REQUIRE(cuda.cuda_plan_statistics().static_p2p_upload_count == 1);
+            REQUIRE(cuda.last_timings().cuda_p2p_wait.calls == 1);
+            REQUIRE(cuda.last_timings().cuda_p2p_kernel.calls == 1);
             for (std::size_t index = 0; index < actual.size(); ++index) {
                 REQUIRE(actual[index].phi ==
                     Catch::Approx(expected[index].phi).margin(2.0e-12));
@@ -119,6 +129,42 @@ TEST_CASE("CUDA M2L hybrid agrees with CPU static", "[cuda][manual]")
                 REQUIRE(actual[index].H.z ==
                     Catch::Approx(expected[index].H.z).margin(2.0e-12));
             }
+
+            const auto potential_expected = cpu.evaluate(
+                moments, OutputFlags::Potential, source_identities
+            );
+            const auto potential_actual = cuda.evaluate(
+                moments, OutputFlags::Potential, source_identities
+            );
+            REQUIRE(cuda.last_timings().cuda_p2p_wait.calls == 0);
+            for (std::size_t index = 0; index < potential_actual.size(); ++index) {
+                REQUIRE(potential_actual[index].phi == Catch::Approx(
+                    potential_expected[index].phi
+                ).margin(2.0e-12));
+            }
+
+            const auto repeated = cuda.evaluate(
+                moments, OutputFlags::Field, source_identities
+            );
+            REQUIRE(repeated.size() == positions.size());
+            REQUIRE(cuda.cuda_plan_statistics().static_m2l_upload_count == 1);
+            REQUIRE(cuda.cuda_plan_statistics().static_p2p_upload_count == 1);
         }
     }
+}
+
+TEST_CASE("CUDA M2L/P2P accepts empty geometry", "[cuda][manual]")
+{
+    if (!cuda_m2l_p2p_available()) {
+        SUCCEED("CUDA M2L/P2P is unavailable");
+        return;
+    }
+
+    UniformFmmOptions options;
+    options.backend = ExecutionBackend::CudaM2LP2P;
+    UniformFmm fmm(std::vector<Vec3>{}, std::vector<Vec3>{}, options);
+    const auto result = fmm.evaluate({}, OutputFlags::Field);
+
+    REQUIRE(result.empty());
+    REQUIRE(fmm.last_timings().cuda_p2p_wait.calls == 1);
 }

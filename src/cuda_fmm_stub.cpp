@@ -26,6 +26,11 @@ bool cuda_direct_available() noexcept
 
 bool cuda_m2l_available() noexcept
 {
+    return cuda_m2l_p2p_available();
+}
+
+bool cuda_m2l_p2p_available() noexcept
+{
     return false;
 }
 
@@ -101,6 +106,20 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2POperator&)
 }
 
 CudaP2PPlan::~CudaP2PPlan() = default;
+
+void CudaP2PPlan::begin_evaluate(std::span<const Vec3>, std::span<const int>)
+{
+    throw std::runtime_error("CUDA static P2P is unavailable in this build");
+}
+
+void CudaP2PPlan::finish_evaluate(std::span<Vec3>)
+{
+    throw std::runtime_error("CUDA static P2P is unavailable in this build");
+}
+
+void CudaP2PPlan::cancel_evaluate() noexcept
+{
+}
 
 void CudaP2PPlan::evaluate(std::span<const Vec3>, std::span<const int>,
                            std::span<Vec3>)

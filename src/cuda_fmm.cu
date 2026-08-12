@@ -174,6 +174,11 @@ bool cuda_direct_available() noexcept
 
 bool cuda_m2l_available() noexcept
 {
+    return cuda_m2l_p2p_available();
+}
+
+bool cuda_m2l_p2p_available() noexcept
+{
     return cuda_runtime_available();
 }
 
@@ -527,7 +532,8 @@ CudaM2LPlan::CudaM2LPlan(
     plan.host_multipoles.resize(source_values);
     plan.host_locals.resize(target_values);
 
-    check_cuda(cudaStreamCreate(&plan.stream), "cudaStreamCreate M2L");
+    check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
+               "cudaStreamCreateWithFlags M2L");
     check_cublas(cublasCreate(&plan.cublas), "cublasCreate");
     check_cublas(cublasSetStream(plan.cublas, plan.stream), "cublasSetStream");
     check_cuda(cudaEventCreate(&plan.start), "cudaEventCreate");
@@ -744,6 +750,9 @@ struct CudaP2PPlan::Implementation {
     Vec3* moments{nullptr};
     int* self_indices{nullptr};
     Vec3* fields{nullptr};
+    Vec3* pinned_moments{nullptr};
+    int* pinned_self_indices{nullptr};
+    Vec3* pinned_fields{nullptr};
     cudaStream_t stream{};
     cudaEvent_t start{};
     cudaEvent_t h2d{};
@@ -751,6 +760,7 @@ struct CudaP2PPlan::Implementation {
     cudaEvent_t d2h{};
     CudaPlanStatistics statistics{};
     CudaEvaluationTimings timings{};
+    bool pending{false};
 };
 
 CudaP2PPlan::CudaP2PPlan(const StaticP2POperator& operator_map)
@@ -759,7 +769,8 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2POperator& operator_map)
     auto& plan = *implementation_;
     plan.source_count = operator_map.source_count;
     plan.target_count = operator_map.target_count;
-    check_cuda(cudaStreamCreate(&plan.stream), "create static P2P stream");
+    check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
+               "create static P2P stream");
     check_cuda(cudaEventCreate(&plan.start), "create static P2P event");
     check_cuda(cudaEventCreate(&plan.h2d), "create static P2P event");
     check_cuda(cudaEventCreate(&plan.kernel), "create static P2P event");
@@ -784,6 +795,18 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2POperator& operator_map)
                               operator_map.target_count * sizeof(Vec3),
                               sizeof(Vec3))),
                "allocate P2P fields");
+    check_cuda(cudaMallocHost(&plan.pinned_moments, std::max(
+                                  operator_map.source_count * sizeof(Vec3),
+                                  sizeof(Vec3))),
+               "allocate pinned P2P moments");
+    check_cuda(cudaMallocHost(&plan.pinned_self_indices, std::max(
+                                  operator_map.target_count * sizeof(int),
+                                  sizeof(int))),
+               "allocate pinned P2P identities");
+    check_cuda(cudaMallocHost(&plan.pinned_fields, std::max(
+                                  operator_map.target_count * sizeof(Vec3),
+                                  sizeof(Vec3))),
+               "allocate pinned P2P fields");
     check_cuda(cudaMemcpy(plan.row_offsets, operator_map.row_offsets.data(),
                           row_bytes, cudaMemcpyHostToDevice), "upload P2P rows");
     if (block_bytes != 0) {
@@ -805,11 +828,15 @@ CudaP2PPlan::~CudaP2PPlan()
         return;
     }
     auto& plan = *implementation_;
+    cancel_evaluate();
     cudaFree(plan.row_offsets);
     cudaFree(plan.blocks);
     cudaFree(plan.moments);
     cudaFree(plan.self_indices);
     cudaFree(plan.fields);
+    cudaFreeHost(plan.pinned_moments);
+    cudaFreeHost(plan.pinned_self_indices);
+    cudaFreeHost(plan.pinned_fields);
     cudaEventDestroy(plan.start);
     cudaEventDestroy(plan.h2d);
     cudaEventDestroy(plan.kernel);
@@ -818,38 +845,79 @@ CudaP2PPlan::~CudaP2PPlan()
     delete implementation_;
 }
 
-void CudaP2PPlan::evaluate(const std::span<const Vec3> moments,
-                           const std::span<const int> target_source_indices,
-                           const std::span<Vec3> fields)
+void CudaP2PPlan::begin_evaluate(
+    const std::span<const Vec3> moments,
+    const std::span<const int> target_source_indices)
 {
     auto& plan = *implementation_;
     if (moments.size() != static_cast<std::size_t>(plan.source_count) ||
-        fields.size() != static_cast<std::size_t>(plan.target_count) ||
-        target_source_indices.size() != fields.size()) {
+        target_source_indices.size() !=
+            static_cast<std::size_t>(plan.target_count)) {
         throw std::invalid_argument("CUDA static P2P dimensions are inconsistent");
     }
-    check_cuda(cudaEventRecord(plan.start, plan.stream), "record P2P start");
-    check_cuda(cudaMemcpyAsync(plan.moments, moments.data(),
-                               moments.size_bytes(), cudaMemcpyHostToDevice,
-                               plan.stream), "upload P2P moments");
-    check_cuda(cudaMemcpyAsync(plan.self_indices, target_source_indices.data(),
-                               target_source_indices.size_bytes(),
-                               cudaMemcpyHostToDevice, plan.stream),
-               "upload P2P identities");
-    check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record P2P upload");
-    constexpr int threads = 128;
-    static_p2p_kernel<<<(plan.target_count + threads - 1) / threads, threads,
-                        0, plan.stream>>>(
-        plan.target_count, plan.row_offsets, plan.blocks, plan.moments,
-        plan.self_indices, plan.fields
-    );
-    check_cuda(cudaGetLastError(), "launch static P2P kernel");
-    check_cuda(cudaEventRecord(plan.kernel, plan.stream), "record P2P kernel");
-    check_cuda(cudaMemcpyAsync(fields.data(), plan.fields, fields.size_bytes(),
-                               cudaMemcpyDeviceToHost, plan.stream),
-               "download P2P fields");
-    check_cuda(cudaEventRecord(plan.d2h, plan.stream), "record P2P download");
+    if (plan.pending) {
+        throw std::logic_error("CUDA static P2P evaluation is already pending");
+    }
+    std::copy(moments.begin(), moments.end(), plan.pinned_moments);
+    std::copy(target_source_indices.begin(), target_source_indices.end(),
+              plan.pinned_self_indices);
+    plan.pending = true;
+    try {
+        check_cuda(cudaEventRecord(plan.start, plan.stream), "record P2P start");
+        check_cuda(cudaMemcpyAsync(plan.moments, plan.pinned_moments,
+                                   moments.size_bytes(), cudaMemcpyHostToDevice,
+                                   plan.stream), "upload P2P moments");
+        check_cuda(cudaMemcpyAsync(plan.self_indices, plan.pinned_self_indices,
+                                   target_source_indices.size_bytes(),
+                                   cudaMemcpyHostToDevice, plan.stream),
+                   "upload P2P identities");
+        check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record P2P upload");
+        if (plan.target_count != 0) {
+            constexpr int threads = 128;
+            static_p2p_kernel<<<
+                (plan.target_count + threads - 1) / threads, threads, 0,
+                plan.stream>>>(
+                plan.target_count, plan.row_offsets, plan.blocks, plan.moments,
+                plan.self_indices, plan.fields
+            );
+            check_cuda(cudaGetLastError(), "launch static P2P kernel");
+        }
+        check_cuda(cudaEventRecord(plan.kernel, plan.stream),
+                   "record P2P kernel");
+        check_cuda(cudaMemcpyAsync(
+            plan.pinned_fields, plan.fields,
+            static_cast<std::size_t>(plan.target_count) * sizeof(Vec3),
+            cudaMemcpyDeviceToHost, plan.stream
+        ), "download P2P fields");
+        check_cuda(cudaEventRecord(plan.d2h, plan.stream),
+                   "record P2P download");
+    } catch (...) {
+        cancel_evaluate();
+        throw;
+    }
+    plan.statistics.evaluation_h2d_bytes = moments.size_bytes() +
+        target_source_indices.size_bytes();
+    plan.statistics.evaluation_d2h_bytes =
+        static_cast<std::size_t>(plan.target_count) * sizeof(Vec3);
+    ++plan.statistics.evaluation_h2d_calls;
+    ++plan.statistics.evaluation_d2h_calls;
+}
+
+void CudaP2PPlan::finish_evaluate(const std::span<Vec3> fields)
+{
+    auto& plan = *implementation_;
+    if (!plan.pending) {
+        throw std::logic_error("CUDA static P2P has no pending evaluation");
+    }
+    if (fields.size() != static_cast<std::size_t>(plan.target_count)) {
+        throw std::invalid_argument("CUDA static P2P output size is inconsistent");
+    }
     check_cuda(cudaEventSynchronize(plan.d2h), "synchronise static P2P");
+    std::copy(
+        plan.pinned_fields,
+        plan.pinned_fields + fields.size(),
+        fields.begin()
+    );
     auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
         float milliseconds = 0.0F;
         check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
@@ -860,11 +928,29 @@ void CudaP2PPlan::evaluate(const std::span<const Vec3> moments,
     plan.timings.h2d_seconds = elapsed(plan.start, plan.h2d);
     plan.timings.kernel_seconds = elapsed(plan.h2d, plan.kernel);
     plan.timings.d2h_seconds = elapsed(plan.kernel, plan.d2h);
-    plan.statistics.evaluation_h2d_bytes = moments.size_bytes() +
-        target_source_indices.size_bytes();
-    plan.statistics.evaluation_d2h_bytes = fields.size_bytes();
-    ++plan.statistics.evaluation_h2d_calls;
-    ++plan.statistics.evaluation_d2h_calls;
+    plan.pending = false;
+}
+
+void CudaP2PPlan::cancel_evaluate() noexcept
+{
+    if (implementation_ == nullptr || !implementation_->pending) {
+        return;
+    }
+    cudaStreamSynchronize(implementation_->stream);
+    implementation_->pending = false;
+}
+
+void CudaP2PPlan::evaluate(const std::span<const Vec3> moments,
+                           const std::span<const int> target_source_indices,
+                           const std::span<Vec3> fields)
+{
+    begin_evaluate(moments, target_source_indices);
+    try {
+        finish_evaluate(fields);
+    } catch (...) {
+        cancel_evaluate();
+        throw;
+    }
 }
 
 const CudaPlanStatistics& CudaP2PPlan::statistics() const noexcept

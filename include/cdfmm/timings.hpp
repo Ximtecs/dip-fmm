@@ -83,6 +83,18 @@ struct EvaluationTimings {
     PhaseTiming cuda_kernel{};
     /// @brief Device-stream time spent downloading requested CUDA outputs.
     PhaseTiming cuda_d2h{};
+    /// @brief Device-stream time spent uploading multipoles for CUDA M2L.
+    PhaseTiming cuda_m2l_h2d{};
+    /// @brief Device-stream time spent downloading locals from CUDA M2L.
+    PhaseTiming cuda_m2l_d2h{};
+    /// @brief Device-stream time spent uploading dynamic CUDA P2P inputs.
+    PhaseTiming cuda_p2p_h2d{};
+    /// @brief Device-stream time spent applying the static CUDA P2P tensor.
+    PhaseTiming cuda_p2p_kernel{};
+    /// @brief Device-stream time spent downloading CUDA P2P fields.
+    PhaseTiming cuda_p2p_d2h{};
+    /// @brief Host time spent at the single final CUDA P2P synchronisation.
+    PhaseTiming cuda_p2p_wait{};
     /// @brief Total complete-evaluation time.
     PhaseTiming total{};
     /// @brief Number of complete evaluations represented by these timings.

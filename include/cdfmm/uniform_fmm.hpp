@@ -19,8 +19,9 @@ enum class ExecutionBackend {
     Auto,
     CpuReference,
     CpuStatic,
-    CudaM2L,
-    CudaM2LStaticP2P
+    CudaM2LP2P,
+    CudaM2L = CudaM2LP2P,
+    CudaM2LStaticP2P = CudaM2LP2P
 };
 
 /** @brief Dense multiplication implementation for cached static M2L matrices. */
@@ -41,7 +42,10 @@ enum class StaticMatrixBackend {
 /** @brief Reports whether the O(N^2) CUDA direct reference is available. */
 [[nodiscard]] bool cuda_direct_available() noexcept;
 
-/** @brief Reports whether the hybrid CUDA static-M2L backend is available. */
+/** @brief Reports whether hybrid CUDA static M2L/P2P is available. */
+[[nodiscard]] bool cuda_m2l_p2p_available() noexcept;
+
+/** @brief Compatibility alias for `cuda_m2l_p2p_available()`. */
 [[nodiscard]] bool cuda_m2l_available() noexcept;
 
 /** @brief Reports whether a complete device-resident CUDA FMM is implemented. */
@@ -229,6 +233,9 @@ private:
   };
 
   void build_static_plan();
+  void prepare_moments(std::span<const Vec3> dipole_moments);
+  void upward_pass_prepared();
+  void prepare_self_indices(std::span<const int> target_source_indices);
   void static_m2l(int level);
   void cuda_m2l();
   void l2l_downward();

@@ -17,6 +17,10 @@ public:
     CudaP2PPlan(const CudaP2PPlan&) = delete;
     CudaP2PPlan& operator=(const CudaP2PPlan&) = delete;
 
+    void begin_evaluate(std::span<const Vec3> moments,
+                        std::span<const int> target_source_indices);
+    void finish_evaluate(std::span<Vec3> fields);
+    void cancel_evaluate() noexcept;
     void evaluate(std::span<const Vec3> moments,
                   std::span<const int> target_source_indices,
                   std::span<Vec3> fields);
