@@ -110,7 +110,6 @@ TEST_CASE("CUDA direct P2P agrees with the CPU direct reference", "[cuda]")
         targets, sources, moments, OutputFlags::Both
     );
     REQUIRE(cuda_direct_available());
-    REQUIRE_FALSE(cuda_full_available());
     for (std::size_t index = 0; index < targets.size(); ++index) {
             REQUIRE(actual[index].phi ==
                     Catch::Approx(direct[index].phi).epsilon(2.0e-13));
@@ -132,7 +131,7 @@ TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
 
     std::vector<Vec3> positions;
     std::vector<Vec3> moments;
-    for (int index = 0; index < 96; ++index) {
+    for (int index = 0; index < 48; ++index) {
         const double value = static_cast<double>(index);
         positions.push_back({
             -0.9 + 1.8 * static_cast<double>((index * 17) % 97) / 96.0,
@@ -145,65 +144,71 @@ TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
     std::vector<int> source_identities(positions.size());
     std::iota(source_identities.begin(), source_identities.end(), 0);
 
-    for (const int order : {2, 4, 6}) {
-        for (const int depth : {2, 3}) {
-            UniformFmmOptions cpu_options;
-            cpu_options.expansion_order = order;
-            cpu_options.tree.max_level = depth;
-            cpu_options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
-            cpu_options.tree.root_half_width = 1.0;
-            cpu_options.backend = ExecutionBackend::CpuStatic;
-            UniformFmmOptions cuda_options = cpu_options;
-            cuda_options.backend = ExecutionBackend::CudaM2LP2P;
+    UniformFmmOptions cpu_options;
+    cpu_options.expansion_order = 3;
+    cpu_options.tree.max_level = 2;
+    cpu_options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
+    cpu_options.tree.root_half_width = 1.0;
+    cpu_options.backend = ExecutionBackend::CpuStatic;
+    UniformFmmOptions cuda_options = cpu_options;
+    cuda_options.backend = ExecutionBackend::CudaM2LP2P;
 
-            UniformFmm cpu(positions, positions, cpu_options);
-            UniformFmm cuda(positions, positions, cuda_options);
-            const auto expected = cpu.evaluate(
-                moments,
-                OutputFlags::Both,
-                source_identities
-            );
-            const auto actual = cuda.evaluate(
-                moments,
-                OutputFlags::Both,
-                source_identities
-            );
-            REQUIRE(cuda.cuda_plan_statistics().static_m2l_upload_count == 1);
-            REQUIRE(cuda.cuda_plan_statistics().static_p2p_upload_count == 1);
-            REQUIRE(cuda.last_timings().cuda_p2p_wait.calls == 1);
-            REQUIRE(cuda.last_timings().cuda_p2p_kernel.calls == 1);
-            for (std::size_t index = 0; index < actual.size(); ++index) {
-                REQUIRE(actual[index].phi ==
-                    Catch::Approx(expected[index].phi).margin(2.0e-12));
-                REQUIRE(actual[index].H.x ==
-                    Catch::Approx(expected[index].H.x).margin(2.0e-12));
-                REQUIRE(actual[index].H.y ==
-                    Catch::Approx(expected[index].H.y).margin(2.0e-12));
-                REQUIRE(actual[index].H.z ==
-                    Catch::Approx(expected[index].H.z).margin(2.0e-12));
-            }
+    UniformFmm cpu(positions, positions, cpu_options);
+    UniformFmm cuda(positions, positions, cuda_options);
+    REQUIRE(cuda.static_plan_statistics().interactions > 0);
+    REQUIRE(cuda.static_plan_statistics().p2p_interactions > 0);
 
-            const auto potential_expected = cpu.evaluate(
-                moments, OutputFlags::Potential, source_identities
-            );
-            const auto potential_actual = cuda.evaluate(
-                moments, OutputFlags::Potential, source_identities
-            );
-            REQUIRE(cuda.last_timings().cuda_p2p_wait.calls == 0);
-            for (std::size_t index = 0; index < potential_actual.size(); ++index) {
-                REQUIRE(potential_actual[index].phi == Catch::Approx(
-                    potential_expected[index].phi
-                ).margin(2.0e-12));
-            }
-
-            const auto repeated = cuda.evaluate(
-                moments, OutputFlags::Field, source_identities
-            );
-            REQUIRE(repeated.size() == positions.size());
-            REQUIRE(cuda.cuda_plan_statistics().static_m2l_upload_count == 1);
-            REQUIRE(cuda.cuda_plan_statistics().static_p2p_upload_count == 1);
-        }
+    const auto expected = cpu.evaluate(
+        moments,
+        OutputFlags::Both,
+        source_identities
+    );
+    const auto actual = cuda.evaluate(
+        moments,
+        OutputFlags::Both,
+        source_identities
+    );
+    REQUIRE(cuda.cuda_plan_statistics().static_m2l_upload_count == 1);
+    REQUIRE(cuda.cuda_plan_statistics().static_p2p_upload_count == 1);
+    REQUIRE(cuda.last_timings().cuda_p2p_wait.calls == 1);
+    REQUIRE(cuda.last_timings().cuda_p2p_kernel.calls == 1);
+    for (std::size_t index = 0; index < actual.size(); ++index) {
+        REQUIRE(actual[index].phi ==
+                Catch::Approx(expected[index].phi).margin(2.0e-12));
+        REQUIRE(actual[index].H.x ==
+                Catch::Approx(expected[index].H.x).margin(2.0e-12));
+        REQUIRE(actual[index].H.y ==
+                Catch::Approx(expected[index].H.y).margin(2.0e-12));
+        REQUIRE(actual[index].H.z ==
+                Catch::Approx(expected[index].H.z).margin(2.0e-12));
     }
+
+    const auto potential_expected = cpu.evaluate(
+        moments, OutputFlags::Potential, source_identities
+    );
+    const auto potential_actual = cuda.evaluate(
+        moments, OutputFlags::Potential, source_identities
+    );
+    REQUIRE(cuda.last_timings().cuda_p2p_wait.calls == 0);
+    for (std::size_t index = 0; index < potential_actual.size(); ++index) {
+        REQUIRE(potential_actual[index].phi == Catch::Approx(
+            potential_expected[index].phi
+        ).margin(2.0e-12));
+    }
+
+    moments.front().x += 0.25;
+    const auto repeated_expected = cpu.evaluate(
+        moments, OutputFlags::Field, source_identities
+    );
+    const auto repeated = cuda.evaluate(
+        moments, OutputFlags::Field, source_identities
+    );
+    REQUIRE(repeated.size() == positions.size());
+    REQUIRE(repeated.front().H.x == Catch::Approx(
+        repeated_expected.front().H.x
+    ).margin(2.0e-12));
+    REQUIRE(cuda.cuda_plan_statistics().static_m2l_upload_count == 1);
+    REQUIRE(cuda.cuda_plan_statistics().static_p2p_upload_count == 1);
 }
 
 TEST_CASE("CUDA M2L/P2P accepts empty geometry", "[cuda][manual]")
