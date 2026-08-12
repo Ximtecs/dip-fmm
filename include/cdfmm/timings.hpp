@@ -152,6 +152,8 @@ struct CudaPlanStatistics {
     std::uint64_t static_upload_count{0};
     std::uint64_t static_m2l_upload_count{0};
     std::uint64_t static_p2p_upload_count{0};
+    /// @brief Number of immutable geometry-metadata uploads.
+    std::uint64_t geometry_upload_count{0};
 };
 
 /** @brief Device-stream phase timings for the most recent CUDA evaluation. */
@@ -162,6 +164,14 @@ struct CudaEvaluationTimings {
     double scatter_seconds{0.0};
     double kernel_seconds{0.0};
     double d2h_seconds{0.0};
+    double p2m_seconds{0.0};
+    double m2m_seconds{0.0};
+    double m2l_seconds{0.0};
+    double l2l_seconds{0.0};
+    double l2p_seconds{0.0};
+    double p2p_seconds{0.0};
+    double accumulation_seconds{0.0};
+    double total_seconds{0.0};
 };
 
 } // namespace cdfmm

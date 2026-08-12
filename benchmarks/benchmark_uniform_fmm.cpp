@@ -62,6 +62,7 @@ enum class BenchmarkBackend {
     CpuStaticMatrix,
     CpuStaticMatrixMkl,
     CudaM2LP2P,
+    CudaFull,
     CudaDirect
 };
 
@@ -142,11 +143,17 @@ BenchmarkBackend benchmark_backend(const std::string& name)
         return BenchmarkBackend::CudaDirect;
     }
     if (name == "cuda-m2l-p2p" || name == "cuda-m2l" ||
-        name == "cuda-m2l-static-p2p") {
+        name == "cuda-m2l-static-p2p" || name == "cuda-partial") {
         if (!cdfmm::cuda_m2l_p2p_available()) {
             throw std::runtime_error("CUDA M2L and static P2P are unavailable");
         }
         return BenchmarkBackend::CudaM2LP2P;
+    }
+    if (name == "cuda-full") {
+        if (!cdfmm::cuda_full_available()) {
+            throw std::runtime_error("full CUDA FMM is unavailable");
+        }
+        return BenchmarkBackend::CudaFull;
     }
     throw std::invalid_argument(
         "Unknown backend '" + name +
@@ -168,7 +175,9 @@ std::string_view benchmark_backend_name(const BenchmarkBackend backend)
     case BenchmarkBackend::CpuStaticMatrixMkl:
         return "cpu-static-matrix-mkl";
     case BenchmarkBackend::CudaM2LP2P:
-        return "cuda-m2l-p2p";
+        return "cuda-partial";
+    case BenchmarkBackend::CudaFull:
+        return "cuda-full";
     case BenchmarkBackend::CudaDirect:
         return "cuda-direct";
     }
@@ -199,6 +208,11 @@ cdfmm::UniformFmmOptions cpu_options(
     }
     if (backend == BenchmarkBackend::CudaM2LP2P) {
         selected.backend = cdfmm::ExecutionBackend::CudaM2LP2P;
+        selected.m2l_backend = cdfmm::M2LBackend::Static;
+        return selected;
+    }
+    if (backend == BenchmarkBackend::CudaFull) {
+        selected.backend = cdfmm::ExecutionBackend::CudaFull;
         selected.m2l_backend = cdfmm::M2LBackend::Static;
         return selected;
     }
@@ -397,7 +411,8 @@ std::string static_multiply_backend(const BenchmarkBackend backend)
     if (backend == BenchmarkBackend::CpuStaticMatrix) {
         return "portable";
     }
-    if (backend == BenchmarkBackend::CudaM2LP2P) {
+    if (backend == BenchmarkBackend::CudaM2LP2P ||
+        backend == BenchmarkBackend::CudaFull) {
         return "cuBLAS";
     }
     return "not_applicable";
@@ -551,7 +566,8 @@ int main(int argc, char** argv)
         if (selected_backend == BenchmarkBackend::CpuReference ||
             selected_backend == BenchmarkBackend::CpuStaticMatrix ||
             selected_backend == BenchmarkBackend::CpuStaticMatrixMkl ||
-            selected_backend == BenchmarkBackend::CudaM2LP2P) {
+            selected_backend == BenchmarkBackend::CudaM2LP2P ||
+            selected_backend == BenchmarkBackend::CudaFull) {
             selected_options = cpu_options(fmm_options, selected_backend);
         }
 
@@ -572,7 +588,8 @@ int main(int argc, char** argv)
                 OutputFlags::Field,
                 source_identities
             );
-        } else if (selected_backend == BenchmarkBackend::CudaM2LP2P) {
+        } else if (selected_backend == BenchmarkBackend::CudaM2LP2P ||
+                   selected_backend == BenchmarkBackend::CudaFull) {
             UniformFmm warmup_fmm(
                 source_positions,
                 target_positions,
@@ -920,14 +937,17 @@ int main(int argc, char** argv)
         const bool static_matrix =
             selected_backend == BenchmarkBackend::CpuStaticMatrix ||
             selected_backend == BenchmarkBackend::CpuStaticMatrixMkl ||
-            selected_backend == BenchmarkBackend::CudaM2LP2P;
+            selected_backend == BenchmarkBackend::CudaM2LP2P ||
+            selected_backend == BenchmarkBackend::CudaFull;
         const std::string m2l_strategy =
             selected_backend == BenchmarkBackend::CudaM2LP2P
             ? "cached-dense-m2l-and-sparse-list1-p2p"
+            : (selected_backend == BenchmarkBackend::CudaFull
+                ? "full-device-resident-static-fmm"
             : (static_matrix
                 ? "cached-dense-m2l-matrix-per-transfer-class"
                 : (selected_backend == BenchmarkBackend::CpuReference
-                    ? "reference-operators" : "not-applicable-direct-p2p"));
+                    ? "reference-operators" : "not-applicable-direct-p2p")));
         const std::string multiply_backend = static_multiply_backend(
             selected_backend
         );
