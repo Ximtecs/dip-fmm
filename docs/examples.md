@@ -59,6 +59,34 @@ jupyter lab
 See `examples/notebooks/README.md` for the ordered list and select
 `Python (cdfmm)` as the kernel.
 
+Notebook 11 compares CUDA-full, CUDA-partial, and oneMKL CPU-static with the
+pinned FMM3D 2.1.0 Laplace dipole implementation on the same deterministic
+source-point problem. It verifies coincident source/target geometry and reports
+sampled exact-reference accuracy together with one-run and persistent
+changing-moment performance. From the repository root, install and launch it
+with:
+
+```console
+conda env update -n cdfmm -f environment.yml
+conda env update -n cdfmm -f environment-cuda.yml
+conda env update -n cdfmm -f environment-fmm3d.yml
+conda activate cdfmm
+cmake --fresh --preset notebooks
+cmake --build --preset notebooks -j
+ctest --preset notebooks
+./examples/notebooks/install_fmm3d.sh
+jupyter lab examples/notebooks/11_fmm3d_comparison.ipynb
+```
+
+This installed Python build contains CUDA-full, CUDA-partial, oneMKL, and the
+static-M2L inspection binding required by notebook 12. Restart an already open
+notebook kernel after rebuilding so it does not retain the previous extension.
+
+Notebook 12 derives host and device storage from the actual uniform-tree
+interaction lists. It contrasts CUDA-full's replicated M2L entries with
+CUDA-partial's transfer-class matrices and work buffers without allocating a
+CUDA plan while exploring potentially oversized configurations.
+
 ## Benchmark
 
 `benchmarks/benchmark_p2p.cpp` is a minimal standalone timing of one direct sum

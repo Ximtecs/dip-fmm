@@ -26,6 +26,7 @@ __pycache__/
 *.pyd
 *.egg-info/
 .venv/
+.external/
 docs/_build/
 
 # Test/cache tools

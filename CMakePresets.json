@@ -28,6 +28,18 @@
       }
     },
     {
+      "name": "notebooks",
+      "displayName": "CUDA, oneMKL, and installed Python notebook build",
+      "inherits": "cuda",
+      "binaryDir": "${sourceDir}/build-notebooks",
+      "cacheVariables": {
+        "CDFMM_ENABLE_MKL": "ON",
+        "MKL_DIR": "$env{CONDA_PREFIX}/lib/cmake/mkl",
+        "MKL_INTERFACE": "lp64",
+        "MKL_THREADING": "gnu_thread"
+      }
+    },
+    {
       "name": "dev",
       "displayName": "Developer build",
       "generator": "Ninja",
@@ -82,7 +94,7 @@
     },
     {
       "name": "benchmark-all",
-      "displayName": "Combined CPU, CUDA direct, and oneMKL benchmark build",
+      "displayName": "Combined CPU, CUDA, and oneMKL benchmark build",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-bench-all",
       "environment": {
@@ -113,6 +125,11 @@
       "targets": ["install"]
     },
     {
+      "name": "notebooks",
+      "configurePreset": "notebooks",
+      "targets": ["install"]
+    },
+    {
       "name": "dev",
       "configurePreset": "dev"
     },
@@ -137,6 +154,13 @@
     {
       "name": "cuda",
       "configurePreset": "cuda",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "notebooks",
+      "configurePreset": "notebooks",
       "output": {
         "outputOnFailure": true
       }

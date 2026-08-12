@@ -28,6 +28,8 @@ The sequence follows the data flow through the implemented operators:
 | `08_uniform_tree.ipynb` | Morton order, occupancy, boxes, list1, and list2 |
 | `09_uniform_upward_pass.ipynb` | Leaf P2M, hierarchical M2M, and direct-root equivalence |
 | `10_uniform_downward_pass.ipynb` | M2L/L2L routes, list1 near field, and complete-FMM accuracy |
+| `11_fmm3d_comparison.ipynb` | CUDA-full, CUDA-partial, and oneMKL performance versus FMM3D 2.1.0 |
+| `12_cuda_memory_usage.ipynb` | Allocation-free host/device storage analysis for both CUDA FMM layouts |
 
 Select the `Python (cdfmm)` kernel in JupyterLab or VSCode. Important
 parameters are collected near the top of each notebook, and all random
@@ -39,3 +41,37 @@ The uniform tree provides geometry and interaction lists, while `UniformFmm`
 executes the complete reference traversal in compiled C++. Notebook 10 only
 visualises that state and compares it with compiled direct P2P; it does not
 reimplement traversal logic in Python.
+
+## FMM3D comparison setup
+
+Notebook 11 has one additional pinned dependency. Install it once from the
+repository root, then restart the notebook kernel:
+
+```console
+conda env update -n cdfmm -f environment.yml
+conda env update -n cdfmm -f environment-cuda.yml
+conda env update -n cdfmm -f environment-fmm3d.yml
+conda activate cdfmm
+cmake --fresh --preset notebooks
+cmake --build --preset notebooks -j
+ctest --preset notebooks
+./examples/notebooks/install_fmm3d.sh
+jupyter lab examples/notebooks/11_fmm3d_comparison.ipynb
+```
+
+The installer builds the optimised FMM3D 2.1.0 Python wrapper in the active
+`cdfmm` environment and is safe to rerun. Its source checkout is kept below
+the ignored `.external/` directory. The notebook defaults to 10,000 coincident
+sources and targets at order 6 and depth 2. It compares all three cdfmm paths
+with an exact target sample and times 1, 10, 100, and 1,000 changing-moment
+evaluations. Plans are released between backends so CUDA allocations do not
+accumulate.
+
+FMM3D defaults to `eps=1e-3`, for which the pinned v2.1.0 Laplace
+implementation selects spherical expansion order `nterms=12`.
+
+Notebook 12 requires the current compiled `cdfmm` module, including the
+`static_m2l_matrix` inspection binding installed by the `notebooks` preset. It
+reconstructs the
+current host and CUDA storage layouts from tree interactions without allocating
+CUDA plans, so oversized configurations can be inspected safely.

@@ -1,0 +1,15 @@
+name: cdfmm
+channels:
+  - conda-forge
+dependencies:
+  # Build the pinned FMM3D Python wrapper from its Fortran sources.
+  - make
+  # Use a consistent GNU C/C++/Fortran toolchain for NumPy's generated f2py
+  # wrappers. The main environment also contains icx, which must not be mixed
+  # with GNU Fortran when linking FMM3D's Python extensions.
+  - c-compiler
+  - cxx-compiler
+  - fortran-compiler
+  # FMM3D v2.1.0 still builds through numpy.distutils.
+  - numpy <2
+  - setuptools <60
