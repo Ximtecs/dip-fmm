@@ -13,7 +13,7 @@ python -m pytest python_tests -v
 ```
 
 Run the fixed-geometry problem-size and expansion-order sweep (including
-`cuda-m2l-p2p` only when capability probing succeeds) with:
+`cuda-partial` and `cuda-full` when capability probing succeeds) with:
 
 ```console
 cmake --build --preset cuda --target benchmark_uniform_fmm
@@ -25,7 +25,8 @@ moment generation for each backend:
 
 ```console
 build-cuda/benchmarks/benchmark_uniform_fmm --backend cpu-static-matrix --sources 20000 --targets 20000 --depth 4 --order 6 --evaluations 20 --samples 5 --output cpu.csv
-build-cuda/benchmarks/benchmark_uniform_fmm --backend cuda-m2l-p2p --sources 20000 --targets 20000 --depth 4 --order 6 --evaluations 20 --samples 5 --output cuda-m2l-p2p.csv
+build-cuda/benchmarks/benchmark_uniform_fmm --backend cuda-partial --sources 20000 --targets 20000 --depth 4 --order 6 --evaluations 20 --samples 5 --output cuda-partial.csv
+build-cuda/benchmarks/benchmark_uniform_fmm --backend cuda-full --sources 20000 --targets 20000 --depth 4 --order 6 --evaluations 20 --samples 5 --output cuda-full.csv
 ```
 
 The C++ suite selects CPU reference/static backends explicitly and compares

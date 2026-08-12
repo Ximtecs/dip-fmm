@@ -137,12 +137,13 @@ def test_rough_profile_contains_exactly_four_geometries_and_no_scaling():
     }
 
 
-def test_rough_profile_runs_direct_backends_once_per_particle_count():
+def test_rough_profile_includes_partial_and_full_cuda_backends():
     profile = PROFILES["rough"]
     available = [
         "cpu-direct",
         "cuda-direct",
-        "cuda-m2l-p2p",
+        "cuda-partial",
+        "cuda-full",
         "cpu-static-matrix",
         "cpu-static-matrix-mkl",
     ]
@@ -150,7 +151,7 @@ def test_rough_profile_runs_direct_backends_once_per_particle_count():
 
     assert selected == profile["backends"]
     expanded = expanded_cases(build_cases(profile, 8), selected)
-    assert len(expanded) == 16
+    assert len(expanded) == 20
     direct = [
         (case, backend)
         for case, backend in expanded
@@ -168,16 +169,17 @@ def test_rough_profile_runs_direct_backends_once_per_particle_count():
     }
 
 
-def test_rough_profile_rejects_a_build_without_cuda_m2l():
+def test_rough_profile_rejects_a_build_without_full_cuda():
     profile = PROFILES["rough"]
     available = [
         "cpu-direct",
         "cuda-direct",
+        "cuda-partial",
         "cpu-static-matrix",
         "cpu-static-matrix-mkl",
     ]
 
-    with pytest.raises(RuntimeError, match="cuda-m2l-p2p"):
+    with pytest.raises(RuntimeError, match="cuda-full"):
         profile_backends("rough", profile, available)
 
 
@@ -250,13 +252,13 @@ def test_cuda_build_runs_direct_backends_once_per_particle_count():
         }
 
 
-def test_cuda_m2l_capability_selects_combined_m2l_p2p_backend():
+def test_cuda_capabilities_select_partial_and_full_fmm_backends():
     status = CudaStatus(
         compiled=True,
         available=True,
         direct_available=True,
         m2l_available=True,
-        full_available=False,
+        full_available=True,
         mkl_available=True,
         device="Test GPU",
     )
@@ -264,7 +266,8 @@ def test_cuda_m2l_capability_selects_combined_m2l_p2p_backend():
     assert benchmark_backends(status) == [
         "cpu-direct",
         "cuda-direct",
-        "cuda-m2l-p2p",
+        "cuda-partial",
+        "cuda-full",
         "cpu-static-matrix",
         "cpu-static-matrix-mkl",
     ]
@@ -315,7 +318,7 @@ def test_phase_plots_expose_static_matrix_work():
 
 
 def test_cuda_m2l_device_phases_are_nested_without_double_counting():
-    row = {"execution_backend": "cuda-m2l-p2p"}
+    row = {"execution_backend": "cuda-partial"}
     top_level_columns = {
         column for column, _ in top_level_evaluation_phases(row)
     }
@@ -337,7 +340,7 @@ def test_cuda_m2l_device_phases_are_nested_without_double_counting():
 
 
 def test_cuda_p2p_is_reported_as_an_independent_overlapping_lane():
-    row = {"execution_backend": "cuda-m2l-p2p"}
+    row = {"execution_backend": "cuda-partial"}
     top_level_columns = {
         column for column, _ in top_level_evaluation_phases(row)
     }
@@ -345,3 +348,55 @@ def test_cuda_p2p_is_reported_as_an_independent_overlapping_lane():
     assert "p2p" not in top_level_columns
     assert independent_p2p_phases(row) == CUDA_P2P_PHASES
     assert CUDA_P2P_PHASES[-1] == ("cuda_p2p_wait", "Final host wait")
+
+
+def test_full_cuda_phases_do_not_double_count_aggregate_kernel_time():
+    row = {"execution_backend": "cuda-full"}
+    top_level_columns = {
+        column for column, _ in top_level_evaluation_phases(row)
+    }
+
+    assert "cuda_h2d" in top_level_columns
+    assert "cuda_d2h" in top_level_columns
+    assert "cuda_kernel" not in top_level_columns
+    assert "p2m" in top_level_columns
+    assert "p2p" in top_level_columns
+    assert nested_m2l_phases(row) == []
+    assert independent_p2p_phases(row) == []
+
+
+def test_direct_backends_participate_in_thread_scaling_without_duplicate_max():
+    cases = build_cases(
+        {
+            "sizes": [100, 300],
+            "orders": [4],
+            "depths": [2],
+            "evaluations": 1,
+            "samples": 1,
+        },
+        max_threads=6,
+    )
+    expanded = expanded_cases(cases, ["cpu-direct", "cuda-direct"])
+    scaling = [
+        (case.size, case.order, case.depth, case.threads, backend)
+        for case, backend in expanded
+        if case.suite == "scaling"
+    ]
+
+    assert scaling == [
+        (300, 0, 0, 1, "cpu-direct"),
+        (300, 0, 0, 1, "cuda-direct"),
+        (300, 0, 0, 2, "cpu-direct"),
+        (300, 0, 0, 2, "cuda-direct"),
+        (300, 0, 0, 4, "cpu-direct"),
+        (300, 0, 0, 4, "cuda-direct"),
+    ]
+    maximum_thread_direct = [
+        (case.size, case.threads, backend)
+        for case, backend in expanded
+        if case.suite == "direct" and case.size == 300
+    ]
+    assert maximum_thread_direct == [
+        (300, 6, "cpu-direct"),
+        (300, 6, "cuda-direct"),
+    ]

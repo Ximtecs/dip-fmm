@@ -60,8 +60,9 @@ Static M2L issues one DGEMM per transfer class. It does not place an OpenMP
 region around DGEMM, preventing accidental OpenMP-by-MKL multiplication. Set
 and record `OMP_NUM_THREADS` and `MKL_NUM_THREADS` explicitly when benchmarking.
 
-For the four-way CPU direct, CUDA direct, portable static-matrix FMM, and
-oneMKL static-matrix FMM comparison, build the combined executable:
+For the six-way CPU direct, CUDA direct, portable static-matrix FMM, oneMKL
+static-matrix FMM, partial CUDA FMM, and full CUDA FMM comparison, build the
+combined executable:
 
 ```console
 conda env update -n cdfmm -f environment.yml

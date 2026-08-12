@@ -157,9 +157,8 @@ BenchmarkBackend benchmark_backend(const std::string& name)
     }
     throw std::invalid_argument(
         "Unknown backend '" + name +
-        "'; expected cpu-direct, cpu-reference, cuda-direct, cuda-m2l-p2p, "
-        "cpu-static-matrix, or "
-        "cpu-static-matrix-mkl"
+        "'; expected cpu-direct, cpu-reference, cuda-direct, cuda-partial, "
+        "cuda-full, cpu-static-matrix, or cpu-static-matrix-mkl"
     );
 }
 
@@ -602,7 +601,7 @@ int main(int argc, char** argv)
             );
             if (warmup_results.size() != target_positions.size()) {
                 throw std::runtime_error(
-                    "CUDA M2L runtime warm-up returned the wrong result size"
+                    "CUDA FMM runtime warm-up returned the wrong result size"
                 );
             }
         } else if (selected_backend == BenchmarkBackend::CpuStaticMatrixMkl) {

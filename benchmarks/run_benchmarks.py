@@ -34,11 +34,12 @@ PROFILES = {
             "cuda-direct",
             "cpu-static-matrix-mkl",
             "cpu-static-matrix",
-            "cuda-m2l-p2p",
+            "cuda-partial",
+            "cuda-full",
         ],
     ),
-    "standard": dict(sizes=[1000, 2000, 5000], orders=[2, 3, 4, 5, 6, 8], depths=[2, 3, 4], evaluations=20, samples=5),
-    "full": dict(sizes=[1000, 5000, 20000, 50000], orders=[2, 3, 4, 5, 6, 8], depths=[3, 4, 5], evaluations=100, samples=7),
+    "standard": dict(sizes=[10000, 20000, 50000], orders=[2, 4, 6, 8], depths=[2, 3, 4], evaluations=20, samples=5),
+    "full": dict(sizes=[2**10, 2**12, 2**14, 2**16], orders=[2, 3, 4, 5, 6, 8], depths=[2, 3, 4, 5], evaluations=100, samples=7),
 }
 
 EVALUATION_PHASES = [
@@ -73,7 +74,8 @@ CUDA_P2P_PHASES = [
 BACKEND_LABELS = {
     "cpu-direct": "CPU direct P2P",
     "cuda-direct": "CUDA direct P2P",
-    "cuda-m2l-p2p": "Hybrid CUDA M2L/P2P FMM",
+    "cuda-partial": "Partial CUDA FMM",
+    "cuda-full": "Full CUDA FMM",
     "cpu-static-matrix": "FMM static matrix",
     "cpu-static-matrix-mkl": "FMM static matrix + oneMKL",
 }
@@ -85,24 +87,32 @@ def top_level_evaluation_phases(
     row: dict[str, str],
 ) -> list[tuple[str, str]]:
     """Return non-overlapping top-level phases for one backend row."""
-    if row.get("execution_backend") == "cuda-m2l-p2p":
+    backend = row.get("execution_backend")
+    if backend == "cuda-partial":
         overlapping_cuda = {"p2p", "cuda_h2d", "cuda_kernel", "cuda_d2h"}
         return [
             phase
             for phase in EVALUATION_PHASES
             if phase[0] not in overlapping_cuda
         ]
+    if backend == "cuda-full":
+        return [
+            phase for phase in EVALUATION_PHASES
+            if phase[0] != "cuda_kernel"
+        ]
     return EVALUATION_PHASES
 
 
 def nested_m2l_phases(row: dict[str, str]) -> list[tuple[str, str]]:
     """Return the diagnostic partition of the parent M2L phase."""
-    if row.get("execution_backend") == "cuda-m2l-p2p":
+    if row.get("execution_backend") == "cuda-partial":
         return [
             ("cuda_m2l_h2d", "Multipole H2D"),
             *M2L_SUBPHASES,
             ("cuda_m2l_d2h", "Local D2H"),
         ]
+    if row.get("execution_backend") == "cuda-full":
+        return []
     return M2L_SUBPHASES
 
 
@@ -110,7 +120,7 @@ def independent_p2p_phases(
     row: dict[str, str],
 ) -> list[tuple[str, str]]:
     """Return the independently scheduled CUDA P2P lane."""
-    if row.get("execution_backend") == "cuda-m2l-p2p":
+    if row.get("execution_backend") == "cuda-partial":
         return CUDA_P2P_PHASES
     return []
 
@@ -205,7 +215,9 @@ def benchmark_backends(status: CudaStatus) -> list[str]:
     if status.direct_available:
         backends.append("cuda-direct")
     if status.m2l_available:
-        backends.append("cuda-m2l-p2p")
+        backends.append("cuda-partial")
+    if status.full_available:
+        backends.append("cuda-full")
     backends.append("cpu-static-matrix")
     if status.mkl_available:
         backends.append("cpu-static-matrix-mkl")
@@ -233,7 +245,7 @@ def profile_backends(
 
 
 def expanded_cases(cases: list[BenchmarkCase], backends: list[str]):
-    """Expand tree cases and add one order-independent direct case per size."""
+    """Expand FMM cases and order-independent direct/scaling cases."""
     tree_backends = [
         backend for backend in backends if backend not in DIRECT_BACKENDS
     ]
@@ -263,6 +275,27 @@ def expanded_cases(cases: list[BenchmarkCase], backends: list[str]):
     planned.extend(
         (direct_cases_by_size[size], backend)
         for size in sorted(direct_cases_by_size)
+        for backend in backends
+        if backend in DIRECT_BACKENDS
+    )
+    maximum_threads = max(
+        (case.threads for case in cases if case.suite == "parameter_grid"),
+        default=0,
+    )
+    planned.extend(
+        (
+            BenchmarkCase(
+                suite="scaling",
+                size=case.size,
+                order=0,
+                depth=0,
+                threads=case.threads,
+                direct=False,
+            ),
+            backend,
+        )
+        for case in cases
+        if case.suite == "scaling" and case.threads != maximum_threads
         for backend in backends
         if backend in DIRECT_BACKENDS
     )
@@ -460,8 +493,11 @@ def generate_phase_breakdown(row: dict[str, str], path: Path) -> None:
     p2p_values = [float(row[column]) for column, _ in diagnostic_p2p_phases]
     p2p_recorded_total = sum(p2p_values)
 
-    panel_count = 3 if diagnostic_p2p_phases else 2
+    panel_count = (
+        1 + bool(diagnostic_m2l_phases) + bool(diagnostic_p2p_phases)
+    )
     figure, axes = plt.subplots(1, panel_count, figsize=(7.5 * panel_count, 6))
+    axes = np.atleast_1d(axes)
 
     def draw_breakdown(
         axis, names, values, total, title, *, show_fraction=True
@@ -491,16 +527,19 @@ def generate_phase_breakdown(row: dict[str, str], path: Path) -> None:
         recorded_phase_total,
         "Top-level evaluation phases",
     )
-    draw_breakdown(
-        axes[1],
-        m2l_names,
-        m2l_values,
-        m2l_recorded_total,
-        "Nested M2L matrix sub-phases",
-    )
+    next_axis = 1
+    if diagnostic_m2l_phases:
+        draw_breakdown(
+            axes[next_axis],
+            m2l_names,
+            m2l_values,
+            m2l_recorded_total,
+            "Nested M2L matrix sub-phases",
+        )
+        next_axis += 1
     if diagnostic_p2p_phases:
         draw_breakdown(
-            axes[2],
+            axes[next_axis],
             p2p_names,
             p2p_values,
             p2p_recorded_total,
@@ -1115,6 +1154,13 @@ def generate_figures(rows: list[dict[str, str]], figures: Path) -> None:
     plt.close()
 
     scaling_rows = [row for row in rows if row["suite"] == "scaling"]
+    if scaling_rows:
+        scaling_size = max(int(row["sources"]) for row in scaling_rows)
+        scaling_rows.extend(
+            row
+            for row in direct_rows
+            if int(row["sources"]) == scaling_size
+        )
     for backend in sorted(
         {
             row.get("execution_backend", "cpu-static-matrix")
@@ -1212,7 +1258,7 @@ def main() -> None:
         f"CUDA compiled={cuda_status.compiled}, "
         f"available={cuda_status.available}, "
         f"direct={cuda_status.direct_available}, "
-        f"cuda-m2l-p2p={cuda_status.m2l_available}, "
+        f"cuda-partial={cuda_status.m2l_available}, "
         f"full={cuda_status.full_available}, "
         f"oneMKL={cuda_status.mkl_available}, "
         f"device={cuda_status.device or 'none'}\n"

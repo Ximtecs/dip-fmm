@@ -41,6 +41,7 @@ Before benchmarking, confirm the capability output includes:
 cuda_available=1
 cuda_direct_available=1
 cuda_m2l_available=1
+cuda_full_available=1
 one_mkl_available=1
 ```
 
@@ -55,7 +56,7 @@ That last command permanently removes the old CSV files and figures.
 
 ## Combined CPU, CUDA, and oneMKL measurements
 
-Use the combined preset to place all five implemented strategies in one
+Use the combined preset to place all six implemented strategies in one
 executable:
 
 ```console
@@ -68,7 +69,9 @@ python benchmarks/run_benchmarks.py --profile quick --max-threads 4 \
 
 The runner prefers this combined executable and probes its capabilities before
 planning measurements. A complete run compares `cpu-direct`, `cuda-direct`,
-`cuda-m2l-p2p`, `cpu-static-matrix`, and `cpu-static-matrix-mkl`. CUDA direct
+`cuda-partial`, `cuda-full`, `cpu-static-matrix`, and
+`cpu-static-matrix-mkl`. The older `cuda-m2l-p2p`, `cuda-m2l`, and
+`cuda-m2l-static-p2p` CLI spellings remain aliases for `cuda-partial`. CUDA direct
 uses a persistent
 plan: source and target positions are uploaded once during construction, while
 each subsequent evaluation uploads only changing dipole moments and downloads
@@ -82,10 +85,12 @@ CSV rows identify `execution_backend`, compile/runtime CUDA status, device,
 setup bytes, per-evaluation H2D/D2H bytes, upload counts, and persistent device
 bytes. Accuracy columns include the number of exact-reference targets, sampled
 reference time, and mean/RMS/maximum relative field errors. CUDA rows report
-separate M2L and P2P device-stream timings. The P2P lane
+separate device timings. For `cuda-partial`, the P2P lane
 overlaps the dependent P2M/M2M/M2L/L2L/L2P chain and is therefore plotted
 separately rather than added to its phase total. Caller wall time remains the
-primary end-to-end measurement. CUDA
+primary end-to-end measurement. For `cuda-full`, the aggregate CUDA kernel
+timer is excluded from phase totals because the individual device P2M, M2M,
+M2L, L2L, L2P, and P2P timers already partition that work. CUDA
 results are hardware-specific and are never generated in GitHub Actions. Do
 not report crossover or amortisation claims without measured GPU output.
 
@@ -213,15 +218,15 @@ Consequently `--sources` and `--targets` must be equal.
 
 ## Automated profiles
 
-For a deliberately coarse five-backend comparison, use the `rough` profile:
+For a deliberately coarse six-backend comparison, use the `rough` profile:
 
 ```console
 python benchmarks/run_benchmarks.py --profile rough --max-threads 8 \
   --executable build-bench-all/benchmarks/benchmark_uniform_fmm
 ```
 
-It runs exactly 16 processes: the three FMM backends at 20,000 and 30,000
-particles, depths three and four, and expansion order four (12 runs), plus one
+It runs exactly 20 processes: the four FMM backends at 20,000 and 30,000
+particles, depths three and four, and expansion order four (16 runs), plus one
 CPU-direct and one CUDA-direct run at each particle count (four runs). Each
 process records
 one warmed timed evaluation with one sample, plus independent 1+1 and 1+10
@@ -233,7 +238,7 @@ included in `summary.md`. Accuracy sampling is outside all timed benchmark
 regions. The profile still
 produces construction-inclusive, evaluation-only, and setup-amortisation plots
 for every geometry, including projections through 10,000 evaluations. It fails
-explicitly unless all five backends are available.
+explicitly unless all six backends are available, including `cuda-full`.
 
 ```console
 python benchmarks/run_benchmarks.py --profile quick --max-threads 8
@@ -249,8 +254,10 @@ the runner uses all logical CPUs reported by the operating system.
 Profiles contain a full FMM `parameter_grid` suite in `results.csv`, covering
 every configured particle-count, expansion-order, and tree-depth combination.
 The separate `direct` suite contains one CPU-direct row and, when available,
-one CUDA-direct row per particle count. The
-`scaling` suite varies OpenMP threads at the largest problem size, and the
+one CUDA-direct row per particle count. The `scaling` suite varies threads at
+the largest problem size for every backend, including CPU and CUDA direct.
+Its maximum-thread direct endpoint reuses the corresponding `direct` row, so
+that configuration is not executed twice. The
 `comparison` suite presents the backend workload comparison at one common
 geometry. The driver
 creates a timestamped directory below `benchmark_results/` containing the CSV,
