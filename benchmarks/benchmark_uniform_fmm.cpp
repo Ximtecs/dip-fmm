@@ -15,6 +15,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef CDFMM_USE_OPENMP
@@ -39,6 +40,7 @@ struct Options {
     int evaluations{10};
     int warmups{1};
     int samples{5};
+    int accuracy_targets{0};
     int threads{0};
     unsigned int seed{314159U};
     bool direct{true};
@@ -59,8 +61,7 @@ enum class BenchmarkBackend {
     CpuReference,
     CpuStaticMatrix,
     CpuStaticMatrixMkl,
-    CudaM2L,
-    CudaM2LStaticP2P,
+    CudaM2LP2P,
     CudaDirect
 };
 
@@ -92,6 +93,9 @@ Options parse_options(const int argc, char** argv)
         else if (key == "--evaluations") options.evaluations = std::stoi(value);
         else if (key == "--warmups") options.warmups = std::stoi(value);
         else if (key == "--samples") options.samples = std::stoi(value);
+        else if (key == "--accuracy-targets") {
+            options.accuracy_targets = std::stoi(value);
+        }
         else if (key == "--threads") options.threads = std::stoi(value);
         else if (key == "--seed") options.seed =
             static_cast<unsigned int>(std::stoul(value));
@@ -100,7 +104,8 @@ Options parse_options(const int argc, char** argv)
         else throw std::invalid_argument("Unknown option: " + key);
     }
     if (options.sources < 0 || options.targets < 0 || options.depth < 0 ||
-        options.order < 0 || options.evaluations < 1 || options.samples < 1) {
+        options.order < 0 || options.evaluations < 1 || options.samples < 1 ||
+        options.accuracy_targets < 0) {
         throw std::invalid_argument("Counts, depth, order, and samples are invalid");
     }
     if (options.targets != options.sources) {
@@ -136,24 +141,38 @@ BenchmarkBackend benchmark_backend(const std::string& name)
         }
         return BenchmarkBackend::CudaDirect;
     }
-    if (name == "cuda-m2l") {
-        if (!cdfmm::cuda_m2l_available()) {
-            throw std::runtime_error("CUDA M2L is unavailable");
-        }
-        return BenchmarkBackend::CudaM2L;
-    }
-    if (name == "cuda-m2l-static-p2p") {
-        if (!cdfmm::cuda_m2l_available()) {
+    if (name == "cuda-m2l-p2p" || name == "cuda-m2l" ||
+        name == "cuda-m2l-static-p2p") {
+        if (!cdfmm::cuda_m2l_p2p_available()) {
             throw std::runtime_error("CUDA M2L and static P2P are unavailable");
         }
-        return BenchmarkBackend::CudaM2LStaticP2P;
+        return BenchmarkBackend::CudaM2LP2P;
     }
     throw std::invalid_argument(
         "Unknown backend '" + name +
-        "'; expected cpu-direct, cpu-reference, cuda-direct, cuda-m2l, "
-        "cpu-static-matrix, cuda-m2l-static-p2p, or "
+        "'; expected cpu-direct, cpu-reference, cuda-direct, cuda-m2l-p2p, "
+        "cpu-static-matrix, or "
         "cpu-static-matrix-mkl"
     );
+}
+
+std::string_view benchmark_backend_name(const BenchmarkBackend backend)
+{
+    switch (backend) {
+    case BenchmarkBackend::CpuDirect:
+        return "cpu-direct";
+    case BenchmarkBackend::CpuReference:
+        return "cpu-reference";
+    case BenchmarkBackend::CpuStaticMatrix:
+        return "cpu-static-matrix";
+    case BenchmarkBackend::CpuStaticMatrixMkl:
+        return "cpu-static-matrix-mkl";
+    case BenchmarkBackend::CudaM2LP2P:
+        return "cuda-m2l-p2p";
+    case BenchmarkBackend::CudaDirect:
+        return "cuda-direct";
+    }
+    throw std::logic_error("unrecognised benchmark backend");
 }
 
 cdfmm::UniformFmmOptions cpu_options(
@@ -178,14 +197,8 @@ cdfmm::UniformFmmOptions cpu_options(
         selected.static_matrix_backend = cdfmm::StaticMatrixBackend::OneMkl;
         return selected;
     }
-    if (backend == BenchmarkBackend::CudaM2L ||
-        backend == BenchmarkBackend::CudaM2LStaticP2P) {
-        selected.backend = cdfmm::ExecutionBackend::CudaM2L;
-        selected.m2l_backend = cdfmm::M2LBackend::Static;
-        return selected;
-    }
-    if (backend == BenchmarkBackend::CudaM2LStaticP2P) {
-        selected.backend = cdfmm::ExecutionBackend::CudaM2LStaticP2P;
+    if (backend == BenchmarkBackend::CudaM2LP2P) {
+        selected.backend = cdfmm::ExecutionBackend::CudaM2LP2P;
         selected.m2l_backend = cdfmm::M2LBackend::Static;
         return selected;
     }
@@ -384,7 +397,7 @@ std::string static_multiply_backend(const BenchmarkBackend backend)
     if (backend == BenchmarkBackend::CpuStaticMatrix) {
         return "portable";
     }
-    if (backend == BenchmarkBackend::CudaM2L) {
+    if (backend == BenchmarkBackend::CudaM2LP2P) {
         return "cuBLAS";
     }
     return "not_applicable";
@@ -442,6 +455,8 @@ int main(int argc, char** argv)
                       << (cuda_direct_available() ? 1 : 0) << '\n'
                       << "cuda_m2l_available="
                       << (cuda_m2l_available() ? 1 : 0) << '\n'
+                      << "cuda_m2l_p2p_available="
+                      << (cuda_m2l_p2p_available() ? 1 : 0) << '\n'
                       << "cuda_full_available="
                       << (cuda_full_available() ? 1 : 0) << '\n'
                       << "one_mkl_available="
@@ -456,6 +471,9 @@ int main(int argc, char** argv)
         const BenchmarkBackend selected_backend = benchmark_backend(
             options.backend
         );
+        const bool direct_backend =
+            selected_backend == BenchmarkBackend::CpuDirect ||
+            selected_backend == BenchmarkBackend::CudaDirect;
 #ifdef CDFMM_USE_OPENMP
         if (options.threads > 0) {
             omp_set_num_threads(options.threads);
@@ -480,9 +498,13 @@ int main(int argc, char** argv)
 
         std::cerr << "Running benchmark: sources=" << options.sources
                   << " targets=" << options.targets
-                  << " order=" << options.order
-                  << " depth=" << options.depth
-                  << " backend=" << options.backend
+                  << " order=";
+        if (direct_backend) {
+            std::cerr << "n/a depth=n/a";
+        } else {
+            std::cerr << options.order << " depth=" << options.depth;
+        }
+        std::cerr << " backend=" << benchmark_backend_name(selected_backend)
                   << " threads=" << thread_count
                   << " evaluations=" << options.evaluations
                   << " samples=" << options.samples << "\n";
@@ -529,8 +551,7 @@ int main(int argc, char** argv)
         if (selected_backend == BenchmarkBackend::CpuReference ||
             selected_backend == BenchmarkBackend::CpuStaticMatrix ||
             selected_backend == BenchmarkBackend::CpuStaticMatrixMkl ||
-            selected_backend == BenchmarkBackend::CudaM2L ||
-            selected_backend == BenchmarkBackend::CudaM2LStaticP2P) {
+            selected_backend == BenchmarkBackend::CudaM2LP2P) {
             selected_options = cpu_options(fmm_options, selected_backend);
         }
 
@@ -551,8 +572,7 @@ int main(int argc, char** argv)
                 OutputFlags::Field,
                 source_identities
             );
-        } else if (selected_backend == BenchmarkBackend::CudaM2L ||
-                   selected_backend == BenchmarkBackend::CudaM2LStaticP2P) {
+        } else if (selected_backend == BenchmarkBackend::CudaM2LP2P) {
             UniformFmm warmup_fmm(
                 source_positions,
                 target_positions,
@@ -631,7 +651,7 @@ int main(int argc, char** argv)
             }
             std::cerr
                 << "Workload median totals (1 evaluation / 10 evaluations):\n"
-                << "  " << options.backend << ": "
+                << "  " << benchmark_backend_name(selected_backend) << ": "
                 << selected_single.total_seconds << " s / "
                 << selected_repeated.total_seconds << " s\n";
         }
@@ -744,12 +764,24 @@ int main(int argc, char** argv)
             : direct_timings;
 
         double direct_seconds = std::numeric_limits<double>::quiet_NaN();
-        ErrorMetrics metrics;
+        double accuracy_reference_seconds =
+            std::numeric_limits<double>::quiet_NaN();
+        std::size_t accuracy_target_count = 0;
+        ErrorMetrics metrics{
+            missing,
+            missing,
+            missing,
+            missing,
+            missing,
+        };
         if (options.direct) {
+            accuracy_target_count = target_positions.size();
             if (selected_backend == BenchmarkBackend::CpuDirect) {
                 // The selected algorithm is already the CPU reference. Reusing
                 // its median avoids timing the same all-to-all kernel twice.
                 direct_seconds = median(sample_seconds);
+                accuracy_reference_seconds = 0.0;
+                metrics = {};
                 std::cerr << "CPU direct backend is the all-to-all reference; "
                              "skipping duplicate reference evaluation.\n";
             } else {
@@ -764,6 +796,7 @@ int main(int argc, char** argv)
                 direct_seconds = std::chrono::duration<double>(
                     Clock::now() - direct_start
                 ).count();
+                accuracy_reference_seconds = direct_seconds;
                 std::cerr << " done (" << direct_seconds << " s)\n";
                 evaluate_selected(
                     moment_states[static_cast<std::size_t>(options.warmups)]
@@ -773,6 +806,68 @@ int main(int argc, char** argv)
                 for (std::size_t index = 0; index < result.size(); ++index) {
                     approximate_fields[index] = result[index].H;
                     reference_fields[index] = reference[index].H;
+                }
+                metrics = compute_error_metrics(
+                    approximate_fields,
+                    reference_fields
+                );
+            }
+        } else if (options.accuracy_targets > 0 && !target_positions.empty()) {
+            accuracy_target_count = std::min(
+                target_positions.size(),
+                static_cast<std::size_t>(options.accuracy_targets)
+            );
+            if (selected_backend == BenchmarkBackend::CpuDirect) {
+                // CPU direct is the exact reference by definition.
+                accuracy_reference_seconds = 0.0;
+                metrics = {};
+            } else {
+                std::vector<Vec3> sampled_targets;
+                std::vector<int> sampled_identities;
+                std::vector<std::size_t> sampled_indices;
+                sampled_targets.reserve(accuracy_target_count);
+                sampled_identities.reserve(accuracy_target_count);
+                sampled_indices.reserve(accuracy_target_count);
+                for (std::size_t sample = 0;
+                    sample < accuracy_target_count;
+                    ++sample) {
+                    const std::size_t index =
+                        sample * target_positions.size() /
+                        accuracy_target_count;
+                    sampled_indices.push_back(index);
+                    sampled_targets.push_back(target_positions[index]);
+                    sampled_identities.push_back(source_identities[index]);
+                }
+
+                std::cerr << "Computing exact reference at "
+                          << accuracy_target_count << " sampled targets..."
+                          << std::flush;
+                const auto direct_start = Clock::now();
+                const auto reference = direct_p2p_reference(
+                    sampled_targets,
+                    source_positions,
+                    moment_states[static_cast<std::size_t>(options.warmups)],
+                    OutputFlags::Field,
+                    sampled_identities
+                );
+                accuracy_reference_seconds = std::chrono::duration<double>(
+                    Clock::now() - direct_start
+                ).count();
+                std::cerr << " done (" << accuracy_reference_seconds
+                          << " s)\n";
+
+                evaluate_selected(
+                    moment_states[static_cast<std::size_t>(options.warmups)]
+                );
+                std::vector<Vec3> approximate_fields(accuracy_target_count);
+                std::vector<Vec3> reference_fields(accuracy_target_count);
+                for (std::size_t sample = 0;
+                    sample < accuracy_target_count;
+                    ++sample) {
+                    approximate_fields[sample] = result[
+                        sampled_indices[sample]
+                    ].H;
+                    reference_fields[sample] = reference[sample].H;
                 }
                 metrics = compute_error_metrics(
                     approximate_fields,
@@ -825,12 +920,14 @@ int main(int argc, char** argv)
         const bool static_matrix =
             selected_backend == BenchmarkBackend::CpuStaticMatrix ||
             selected_backend == BenchmarkBackend::CpuStaticMatrixMkl ||
-            selected_backend == BenchmarkBackend::CudaM2L ||
-            selected_backend == BenchmarkBackend::CudaM2LStaticP2P;
-        const std::string m2l_strategy = static_matrix
-            ? "cached-dense-m2l-matrix-per-transfer-class"
-            : (selected_backend == BenchmarkBackend::CpuReference
-                ? "reference-operators" : "not-applicable-direct-p2p");
+            selected_backend == BenchmarkBackend::CudaM2LP2P;
+        const std::string m2l_strategy =
+            selected_backend == BenchmarkBackend::CudaM2LP2P
+            ? "cached-dense-m2l-and-sparse-list1-p2p"
+            : (static_matrix
+                ? "cached-dense-m2l-matrix-per-transfer-class"
+                : (selected_backend == BenchmarkBackend::CpuReference
+                    ? "reference-operators" : "not-applicable-direct-p2p"));
         const std::string multiply_backend = static_multiply_backend(
             selected_backend
         );
@@ -866,7 +963,9 @@ int main(int argc, char** argv)
                "amortised_seconds,moment_permutation,multipole_reset,p2m,m2m,"
                "local_reset,l2l,m2l,m2l_gather,m2l_multiply,m2l_scatter,"
                "l2p,p2p,result_unpermutation,cuda_h2d,"
-               "cuda_kernel,cuda_d2h,direct_seconds,"
+               "cuda_kernel,cuda_d2h,cuda_m2l_h2d,cuda_m2l_d2h,"
+               "cuda_p2p_h2d,cuda_p2p_kernel,cuda_p2p_d2h,cuda_p2p_wait,"
+               "direct_seconds,accuracy_targets,accuracy_reference_seconds,"
                "mean_relative_error,rms_relative_error,max_relative_error,total_nodes,"
                "occupied_source_leaves,occupied_target_leaves,m2l_translations,"
                "near_field_pairs,m2l_strategy,static_multiply_backend,mkl_version,"
@@ -882,6 +981,7 @@ int main(int argc, char** argv)
                "cuda_setup_h2d_bytes,"
                "cuda_evaluation_h2d_bytes,cuda_evaluation_d2h_bytes,"
                "cuda_evaluation_h2d_calls,cuda_evaluation_d2h_calls,"
+               "cuda_static_m2l_upload_count,cuda_static_p2p_upload_count,"
                "cuda_persistent_device_bytes\n";
         const char* build_type =
 #ifdef NDEBUG
@@ -889,10 +989,13 @@ int main(int argc, char** argv)
 #else
             "Debug";
 #endif
-        out << options.sources << ',' << options.targets << ',' << options.depth
-            << ',' << options.order << ',' << thread_count << ',' << options.seed
+        const int recorded_depth = direct_backend ? 0 : options.depth;
+        const int recorded_order = direct_backend ? 0 : options.order;
+        out << options.sources << ',' << options.targets << ',' << recorded_depth
+            << ',' << recorded_order << ',' << thread_count << ',' << options.seed
             << ',' << options.evaluations << ',' << options.samples << ','
-            << options.backend << ',' << (cuda_compiled() ? 1 : 0) << ','
+            << benchmark_backend_name(selected_backend) << ','
+            << (cuda_compiled() ? 1 : 0) << ','
             << (cuda_available() ? 1 : 0) << ",\""
             << (cuda_available() ? cuda_device_description() : std::string{})
             << "\"," << (one_mkl_available() ? 1 : 0) << ','
@@ -926,7 +1029,15 @@ int main(int argc, char** argv)
             << phase_mean(timing.result_unpermutation) << ','
             << phase_mean(timing.cuda_h2d) << ','
             << phase_mean(timing.cuda_kernel) << ','
-            << phase_mean(timing.cuda_d2h) << ',' << direct_seconds
+            << phase_mean(timing.cuda_d2h) << ','
+            << phase_mean(timing.cuda_m2l_h2d) << ','
+            << phase_mean(timing.cuda_m2l_d2h) << ','
+            << phase_mean(timing.cuda_p2p_h2d) << ','
+            << phase_mean(timing.cuda_p2p_kernel) << ','
+            << phase_mean(timing.cuda_p2p_d2h) << ','
+            << phase_mean(timing.cuda_p2p_wait) << ',' << direct_seconds
+            << ',' << accuracy_target_count
+            << ',' << accuracy_reference_seconds
             << ',' << metrics.mean_relative_error << ','
             << metrics.rms_relative_error << ',' << metrics.max_relative_error
             << ',' << total_nodes << ','
@@ -956,13 +1067,15 @@ int main(int argc, char** argv)
             << ',' << cuda_statistics.evaluation_d2h_bytes
             << ',' << cuda_statistics.evaluation_h2d_calls
             << ',' << cuda_statistics.evaluation_d2h_calls
+            << ',' << cuda_statistics.static_m2l_upload_count
+            << ',' << cuda_statistics.static_p2p_upload_count
             << ',' << cuda_statistics.persistent_device_bytes << '\n';
 
         if (!options.output.empty()) {
             std::cout << "Wrote " << options.output << "\n";
         }
         std::cerr << "compiler=" << compiler_name()
-                  << " backend=" << options.backend
+                  << " backend=" << benchmark_backend_name(selected_backend)
                   << " openmp=" << openmp_status
                   << " threads=" << thread_count
                   << " median_ms=" << evaluation_median * 1.0e3 << '\n';
