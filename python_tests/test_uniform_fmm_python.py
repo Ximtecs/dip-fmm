@@ -4,6 +4,16 @@ import pytest
 import cdfmm
 
 
+def test_cuda_m2l_p2p_backend_aliases_are_compatible():
+    assert cdfmm.ExecutionBackend.CUDA_M2L == (
+        cdfmm.ExecutionBackend.CUDA_M2L_P2P
+    )
+    assert cdfmm.ExecutionBackend.CUDA_M2L_STATIC_P2P == (
+        cdfmm.ExecutionBackend.CUDA_M2L_P2P
+    )
+    assert cdfmm.cuda_m2l_available() == cdfmm.cuda_m2l_p2p_available()
+
+
 def test_static_backend_is_default_and_reference_is_selectable():
     sources = np.array([[-0.75, 0.0, 0.0], [0.75, 0.0, 0.0]])
     moments = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])

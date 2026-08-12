@@ -374,6 +374,7 @@ PYBIND11_MODULE(cdfmm, module)
         .value("AUTO", ExecutionBackend::Auto)
         .value("CPU_REFERENCE", ExecutionBackend::CpuReference)
         .value("CPU_STATIC", ExecutionBackend::CpuStatic)
+        .value("CUDA_M2L_P2P", ExecutionBackend::CudaM2LP2P)
         .value("CUDA_M2L", ExecutionBackend::CudaM2L)
         .value("CUDA_M2L_STATIC_P2P", ExecutionBackend::CudaM2LStaticP2P);
 
@@ -381,6 +382,7 @@ PYBIND11_MODULE(cdfmm, module)
     module.def("one_mkl_available", &one_mkl_available);
     module.def("cuda_available", &cuda_available);
     module.def("cuda_direct_available", &cuda_direct_available);
+    module.def("cuda_m2l_p2p_available", &cuda_m2l_p2p_available);
     module.def("cuda_m2l_available", &cuda_m2l_available);
     module.def("cuda_full_available", &cuda_full_available);
     module.def("cuda_device_description", &cuda_device_description);
