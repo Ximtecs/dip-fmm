@@ -20,6 +20,8 @@ enum class ExecutionBackend {
     CpuReference,
     CpuStatic,
     CudaM2LP2P,
+    CudaPartial = CudaM2LP2P,
+    CudaFull,
     CudaM2L = CudaM2LP2P,
     CudaM2LStaticP2P = CudaM2LP2P
 };
@@ -216,6 +218,7 @@ public:
 private:
   class CudaM2LPlanOwner;
   class CudaP2PPlanOwner;
+  class CudaFullPlanOwner;
   struct P2MPlan {
       int leaf{0};
       StaticCoefficientOperator operator_map{};
@@ -233,6 +236,7 @@ private:
   };
 
   void build_static_plan();
+  void build_cuda_full_plan();
   void prepare_moments(std::span<const Vec3> dipole_moments);
   void upward_pass_prepared();
   void prepare_self_indices(std::span<const int> target_source_indices);
@@ -248,6 +252,7 @@ private:
   mutable CudaPlanStatistics empty_cuda_statistics_{};
   std::unique_ptr<CudaM2LPlanOwner> cuda_m2l_plan_{};
   std::unique_ptr<CudaP2PPlanOwner> cuda_p2p_plan_{};
+  std::unique_ptr<CudaFullPlanOwner> cuda_full_plan_{};
   std::vector<M2LGroup> m2l_groups_{};
   std::vector<P2MPlan> p2m_plans_{};
   std::vector<std::array<StaticCoefficientOperator, 8>> m2m_operators_{};

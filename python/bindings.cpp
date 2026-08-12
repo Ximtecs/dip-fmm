@@ -375,6 +375,8 @@ PYBIND11_MODULE(cdfmm, module)
         .value("CPU_REFERENCE", ExecutionBackend::CpuReference)
         .value("CPU_STATIC", ExecutionBackend::CpuStatic)
         .value("CUDA_M2L_P2P", ExecutionBackend::CudaM2LP2P)
+        .value("CUDA_PARTIAL", ExecutionBackend::CudaPartial)
+        .value("CUDA_FULL", ExecutionBackend::CudaFull)
         .value("CUDA_M2L", ExecutionBackend::CudaM2L)
         .value("CUDA_M2L_STATIC_P2P", ExecutionBackend::CudaM2LStaticP2P);
 

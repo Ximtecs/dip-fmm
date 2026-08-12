@@ -31,10 +31,14 @@ build-cuda/benchmarks/benchmark_uniform_fmm --backend cuda-m2l-p2p --sources 200
 The C++ suite selects CPU reference/static backends explicitly and compares
 `cuda_direct_p2p_reference` with the CPU direct reference whenever
 `cuda_direct_available()` is true. Manual CUDA tests also compare
-`CudaM2LP2P` with `CpuStatic`; the full-FMM capability remains false.
+`CudaPartial` with `CpuStatic`, while the manual full-backend tests compare
+`CudaFull` with both paths and assert the moments-only H2D and field-only D2H
+contract. CUDA tests remain excluded from hosted CI.
 
-The hybrid path performs CPU moment permutation, P2M and M2M; GPU gather,
+The partial path performs CPU moment permutation, P2M and M2M; GPU gather,
 static M2L cuBLAS multiplication and scatter; then CPU L2L and L2P. The cached
+full path applies every CPU-built static operator on the GPU and keeps
+multipoles, locals, near fields, and far fields resident between phases.
 sparse list-1 P2P tensor runs independently on a second CUDA stream and joins
 the far-field result once. Static M2L and P2P data are uploaded only during
 plan construction.

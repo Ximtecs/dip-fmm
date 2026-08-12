@@ -121,6 +121,15 @@ public:
     std::unique_ptr<CudaP2PPlan> plan;
 };
 
+class UniformFmm::CudaFullPlanOwner {
+public:
+    explicit CudaFullPlanOwner(std::unique_ptr<CudaFullPlan> value)
+        : plan(std::move(value))
+    {
+    }
+    std::unique_ptr<CudaFullPlan> plan;
+};
+
 //------------------------------------------------------------------------------
 // Construction
 //------------------------------------------------------------------------------
@@ -146,6 +155,9 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     if (backend_ == ExecutionBackend::CudaM2LP2P &&
         !cuda_m2l_p2p_available()) {
         throw std::runtime_error("CudaM2LP2P is unavailable in this build");
+    }
+    if (backend_ == ExecutionBackend::CudaFull && !cuda_full_available()) {
+        throw std::runtime_error("CudaFull is unavailable in this build");
     }
     m2l_backend_ = backend_ == ExecutionBackend::CpuReference
         ? M2LBackend::Reference : M2LBackend::Static;
@@ -184,6 +196,9 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
             );
         }
     }
+    if (backend_ == ExecutionBackend::CudaFull) {
+        build_cuda_full_plan();
+    }
 }
 
 UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
@@ -208,6 +223,9 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     if (backend_ == ExecutionBackend::CudaM2LP2P &&
         !cuda_m2l_p2p_available()) {
         throw std::runtime_error("CudaM2LP2P is unavailable in this build");
+    }
+    if (backend_ == ExecutionBackend::CudaFull && !cuda_full_available()) {
+        throw std::runtime_error("CudaFull is unavailable in this build");
     }
     m2l_backend_ = backend_ == ExecutionBackend::CpuReference
         ? M2LBackend::Reference : M2LBackend::Static;
@@ -246,6 +264,9 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
         cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
             std::make_unique<CudaP2PPlan>(p2p_operator_)
         );
+    }
+    if (backend_ == ExecutionBackend::CudaFull) {
+        build_cuda_full_plan();
     }
 }
 
@@ -398,6 +419,103 @@ void UniformFmm::build_static_plan()
     static_plan_statistics_.p2p_tensor_plan.add(elapsed_seconds(phase_start));
     static_plan_statistics_.total.add(elapsed_seconds(total_start));
     ++static_plan_statistics_.construction_count;
+}
+
+void UniformFmm::build_cuda_full_plan()
+{
+    CudaFullPlanData data;
+    data.coefficient_count = basis_.size();
+    data.node_count = static_cast<int>(tree_.nodes().size());
+    data.source_count = static_cast<int>(tree_.sorted_source_positions().size());
+    data.target_count = static_cast<int>(tree_.sorted_target_positions().size());
+    data.source_permutation.assign(tree_.source_permutation().begin(),
+                                   tree_.source_permutation().end());
+    data.target_permutation.assign(tree_.target_permutation().begin(),
+                                   tree_.target_permutation().end());
+    const int n = basis_.size();
+    const auto nodes = tree_.nodes();
+
+    for (const P2MPlan& leaf_plan : p2m_plans_) {
+        const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_plan.leaf)];
+        for (StaticOperatorEntry entry : leaf_plan.operator_map.entries) {
+            entry.input += static_cast<int>(leaf.source_begin) * 3;
+            entry.output += leaf.index * n;
+            data.p2m.push_back(entry);
+        }
+    }
+    for (int level = tree_.leaf_level(); level >= 1; --level) {
+        CudaStaticLevel stage;
+        const int begin = level_offset(level);
+        const int end = level_offset(level + 1);
+        for (int child_index = begin; child_index < end; ++child_index) {
+            const TreeNode& child = nodes[static_cast<std::size_t>(child_index)];
+            if (child.source_count() == 0) {
+                continue;
+            }
+            const int child_class = (child.ix & 1) | ((child.iy & 1) << 1) |
+                                    ((child.iz & 1) << 2);
+            for (StaticOperatorEntry entry : m2m_operators_[level][child_class].entries) {
+                entry.input += child.index * n;
+                entry.output += child.parent * n;
+                stage.entries.push_back(entry);
+            }
+        }
+        data.m2m_levels.push_back(std::move(stage));
+    }
+    for (const M2LGroup& group : m2l_groups_) {
+        for (std::size_t interaction = 0; interaction < group.sources.size();
+             ++interaction) {
+            for (int input = 0; input < n; ++input) {
+                for (int output = 0; output < n; ++output) {
+                    const double value = group.matrix[
+                        static_cast<std::size_t>(input * n + output)];
+                    if (value != 0.0) {
+                        data.m2l.push_back({group.targets[interaction] * n + output,
+                                            group.sources[interaction] * n + input,
+                                            value});
+                    }
+                }
+            }
+        }
+    }
+    for (int level = 1; level <= tree_.leaf_level(); ++level) {
+        CudaStaticLevel stage;
+        const int begin = level_offset(level);
+        const int end = level_offset(level + 1);
+        for (int child_index = begin; child_index < end; ++child_index) {
+            const TreeNode& child = nodes[static_cast<std::size_t>(child_index)];
+            if (child.target_count() == 0) {
+                continue;
+            }
+            const int child_class = (child.ix & 1) | ((child.iy & 1) << 1) |
+                                    ((child.iz & 1) << 2);
+            for (StaticOperatorEntry entry : l2l_operators_[level][child_class].entries) {
+                entry.input += child.parent * n;
+                entry.output += child.index * n;
+                stage.entries.push_back(entry);
+            }
+        }
+        data.l2l_levels.push_back(std::move(stage));
+    }
+    const auto occupied_leaves = tree_.occupied_target_leaves();
+    for (const int leaf_index : occupied_leaves) {
+        const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
+        for (std::size_t target = leaf.target_begin; target < leaf.target_end;
+             ++target) {
+            for (int component = 0; component < 3; ++component) {
+                for (int coefficient = 0; coefficient < n; ++coefficient) {
+                    const double value = l2p_evaluators_[target].field[component][coefficient];
+                    if (value != 0.0) {
+                        data.l2p.push_back({static_cast<int>(target) * 3 + component,
+                                            leaf.index * n + coefficient, value});
+                    }
+                }
+            }
+        }
+    }
+    data.p2p = p2p_operator_;
+    cuda_full_plan_ = std::make_unique<CudaFullPlanOwner>(
+        std::make_unique<CudaFullPlan>(data));
 }
 
 void UniformFmm::static_m2l(const int level)
@@ -827,6 +945,40 @@ void UniformFmm::evaluate_into(
         }
     }
 
+    if (backend_ == ExecutionBackend::CudaFull) {
+        if (output != OutputFlags::Field) {
+            throw std::invalid_argument(
+                "CudaFull currently supports field-only evaluation"
+            );
+        }
+        last_timings_ = {};
+        const auto evaluation_start = Clock::now();
+        prepare_self_indices(target_source_indices);
+        std::vector<Vec3> fields(target_count);
+        cuda_full_plan_->plan->evaluate(
+            dipole_moments, fields, sorted_self_indices_
+        );
+        for (std::size_t target = 0; target < target_count; ++target) {
+            results[target].phi = 0.0;
+            results[target].H = fields[target];
+        }
+        const CudaEvaluationTimings& device = cuda_full_plan_->plan->timings();
+        last_timings_.cuda_h2d.add(device.h2d_seconds);
+        last_timings_.p2m.add(device.p2m_seconds);
+        last_timings_.m2m.add(device.m2m_seconds);
+        last_timings_.m2l.add(device.m2l_seconds);
+        last_timings_.l2l.add(device.l2l_seconds);
+        last_timings_.l2p.add(device.l2p_seconds);
+        last_timings_.p2p.add(device.p2p_seconds);
+        last_timings_.result_unpermutation.add(device.accumulation_seconds);
+        last_timings_.cuda_kernel.add(device.kernel_seconds);
+        last_timings_.cuda_d2h.add(device.d2h_seconds);
+        last_timings_.total.add(elapsed_seconds(evaluation_start));
+        last_timings_.evaluations = 1;
+        accumulate_timings(aggregate_timings_, last_timings_);
+        return;
+    }
+
     last_timings_ = {};
     const auto evaluation_start = Clock::now();
     prepare_moments(dipole_moments);
@@ -994,6 +1146,9 @@ StaticMatrixBackend UniformFmm::static_matrix_backend() const
 ExecutionBackend UniformFmm::backend() const { return backend_; }
 const CudaPlanStatistics& UniformFmm::cuda_plan_statistics() const
 {
+    if (cuda_full_plan_) {
+        return cuda_full_plan_->plan->statistics();
+    }
     if (!cuda_m2l_plan_) {
         return empty_cuda_statistics_;
     }

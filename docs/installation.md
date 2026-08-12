@@ -398,8 +398,11 @@ the active Conda environment's Python platform-library directory. Plain
 configuring so the install target is derived from the intended interpreter.
 
 The C++ suite contains explicit CUDA tests which are skipped in CPU-only
-builds and exercise the hybrid `CudaM2LP2P` backend when a device is present.
-P2M, M2M, L2L, and L2P remain CPU static; cached M2L and list-1 P2P operators
+builds and exercise the partial `CudaPartial` and device-resident `CudaFull`
+backends when a device is present. `CudaM2LP2P` remains a compatibility alias
+for the partial path.
+In `CudaPartial`, P2M, M2M, L2L, and L2P remain CPU static; cached M2L and
+list-1 P2P operators
 run on independent CUDA streams. Verify `cuda_available()` and
 `cuda_device_description()` from Python after building. GitHub Actions
 explicitly configures

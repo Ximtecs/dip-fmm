@@ -20,9 +20,10 @@ for (const auto& moments : moment_states) {
 Python exposes the same default and `cdfmm.M2LBackend.Reference` fallback.
 
 Execution can be selected with `options.backend`: `CpuReference` or
-`CpuStatic`, or `CudaM2LP2P`. `Auto` deliberately selects `CpuStatic`; it can
+`CpuStatic`, `CudaPartial`, or `CudaFull`. `Auto` deliberately selects `CpuStatic`; it can
 never substitute an O(N^2) direct calculation for an FMM traversal.
-`CudaM2LP2P` runs P2M, M2M, L2L, and L2P on the CPU, applies cached dense M2L
+`CudaPartial` (with `CudaM2LP2P` retained as an alias) runs P2M, M2M, L2L, and
+L2P on the CPU, applies cached dense M2L
 matrices with cuBLAS, and applies the cached sparse list-1 P2P tensor on an
 independent CUDA stream. `CudaM2L` remains a compatibility alias. The
 separately exposed
@@ -42,8 +43,11 @@ The evaluator supports field, potential, or both. Source-point self exclusion
 uses an explicit target-to-source identity index rather than coordinate
 equality, and returned values follow user target order. Adaptive trees and
 MagTense/Fortran integration are not implemented. CUDA also provides the
-truthfully named direct O(N^2) reference. Device P2M/M2M/L2L/L2P and a full
-device-resident FMM remain unimplemented. See the
+truthfully named direct O(N^2) reference. `CudaFull` uploads every CPU-built
+static operator once and executes P2M, M2M, M2L, L2L, L2P and P2P on the GPU.
+Its repeated field-only path uploads only moments and downloads only the final
+user-ordered field. The target/source identity map is fixed by the first call;
+changing it requires rebuilding the plan. See the
 [roadmap](docs/roadmap.md) for the next milestone and later research.
 
 ## Build and test

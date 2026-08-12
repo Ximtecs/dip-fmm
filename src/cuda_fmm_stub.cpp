@@ -73,6 +73,31 @@ const CudaEvaluationTimings& CudaFmmPlan::evaluation_timings() const noexcept
     return empty;
 }
 
+CudaFullPlan::CudaFullPlan(const CudaFullPlanData&)
+{
+    throw std::runtime_error("full CUDA FMM is unavailable in this build");
+}
+
+CudaFullPlan::~CudaFullPlan() = default;
+
+void CudaFullPlan::evaluate(std::span<const Vec3>, std::span<Vec3>,
+                            std::span<const int>)
+{
+    throw std::runtime_error("full CUDA FMM is unavailable in this build");
+}
+
+const CudaPlanStatistics& CudaFullPlan::statistics() const noexcept
+{
+    static const CudaPlanStatistics empty{};
+    return empty;
+}
+
+const CudaEvaluationTimings& CudaFullPlan::timings() const noexcept
+{
+    static const CudaEvaluationTimings empty{};
+    return empty;
+}
+
 CudaM2LPlan::CudaM2LPlan(int, std::span<const CudaM2LGroupView>)
 {
     throw std::runtime_error(

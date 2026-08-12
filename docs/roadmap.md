@@ -241,19 +241,26 @@ development workflow.
 - [x] static list-1 P2P tensors uploaded once and evaluated on CUDA
 - [x] independent CUDA P2P stream overlapped with the far-field chain
 - [x] genuine hybrid CUDA-M2L/P2P FMM and CPU-static comparison benchmarks
-- [ ] device P2M, M2M, L2L, and L2P kernels
+- [x] static CUDA P2M, M2M, L2L, and L2P operator application
+- [x] full device-resident CUDA FMM
+- [x] moments-only H2D repeated evaluation
+- [x] field-only D2H repeated evaluation
 - [x] persistent CUDA direct-P2P buffers and user-order output
-- [ ] device Morton permutations
+- [x] device source and target permutations
 - [ ] custom-versus-cuBLAS M2L microbenchmarks
 - [ ] CUDA Graph investigation and retention if measurements justify it
 - [x] CPU-static versus CUDA-M2L/P2P problem-size and order sweep infrastructure
 - [x] manual CUDA validation workflow (CUDA remains excluded from GitHub CI)
 
-`CudaM2LP2P` is deliberately hybrid: CPU P2M/M2M feed packed multipoles to the
+`CudaPartial` (`CudaM2LP2P` compatibility alias) is deliberately hybrid: CPU
+P2M/M2M feed packed multipoles to the
 resident grouped CUDA M2L plan, downloaded raw locals feed CPU L2L/L2P, and an
 independent CUDA stream applies the resident sparse list-1 P2P tensor. `Auto`
-remains CPU static. CUDA P2M, M2M, L2L, L2P, and a full device-resident FMM
-remain later milestones. `CudaM2L` is retained as a compatibility alias.
+remains CPU static. `CudaFull` keeps P2M, M2M, M2L, L2L, L2P, P2P and all
+intermediate expansions device-resident. Repeated field evaluations perform one
+moments-only H2D transfer and one final-field-only D2H transfer. Static identity
+metadata is fixed at initial evaluation and a changed map requires plan rebuild.
+`CudaM2L` is retained as a compatibility alias.
 
 ## Future milestone: true periodic magnetostatics
 
