@@ -33,6 +33,29 @@ struct StaticL2PEvaluator {
     std::array<std::vector<double>, 3> field{};
 };
 
+/** @brief Six independent entries of one fixed dipole interaction tensor. */
+struct StaticDipoleBlock {
+    int target{0};
+    int source{0};
+    double xx{0.0};
+    double xy{0.0};
+    double xz{0.0};
+    double yy{0.0};
+    double yz{0.0};
+    double zz{0.0};
+};
+
+/** @brief Target-row representation of the exact sparse near-field operator. */
+struct StaticP2POperator {
+    int source_count{0};
+    int target_count{0};
+    std::vector<int> row_offsets{};
+    std::vector<StaticDipoleBlock> blocks{};
+
+    /// @brief Returns persistent storage used by the compact representation.
+    [[nodiscard]] std::size_t memory_bytes() const noexcept;
+};
+
 //------------------------------------------------------------------------------
 // Canonical static mathematical operators
 //------------------------------------------------------------------------------
@@ -72,6 +95,33 @@ struct StaticL2PEvaluator {
     const MultiIndexSet& basis,
     const Vec3& centre,
     const Vec3& target
+);
+
+/**
+ * @brief Builds the exact sparse dipole tensor for an explicit interaction set.
+ *
+ * Interaction pairs contain sorted target and source indices. The caller is
+ * responsible for supplying only list1 pairs; coordinate equality never
+ * implies self identity.
+ */
+[[nodiscard]] StaticP2POperator build_static_p2p_operator(
+    std::span<const Vec3> target_positions,
+    std::span<const Vec3> source_positions,
+    std::span<const std::array<int, 2>> interactions
+);
+
+/**
+ * @brief Applies the compact static near-field tensor additively.
+ *
+ * `target_source_indices` is in the same sorted indexing as the operator. An
+ * entry equal to a block source is skipped explicitly. Potential is not part
+ * of this field-only tensor.
+ */
+void apply_static_p2p_operator(
+    const StaticP2POperator& operator_map,
+    std::span<const Vec3> dipole_moments,
+    std::span<Vec3> H,
+    std::span<const int> target_source_indices = {}
 );
 
 /** @brief Applies a compact static operator additively to an output vector. */

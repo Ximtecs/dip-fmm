@@ -60,6 +60,7 @@ enum class BenchmarkBackend {
     CpuStaticMatrix,
     CpuStaticMatrixMkl,
     CudaM2L,
+    CudaM2LStaticP2P,
     CudaDirect
 };
 
@@ -141,10 +142,16 @@ BenchmarkBackend benchmark_backend(const std::string& name)
         }
         return BenchmarkBackend::CudaM2L;
     }
+    if (name == "cuda-m2l-static-p2p") {
+        if (!cdfmm::cuda_m2l_available()) {
+            throw std::runtime_error("CUDA M2L and static P2P are unavailable");
+        }
+        return BenchmarkBackend::CudaM2LStaticP2P;
+    }
     throw std::invalid_argument(
         "Unknown backend '" + name +
         "'; expected cpu-direct, cpu-reference, cuda-direct, cuda-m2l, "
-        "cpu-static-matrix, or "
+        "cpu-static-matrix, cuda-m2l-static-p2p, or "
         "cpu-static-matrix-mkl"
     );
 }
@@ -171,8 +178,14 @@ cdfmm::UniformFmmOptions cpu_options(
         selected.static_matrix_backend = cdfmm::StaticMatrixBackend::OneMkl;
         return selected;
     }
-    if (backend == BenchmarkBackend::CudaM2L) {
+    if (backend == BenchmarkBackend::CudaM2L ||
+        backend == BenchmarkBackend::CudaM2LStaticP2P) {
         selected.backend = cdfmm::ExecutionBackend::CudaM2L;
+        selected.m2l_backend = cdfmm::M2LBackend::Static;
+        return selected;
+    }
+    if (backend == BenchmarkBackend::CudaM2LStaticP2P) {
+        selected.backend = cdfmm::ExecutionBackend::CudaM2LStaticP2P;
         selected.m2l_backend = cdfmm::M2LBackend::Static;
         return selected;
     }
@@ -516,7 +529,8 @@ int main(int argc, char** argv)
         if (selected_backend == BenchmarkBackend::CpuReference ||
             selected_backend == BenchmarkBackend::CpuStaticMatrix ||
             selected_backend == BenchmarkBackend::CpuStaticMatrixMkl ||
-            selected_backend == BenchmarkBackend::CudaM2L) {
+            selected_backend == BenchmarkBackend::CudaM2L ||
+            selected_backend == BenchmarkBackend::CudaM2LStaticP2P) {
             selected_options = cpu_options(fmm_options, selected_backend);
         }
 
@@ -537,7 +551,8 @@ int main(int argc, char** argv)
                 OutputFlags::Field,
                 source_identities
             );
-        } else if (selected_backend == BenchmarkBackend::CudaM2L) {
+        } else if (selected_backend == BenchmarkBackend::CudaM2L ||
+                   selected_backend == BenchmarkBackend::CudaM2LStaticP2P) {
             UniformFmm warmup_fmm(
                 source_positions,
                 target_positions,
@@ -810,7 +825,8 @@ int main(int argc, char** argv)
         const bool static_matrix =
             selected_backend == BenchmarkBackend::CpuStaticMatrix ||
             selected_backend == BenchmarkBackend::CpuStaticMatrixMkl ||
-            selected_backend == BenchmarkBackend::CudaM2L;
+            selected_backend == BenchmarkBackend::CudaM2L ||
+            selected_backend == BenchmarkBackend::CudaM2LStaticP2P;
         const std::string m2l_strategy = static_matrix
             ? "cached-dense-m2l-matrix-per-transfer-class"
             : (selected_backend == BenchmarkBackend::CpuReference
@@ -856,6 +872,8 @@ int main(int argc, char** argv)
                "near_field_pairs,m2l_strategy,static_multiply_backend,mkl_version,"
                "static_plan_seconds,p2m_plan_seconds,m2m_plan_seconds,"
                "m2l_plan_seconds,l2l_plan_seconds,l2p_plan_seconds,"
+               "p2p_tensor_plan_seconds,p2p_static_interactions,"
+               "p2p_tensor_value_bytes,p2p_index_bytes,"
                "cached_m2l_matrices,cached_operator_bytes,"
                "static_interaction_bytes,static_scratch_bytes,static_plan_bytes,"
                "workload_1_creation_median,workload_1_evaluation_median,"
@@ -922,6 +940,10 @@ int main(int argc, char** argv)
             << ',' << static_plan.m2l_plan.total_seconds
             << ',' << static_plan.l2l_plan.total_seconds
             << ',' << static_plan.l2p_plan.total_seconds
+            << ',' << static_plan.p2p_tensor_plan.total_seconds
+            << ',' << static_plan.p2p_interactions
+            << ',' << static_plan.p2p_value_bytes
+            << ',' << static_plan.p2p_index_bytes
             << ',' << static_plan.transfer_classes
             << ',' << static_plan.operator_bytes
             << ',' << static_plan.interaction_bytes

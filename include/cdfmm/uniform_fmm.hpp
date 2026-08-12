@@ -19,7 +19,8 @@ enum class ExecutionBackend {
     Auto,
     CpuReference,
     CpuStatic,
-    CudaM2L
+    CudaM2L,
+    CudaM2LStaticP2P
 };
 
 /** @brief Dense multiplication implementation for cached static M2L matrices. */
@@ -210,6 +211,7 @@ public:
 
 private:
   class CudaM2LPlanOwner;
+  class CudaP2PPlanOwner;
   struct P2MPlan {
       int leaf{0};
       StaticCoefficientOperator operator_map{};
@@ -236,18 +238,22 @@ private:
   M2LBackend m2l_backend_{M2LBackend::Static};
   StaticMatrixBackend static_matrix_backend_{StaticMatrixBackend::Portable};
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
-  CudaPlanStatistics empty_cuda_statistics_{};
+  mutable CudaPlanStatistics empty_cuda_statistics_{};
   std::unique_ptr<CudaM2LPlanOwner> cuda_m2l_plan_{};
+  std::unique_ptr<CudaP2PPlanOwner> cuda_p2p_plan_{};
   std::vector<M2LGroup> m2l_groups_{};
   std::vector<P2MPlan> p2m_plans_{};
   std::vector<std::array<StaticCoefficientOperator, 8>> m2m_operators_{};
   std::vector<std::array<StaticCoefficientOperator, 8>> l2l_operators_{};
   std::vector<StaticL2PEvaluator> l2p_evaluators_{};
+  StaticP2POperator p2p_operator_{};
   StaticPlanStatistics static_plan_statistics_{};
   std::vector<CoeffVector> multipoles_{};
   std::vector<CoeffVector> locals_{};
   std::vector<Vec3> sorted_dipole_moments_{};
   std::vector<PotentialField> sorted_results_{};
+  std::vector<Vec3> near_fields_{};
+  std::vector<int> sorted_self_indices_{};
   EvaluationTimings last_timings_{};
   EvaluationTimings aggregate_timings_{};
 };

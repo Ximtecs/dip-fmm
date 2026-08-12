@@ -295,3 +295,18 @@ Literature starting points are:
   DOI `10.1016/j.jmmm.2016.11.128`; and Bruckner et al., *Scientific Reports*
   11 (2021), DOI `10.1038/s41598-021-88541-9`, as independent micromagnetic
   periodic validation approaches.
+# Static-geometry operator roadmap
+
+- [x] static P2M
+- [x] static M2M
+- [x] static M2L
+- [x] static L2L
+- [x] static L2P
+- [x] static near-field P2P tensor
+- [x] CPU static sparse P2P
+- [x] CUDA static sparse P2P (custom six-component block kernel)
+- [ ] stage-level global sparse P2M (candidate; benchmark required)
+- [ ] level sparse M2M (candidate; benchmark required)
+- [ ] global sparse M2L comparison (class reuse currently avoids duplication)
+- [ ] level sparse L2L (candidate; benchmark required)
+- [ ] global sparse L2P (candidate; benchmark required)

@@ -2,6 +2,7 @@
 
 #include "cuda_fmm_plan.hpp"
 #include "cuda_m2l_plan.hpp"
+#include "cuda_p2p_plan.hpp"
 #include "cdfmm/cuda_direct.hpp"
 
 #include <stdexcept>
@@ -89,6 +90,31 @@ const CudaPlanStatistics& CudaM2LPlan::statistics() const noexcept
 }
 
 const CudaEvaluationTimings& CudaM2LPlan::timings() const noexcept
+{
+    static const CudaEvaluationTimings empty{};
+    return empty;
+}
+
+CudaP2PPlan::CudaP2PPlan(const StaticP2POperator&)
+{
+    throw std::runtime_error("CUDA static P2P is unavailable in this build");
+}
+
+CudaP2PPlan::~CudaP2PPlan() = default;
+
+void CudaP2PPlan::evaluate(std::span<const Vec3>, std::span<const int>,
+                           std::span<Vec3>)
+{
+    throw std::runtime_error("CUDA static P2P is unavailable in this build");
+}
+
+const CudaPlanStatistics& CudaP2PPlan::statistics() const noexcept
+{
+    static const CudaPlanStatistics empty{};
+    return empty;
+}
+
+const CudaEvaluationTimings& CudaP2PPlan::timings() const noexcept
 {
     static const CudaEvaluationTimings empty{};
     return empty;

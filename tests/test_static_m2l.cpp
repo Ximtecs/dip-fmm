@@ -14,6 +14,71 @@
 
 using namespace cdfmm;
 
+TEST_CASE("compact static P2P matches list1-style direct pairs")
+{
+    const std::vector<Vec3> sources{
+        {-0.4, 0.1, 0.2}, {0.3, -0.2, 0.5}, {0.8, 0.4, -0.1}
+    };
+    const std::vector<Vec3> targets{
+        {0.1, 0.6, 0.3}, {-0.7, -0.3, 0.2}, {1.5, 1.5, 1.5}
+    };
+    const std::vector<Vec3> moments{
+        {0.2, -0.4, 0.7}, {-0.3, 0.8, 0.1}, {0.6, 0.2, -0.5}
+    };
+    // The last target deliberately represents an empty near-field row.
+    const std::vector<std::array<int, 2>> interactions{
+        {0, 0}, {0, 2}, {1, 0}, {1, 1}
+    };
+    const StaticP2POperator operator_map = build_static_p2p_operator(
+        targets, sources, interactions
+    );
+    std::vector<Vec3> actual(targets.size());
+    apply_static_p2p_operator(operator_map, moments, actual);
+
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+        PotentialField expected;
+        for (const auto pair : interactions) {
+            if (pair[0] == static_cast<int>(target)) {
+                expected.H += p2p_dipole_pair(
+                    targets[target], sources[static_cast<std::size_t>(pair[1])],
+                    moments[static_cast<std::size_t>(pair[1])]
+                ).H;
+            }
+        }
+        REQUIRE(actual[target].x == Catch::Approx(expected.H.x).margin(2.0e-15));
+        REQUIRE(actual[target].y == Catch::Approx(expected.H.y).margin(2.0e-15));
+        REQUIRE(actual[target].z == Catch::Approx(expected.H.z).margin(2.0e-15));
+    }
+    REQUIRE(operator_map.blocks.size() == interactions.size());
+    REQUIRE(operator_map.memory_bytes() ==
+            operator_map.blocks.size() * sizeof(StaticDipoleBlock) +
+            operator_map.row_offsets.size() * sizeof(int));
+}
+
+TEST_CASE("compact static P2P honours explicit self identity")
+{
+    const std::vector<Vec3> positions{{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}};
+    const std::vector<Vec3> moments{{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}};
+    const std::vector<std::array<int, 2>> interactions{
+        {0, 0}, {0, 1}, {1, 0}, {1, 1}
+    };
+    const auto operator_map = build_static_p2p_operator(
+        positions, positions, interactions
+    );
+    std::vector<Vec3> actual(positions.size());
+    const std::vector<int> identities{0, 1};
+    apply_static_p2p_operator(operator_map, moments, actual, identities);
+    for (std::size_t target = 0; target < positions.size(); ++target) {
+        const auto expected = p2p_dipole_sum(
+            positions[target], positions, moments, OutputFlags::Field,
+            static_cast<int>(target)
+        );
+        REQUIRE(actual[target].x == Catch::Approx(expected.H.x));
+        REQUIRE(actual[target].y == Catch::Approx(expected.H.y));
+        REQUIRE(actual[target].z == Catch::Approx(expected.H.z));
+    }
+}
+
 TEST_CASE("static P2M matches the independent dipole operator")
 {
     std::mt19937 generator(731);

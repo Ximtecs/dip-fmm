@@ -3,6 +3,10 @@
 #include "cdfmm/static_operators.hpp"
 
 #include <stdexcept>
+#include <algorithm>
+#include <cmath>
+#include <numbers>
+#include <limits>
 
 #include "cdfmm/laplace_derivatives.hpp"
 
@@ -168,6 +172,100 @@ StaticL2PEvaluator build_static_l2p_evaluator(
         }
     }
     return result;
+}
+
+std::size_t StaticP2POperator::memory_bytes() const noexcept
+{
+    return row_offsets.size() * sizeof(int) +
+        blocks.size() * sizeof(StaticDipoleBlock);
+}
+
+StaticP2POperator build_static_p2p_operator(
+    const std::span<const Vec3> target_positions,
+    const std::span<const Vec3> source_positions,
+    const std::span<const std::array<int, 2>> interactions)
+{
+    StaticP2POperator result;
+    result.source_count = static_cast<int>(source_positions.size());
+    result.target_count = static_cast<int>(target_positions.size());
+    result.row_offsets.assign(target_positions.size() + 1, 0);
+
+    std::vector<std::array<int, 2>> sorted(interactions.begin(), interactions.end());
+    std::sort(sorted.begin(), sorted.end());
+    result.blocks.reserve(sorted.size());
+    constexpr double prefactor = 1.0 / (4.0 * std::numbers::pi);
+    for (const auto pair : sorted) {
+        const int target = pair[0];
+        const int source = pair[1];
+        if (target < 0 || target >= result.target_count || source < 0 ||
+            source >= result.source_count) {
+            throw std::invalid_argument("static P2P interaction index is invalid");
+        }
+        const Vec3 r = target_positions[static_cast<std::size_t>(target)] -
+            source_positions[static_cast<std::size_t>(source)];
+        const double r2 = dot(r, r);
+        if (r2 == 0.0) {
+            // Preserve the block so an explicit identity map can skip it. If
+            // it is not a self pair, NaNs deliberately expose the same
+            // undefined point-dipole singularity as the reference operator.
+            const double undefined = std::numeric_limits<double>::quiet_NaN();
+            result.blocks.push_back({target, source, undefined, undefined,
+                                     undefined, undefined, undefined, undefined});
+            ++result.row_offsets[static_cast<std::size_t>(target) + 1];
+            continue;
+        }
+        const double inverse_r = 1.0 / std::sqrt(r2);
+        const double inverse_r3 = inverse_r / r2;
+        const double common = 3.0 * prefactor * inverse_r3 / r2;
+        const double diagonal = prefactor * inverse_r3;
+        result.blocks.push_back({
+            target, source,
+            common * r.x * r.x - diagonal,
+            common * r.x * r.y,
+            common * r.x * r.z,
+            common * r.y * r.y - diagonal,
+            common * r.y * r.z,
+            common * r.z * r.z - diagonal
+        });
+        ++result.row_offsets[static_cast<std::size_t>(target) + 1];
+    }
+    for (std::size_t row = 1; row < result.row_offsets.size(); ++row) {
+        result.row_offsets[row] += result.row_offsets[row - 1];
+    }
+    return result;
+}
+
+void apply_static_p2p_operator(
+    const StaticP2POperator& operator_map,
+    const std::span<const Vec3> dipole_moments,
+    const std::span<Vec3> H,
+    const std::span<const int> target_source_indices)
+{
+    if (dipole_moments.size() != static_cast<std::size_t>(operator_map.source_count) ||
+        H.size() != static_cast<std::size_t>(operator_map.target_count) ||
+        (!target_source_indices.empty() && target_source_indices.size() != H.size())) {
+        throw std::invalid_argument("static P2P dimensions are inconsistent");
+    }
+    #pragma omp parallel for schedule(static) if(operator_map.target_count >= 64)
+    for (int target = 0; target < operator_map.target_count; ++target) {
+        Vec3 field{};
+        const int self = target_source_indices.empty()
+            ? -1 : target_source_indices[static_cast<std::size_t>(target)];
+        for (int entry = operator_map.row_offsets[static_cast<std::size_t>(target)];
+             entry < operator_map.row_offsets[static_cast<std::size_t>(target) + 1];
+             ++entry) {
+            const StaticDipoleBlock& block = operator_map.blocks[
+                static_cast<std::size_t>(entry)];
+            if (block.source == self) {
+                continue;
+            }
+            const Vec3 m = dipole_moments[static_cast<std::size_t>(block.source)];
+            field.x += block.xx * m.x + block.xy * m.y + block.xz * m.z;
+            field.y += block.xy * m.x + block.yy * m.y + block.yz * m.z;
+            field.z += block.xz * m.x + block.yz * m.y + block.zz * m.z;
+        }
+        H[static_cast<std::size_t>(target)] += field;
+    }
 }
 
 void apply_static_operator(
