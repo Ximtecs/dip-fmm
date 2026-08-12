@@ -99,3 +99,17 @@ state reset. The benchmark optionally evaluates the same state with parallel
 direct P2P and writes mean, RMS, and maximum relative field errors beside the
 phase timings. Large automated cases disable the quadratic direct reference
 explicitly rather than reporting a misleading zero error.
+# Static list1 P2P validation
+
+The static CPU path is checked against the independent geometry-recomputing
+list1 traversal for coincident source/target populations, independent target
+sets, explicit self maps, multiple neighbours, and empty rows. The CUDA test is
+manual and compares the persistent custom six-value block executor with the CPU
+static result when a device is available. Geometry and tensor values are
+uploaded once; evaluation traffic contains moments, identities, and fields.
+
+MagTense's six separate component matrices provide the architectural reference.
+Here a single row structure and one compact block kernel reuse indices across
+all components, use one launch, and load six rather than nine tensor values.
+A generic 3-by-3 BSR form would store nine values and was therefore not retained
+without platform benchmark evidence that compensates for its extra bandwidth.

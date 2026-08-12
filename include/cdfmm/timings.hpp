@@ -101,6 +101,8 @@ struct StaticPlanStatistics {
     PhaseTiming l2l_plan{};
     /// @brief Time spent constructing target L2P rows.
     PhaseTiming l2p_plan{};
+    /// @brief Time spent constructing the compact list1 dipole tensors.
+    PhaseTiming p2p_tensor_plan{};
     PhaseTiming transfer_discovery{};
     PhaseTiming operator_construction{};
     PhaseTiming buffer_allocation{};
@@ -110,6 +112,12 @@ struct StaticPlanStatistics {
     std::size_t operator_bytes{0};
     std::size_t interaction_bytes{0};
     std::size_t scratch_bytes{0};
+    /// @brief Number of particle pairs represented by the list1 tensor.
+    std::size_t p2p_interactions{0};
+    /// @brief Six-coefficient tensor storage.
+    std::size_t p2p_value_bytes{0};
+    /// @brief Row and source/target index storage.
+    std::size_t p2p_index_bytes{0};
     /// @brief Number of times the immutable plan has been constructed.
     std::uint64_t construction_count{0};
 
@@ -131,6 +139,7 @@ struct CudaPlanStatistics {
     std::uint64_t plan_generation_count{0};
     std::uint64_t static_upload_count{0};
     std::uint64_t static_m2l_upload_count{0};
+    std::uint64_t static_p2p_upload_count{0};
 };
 
 /** @brief Device-stream phase timings for the most recent CUDA evaluation. */

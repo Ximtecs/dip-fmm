@@ -181,3 +181,34 @@ moment state.
 P2P applies the pair formulas in the first section and sums them without
 approximation.  It supplies the near-field contribution in an FMM and the
 reference answer used by current validation tests.
+# Static near-field tensor
+
+For fixed geometry, each list1 pair can be written as
+
+\[
+\mathbf H_{ij}=D_{ij}\mathbf m_j,\qquad
+D_{ij}=\frac{1}{4\pi}\left(
+\frac{3\mathbf r_{ij}\mathbf r_{ij}^{T}}{|\mathbf r_{ij}|^5}
+-\frac{I}{|\mathbf r_{ij}|^3}\right).
+\]
+
+The tensor is symmetric, so the static plan stores only `Dxx`, `Dxy`, `Dxz`,
+`Dyy`, `Dyz`, and `Dzz`. The three output rows still require all appropriate
+products with the moment components; symmetry reduces storage, not the apply
+to six scalar products. Collecting only list1 blocks gives
+`H_near = D_near m`. It is not an all-to-all demagnetisation matrix.
+The compact tensor accelerates field output. Potential-only work, and the
+potential part of combined output, deliberately continues to use the
+independent list1 reference calculation.
+
+# Stage-level static linear forms
+
+Fixed geometry also permits the hierarchical forms `M_leaf = P m`,
+`M_parent = A_level M_child`, `L_raw = T M`,
+`L_child = B_level L_parent`, and `H_far = E L_leaf`. P2M and L2P are natural
+global sparse candidates, while M2M and L2L retain one dependency-ordered
+application per level. M2L currently benefits from transfer-class matrix reuse;
+a conventional global sparse matrix would duplicate those dense values.
+Consequently these alternatives require benchmarks before adoption. Explicitly
+composing all stages is avoided because fill-in would approach an all-to-all
+operator and discard the FMM hierarchy and scaling.

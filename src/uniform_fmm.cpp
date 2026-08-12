@@ -22,6 +22,7 @@
 #include "cdfmm/static_operators.hpp"
 #include "cuda_fmm_plan.hpp"
 #include "cuda_m2l_plan.hpp"
+#include "cuda_p2p_plan.hpp"
 
 namespace cdfmm {
 
@@ -76,6 +77,15 @@ public:
     std::unique_ptr<CudaM2LPlan> plan;
 };
 
+class UniformFmm::CudaP2PPlanOwner {
+public:
+    explicit CudaP2PPlanOwner(std::unique_ptr<CudaP2PPlan> value)
+        : plan(std::move(value))
+    {
+    }
+    std::unique_ptr<CudaP2PPlan> plan;
+};
+
 //------------------------------------------------------------------------------
 // Construction
 //------------------------------------------------------------------------------
@@ -98,7 +108,9 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
             ? ExecutionBackend::CpuReference
             : ExecutionBackend::CpuStatic;
     }
-    if (backend_ == ExecutionBackend::CudaM2L && !cuda_m2l_available()) {
+    if ((backend_ == ExecutionBackend::CudaM2L ||
+         backend_ == ExecutionBackend::CudaM2LStaticP2P) &&
+        !cuda_m2l_available()) {
         throw std::runtime_error("CudaM2L is unavailable in this build");
     }
     m2l_backend_ = backend_ == ExecutionBackend::CpuReference
@@ -123,7 +135,8 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     if (m2l_backend_ == M2LBackend::Static) {
         build_static_plan();
     }
-    if (backend_ == ExecutionBackend::CudaM2L) {
+    if (backend_ == ExecutionBackend::CudaM2L ||
+        backend_ == ExecutionBackend::CudaM2LStaticP2P) {
         std::vector<CudaM2LGroupView> groups;
         groups.reserve(m2l_groups_.size());
         for (const M2LGroup& group : m2l_groups_) {
@@ -132,6 +145,12 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
         cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
             std::make_unique<CudaM2LPlan>(basis_.size(), groups)
         );
+        if (backend_ == ExecutionBackend::CudaM2LStaticP2P &&
+            !tree_.sorted_target_positions().empty()) {
+            cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+                std::make_unique<CudaP2PPlan>(p2p_operator_)
+            );
+        }
     }
 }
 
@@ -154,7 +173,9 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
             ? ExecutionBackend::CpuReference
             : ExecutionBackend::CpuStatic;
     }
-    if (backend_ == ExecutionBackend::CudaM2L && !cuda_m2l_available()) {
+    if ((backend_ == ExecutionBackend::CudaM2L ||
+         backend_ == ExecutionBackend::CudaM2LStaticP2P) &&
+        !cuda_m2l_available()) {
         throw std::runtime_error("CudaM2L is unavailable in this build");
     }
     m2l_backend_ = backend_ == ExecutionBackend::CpuReference
@@ -177,10 +198,13 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     );
     sorted_dipole_moments_.resize(source_positions.size());
     sorted_results_.resize(target_positions.size());
+    near_fields_.resize(target_positions.size());
+    sorted_self_indices_.resize(target_positions.size(), -1);
     if (m2l_backend_ == M2LBackend::Static) {
         build_static_plan();
     }
-    if (backend_ == ExecutionBackend::CudaM2L) {
+    if (backend_ == ExecutionBackend::CudaM2L ||
+        backend_ == ExecutionBackend::CudaM2LStaticP2P) {
         std::vector<CudaM2LGroupView> groups;
         groups.reserve(m2l_groups_.size());
         for (const M2LGroup& group : m2l_groups_) {
@@ -189,6 +213,11 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
         cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
             std::make_unique<CudaM2LPlan>(basis_.size(), groups)
         );
+        if (backend_ == ExecutionBackend::CudaM2LStaticP2P) {
+            cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+                std::make_unique<CudaP2PPlan>(p2p_operator_)
+            );
+        }
     }
 }
 
@@ -309,6 +338,36 @@ void UniformFmm::build_static_plan()
         }
     }
     static_plan_statistics_.l2p_plan.add(elapsed_seconds(phase_start));
+
+    phase_start = Clock::now();
+    std::vector<std::array<int, 2>> near_interactions;
+    for (const int leaf_index : tree_.occupied_target_leaves()) {
+        const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
+        for (std::size_t target = leaf.target_begin; target < leaf.target_end;
+             ++target) {
+            for (const int neighbour_index : leaf.list1) {
+                const TreeNode& neighbour = nodes[
+                    static_cast<std::size_t>(neighbour_index)];
+                for (std::size_t source = neighbour.source_begin;
+                     source < neighbour.source_end; ++source) {
+                    near_interactions.push_back({
+                        static_cast<int>(target), static_cast<int>(source)
+                    });
+                }
+            }
+        }
+    }
+    p2p_operator_ = build_static_p2p_operator(
+        targets, sorted_positions, near_interactions
+    );
+    static_plan_statistics_.p2p_interactions = p2p_operator_.blocks.size();
+    static_plan_statistics_.p2p_value_bytes = p2p_operator_.blocks.size() *
+        6 * sizeof(double);
+    static_plan_statistics_.p2p_index_bytes =
+        p2p_operator_.row_offsets.size() * sizeof(int) +
+        p2p_operator_.blocks.size() * 2 * sizeof(int);
+    static_plan_statistics_.operator_bytes += p2p_operator_.memory_bytes();
+    static_plan_statistics_.p2p_tensor_plan.add(elapsed_seconds(phase_start));
     static_plan_statistics_.total.add(elapsed_seconds(total_start));
     ++static_plan_statistics_.construction_count;
 }
@@ -561,7 +620,8 @@ void UniformFmm::downward_pass()
     }
     last_timings_.local_reset.add(elapsed_seconds(phase_start));
 
-    if (backend_ == ExecutionBackend::CudaM2L) {
+    if (backend_ == ExecutionBackend::CudaM2L ||
+        backend_ == ExecutionBackend::CudaM2LStaticP2P) {
         cuda_m2l();
         l2l_downward();
         return;
@@ -749,6 +809,49 @@ void UniformFmm::evaluate_into(
     last_timings_.l2p.add(elapsed_seconds(phase_start));
 
     phase_start = Clock::now();
+    std::fill(sorted_self_indices_.begin(), sorted_self_indices_.end(), -1);
+    if (!target_source_indices.empty()) {
+        for (std::size_t target_index = 0; target_index < target_count;
+             ++target_index) {
+            const int original_target = target_permutation[target_index];
+            const int original_source = target_source_indices[
+                static_cast<std::size_t>(original_target)];
+            if (original_source >= 0) {
+                sorted_self_indices_[target_index] = source_inverse[
+                    static_cast<std::size_t>(original_source)];
+            }
+        }
+    }
+
+    if (backend_ != ExecutionBackend::CpuReference &&
+        has_flag(output, OutputFlags::Field)) {
+        std::fill(near_fields_.begin(), near_fields_.end(), Vec3{});
+        if (backend_ == ExecutionBackend::CudaM2LStaticP2P && cuda_p2p_plan_) {
+            cuda_p2p_plan_->plan->evaluate(
+                sorted_dipole_moments_, sorted_self_indices_, near_fields_
+            );
+            const CudaEvaluationTimings& device =
+                cuda_p2p_plan_->plan->timings();
+            last_timings_.cuda_h2d.add(device.h2d_seconds);
+            last_timings_.cuda_kernel.add(device.kernel_seconds);
+            last_timings_.cuda_d2h.add(device.d2h_seconds);
+        } else {
+            apply_static_p2p_operator(
+                p2p_operator_, sorted_dipole_moments_, near_fields_,
+                sorted_self_indices_
+            );
+        }
+        for (std::size_t target = 0; target < target_count; ++target) {
+            sorted_results_[target].H += near_fields_[target];
+        }
+    }
+
+    const OutputFlags reference_near_output =
+        backend_ == ExecutionBackend::CpuReference
+        ? output
+        : (has_flag(output, OutputFlags::Potential)
+            ? OutputFlags::Potential : OutputFlags::None);
+    if (reference_near_output != OutputFlags::None) {
     #pragma omp parallel for schedule(static) if(occupied_leaves.size() >= 8)
     for (std::ptrdiff_t occupied_index = 0;
          occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
@@ -758,18 +861,7 @@ void UniformFmm::evaluate_into(
         const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
         for (std::size_t target_index = leaf.target_begin;
              target_index < leaf.target_end; ++target_index) {
-            int self_sorted_index = -1;
-            if (!target_source_indices.empty()) {
-                const int original_target = target_permutation[target_index];
-                const int original_source = target_source_indices[
-                    static_cast<std::size_t>(original_target)
-                ];
-                if (original_source >= 0) {
-                    self_sorted_index = source_inverse[
-                        static_cast<std::size_t>(original_source)
-                    ];
-                }
-            }
+            const int self_sorted_index = sorted_self_indices_[target_index];
 
             PotentialField& result = sorted_results_[target_index];
             for (const int neighbour_index : leaf.list1) {
@@ -793,12 +885,13 @@ void UniformFmm::evaluate_into(
                     std::span<const Vec3>(sorted_dipole_moments_).subspan(
                         neighbour.source_begin, neighbour.source_count()
                     ),
-                    output, local_self_index
+                    reference_near_output, local_self_index
                 );
                 result.phi += near.phi;
                 result.H += near.H;
             }
         }
+    }
     }
     last_timings_.p2p.add(elapsed_seconds(phase_start));
 
@@ -832,8 +925,23 @@ StaticMatrixBackend UniformFmm::static_matrix_backend() const
 ExecutionBackend UniformFmm::backend() const { return backend_; }
 const CudaPlanStatistics& UniformFmm::cuda_plan_statistics() const
 {
-    return cuda_m2l_plan_ ? cuda_m2l_plan_->plan->statistics()
-                          : empty_cuda_statistics_;
+    if (!cuda_m2l_plan_) {
+        return empty_cuda_statistics_;
+    }
+    empty_cuda_statistics_ = cuda_m2l_plan_->plan->statistics();
+    if (cuda_p2p_plan_) {
+        const CudaPlanStatistics& p2p = cuda_p2p_plan_->plan->statistics();
+        empty_cuda_statistics_.setup_h2d_bytes += p2p.setup_h2d_bytes;
+        empty_cuda_statistics_.evaluation_h2d_bytes += p2p.evaluation_h2d_bytes;
+        empty_cuda_statistics_.evaluation_d2h_bytes += p2p.evaluation_d2h_bytes;
+        empty_cuda_statistics_.evaluation_h2d_calls += p2p.evaluation_h2d_calls;
+        empty_cuda_statistics_.evaluation_d2h_calls += p2p.evaluation_d2h_calls;
+        empty_cuda_statistics_.persistent_device_bytes +=
+            p2p.persistent_device_bytes;
+        empty_cuda_statistics_.static_p2p_upload_count =
+            p2p.static_p2p_upload_count;
+    }
+    return empty_cuda_statistics_;
 }
 const StaticPlanStatistics& UniformFmm::static_plan_statistics() const
 {

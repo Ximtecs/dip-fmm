@@ -93,7 +93,7 @@ TEST_CASE("CUDA M2L hybrid agrees with CPU static", "[cuda][manual]")
             cpu_options.tree.root_half_width = 1.0;
             cpu_options.backend = ExecutionBackend::CpuStatic;
             UniformFmmOptions cuda_options = cpu_options;
-            cuda_options.backend = ExecutionBackend::CudaM2L;
+            cuda_options.backend = ExecutionBackend::CudaM2LStaticP2P;
 
             UniformFmm cpu(positions, positions, cpu_options);
             UniformFmm cuda(positions, positions, cuda_options);
@@ -108,6 +108,7 @@ TEST_CASE("CUDA M2L hybrid agrees with CPU static", "[cuda][manual]")
                 source_identities
             );
             REQUIRE(cuda.cuda_plan_statistics().static_m2l_upload_count == 1);
+            REQUIRE(cuda.cuda_plan_statistics().static_p2p_upload_count == 1);
             for (std::size_t index = 0; index < actual.size(); ++index) {
                 REQUIRE(actual[index].phi ==
                     Catch::Approx(expected[index].phi).margin(2.0e-12));
