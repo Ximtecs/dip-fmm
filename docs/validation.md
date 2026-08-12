@@ -13,7 +13,7 @@ python -m pytest python_tests -v
 ```
 
 Run the fixed-geometry problem-size and expansion-order sweep (including
-`cuda-m2l` only when capability probing succeeds) with:
+`cuda-m2l-p2p` only when capability probing succeeds) with:
 
 ```console
 cmake --build --preset cuda --target benchmark_uniform_fmm
@@ -25,29 +25,28 @@ moment generation for each backend:
 
 ```console
 build-cuda/benchmarks/benchmark_uniform_fmm --backend cpu-static-matrix --sources 20000 --targets 20000 --depth 4 --order 6 --evaluations 20 --samples 5 --output cpu.csv
-build-cuda/benchmarks/benchmark_uniform_fmm --backend cuda-m2l --sources 20000 --targets 20000 --depth 4 --order 6 --evaluations 20 --samples 5 --output cuda-m2l.csv
+build-cuda/benchmarks/benchmark_uniform_fmm --backend cuda-m2l-p2p --sources 20000 --targets 20000 --depth 4 --order 6 --evaluations 20 --samples 5 --output cuda-m2l-p2p.csv
 ```
 
 The C++ suite selects CPU reference/static backends explicitly and compares
 `cuda_direct_p2p_reference` with the CPU direct reference whenever
-`cuda_direct_available()` is true. Manual CUDA tests also compare `CudaM2L`
-with `CpuStatic`; the full-FMM capability remains false.
+`cuda_direct_available()` is true. Manual CUDA tests also compare
+`CudaM2LP2P` with `CpuStatic`; the full-FMM capability remains false.
 
 The hybrid path performs CPU moment permutation, P2M and M2M; GPU gather,
-static M2L cuBLAS multiplication and scatter; then CPU L2L, L2P and near-field
-P2P. Repeated evaluation transfers packed multipole coefficients H2D and raw
-M2L local coefficients D2H. Static matrices and interaction metadata are
-uploaded only during plan construction, and all levels share those two dynamic
-transfers.
+static M2L cuBLAS multiplication and scatter; then CPU L2L and L2P. The cached
+sparse list-1 P2P tensor runs independently on a second CUDA stream and joins
+the far-field result once. Static M2L and P2P data are uploaded only during
+plan construction.
 
 The CUDA direct convenience evaluator is an O(N^2) validation reference, not
 an FMM backend. It uploads geometry when called and must not be used to claim a
 moment-only repeated far-field transfer contract.
 
-`EvaluationTimings` records CUDA H2D, gather, multiply, scatter, and D2H durations
-with CUDA events. Their sum excludes host packing and result-copy overhead;
-compare it with the complete caller wall time in `total` when diagnosing
-launch, synchronisation, and other host-side costs.
+`EvaluationTimings` records operation-specific CUDA M2L and P2P durations with
+CUDA events plus the single final P2P host wait. Because the two device streams
+can overlap, their durations must not be summed as a sequential critical path;
+compare them with the complete caller wall time in `total`.
 
 The project validates small mathematical pieces analytically before composing
 them.  Unit tests cover multi-index counts and ordering, Taylor-jet algebra,

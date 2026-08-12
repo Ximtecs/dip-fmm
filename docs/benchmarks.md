@@ -1,8 +1,61 @@
 # Performance benchmarks
 
+## Complete reset, build, test, and rough benchmark
+
+Run from the repository root. This resets all build directories but preserves
+existing benchmark results:
+
+```bash
+conda env update -n cdfmm -f environment.yml
+conda env update -n cdfmm -f environment-cuda.yml
+conda activate cdfmm
+
+rm -rf \
+  build \
+  build-release \
+  build-cuda \
+  build-bench \
+  build-bench-mkl \
+  build-bench-all
+
+cmake --fresh --preset cuda
+cmake --build --preset cuda -j"$(nproc)"
+
+ctest --preset cuda --timeout 120
+python -m pytest python_tests -v
+
+cmake --fresh --preset benchmark-all
+cmake --build --preset benchmark-all -j"$(nproc)"
+
+./build-bench-all/benchmarks/benchmark_uniform_fmm --cuda-status
+
+python benchmarks/run_benchmarks.py \
+  --profile rough \
+  --max-threads 8 \
+  --executable build-bench-all/benchmarks/benchmark_uniform_fmm
+```
+
+Before benchmarking, confirm the capability output includes:
+
+```text
+cuda_available=1
+cuda_direct_available=1
+cuda_m2l_available=1
+one_mkl_available=1
+```
+
+To also remove all previous generated benchmark results, explicitly run before
+the benchmark:
+
+```bash
+rm -rf benchmark_results
+```
+
+That last command permanently removes the old CSV files and figures.
+
 ## Combined CPU, CUDA, and oneMKL measurements
 
-Use the combined preset to place all four implemented strategies in one
+Use the combined preset to place all five implemented strategies in one
 executable:
 
 ```console
@@ -15,18 +68,24 @@ python benchmarks/run_benchmarks.py --profile quick --max-threads 4 \
 
 The runner prefers this combined executable and probes its capabilities before
 planning measurements. A complete run compares `cpu-direct`, `cuda-direct`,
-`cpu-static-matrix`, and `cpu-static-matrix-mkl`. CUDA direct uses a persistent
+`cuda-m2l-p2p`, `cpu-static-matrix`, and `cpu-static-matrix-mkl`. CUDA direct
+uses a persistent
 plan: source and target positions are uploaded once during construction, while
 each subsequent evaluation uploads only changing dipole moments and downloads
 the requested results. It is an O(N^2) direct P2P implementation, not CUDA M2L
-or a CUDA FMM. Expansion order and tree depth are retained on both direct rows
-only to identify their paired FMM geometry.
+or a CUDA FMM. Each direct backend is measured exactly once per configured
+particle count because all-to-all P2P does not construct or depend on a tree.
+Direct CSV rows use `suite=direct` and record order and depth as zero to mark
+them as not applicable.
 
 CSV rows identify `execution_backend`, compile/runtime CUDA status, device,
-setup bytes, per-evaluation H2D/D2H bytes, and persistent device bytes. CUDA
-rows also report device-stream H2D, kernel, and D2H times measured with CUDA
-events; these phases appear in the same phase plots as the CPU traversal
-phases. Caller wall time remains the primary end-to-end measurement. CUDA
+setup bytes, per-evaluation H2D/D2H bytes, upload counts, and persistent device
+bytes. Accuracy columns include the number of exact-reference targets, sampled
+reference time, and mean/RMS/maximum relative field errors. CUDA rows report
+separate M2L and P2P device-stream timings. The P2P lane
+overlaps the dependent P2M/M2M/M2L/L2L/L2P chain and is therefore plotted
+separately rather than added to its phase total. Caller wall time remains the
+primary end-to-end measurement. CUDA
 results are hardware-specific and are never generated in GitHub Actions. Do
 not report crossover or amortisation claims without measured GPU output.
 
@@ -53,7 +112,7 @@ python benchmarks/run_benchmarks.py --profile quick --max-threads 4 \
   --executable build-bench-mkl/benchmarks/benchmark_uniform_fmm
 ```
 
-The two FMM rows retain the uniform tree, Morton permutations, source/target
+The static FMM rows retain the uniform tree, Morton permutations, source/target
 ranges, list1/list2 interaction lists, and one dense Cartesian M2L coefficient
 matrix `T(R)` for every occupied
 `(level, dx, dy, dz)` transfer class. They also retain the interaction index
@@ -61,12 +120,13 @@ maps and gather/translated scratch buffers used for grouped multiplication.
 `cpu-static-matrix` uses the portable nested-loop multiply;
 `cpu-static-matrix-mkl` selects oneMKL DGEMM at runtime from the same binary.
 
-Only M2L coefficient matrices are currently cached. There are no stored P2M,
-M2M, L2L, or L2P matrices. CSV columns report the M2L strategy, number and bytes
-of cached matrices, interaction-map bytes, scratch bytes, and total static-plan
-storage. Runtime instrumentation separates `m2l_gather`, `m2l_multiply`, and
-`m2l_scatter` for the matrix strategy. The older per-interaction M2L traversal
-is omitted because it makes complete sweeps prohibitively slow.
+The static plan caches sparse P2M maps per occupied source leaf, shared
+triangular M2M and L2L maps, dense M2L matrices per transfer class, fixed L2P
+rows per target, and sparse list-1 P2P tensor blocks. CSV columns report
+construction time and storage across these operators. Runtime instrumentation
+separates `m2l_gather`, `m2l_multiply`, and `m2l_scatter` for the dense M2L
+strategy. The older per-interaction M2L traversal is retained only as a
+validation reference.
 
 Gathering and matrix application are scheduled across independent transfer
 classes with OpenMP. Each worker processes a complete grouped matrix operation;
@@ -107,21 +167,25 @@ and file output are outside timed regions.
 `m2l` is a top-level parent phase. `m2l_gather`, `m2l_multiply`, and
 `m2l_scatter` partition its static-matrix work and appear in a separate nested
 breakdown. They are excluded from top-level phase-share normalisation so the
-same M2L time is not counted twice. For hybrid CUDA M2L, multipole H2D and
+same M2L time is not counted twice. For hybrid CUDA M2L/P2P, multipole H2D and
 local-coefficient D2H are included in this nested partition as well;
 `cuda_kernel` is a diagnostic sum and is not counted as another top-level
-phase.
+phase. The hybrid backend additionally reports `cuda_p2p_h2d`,
+`cuda_p2p_kernel`, `cuda_p2p_d2h`, and the single residual
+`cuda_p2p_wait`. These form an independent overlapping lane and are excluded
+from sequential top-level phase-share normalisation.
 
 Every automated benchmark row records two end-to-end workloads: exactly one
 construction plus one evaluation, and exactly one construction plus ten
 evaluations with changing dipole moments. Construction, evaluation, and total
 median times are stored separately. This applies independently to CPU direct,
 GPU direct, portable static-matrix FMM, oneMKL static-matrix FMM, and hybrid
-CUDA M2L FMM. In the
+CUDA M2L/P2P FMM. In the
 GPU-direct 1+10 workload, positions remain device-resident and only moments
-and results cross the PCIe boundary between evaluations. Hybrid CUDA M2L keeps
-static matrices and interaction metadata resident while transferring packed
-multipoles and raw M2L locals per evaluation. OpenMP, CUDA, and oneMKL
+and results cross the PCIe boundary between evaluations. Hybrid CUDA M2L/P2P keeps
+static M2L matrices and sparse P2P tensors resident while transferring packed
+multipoles, raw M2L locals, changing moments, identities, and near fields per
+evaluation. OpenMP, CUDA, and oneMKL
 runtime initialisation is warmed before these workloads are timed. This removes
 process-global driver and library first-use costs. Timed construction still
 includes everything owned by an evaluator: tree and static-plan construction,
@@ -156,12 +220,17 @@ python benchmarks/run_benchmarks.py --profile rough --max-threads 8 \
   --executable build-bench-all/benchmarks/benchmark_uniform_fmm
 ```
 
-It runs exactly 20 processes: 20,000 and 30,000 particles at depths two and
-three, with expansion order four, across CPU direct P2P, CUDA direct P2P,
-portable CPU FMM, oneMKL CPU FMM, and hybrid CUDA M2L FMM. Each process records
+It runs exactly 16 processes: the three FMM backends at 20,000 and 30,000
+particles, depths three and four, and expansion order four (12 runs), plus one
+CPU-direct and one CUDA-direct run at each particle count (four runs). Each
+process records
 one warmed timed evaluation with one sample, plus independent 1+1 and 1+10
 construction/evaluation workloads. The profile deliberately omits thread
-scaling, the extra comparison suite, and direct accuracy references. It still
+scaling, the extra comparison suite, and a full all-target accuracy reference.
+Instead, each process checks 128 deterministically spaced targets against exact
+CPU P2P over all sources. The target count and RMS/maximum relative errors are
+included in `summary.md`. Accuracy sampling is outside all timed benchmark
+regions. The profile still
 produces construction-inclusive, evaluation-only, and setup-amortisation plots
 for every geometry, including projections through 10,000 evaluations. It fails
 explicitly unless all five backends are available.
@@ -177,8 +246,10 @@ limits the scaling sweep; for example, `--max-threads 8` tests 1, 2, 4, and 8
 threads even when the machine reports more logical CPUs. Without the option,
 the runner uses all logical CPUs reported by the operating system.
 
-Profiles contain a full `parameter_grid` suite in `results.csv`, covering every
-configured particle-count, expansion-order, and tree-depth combination. The
+Profiles contain a full FMM `parameter_grid` suite in `results.csv`, covering
+every configured particle-count, expansion-order, and tree-depth combination.
+The separate `direct` suite contains one CPU-direct row and, when available,
+one CUDA-direct row per particle count. The
 `scaling` suite varies OpenMP threads at the largest problem size, and the
 `comparison` suite presents the backend workload comparison at one common
 geometry. The driver
@@ -191,17 +262,21 @@ and tested expansion order nearest four; per-run phase plots cover direct,
 static-matrix, and CUDA phases. Generated
 results are ignored by Git and existing runs are not overwritten.
 
-The terminal reports the exact suite, source/target count, order, depth,
-backend, and thread count before every case. It shows overall case progress,
+The terminal reports the exact suite, source/target count, applicable tree
+parameters, backend, and thread count before every case. It shows overall case
+progress,
 while the C++
 executable updates completed samples and timed evaluations after each sample.
 Progress printing occurs outside the measured interval. Figures are grouped by
 result type under `figures/runtime/`, `accuracy/`, `work/`, `phases/`,
 `setup/`, `scaling/`, and `comparison/`. `figures/combined_overview.png`
 combines runtime, accuracy, M2L translations, and near-field pairs for the full
-grid. Every recorded row has individual phase, setup/evaluation, and work plots
-in the corresponding `per_run/` directory. Per-configuration depth sweeps and
-per-order/depth particle sweeps provide less crowded detailed views.
+grid. Every recorded row has individual phase and setup/evaluation plots;
+tree-based rows also have work plots in the corresponding `per_run/`
+directory. Per-configuration depth sweeps and
+per-order/depth FMM particle sweeps provide less crowded detailed views. Direct
+runtime particle sweeps contain one point per configured particle count and do
+not carry an order or depth label.
 
 ## Setup and repeated evaluation
 
@@ -218,7 +293,7 @@ Evaluation is internally OpenMP-parallel, but concurrent calls on the same
 timing accumulators are mutable. Separate objects may be evaluated by separate
 calling threads, although oversubscription must then be managed by the caller.
 
-The static backend caches grouped M2L translation matrices and reusable gather
-and scatter buffers. Near-field tensors are not cached. Morton stable sorting
-remains serial, and complete-tree storage can become expensive at excessive
-depth.
+The static backend caches all geometry-dependent operator maps, including
+grouped M2L translation matrices, reusable gather/scatter buffers, and sparse
+near-field tensors. Morton stable sorting remains serial, and complete-tree
+storage can become expensive at excessive depth.

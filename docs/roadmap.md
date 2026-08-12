@@ -238,19 +238,22 @@ development workflow.
 - [x] direct all-to-all CUDA dipole reference
 - [x] static M2L matrices and interaction metadata uploaded once
 - [x] CUDA M2L gather, cuBLAS multiply, and race-free atomic scatter
-- [x] genuine hybrid CUDA-M2L FMM and CPU-static comparison benchmarks
+- [x] static list-1 P2P tensors uploaded once and evaluated on CUDA
+- [x] independent CUDA P2P stream overlapped with the far-field chain
+- [x] genuine hybrid CUDA-M2L/P2P FMM and CPU-static comparison benchmarks
 - [ ] device P2M, M2M, L2L, and L2P kernels
 - [x] persistent CUDA direct-P2P buffers and user-order output
 - [ ] device Morton permutations
 - [ ] custom-versus-cuBLAS M2L microbenchmarks
 - [ ] CUDA Graph investigation and retention if measurements justify it
-- [x] CPU-static versus CUDA-M2L problem-size and order sweep infrastructure
+- [x] CPU-static versus CUDA-M2L/P2P problem-size and order sweep infrastructure
 - [x] manual CUDA validation workflow (CUDA remains excluded from GitHub CI)
 
-`CudaM2L` is deliberately hybrid: CPU P2M/M2M feed packed multipoles to the
-resident grouped CUDA M2L plan, and downloaded raw locals feed CPU L2L/L2P/P2P.
-`Auto` remains CPU static. CUDA P2M, M2M, L2L, L2P, FMM near-field P2P, and a
-full device-resident FMM remain later milestones.
+`CudaM2LP2P` is deliberately hybrid: CPU P2M/M2M feed packed multipoles to the
+resident grouped CUDA M2L plan, downloaded raw locals feed CPU L2L/L2P, and an
+independent CUDA stream applies the resident sparse list-1 P2P tensor. `Auto`
+remains CPU static. CUDA P2M, M2M, L2L, L2P, and a full device-resident FMM
+remain later milestones. `CudaM2L` is retained as a compatibility alias.
 
 ## Future milestone: true periodic magnetostatics
 

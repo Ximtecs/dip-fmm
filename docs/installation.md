@@ -397,10 +397,12 @@ the active Conda environment's Python platform-library directory. Plain
 `PYTHONPATH` is neither required nor recommended. Activate `cdfmm` before
 configuring so the install target is derived from the intended interpreter.
 
-The C++ suite contains an explicit CUDA test which is skipped in CPU-only
-builds and exercises both CUDA backend selections when a device is present.
-Verify `cuda_available()` and `cuda_device_description()` from Python after
-building. GitHub Actions explicitly configures
+The C++ suite contains explicit CUDA tests which are skipped in CPU-only
+builds and exercise the hybrid `CudaM2LP2P` backend when a device is present.
+P2M, M2M, L2L, and L2P remain CPU static; cached M2L and list-1 P2P operators
+run on independent CUDA streams. Verify `cuda_available()` and
+`cuda_device_description()` from Python after building. GitHub Actions
+explicitly configures
 `CDFMM_ENABLE_CUDA=OFF`: CUDA compilation, tests, and performance measurements
 are intentionally manual and require a real NVIDIA CUDA-capable system.
 

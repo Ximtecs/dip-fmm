@@ -5,8 +5,8 @@ specialised for point-dipole interactions.  It uses
 `G(r) = 1/(4*pi*|r|)` and treats the magnetic field `H = -grad(phi)` as the
 primary result, with optional scalar potential output.
 
-`UniformFmm` builds an immutable static-geometry M2L plan by default. Exact
-translation matrices and integer transfer-class maps are reused across calls
+`UniformFmm` builds an immutable static-geometry operator plan by default.
+Fixed P2M, M2M, M2L, L2L, L2P, and list-1 P2P maps are reused across calls
 where only dipole moments change. The independent reference traversal remains
 selectable with `options.m2l_backend = cdfmm::M2LBackend::Reference`.
 
@@ -20,11 +20,11 @@ for (const auto& moments : moment_states) {
 Python exposes the same default and `cdfmm.M2LBackend.Reference` fallback.
 
 Execution can be selected with `options.backend`: `CpuReference` or
-`CpuStatic`, or `CudaM2L`. `Auto` deliberately selects `CpuStatic`; it can never
-substitute an O(N^2) direct calculation for an FMM traversal. `CudaM2L` runs
-moment permutation, P2M, and M2M on the CPU, transfers packed multipole
-coefficients once, applies all static M2L groups on the GPU with cuBLAS, returns
-raw M2L locals once, and completes L2L, L2P, and near-field P2P on the CPU. The
+`CpuStatic`, or `CudaM2LP2P`. `Auto` deliberately selects `CpuStatic`; it can
+never substitute an O(N^2) direct calculation for an FMM traversal.
+`CudaM2LP2P` runs P2M, M2M, L2L, and L2P on the CPU, applies cached dense M2L
+matrices with cuBLAS, and applies the cached sparse list-1 P2P tensor on an
+independent CUDA stream. `CudaM2L` remains a compatibility alias. The
 separately exposed
 `cuda_direct_p2p_reference` is the O(N^2) GPU numerical reference.
 
@@ -40,11 +40,10 @@ and target geometry to a complete reference traversal: P2M and upward M2M,
 
 The evaluator supports field, potential, or both. Source-point self exclusion
 uses an explicit target-to-source identity index rather than coordinate
-equality, and returned values follow user target order. Adaptive trees, static
-optimisation of operators other than M2L, CUDA,
-and MagTense/Fortran integration are not implemented. CUDA also provides the
-truthfully named direct O(N^2) reference. Device P2M/M2M/L2L/L2P, device FMM
-near-field P2P, and a full device-resident FMM remain unimplemented. See the
+equality, and returned values follow user target order. Adaptive trees and
+MagTense/Fortran integration are not implemented. CUDA also provides the
+truthfully named direct O(N^2) reference. Device P2M/M2M/L2L/L2P and a full
+device-resident FMM remain unimplemented. See the
 [roadmap](docs/roadmap.md) for the next milestone and later research.
 
 ## Build and test
