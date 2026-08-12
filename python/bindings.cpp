@@ -163,6 +163,24 @@ py::array_t<double> coefficients_to_array(const CoeffVector& coefficients)
     return array;
 }
 
+py::array_t<double> matrix_to_array(
+    const std::vector<double>& matrix,
+    const int row_count,
+    const int column_count)
+{
+    py::array_t<double> array({row_count, column_count});
+    auto values = array.mutable_unchecked<2>();
+    for (int column = 0; column < column_count; ++column) {
+        for (int row = 0; row < row_count; ++row) {
+            values(row, column) = matrix[
+                static_cast<std::size_t>(row) +
+                static_cast<std::size_t>(row_count) * column
+            ];
+        }
+    }
+    return array;
+}
+
 py::dict potential_field_to_dict(const PotentialField& result)
 {
     py::dict output;
@@ -748,6 +766,35 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc"
         py::arg("target_centre"),
         py::arg("order"),
         "Convert a multipole expansion to a target-centred local expansion."
+    );
+
+    module.def(
+        "static_m2l_matrix",
+        [](py::object source_centre,
+           py::object target_centre,
+           const int order) {
+            const MultiIndexSet basis = make_basis(order);
+            const Vec3 source_position = parse_vec3(
+                source_centre,
+                "source_centre"
+            );
+            const Vec3 target_position = parse_vec3(
+                target_centre,
+                "target_centre"
+            );
+            return matrix_to_array(
+                build_static_m2l_matrix(
+                    basis,
+                    target_position - source_position
+                ),
+                basis.size(),
+                basis.size()
+            );
+        },
+        py::arg("source_centre"),
+        py::arg("target_centre"),
+        py::arg("order"),
+        "Return the canonical dense static M2L matrix in output-by-input order."
     );
 
     module.def(
