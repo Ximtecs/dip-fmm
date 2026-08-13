@@ -82,10 +82,12 @@ This installed Python build contains CUDA-full, CUDA-partial, oneMKL, and the
 static-M2L inspection binding required by notebook 12. Restart an already open
 notebook kernel after rebuilding so it does not retain the previous extension.
 
-Notebook 12 derives host and device storage from the actual uniform-tree
-interaction lists. It contrasts CUDA-full's replicated M2L entries with
-CUDA-partial's transfer-class matrices and work buffers without allocating a
-CUDA plan while exploring potentially oversized configurations.
+Notebook 12 constructs real CPU-static plans across particle-count, expansion-
+order, and tree-depth sweeps, then compares their total and intermediate
+storage counters with an independent estimate derived from the uniform-tree
+interaction lists.  When CUDA is available, it also constructs CUDA-partial
+and CUDA-full plans and verifies that both reuse the same bounded set of
+normalised M2L transfer-class matrices.
 
 ## Benchmark
 

@@ -29,7 +29,7 @@ The sequence follows the data flow through the implemented operators:
 | `09_uniform_upward_pass.ipynb` | Leaf P2M, hierarchical M2M, and direct-root equivalence |
 | `10_uniform_downward_pass.ipynb` | M2L/L2L routes, list1 near field, and complete-FMM accuracy |
 | `11_fmm3d_comparison.ipynb` | CUDA-full, CUDA-partial, and oneMKL performance versus FMM3D 2.1.0 |
-| `12_cuda_memory_usage.ipynb` | Allocation-free host/device storage analysis for both CUDA FMM layouts |
+| `12_cuda_memory_usage.ipynb` | Estimated-versus-measured total and intermediate CPU/CUDA plan storage sweeps |
 
 Select the `Python (cdfmm)` kernel in JupyterLab or VSCode. Important
 parameters are collected near the top of each notebook, and all random
