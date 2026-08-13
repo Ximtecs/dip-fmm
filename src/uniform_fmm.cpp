@@ -697,7 +697,7 @@ void UniformFmm::upward_pass_prepared() {
     const int leaf_index =
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
     const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
-    if (backend_ != ExecutionBackend::CpuReference) {
+    if (execution_plan().p2m != StaticOperatorExecutor::Reference) {
       const StaticCoefficientOperator &operator_map =
           p2m_plans_[static_cast<std::size_t>(occupied_index)].operator_map;
       CoeffVector &M = multipoles_[static_cast<std::size_t>(leaf_index)];
@@ -742,7 +742,7 @@ void UniformFmm::upward_pass_prepared() {
           if (child.source_count() == 0) {
             continue;
           }
-          if (backend_ != ExecutionBackend::CpuReference) {
+          if (execution_plan().m2m != StaticOperatorExecutor::Reference) {
             const int child_class =
                 (child.ix & 1) | ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
             apply_static_operator(
@@ -776,7 +776,7 @@ void UniformFmm::downward_pass() {
     }
     last_timings_.local_reset.add(elapsed_seconds(phase_start));
 
-    if (backend_ == ExecutionBackend::CudaM2LP2P) {
+    if (execution_plan().m2l == StaticOperatorExecutor::Cuda) {
         cuda_m2l();
         l2l_downward();
         return;
@@ -795,7 +795,7 @@ void UniformFmm::downward_pass() {
                 continue;
       }
       const TreeNode &parent = nodes[static_cast<std::size_t>(target.parent)];
-      if (backend_ != ExecutionBackend::CpuReference) {
+      if (execution_plan().l2l != StaticOperatorExecutor::Reference) {
         const int child_class =
             (target.ix & 1) | ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
         apply_static_operator(
@@ -966,9 +966,9 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
   prepare_moments(dipole_moments);
   prepare_self_indices(target_source_indices);
 
-  const bool use_cuda_p2p = backend_ == ExecutionBackend::CudaM2LP2P &&
-                            has_flag(output, OutputFlags::Field) &&
-                            cuda_p2p_plan_;
+  const bool use_cuda_p2p =
+      execution_plan().p2p == StaticOperatorExecutor::Cuda &&
+      has_flag(output, OutputFlags::Field) && cuda_p2p_plan_;
   PendingCudaP2PGuard p2p_guard(use_cuda_p2p ? cuda_p2p_plan_->plan.get()
                                              : nullptr);
   if (use_cuda_p2p) {
@@ -996,7 +996,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
         const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
         for (std::size_t target_index = leaf.target_begin;
              target_index < leaf.target_end; ++target_index) {
-      if (backend_ != ExecutionBackend::CpuReference) {
+      if (execution_plan().l2p != StaticOperatorExecutor::Reference) {
         sorted_results_[target_index] = apply_static_l2p_evaluator(
             l2p_evaluators_[target_index],
             locals_[static_cast<std::size_t>(leaf_index)], output);
@@ -1009,7 +1009,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
   }
     last_timings_.l2p.add(elapsed_seconds(phase_start));
 
-    if (backend_ != ExecutionBackend::CpuReference &&
+    if (execution_plan().p2p != StaticOperatorExecutor::Reference &&
         has_flag(output, OutputFlags::Field)) {
         std::fill(near_fields_.begin(), near_fields_.end(), Vec3{});
         if (use_cuda_p2p) {
@@ -1039,7 +1039,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
 
     phase_start = Clock::now();
   const OutputFlags reference_near_output =
-      backend_ == ExecutionBackend::CpuReference
+      execution_plan().p2p == StaticOperatorExecutor::Reference
           ? output
           : (has_flag(output, OutputFlags::Potential) ? OutputFlags::Potential
                                                       : OutputFlags::None);
@@ -1111,6 +1111,36 @@ StaticMatrixBackend UniformFmm::static_matrix_backend() const {
   return static_matrix_backend_;
 }
 ExecutionBackend UniformFmm::backend() const { return backend_; }
+StaticExecutionPlan UniformFmm::execution_plan() const noexcept {
+  if (backend_ == ExecutionBackend::CpuReference) {
+    return {StaticOperatorExecutor::Reference,
+            StaticOperatorExecutor::Reference,
+            StaticOperatorExecutor::Reference,
+            StaticOperatorExecutor::Reference,
+            StaticOperatorExecutor::Reference,
+            StaticOperatorExecutor::Reference};
+  }
+
+  const StaticOperatorExecutor matrix_executor =
+      static_matrix_backend_ == StaticMatrixBackend::OneMkl
+          ? StaticOperatorExecutor::OneMkl
+          : StaticOperatorExecutor::Portable;
+  if (backend_ == ExecutionBackend::CudaFull) {
+    return {StaticOperatorExecutor::Cuda, StaticOperatorExecutor::Cuda,
+            StaticOperatorExecutor::Cuda, StaticOperatorExecutor::Cuda,
+            StaticOperatorExecutor::Cuda, StaticOperatorExecutor::Cuda};
+  }
+  if (backend_ == ExecutionBackend::CudaPartial) {
+    return {StaticOperatorExecutor::Portable,
+            StaticOperatorExecutor::Portable, StaticOperatorExecutor::Cuda,
+            StaticOperatorExecutor::Portable,
+            StaticOperatorExecutor::Portable, StaticOperatorExecutor::Cuda};
+  }
+  return {StaticOperatorExecutor::Portable,
+          StaticOperatorExecutor::Portable, matrix_executor,
+          StaticOperatorExecutor::Portable, StaticOperatorExecutor::Portable,
+          StaticOperatorExecutor::Portable};
+}
 const CudaPlanStatistics &UniformFmm::cuda_plan_statistics() const {
   if (cuda_full_plan_) {
     return cuda_full_plan_->plan->statistics();
@@ -1128,6 +1158,8 @@ const CudaPlanStatistics &UniformFmm::cuda_plan_statistics() const {
         empty_cuda_statistics_.evaluation_d2h_calls += p2p.evaluation_d2h_calls;
         empty_cuda_statistics_.persistent_device_bytes +=
             p2p.persistent_device_bytes;
+        empty_cuda_statistics_.p2p_interaction_count =
+            p2p.p2p_interaction_count;
         empty_cuda_statistics_.static_p2p_upload_count =
             p2p.static_p2p_upload_count;
   }

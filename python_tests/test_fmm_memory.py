@@ -95,7 +95,7 @@ def test_memory_notebook_is_valid_json_with_compilable_cells():
         for cell in notebook["cells"]
         if cell["cell_type"] == "code"
     ]
-    assert "PARTICLE_COUNTS = [50, 100, 250, 500]" in sources[0]
+    assert "PARTICLE_COUNTS = [1000, 2500, 5000, 10000]" in sources[0]
     assert "EXPANSION_ORDERS = [2, 3, 4, 5, 6]" in sources[0]
     assert "TREE_DEPTHS = [2, 3, 4, 5]" in sources[0]
     assert "cdfmm.UniformFmm(" in "\n".join(sources)

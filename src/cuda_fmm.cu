@@ -932,6 +932,7 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2POperator &operator_map)
   plan.statistics.plan_generation_count = 1;
     plan.statistics.static_upload_count = 1;
   plan.statistics.static_p2p_upload_count = 1;
+  plan.statistics.p2p_interaction_count = operator_map.blocks.size();
 }
 
 CudaP2PPlan::~CudaP2PPlan() {
@@ -1247,6 +1248,7 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   plan.statistics.static_upload_count = 1;
     plan.statistics.static_m2l_upload_count = 1;
     plan.statistics.static_p2p_upload_count = 1;
+    plan.statistics.p2p_interaction_count = data.p2p.blocks.size();
   plan.statistics.geometry_upload_count = 1;
 }
 
