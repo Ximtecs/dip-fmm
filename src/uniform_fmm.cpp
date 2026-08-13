@@ -296,6 +296,10 @@ void UniformFmm::build_static_plan()
     phase_start = Clock::now();
     m2m_operators_.resize(static_cast<std::size_t>(tree_.leaf_level() + 1));
     l2l_operators_.resize(static_cast<std::size_t>(tree_.leaf_level() + 1));
+    static_plan_statistics_.m2m_theoretical_interactions =
+        nodes.empty() ? 0 : nodes.size() - 1;
+    static_plan_statistics_.l2l_theoretical_interactions =
+        static_plan_statistics_.m2m_theoretical_interactions;
     for (int level = 1; level <= tree_.leaf_level(); ++level) {
         const double child_half_width = nodes[static_cast<std::size_t>(
             level_offset(level))].half_width;
@@ -309,9 +313,17 @@ void UniformFmm::build_static_plan()
                 build_static_m2m_operator(basis_, child_offset * -1.0);
             l2l_operators_[static_cast<std::size_t>(level)][child_class] =
                 build_static_l2l_operator(basis_, child_offset);
-            static_plan_statistics_.operator_bytes += 2 *
+            const std::size_t m2m_bytes =
                 m2m_operators_[static_cast<std::size_t>(level)][child_class]
                     .entries.size() * sizeof(StaticOperatorEntry);
+            const std::size_t l2l_bytes =
+                l2l_operators_[static_cast<std::size_t>(level)][child_class]
+                    .entries.size() * sizeof(StaticOperatorEntry);
+            static_plan_statistics_.m2m_operator_bytes += m2m_bytes;
+            static_plan_statistics_.l2l_operator_bytes += l2l_bytes;
+            static_plan_statistics_.operator_bytes += m2m_bytes + l2l_bytes;
+            ++static_plan_statistics_.m2m_operators;
+            ++static_plan_statistics_.l2l_operators;
         }
     }
     static_plan_statistics_.m2m_plan.add(elapsed_seconds(phase_start));
@@ -365,12 +377,15 @@ void UniformFmm::build_static_plan()
         group.translated.resize(values);
         static_plan_statistics_.operator_bytes +=
             group.matrix.size() * sizeof(double);
+        static_plan_statistics_.m2l_operator_bytes +=
+            group.matrix.size() * sizeof(double);
         static_plan_statistics_.interaction_bytes +=
             (group.sources.size() + group.targets.size()) * sizeof(int);
         static_plan_statistics_.scratch_bytes += 2 * values * sizeof(double);
         static_plan_statistics_.interactions += group.sources.size();
     }
     static_plan_statistics_.transfer_classes = m2l_groups_.size();
+    static_plan_statistics_.m2l_operators = m2l_groups_.size();
     static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
     phase_start = Clock::now();
     const auto targets = tree_.sorted_target_positions();

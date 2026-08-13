@@ -519,6 +519,24 @@ PYBIND11_MODULE(cdfmm, module)
             result["operator_bytes"] = statistics.operator_bytes;
             result["interaction_bytes"] = statistics.interaction_bytes;
             result["scratch_bytes"] = statistics.scratch_bytes;
+            result["m2m_operators"] = statistics.m2m_operators;
+            result["m2m_theoretical_interactions"] =
+                statistics.m2m_theoretical_interactions;
+            result["m2m_operator_bytes"] = statistics.m2m_operator_bytes;
+            result["m2l_operators"] = statistics.m2l_operators;
+            result["m2l_theoretical_maximum_classes"] =
+                StaticPlanStatistics::theoretical_maximum_m2l_classes;
+            result["m2l_operator_bytes"] = statistics.m2l_operator_bytes;
+            result["l2l_operators"] = statistics.l2l_operators;
+            result["l2l_theoretical_interactions"] =
+                statistics.l2l_theoretical_interactions;
+            result["l2l_operator_bytes"] = statistics.l2l_operator_bytes;
+            result["translation_operator_bytes"] =
+                statistics.translation_operator_bytes();
+            result["dense"] = statistics.dense;
+            result["sparse"] = statistics.sparse;
+            result["numerically_pruned"] = statistics.numerically_pruned;
+            result["symmetry_compressed"] = statistics.symmetry_compressed;
             result["total_bytes"] = statistics.total_bytes();
             result["setup_seconds"] = statistics.total.total_seconds;
             return result;

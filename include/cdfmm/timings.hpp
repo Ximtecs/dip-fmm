@@ -103,6 +103,8 @@ struct EvaluationTimings {
 
 /** @brief One-time cost and storage of the immutable static CPU plan. */
 struct StaticPlanStatistics {
+    /// @brief Maximum number of integer M2L offsets in a uniform 3-D octree.
+    static constexpr std::size_t theoretical_maximum_m2l_classes = 316;
     /// @brief Time spent constructing leaf P2M maps.
     PhaseTiming p2m_plan{};
     /// @brief Time spent constructing shared M2M maps.
@@ -124,6 +126,36 @@ struct StaticPlanStatistics {
     std::size_t operator_bytes{0};
     std::size_t interaction_bytes{0};
     std::size_t scratch_bytes{0};
+    /// @brief Shared M2M matrices stored (eight child classes per used level).
+    std::size_t m2m_operators{0};
+    /// @brief Complete-tree parent-child relations represented by M2M IDs.
+    std::size_t m2m_theoretical_interactions{0};
+    /// @brief Bytes occupied by the shared M2M operator table.
+    std::size_t m2m_operator_bytes{0};
+    /// @brief Dense M2L matrices stored after unused classes are discarded.
+    std::size_t m2l_operators{0};
+    /// @brief Bytes occupied by the dense M2L operator table.
+    std::size_t m2l_operator_bytes{0};
+    /// @brief Shared L2L matrices stored (eight child classes per used level).
+    std::size_t l2l_operators{0};
+    /// @brief Complete-tree parent-child relations represented by L2L IDs.
+    std::size_t l2l_theoretical_interactions{0};
+    /// @brief Bytes occupied by the shared L2L operator table.
+    std::size_t l2l_operator_bytes{0};
+    /// @brief True because directly executable M2L matrices use dense storage.
+    bool dense{true};
+    /// @brief Sparse execution is disabled pending favourable benchmark evidence.
+    bool sparse{false};
+    /// @brief No accuracy-changing coefficient pruning is performed.
+    bool numerically_pruned{false};
+    /// @brief No hot-path rotations, reflections, or permutations are used.
+    bool symmetry_compressed{false};
+
+    /// @brief Returns storage occupied only by translation operator tables.
+    [[nodiscard]] std::size_t translation_operator_bytes() const
+    {
+        return m2m_operator_bytes + m2l_operator_bytes + l2l_operator_bytes;
+    }
     /// @brief Number of particle pairs represented by the list1 tensor.
     std::size_t p2p_interactions{0};
     /// @brief Six-coefficient tensor storage.
