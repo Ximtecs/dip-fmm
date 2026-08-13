@@ -50,9 +50,9 @@ def test_single_particle_storage_has_manual_counts():
     assert estimate.transfer_classes == 0
     assert estimate.m2l_interactions == 0
     assert estimate.p2p_pairs == 1
-    assert estimate.host_static_bytes == 352
-    assert estimate.cuda_partial_bytes == 148
-    assert estimate.cuda_full_bytes == 660
+    assert estimate.host_static_bytes == 424
+    assert estimate.cuda_partial_bytes == 332
+    assert estimate.cuda_full_bytes == 700
 
 
 def test_storage_estimate_detects_far_field_interactions():
@@ -95,11 +95,16 @@ def test_memory_notebook_is_valid_json_with_compilable_cells():
         for cell in notebook["cells"]
         if cell["cell_type"] == "code"
     ]
-    assert "PARTICLE_COUNTS = [1000, 2500, 5000, 10000]" in sources[0]
-    assert "EXPANSION_ORDERS = [2, 3, 4, 5, 6]" in sources[0]
-    assert "TREE_DEPTHS = [2, 3, 4, 5]" in sources[0]
-    assert "cdfmm.UniformFmm(" in "\n".join(sources)
-    assert "persistent_device_bytes" in "\n".join(sources)
-    assert "m2l_unique_matrix_count" in "\n".join(sources)
+    combined_source = "\n".join(sources)
+    assert "PARTICLE_COUNTS =" in sources[0]
+    assert "EXPANSION_ORDERS =" in sources[0]
+    assert "TREE_DEPTHS =" in sources[0]
+    assert "GB = 1_000_000_000" in combined_source
+    assert "MIB =" not in combined_source
+    assert "CPU host" in combined_source
+    assert "GPU device" in combined_source
+    assert "cdfmm.UniformFmm(" in combined_source
+    assert "persistent_device_bytes" in combined_source
+    assert "m2l_unique_matrix_count" in combined_source
     for index, source in enumerate(sources):
         compile(source, f"{NOTEBOOK.name}:cell-{index}", "exec")

@@ -130,15 +130,19 @@ def test_comparison_notebook_is_valid_json_with_compilable_code_cells():
         for cell in notebook["cells"]
         if cell["cell_type"] == "code"
     ]
-    assert "N_PARTICLES = 10_000" in sources[0]
-    assert "TREE_DEPTH = 2" in sources[0]
-    assert "FMM3D_EPS = 1.0e-3" in sources[0]
-    assert "REPEAT_COUNTS = [10, 100, 1000]" in sources[0]
+    assert "PARTICLE_COUNTS = [10_000, 20_000, 30_000]" in sources[0]
+    assert "EXPANSION_ORDERS = [4, 6, 8]" in sources[0]
+    assert "TREE_DEPTHS = [2, 3, 4]" in sources[0]
+    assert "FMM3D_EPS_VALUES = [1.0e-3, 1.0e-4]" in sources[0]
+    assert "VECTOR_BATCH_SIZE is added by this notebook" in sources[0]
     combined = "\n".join(sources)
     assert "ExecutionBackend.CUDA_FULL" in combined
     assert "ExecutionBackend.CUDA_PARTIAL" in combined
     assert "StaticMatrixBackend.ONE_MKL" in combined
-    assert "target_positions = source_positions" in combined
+    assert "median_timed_evaluations" in combined
+    assert "plan = make_cdfmm_plan" in combined
+    assert "for _ in range(WARMUP_EVALUATIONS)" in combined
+    assert "nd=len(batch)" in combined
     for index, source in enumerate(sources):
         compile(source, f"{NOTEBOOK.name}:cell-{index}", "exec")
 

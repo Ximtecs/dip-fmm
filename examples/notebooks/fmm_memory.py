@@ -116,8 +116,6 @@ def estimate_source_point_storage(
     translation_entries = shift_entries(order)
 
     groups: dict[tuple[int, int, int], int] = {}
-    m2l_sources: set[int] = set()
-    m2l_targets: set[int] = set()
     for target in nodes:
         if target.level == 0 or target.target_count == 0:
             continue
@@ -131,8 +129,6 @@ def estimate_source_point_storage(
                 target.iz - source.iz,
             )
             groups[key] = groups.get(key, 0) + 1
-            m2l_sources.add(source.index)
-            m2l_targets.add(target.index)
 
     p2p_pairs = 0
     for target in nodes:
@@ -154,30 +150,24 @@ def estimate_source_point_storage(
         p2p_pairs * P2P_BLOCK_BYTES + (particle_count + 1) * INT_BYTES
     )
     cached_matrix_bytes = len(groups) * coefficients**2 * DOUBLE_BYTES
-    # CPU-static and partial-CUDA groups retain source, target, and level for
-    # every interaction.  The level selects precomputed homogeneity scalings.
-    interaction_index_bytes = m2l_interactions * 3 * INT_BYTES
+    # The canonical target-row plan stores one row offset per tree node and
+    # source, matrix-class, and level indices for every interaction.
+    interaction_index_bytes = (
+        len(nodes) + 1 + 3 * m2l_interactions
+    ) * INT_BYTES
     level_scaling_bytes = 2 * (depth + 1) * coefficients * DOUBLE_BYTES
-    m2l_scratch_bytes = (
-        2 * m2l_interactions * coefficients * DOUBLE_BYTES
-    )
     host_static = {
         "P2P tensors": p2p_static_bytes,
         "P2M maps": particle_entries * particle_count * STATIC_ENTRY_BYTES,
         "shared M2M/L2L maps": (
             2 * depth * 8 * translation_entries * STATIC_ENTRY_BYTES
         ),
-        "cached M2L matrices": cached_matrix_bytes,
+        "cached M2L matrices": cached_matrix_bytes + level_scaling_bytes,
         "M2L interaction indices": interaction_index_bytes,
-        "M2L work buffers": m2l_scratch_bytes,
         "L2P rows": 4 * coefficients * particle_count * DOUBLE_BYTES,
     }
 
-    partial_packed_bytes = (
-        (len(m2l_sources) + len(m2l_targets))
-        * coefficients
-        * DOUBLE_BYTES
-    )
+    coefficient_buffer_bytes = 2 * len(nodes) * coefficients * DOUBLE_BYTES
     cuda_partial = {
         "P2P tensors": p2p_static_bytes,
         "P2P dynamic buffers": (
@@ -186,17 +176,13 @@ def estimate_source_point_storage(
         "M2L class matrices and indices": (
             cached_matrix_bytes + interaction_index_bytes + level_scaling_bytes
         ),
-        "M2L packed coefficients": partial_packed_bytes,
-        "M2L gathered/translated buffers": m2l_scratch_bytes,
+        "M2L multipole and local buffers": coefficient_buffer_bytes,
     }
 
-    coefficient_buffer_bytes = (
-        2 * len(nodes) * coefficients * DOUBLE_BYTES
-    )
     cuda_full = {
         "P2P tensors": p2p_static_bytes,
         "shared M2L matrices": cached_matrix_bytes,
-        "M2L interaction metadata": m2l_interactions * 4 * INT_BYTES,
+        "M2L interaction metadata": interaction_index_bytes,
         "M2L level scalings": level_scaling_bytes,
         "shared M2M/L2L matrices": (
             2 * depth * 8 * translation_entries * STATIC_ENTRY_BYTES

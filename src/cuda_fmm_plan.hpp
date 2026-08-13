@@ -61,16 +61,6 @@ struct CudaSharedTranslationData {
   int matrix_count{0};
 };
 
-/** @brief Globally normalised dense M2L classes and compact interactions. */
-struct CudaM2LData {
-  std::vector<double> matrices{};
-  std::vector<CudaTranslationInteraction> interactions{};
-  std::vector<double> multipole_scaling{};
-  std::vector<double> local_scaling{};
-  int matrix_count{0};
-  int level_count{0};
-};
-
 /** @brief Immutable CPU-built operators consumed by the full CUDA plan. */
 struct CudaFullPlanData {
   int coefficient_count{0};
@@ -81,7 +71,7 @@ struct CudaFullPlanData {
   std::vector<int> target_permutation{};
   std::vector<StaticOperatorEntry> p2m{};
   CudaSharedTranslationData m2m{};
-  CudaM2LData m2l{};
+  StaticM2LPlan m2l{};
   CudaSharedTranslationData l2l{};
   std::vector<StaticOperatorEntry> l2p{};
   StaticP2POperator p2p{};

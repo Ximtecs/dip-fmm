@@ -210,6 +210,74 @@ TEST_CASE("normalised M2L transfer classes scale exactly across levels") {
   }
 }
 
+TEST_CASE("canonical target-row M2L plan handles levels and repeated rows") {
+  const MultiIndexSet basis(3);
+  const int n = basis.size();
+  const std::array<Vec3, 2> normalised_transfers{
+      Vec3{2.0, -3.0, 1.0}, Vec3{-3.0, 2.0, 2.0}};
+
+  StaticM2LPlan plan;
+  plan.coefficient_count = n;
+  plan.matrix_count = static_cast<int>(normalised_transfers.size());
+  plan.level_count = 3;
+  for (const Vec3 transfer : normalised_transfers) {
+    const auto matrix = build_static_m2l_matrix(basis, transfer);
+    plan.matrices.insert(plan.matrices.end(), matrix.begin(), matrix.end());
+  }
+  for (const double width : {1.0, 0.5, 0.25}) {
+    for (int coefficient = 0; coefficient < n; ++coefficient) {
+      const int degree = basis[coefficient].degree();
+      plan.multipole_scaling.push_back(std::pow(width, -degree));
+      plan.local_scaling.push_back(std::pow(width, -(degree + 1)));
+    }
+  }
+
+  // Targets one and three have two and one interactions, respectively.
+  plan.target_row_offsets = {0, 0, 2, 2, 3};
+  plan.source_nodes = {0, 2, 1};
+  plan.matrix_ids = {0, 1, 0};
+  plan.interaction_levels = {1, 1, 2};
+
+  std::vector<CoeffVector> multipoles(
+      4, CoeffVector(static_cast<std::size_t>(n), 0.0));
+  for (std::size_t node = 0; node < multipoles.size(); ++node) {
+    for (int coefficient = 0; coefficient < n; ++coefficient) {
+      multipoles[node][static_cast<std::size_t>(coefficient)] =
+          0.01 * static_cast<double>((node + 1) * (coefficient + 2));
+    }
+  }
+  std::vector<CoeffVector> actual(
+      4, CoeffVector(static_cast<std::size_t>(n), 0.0));
+  std::vector<CoeffVector> expected = actual;
+
+  apply_static_m2l_plan(plan, 1, multipoles, actual);
+  apply_static_m2l_plan(plan, 2, multipoles, actual);
+  m2l_add(basis, normalised_transfers[0] * 0.5, multipoles[0], expected[1]);
+  m2l_add(basis, normalised_transfers[1] * 0.5, multipoles[2], expected[1]);
+  m2l_add(basis, normalised_transfers[0] * 0.25, multipoles[1], expected[3]);
+
+  for (std::size_t node = 0; node < actual.size(); ++node) {
+    for (int coefficient = 0; coefficient < n; ++coefficient) {
+      REQUIRE(actual[node][static_cast<std::size_t>(coefficient)] ==
+              Catch::Approx(
+                  expected[node][static_cast<std::size_t>(coefficient)])
+                  .margin(2.0e-11)
+                  .epsilon(5.0e-13));
+    }
+  }
+}
+
+TEST_CASE("canonical target-row M2L plan accepts empty geometry") {
+  StaticM2LPlan plan;
+  plan.coefficient_count = 1;
+  plan.level_count = 1;
+  plan.target_row_offsets = {0};
+  std::vector<CoeffVector> multipoles;
+  std::vector<CoeffVector> locals;
+
+  REQUIRE_NOTHROW(apply_static_m2l_plan(plan, 0, multipoles, locals));
+}
+
 TEST_CASE("static grouped M2L matches the independent reference traversal") {
   std::mt19937 generator(417);
   std::uniform_real_distribution<double> coordinate(-0.9, 0.9);

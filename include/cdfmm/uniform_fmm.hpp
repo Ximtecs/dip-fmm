@@ -236,10 +236,7 @@ private:
     StaticCoefficientOperator operator_map{};
   };
   struct M2LGroup {
-    int dx{0};
-    int dy{0};
-    int dz{0};
-    std::vector<double> matrix{};
+    int matrix_id{0};
     std::vector<int> sources{};
     std::vector<int> targets{};
     std::vector<int> levels{};
@@ -266,8 +263,6 @@ private:
   std::unique_ptr<CudaP2PPlanOwner> cuda_p2p_plan_{};
   std::unique_ptr<CudaFullPlanOwner> cuda_full_plan_{};
   std::vector<M2LGroup> m2l_groups_{};
-  std::vector<std::vector<double>> m2l_multipole_scaling_{};
-  std::vector<std::vector<double>> m2l_local_scaling_{};
   std::vector<P2MPlan> p2m_plans_{};
   std::vector<std::array<StaticCoefficientOperator, 8>> m2m_operators_{};
   std::vector<std::array<StaticCoefficientOperator, 8>> l2l_operators_{};

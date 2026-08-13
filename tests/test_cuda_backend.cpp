@@ -250,6 +250,157 @@ TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
     REQUIRE(cuda.cuda_plan_statistics().static_p2p_upload_count == 1);
 }
 
+TEST_CASE("CUDA partial and full share canonical static plan behaviour",
+          "[cuda][manual]")
+{
+    if (!cuda_m2l_p2p_available() || !cuda_full_available()) {
+        SUCCEED("Both CUDA FMM modes are required");
+        return;
+    }
+
+    struct Scenario {
+        int order;
+        int depth;
+        int particle_count;
+        bool separate_targets;
+    };
+    const std::array<Scenario, 3> scenarios{{
+        {2, 2, 24, false},
+        {3, 3, 48, true},
+        {3, 5, 64, false},
+    }};
+
+    for (const Scenario scenario : scenarios) {
+        CAPTURE(scenario.order, scenario.depth, scenario.particle_count,
+                scenario.separate_targets);
+        std::vector<Vec3> sources;
+        std::vector<Vec3> targets;
+        std::vector<Vec3> moments;
+        std::vector<int> identities;
+        for (int index = 0; index < scenario.particle_count; ++index) {
+            const double value = static_cast<double>(index);
+            const Vec3 source{
+                -0.95 + 1.9 * static_cast<double>((index * 17) % 67) / 66.0,
+                -0.95 + 1.9 * static_cast<double>((index * 29) % 71) / 70.0,
+                -0.95 + 1.9 * static_cast<double>((index * 43) % 73) / 72.0
+            };
+            sources.push_back(source);
+            targets.push_back(scenario.separate_targets
+                                  ? Vec3{0.8 * source.x + 0.03,
+                                         0.8 * source.y - 0.02,
+                                         0.8 * source.z + 0.01}
+                                  : source);
+            moments.push_back({std::sin(value), std::cos(0.7 * value),
+                               std::sin(0.3 * value)});
+            identities.push_back(scenario.separate_targets ? -1 : index);
+        }
+
+        UniformFmmOptions options;
+        options.expansion_order = scenario.order;
+        options.tree.max_level = scenario.depth;
+        options.tree.root_centre = Vec3{};
+        options.tree.root_half_width = 1.0;
+        options.backend = ExecutionBackend::CpuStatic;
+        UniformFmm cpu(sources, targets, options);
+        options.backend = ExecutionBackend::CudaPartial;
+        UniformFmm partial(sources, targets, options);
+        options.backend = ExecutionBackend::CudaFull;
+        UniformFmm full(sources, targets, options);
+
+        const auto expected =
+            cpu.evaluate(moments, OutputFlags::Field, identities);
+        const auto partial_values =
+            partial.evaluate(moments, OutputFlags::Field, identities);
+        const auto full_values =
+            full.evaluate(moments, OutputFlags::Field, identities);
+        for (std::size_t target = 0; target < targets.size(); ++target) {
+            REQUIRE(partial_values[target].H.x ==
+                    Catch::Approx(expected[target].H.x).margin(3.0e-11));
+            REQUIRE(partial_values[target].H.y ==
+                    Catch::Approx(expected[target].H.y).margin(3.0e-11));
+            REQUIRE(partial_values[target].H.z ==
+                    Catch::Approx(expected[target].H.z).margin(3.0e-11));
+            REQUIRE(full_values[target].H.x ==
+                    Catch::Approx(expected[target].H.x).margin(3.0e-11));
+            REQUIRE(full_values[target].H.y ==
+                    Catch::Approx(expected[target].H.y).margin(3.0e-11));
+            REQUIRE(full_values[target].H.z ==
+                    Catch::Approx(expected[target].H.z).margin(3.0e-11));
+        }
+
+        const CudaPlanStatistics partial_statistics =
+            partial.cuda_plan_statistics();
+        const CudaPlanStatistics full_statistics = full.cuda_plan_statistics();
+        REQUIRE(partial_statistics.m2l_unique_matrix_count ==
+                full_statistics.m2l_unique_matrix_count);
+        REQUIRE(partial_statistics.m2l_matrix_bytes ==
+                full_statistics.m2l_matrix_bytes);
+        REQUIRE(partial_statistics.m2l_interaction_metadata_bytes ==
+                full_statistics.m2l_interaction_metadata_bytes);
+        REQUIRE(partial_statistics.p2p_interaction_count ==
+                full_statistics.p2p_interaction_count);
+        REQUIRE(partial_statistics.static_m2l_upload_count == 1);
+        REQUIRE(partial_statistics.static_p2p_upload_count == 1);
+        REQUIRE(full_statistics.static_m2l_upload_count == 1);
+        REQUIRE(full_statistics.static_p2p_upload_count == 1);
+        REQUIRE(full_statistics.evaluation_h2d_bytes ==
+                moments.size() * sizeof(Vec3));
+        REQUIRE(full_statistics.evaluation_d2h_bytes ==
+                targets.size() * sizeof(Vec3));
+
+        const std::size_t coefficient_bytes =
+            partial.tree().nodes().size() *
+            static_cast<std::size_t>(partial.basis().size()) * sizeof(double);
+        const std::size_t scaling_bytes =
+            2 * static_cast<std::size_t>(scenario.depth + 1) *
+            partial.basis().size() * sizeof(double);
+        const std::size_t p2p_static_bytes =
+            partial_statistics.p2p_interaction_count *
+                sizeof(StaticDipoleBlock) +
+            (targets.size() + 1) * sizeof(int);
+        const std::size_t canonical_m2l_bytes =
+            partial_statistics.m2l_matrix_bytes +
+            partial_statistics.m2l_interaction_metadata_bytes + scaling_bytes;
+        REQUIRE(partial_statistics.setup_h2d_bytes ==
+                canonical_m2l_bytes + p2p_static_bytes);
+        REQUIRE(partial_statistics.evaluation_h2d_bytes ==
+                coefficient_bytes + moments.size() * sizeof(Vec3) +
+                    identities.size() * sizeof(int));
+        REQUIRE(partial_statistics.evaluation_d2h_bytes ==
+                coefficient_bytes + targets.size() * sizeof(Vec3));
+        REQUIRE(partial_statistics.persistent_device_bytes ==
+                partial_statistics.setup_h2d_bytes + 2 * coefficient_bytes +
+                    sources.size() * sizeof(Vec3) +
+                    targets.size() * (sizeof(Vec3) + sizeof(int)));
+        REQUIRE(full_statistics.persistent_device_bytes ==
+                full_statistics.setup_h2d_bytes + 2 * coefficient_bytes +
+                    2 * sources.size() * sizeof(Vec3) +
+                    3 * targets.size() * sizeof(Vec3));
+        REQUIRE(partial.last_timings().m2l_multiply.calls == 1);
+        REQUIRE(partial.last_timings().m2l_gather.calls == 0);
+        REQUIRE(partial.last_timings().m2l_scatter.calls == 0);
+        REQUIRE(full.last_timings().m2l_multiply.calls == 1);
+        REQUIRE(full.last_timings().m2l_gather.calls == 0);
+        REQUIRE(full.last_timings().m2l_scatter.calls == 0);
+
+        moments.front().x += 0.125;
+        const auto partial_repeated =
+            partial.evaluate(moments, OutputFlags::Field, identities);
+        const auto full_repeated =
+            full.evaluate(moments, OutputFlags::Field, identities);
+        REQUIRE(partial_repeated.size() == targets.size());
+        REQUIRE(full_repeated.size() == targets.size());
+        REQUIRE(partial.cuda_plan_statistics().static_m2l_upload_count == 1);
+        REQUIRE(partial.cuda_plan_statistics().static_p2p_upload_count == 1);
+        REQUIRE(full.cuda_plan_statistics().static_m2l_upload_count == 1);
+        REQUIRE(full.cuda_plan_statistics().static_p2p_upload_count == 1);
+        REQUIRE(partial.cuda_plan_statistics().evaluation_h2d_calls == 4);
+        REQUIRE(partial.cuda_plan_statistics().evaluation_d2h_calls == 4);
+        REQUIRE(full.cuda_plan_statistics().evaluation_h2d_calls == 2);
+        REQUIRE(full.cuda_plan_statistics().evaluation_d2h_calls == 2);
+    }
+}
+
 TEST_CASE("CUDA M2L/P2P accepts empty geometry", "[cuda][manual]")
 {
     if (!cuda_m2l_p2p_available()) {

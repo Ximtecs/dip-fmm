@@ -301,109 +301,128 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.transfer_discovery.add(elapsed_seconds(phase_start));
 
   const int coefficient_count = basis_.size();
-  m2l_multipole_scaling_.resize(
-      static_cast<std::size_t>(tree_.leaf_level() + 1));
-  m2l_local_scaling_.resize(static_cast<std::size_t>(tree_.leaf_level() + 1));
+  m2l_plan_.coefficient_count = coefficient_count;
+  m2l_plan_.matrix_count = static_cast<int>(classes.size());
+  m2l_plan_.level_count = tree_.leaf_level() + 1;
+  m2l_plan_.target_row_offsets.assign(nodes.size() + 1, 0);
+
   for (int level = 0; level <= tree_.leaf_level(); ++level) {
     const double box_width =
         2.0 * nodes[static_cast<std::size_t>(level_offset(level))].half_width;
-    auto &multipole_scale =
-        m2l_multipole_scaling_[static_cast<std::size_t>(level)];
-    auto &local_scale = m2l_local_scaling_[static_cast<std::size_t>(level)];
-    multipole_scale.resize(static_cast<std::size_t>(coefficient_count));
-    local_scale.resize(static_cast<std::size_t>(coefficient_count));
+    const std::size_t scaling_offset =
+        static_cast<std::size_t>(level) * coefficient_count;
+    m2l_plan_.multipole_scaling.resize(
+        scaling_offset + static_cast<std::size_t>(coefficient_count));
+    m2l_plan_.local_scaling.resize(
+        scaling_offset + static_cast<std::size_t>(coefficient_count));
     double inverse_width_power = 1.0;
     for (int degree = 0; degree <= basis_.order() + 1; ++degree) {
       for (int index = 0; index < coefficient_count; ++index) {
         if (basis_[index].degree() == degree) {
-          multipole_scale[static_cast<std::size_t>(index)] =
+          m2l_plan_.multipole_scaling[scaling_offset + index] =
               inverse_width_power;
-          local_scale[static_cast<std::size_t>(index)] =
+          m2l_plan_.local_scaling[scaling_offset + index] =
               inverse_width_power / box_width;
         }
       }
       inverse_width_power /= box_width;
     }
   }
-  phase_start = Clock::now();
-  for (const auto &[key, interactions] : classes) {
-    M2LGroup group;
-    std::tie(group.dx, group.dy, group.dz) = key;
-    const Vec3 R{static_cast<double>(group.dx), static_cast<double>(group.dy),
-                 static_cast<double>(group.dz)};
-    group.matrix = build_static_m2l_matrix(basis_, R);
-    for (const auto [source, target] : interactions) {
-      group.sources.push_back(source);
-      group.targets.push_back(target);
-      group.levels.push_back(nodes[static_cast<std::size_t>(target)].level);
-    }
-    m2l_groups_.push_back(std::move(group));
-  }
-    static_plan_statistics_.operator_construction.add(
-        elapsed_seconds(phase_start));
-    static_plan_statistics_.m2l_plan =
-        static_plan_statistics_.operator_construction;
 
   phase_start = Clock::now();
-  for (M2LGroup &group : m2l_groups_) {
-    const std::size_t values =
-        static_cast<std::size_t>(coefficient_count) * group.sources.size();
-    group.gathered.resize(values);
-    group.translated.resize(values);
-    static_plan_statistics_.operator_bytes +=
-        group.matrix.size() * sizeof(double);
-    static_plan_statistics_.m2l_operator_bytes +=
-        group.matrix.size() * sizeof(double);
-    const std::size_t metadata_bytes =
-        (group.sources.size() + group.targets.size() + group.levels.size()) *
-        sizeof(int);
-    static_plan_statistics_.interaction_bytes += metadata_bytes;
-    static_plan_statistics_.m2l_interaction_bytes += metadata_bytes;
-    static_plan_statistics_.scratch_bytes += 2 * values * sizeof(double);
-    static_plan_statistics_.interactions += group.sources.size();
-  }
-  m2l_plan_.coefficient_count = coefficient_count;
-  m2l_plan_.matrix_count = static_cast<int>(m2l_groups_.size());
-  m2l_plan_.level_count = tree_.leaf_level() + 1;
-  m2l_plan_.target_row_offsets.assign(nodes.size() + 1, 0);
-  for (const M2LGroup& group : m2l_groups_) {
-    m2l_plan_.matrices.insert(m2l_plan_.matrices.end(), group.matrix.begin(),
-                              group.matrix.end());
-    for (const int target : group.targets) {
+  std::size_t interaction_count = 0;
+  for (const auto &[key, interactions] : classes) {
+    const auto [dx, dy, dz] = key;
+    const Vec3 R{static_cast<double>(dx), static_cast<double>(dy),
+                 static_cast<double>(dz)};
+    const std::vector<double> matrix = build_static_m2l_matrix(basis_, R);
+    m2l_plan_.matrices.insert(m2l_plan_.matrices.end(), matrix.begin(),
+                              matrix.end());
+    for (const auto [source, target] : interactions) {
+      (void)source;
       ++m2l_plan_.target_row_offsets[static_cast<std::size_t>(target) + 1];
+      ++interaction_count;
     }
   }
   std::partial_sum(m2l_plan_.target_row_offsets.begin(),
                    m2l_plan_.target_row_offsets.end(),
                    m2l_plan_.target_row_offsets.begin());
-  const std::size_t interaction_count = static_plan_statistics_.interactions;
   m2l_plan_.source_nodes.resize(interaction_count);
   m2l_plan_.matrix_ids.resize(interaction_count);
   m2l_plan_.interaction_levels.resize(interaction_count);
   std::vector<int> row_cursors = m2l_plan_.target_row_offsets;
-  for (std::size_t matrix_id = 0; matrix_id < m2l_groups_.size(); ++matrix_id) {
-    const M2LGroup& group = m2l_groups_[matrix_id];
-    for (std::size_t interaction = 0; interaction < group.sources.size();
-         ++interaction) {
-      const int slot = row_cursors[group.targets[interaction]]++;
-      m2l_plan_.source_nodes[slot] = group.sources[interaction];
-      m2l_plan_.matrix_ids[slot] = static_cast<int>(matrix_id);
-      m2l_plan_.interaction_levels[slot] = group.levels[interaction];
+  int matrix_id = 0;
+  for (const auto &[key, interactions] : classes) {
+    (void)key;
+    for (const auto [source, target] : interactions) {
+      const int slot = row_cursors[static_cast<std::size_t>(target)]++;
+      m2l_plan_.source_nodes[static_cast<std::size_t>(slot)] = source;
+      m2l_plan_.matrix_ids[static_cast<std::size_t>(slot)] = matrix_id;
+      m2l_plan_.interaction_levels[static_cast<std::size_t>(slot)] =
+          nodes[static_cast<std::size_t>(target)].level;
+    }
+    ++matrix_id;
+  }
+  static_plan_statistics_.operator_construction.add(
+      elapsed_seconds(phase_start));
+  static_plan_statistics_.m2l_plan =
+      static_plan_statistics_.operator_construction;
+
+  phase_start = Clock::now();
+  const std::size_t matrix_bytes =
+      m2l_plan_.matrices.size() * sizeof(double);
+  const std::size_t scaling_bytes =
+      (m2l_plan_.multipole_scaling.size() +
+       m2l_plan_.local_scaling.size()) *
+      sizeof(double);
+  const std::size_t metadata_bytes =
+      (m2l_plan_.target_row_offsets.size() + m2l_plan_.source_nodes.size() +
+       m2l_plan_.matrix_ids.size() + m2l_plan_.interaction_levels.size()) *
+      sizeof(int);
+  static_plan_statistics_.operator_bytes += matrix_bytes + scaling_bytes;
+  static_plan_statistics_.m2l_operator_bytes += matrix_bytes + scaling_bytes;
+  static_plan_statistics_.interaction_bytes += metadata_bytes;
+  static_plan_statistics_.m2l_interaction_bytes += metadata_bytes;
+  static_plan_statistics_.interactions = interaction_count;
+
+  // oneMKL uses an execution-only gather/GEMM/scatter packing derived from the
+  // canonical target-row plan. Portable CPU and CUDA retain no such buffers.
+  if (static_matrix_backend_ == StaticMatrixBackend::OneMkl) {
+    m2l_groups_.resize(static_cast<std::size_t>(m2l_plan_.matrix_count));
+    for (int id = 0; id < m2l_plan_.matrix_count; ++id) {
+      m2l_groups_[static_cast<std::size_t>(id)].matrix_id = id;
+    }
+    for (std::size_t target = 0;
+         target + 1 < m2l_plan_.target_row_offsets.size(); ++target) {
+      const int begin = m2l_plan_.target_row_offsets[target];
+      const int end = m2l_plan_.target_row_offsets[target + 1];
+      for (int interaction = begin; interaction < end; ++interaction) {
+        const std::size_t slot = static_cast<std::size_t>(interaction);
+        M2LGroup &group =
+            m2l_groups_[static_cast<std::size_t>(m2l_plan_.matrix_ids[slot])];
+        group.sources.push_back(m2l_plan_.source_nodes[slot]);
+        group.targets.push_back(static_cast<int>(target));
+        group.levels.push_back(m2l_plan_.interaction_levels[slot]);
+      }
+    }
+    for (M2LGroup &group : m2l_groups_) {
+      const std::size_t values =
+          static_cast<std::size_t>(coefficient_count) * group.sources.size();
+      group.gathered.resize(values);
+      group.translated.resize(values);
+      const std::size_t group_metadata_bytes =
+          (group.sources.size() + group.targets.size() + group.levels.size()) *
+          sizeof(int);
+      static_plan_statistics_.interaction_bytes += group_metadata_bytes;
+      static_plan_statistics_.m2l_interaction_bytes += group_metadata_bytes;
+      static_plan_statistics_.scratch_bytes += 2 * values * sizeof(double);
     }
   }
-  for (int level = 0; level <= tree_.leaf_level(); ++level) {
-    m2l_plan_.multipole_scaling.insert(
-        m2l_plan_.multipole_scaling.end(), m2l_multipole_scaling_[level].begin(),
-        m2l_multipole_scaling_[level].end());
-    m2l_plan_.local_scaling.insert(m2l_plan_.local_scaling.end(),
-                                   m2l_local_scaling_[level].begin(),
-                                   m2l_local_scaling_[level].end());
-  }
-    static_plan_statistics_.transfer_classes = m2l_groups_.size();
-    static_plan_statistics_.m2l_operators = m2l_groups_.size();
-    static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
-    phase_start = Clock::now();
-    const auto targets = tree_.sorted_target_positions();
+  static_plan_statistics_.transfer_classes = classes.size();
+  static_plan_statistics_.m2l_operators = classes.size();
+  static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
+  phase_start = Clock::now();
+  const auto targets = tree_.sorted_target_positions();
   l2p_evaluators_.resize(targets.size());
   for (const int leaf_index : tree_.occupied_target_leaves()) {
     const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
@@ -509,29 +528,7 @@ void UniformFmm::build_cuda_full_plan() {
       }
     }
   }
-  data.m2l.matrix_count = static_cast<int>(m2l_groups_.size());
-  data.m2l.level_count = tree_.leaf_level() + 1;
-  for (int level = 0; level <= tree_.leaf_level(); ++level) {
-    data.m2l.multipole_scaling.insert(
-        data.m2l.multipole_scaling.end(),
-        m2l_multipole_scaling_[static_cast<std::size_t>(level)].begin(),
-        m2l_multipole_scaling_[static_cast<std::size_t>(level)].end());
-    data.m2l.local_scaling.insert(
-        data.m2l.local_scaling.end(),
-        m2l_local_scaling_[static_cast<std::size_t>(level)].begin(),
-        m2l_local_scaling_[static_cast<std::size_t>(level)].end());
-  }
-  for (std::size_t matrix_id = 0; matrix_id < m2l_groups_.size(); ++matrix_id) {
-    const M2LGroup &group = m2l_groups_[matrix_id];
-    data.m2l.matrices.insert(data.m2l.matrices.end(), group.matrix.begin(),
-                             group.matrix.end());
-    for (std::size_t interaction = 0; interaction < group.sources.size();
-         ++interaction) {
-      data.m2l.interactions.push_back(
-          {group.sources[interaction], group.targets[interaction],
-           static_cast<int>(matrix_id), group.levels[interaction]});
-    }
-  }
+  data.m2l = m2l_plan_;
   const auto occupied_leaves = tree_.occupied_target_leaves();
   for (const int leaf_index : occupied_leaves) {
         const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
@@ -564,9 +561,11 @@ void UniformFmm::static_m2l(const int level) {
   const int n = basis_.size();
   const std::ptrdiff_t group_count =
       static_cast<std::ptrdiff_t>(m2l_groups_.size());
-  const auto &multipole_scale =
-      m2l_multipole_scaling_[static_cast<std::size_t>(level)];
-  const auto &local_scale = m2l_local_scaling_[static_cast<std::size_t>(level)];
+  const double *multipole_scale =
+      m2l_plan_.multipole_scaling.data() +
+      static_cast<std::size_t>(level) * n;
+  const double *local_scale =
+      m2l_plan_.local_scaling.data() + static_cast<std::size_t>(level) * n;
 
   auto phase_start = Clock::now();
 #pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
@@ -581,7 +580,7 @@ void UniformFmm::static_m2l(const int level) {
           multipoles_[static_cast<std::size_t>(group.sources[column])];
       for (int alpha = 0; alpha < n; ++alpha) {
         group.gathered[static_cast<std::size_t>(alpha) + column * n] =
-            multipole_scale[static_cast<std::size_t>(alpha)] *
+            multipole_scale[alpha] *
             M[static_cast<std::size_t>(alpha)];
       }
     }
@@ -604,9 +603,12 @@ void UniformFmm::static_m2l(const int level) {
       }
       const std::size_t column_offset =
           static_cast<std::size_t>(first - group.levels.begin());
+      const double *matrix =
+          m2l_plan_.matrices.data() +
+          static_cast<std::size_t>(group.matrix_id) * n * n;
       const int previous_mkl_threads = mkl_set_num_threads_local(1);
       cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, columns, n, 1.0,
-                  group.matrix.data(), n,
+                  matrix, n,
                   group.gathered.data() + column_offset * n, n, 0.0,
                   group.translated.data() + column_offset * n, n);
       mkl_set_num_threads_local(previous_mkl_threads);
@@ -618,6 +620,9 @@ void UniformFmm::static_m2l(const int level) {
     for (std::ptrdiff_t group_index = 0; group_index < group_count;
          ++group_index) {
       M2LGroup &group = m2l_groups_[static_cast<std::size_t>(group_index)];
+      const double *matrix =
+          m2l_plan_.matrices.data() +
+          static_cast<std::size_t>(group.matrix_id) * n * n;
       for (std::size_t column = 0; column < group.sources.size(); ++column) {
         if (group.levels[column] != level) {
           continue;
@@ -629,7 +634,7 @@ void UniformFmm::static_m2l(const int level) {
               group.gathered[static_cast<std::size_t>(alpha) + column * n];
           for (int beta = 0; beta < n; ++beta) {
             translated[beta] +=
-                group.matrix[static_cast<std::size_t>(beta + alpha * n)] *
+                matrix[static_cast<std::size_t>(beta + alpha * n)] *
                 value;
           }
         }
@@ -647,7 +652,7 @@ void UniformFmm::static_m2l(const int level) {
       CoeffVector &L = locals_[static_cast<std::size_t>(group.targets[column])];
       for (int beta = 0; beta < n; ++beta) {
         L[static_cast<std::size_t>(beta)] +=
-            local_scale[static_cast<std::size_t>(beta)] *
+            local_scale[beta] *
             group.translated[static_cast<std::size_t>(beta) + column * n];
       }
     }
@@ -853,9 +858,7 @@ void UniformFmm::cuda_m2l() {
   const CudaEvaluationTimings &device = cuda_m2l_plan_->plan->timings();
     last_timings_.cuda_h2d.add(device.h2d_seconds);
     last_timings_.cuda_m2l_h2d.add(device.h2d_seconds);
-    last_timings_.m2l_gather.add(device.gather_seconds);
     last_timings_.m2l_multiply.add(device.multiply_seconds);
-    last_timings_.m2l_scatter.add(device.scatter_seconds);
     last_timings_.cuda_kernel.add(device.kernel_seconds);
     last_timings_.cuda_d2h.add(device.d2h_seconds);
     last_timings_.cuda_m2l_d2h.add(device.d2h_seconds);
@@ -957,6 +960,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
         last_timings_.p2m.add(device.p2m_seconds);
         last_timings_.m2m.add(device.m2m_seconds);
         last_timings_.m2l.add(device.m2l_seconds);
+        last_timings_.m2l_multiply.add(device.multiply_seconds);
         last_timings_.l2l.add(device.l2l_seconds);
         last_timings_.l2p.add(device.l2p_seconds);
         last_timings_.p2p.add(device.p2p_seconds);
