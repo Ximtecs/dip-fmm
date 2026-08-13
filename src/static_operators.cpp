@@ -12,6 +12,42 @@
 
 namespace cdfmm {
 
+void apply_static_m2l_plan(
+    const StaticM2LPlan& plan,
+    const int level,
+    const std::span<const std::vector<double>> multipoles,
+    const std::span<std::vector<double>> locals
+) {
+    const int n = plan.coefficient_count;
+    const std::ptrdiff_t output_count =
+        static_cast<std::ptrdiff_t>(locals.size()) * n;
+#pragma omp parallel for schedule(static) if (output_count >= 256)
+    for (std::ptrdiff_t output = 0; output < output_count; ++output) {
+        const int target = static_cast<int>(output / n);
+        const int beta = static_cast<int>(output % n);
+        double value = 0.0;
+        for (int interaction = plan.target_row_offsets[target];
+             interaction < plan.target_row_offsets[target + 1];
+             ++interaction) {
+            if (plan.interaction_levels[interaction] != level) {
+                continue;
+            }
+            const int source = plan.source_nodes[interaction];
+            const int matrix_id = plan.matrix_ids[interaction];
+            const double local_scale =
+                plan.local_scaling[static_cast<std::size_t>(level) * n + beta];
+            for (int alpha = 0; alpha < n; ++alpha) {
+                const std::size_t matrix_index =
+                    (static_cast<std::size_t>(matrix_id) * n + alpha) * n + beta;
+                value += local_scale * plan.matrices[matrix_index] *
+                    plan.multipole_scaling[static_cast<std::size_t>(level) * n + alpha] *
+                    multipoles[source][alpha];
+            }
+        }
+        locals[target][beta] += value;
+    }
+}
+
 namespace {
 
 void validate_operator_dimensions(
@@ -260,9 +296,7 @@ void apply_static_p2p_operator(
                 continue;
             }
             const Vec3 m = dipole_moments[static_cast<std::size_t>(block.source)];
-            field.x += block.xx * m.x + block.xy * m.y + block.xz * m.z;
-            field.y += block.xy * m.x + block.yy * m.y + block.yz * m.z;
-            field.z += block.xz * m.x + block.yz * m.y + block.zz * m.z;
+            accumulate_static_dipole_block(block, m, field);
         }
         H[static_cast<std::size_t>(target)] += field;
     }

@@ -69,8 +69,7 @@ const CudaEvaluationTimings &CudaFullPlan::timings() const noexcept {
   return empty;
 }
 
-CudaM2LPlan::CudaM2LPlan(int, std::span<const CudaM2LGroupView>,
-                         std::span<const double>, std::span<const double>) {
+CudaM2LPlan::CudaM2LPlan(const StaticM2LPlan&) {
   throw std::runtime_error("CUDA M2L requested, but CDFMM_ENABLE_CUDA is OFF");
 }
 
