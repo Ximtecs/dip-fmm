@@ -273,6 +273,7 @@ private:
   std::vector<std::array<StaticCoefficientOperator, 8>> l2l_operators_{};
   std::vector<StaticL2PEvaluator> l2p_evaluators_{};
   StaticP2POperator p2p_operator_{};
+  StaticM2LPlan m2l_plan_{};
   StaticPlanStatistics static_plan_statistics_{};
   std::vector<CoeffVector> multipoles_{};
   std::vector<CoeffVector> locals_{};

@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <map>
+#include <numeric>
 #include <stdexcept>
 #include <tuple>
 
@@ -155,26 +156,8 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
     build_static_plan();
     }
     if (backend_ == ExecutionBackend::CudaM2LP2P) {
-    std::vector<CudaM2LGroupView> groups;
-    groups.reserve(m2l_groups_.size());
-    for (const M2LGroup &group : m2l_groups_) {
-      groups.push_back(
-          {group.matrix, group.sources, group.targets, group.levels});
-    }
-    std::vector<double> multipole_scaling;
-    std::vector<double> local_scaling;
-    for (std::size_t level = 0; level < m2l_multipole_scaling_.size();
-         ++level) {
-      multipole_scaling.insert(multipole_scaling.end(),
-                               m2l_multipole_scaling_[level].begin(),
-                               m2l_multipole_scaling_[level].end());
-      local_scaling.insert(local_scaling.end(),
-                           m2l_local_scaling_[level].begin(),
-                           m2l_local_scaling_[level].end());
-    }
-    cuda_m2l_plan_ =
-        std::make_unique<CudaM2LPlanOwner>(std::make_unique<CudaM2LPlan>(
-            basis_.size(), groups, multipole_scaling, local_scaling));
+    cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
+        std::make_unique<CudaM2LPlan>(m2l_plan_));
     if (!tree_.sorted_target_positions().empty()) {
       cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
           std::make_unique<CudaP2PPlan>(p2p_operator_));
@@ -230,26 +213,8 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
         build_static_plan();
     }
     if (backend_ == ExecutionBackend::CudaM2LP2P) {
-    std::vector<CudaM2LGroupView> groups;
-    groups.reserve(m2l_groups_.size());
-    for (const M2LGroup &group : m2l_groups_) {
-      groups.push_back(
-          {group.matrix, group.sources, group.targets, group.levels});
-    }
-    std::vector<double> multipole_scaling;
-    std::vector<double> local_scaling;
-    for (std::size_t level = 0; level < m2l_multipole_scaling_.size();
-         ++level) {
-      multipole_scaling.insert(multipole_scaling.end(),
-                               m2l_multipole_scaling_[level].begin(),
-                               m2l_multipole_scaling_[level].end());
-      local_scaling.insert(local_scaling.end(),
-                           m2l_local_scaling_[level].begin(),
-                           m2l_local_scaling_[level].end());
-    }
-    cuda_m2l_plan_ =
-        std::make_unique<CudaM2LPlanOwner>(std::make_unique<CudaM2LPlan>(
-            basis_.size(), groups, multipole_scaling, local_scaling));
+    cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
+        std::make_unique<CudaM2LPlan>(m2l_plan_));
     cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
         std::make_unique<CudaP2PPlan>(p2p_operator_));
   }
@@ -396,6 +361,43 @@ void UniformFmm::build_static_plan() {
     static_plan_statistics_.m2l_interaction_bytes += metadata_bytes;
     static_plan_statistics_.scratch_bytes += 2 * values * sizeof(double);
     static_plan_statistics_.interactions += group.sources.size();
+  }
+  m2l_plan_.coefficient_count = coefficient_count;
+  m2l_plan_.matrix_count = static_cast<int>(m2l_groups_.size());
+  m2l_plan_.level_count = tree_.leaf_level() + 1;
+  m2l_plan_.target_row_offsets.assign(nodes.size() + 1, 0);
+  for (const M2LGroup& group : m2l_groups_) {
+    m2l_plan_.matrices.insert(m2l_plan_.matrices.end(), group.matrix.begin(),
+                              group.matrix.end());
+    for (const int target : group.targets) {
+      ++m2l_plan_.target_row_offsets[static_cast<std::size_t>(target) + 1];
+    }
+  }
+  std::partial_sum(m2l_plan_.target_row_offsets.begin(),
+                   m2l_plan_.target_row_offsets.end(),
+                   m2l_plan_.target_row_offsets.begin());
+  const std::size_t interaction_count = static_plan_statistics_.interactions;
+  m2l_plan_.source_nodes.resize(interaction_count);
+  m2l_plan_.matrix_ids.resize(interaction_count);
+  m2l_plan_.interaction_levels.resize(interaction_count);
+  std::vector<int> row_cursors = m2l_plan_.target_row_offsets;
+  for (std::size_t matrix_id = 0; matrix_id < m2l_groups_.size(); ++matrix_id) {
+    const M2LGroup& group = m2l_groups_[matrix_id];
+    for (std::size_t interaction = 0; interaction < group.sources.size();
+         ++interaction) {
+      const int slot = row_cursors[group.targets[interaction]]++;
+      m2l_plan_.source_nodes[slot] = group.sources[interaction];
+      m2l_plan_.matrix_ids[slot] = static_cast<int>(matrix_id);
+      m2l_plan_.interaction_levels[slot] = group.levels[interaction];
+    }
+  }
+  for (int level = 0; level <= tree_.leaf_level(); ++level) {
+    m2l_plan_.multipole_scaling.insert(
+        m2l_plan_.multipole_scaling.end(), m2l_multipole_scaling_[level].begin(),
+        m2l_multipole_scaling_[level].end());
+    m2l_plan_.local_scaling.insert(m2l_plan_.local_scaling.end(),
+                                   m2l_local_scaling_[level].begin(),
+                                   m2l_local_scaling_[level].end());
   }
     static_plan_statistics_.transfer_classes = m2l_groups_.size();
     static_plan_statistics_.m2l_operators = m2l_groups_.size();
@@ -553,6 +555,12 @@ void UniformFmm::build_cuda_full_plan() {
 }
 
 void UniformFmm::static_m2l(const int level) {
+  if (static_matrix_backend_ == StaticMatrixBackend::Portable) {
+    const auto phase_start = Clock::now();
+    apply_static_m2l_plan(m2l_plan_, level, multipoles_, locals_);
+    last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
+    return;
+  }
   const int n = basis_.size();
   const std::ptrdiff_t group_count =
       static_cast<std::ptrdiff_t>(m2l_groups_.size());

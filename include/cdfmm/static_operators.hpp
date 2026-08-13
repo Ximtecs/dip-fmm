@@ -45,6 +45,25 @@ struct StaticDipoleBlock {
     double zz{0.0};
 };
 
+#if defined(__CUDACC__)
+#define CDFMM_HOST_DEVICE __host__ __device__
+#else
+#define CDFMM_HOST_DEVICE
+#endif
+
+/** @brief Accumulates one symmetric six-component dipole tensor product. */
+CDFMM_HOST_DEVICE inline void accumulate_static_dipole_block(
+    const StaticDipoleBlock& block,
+    const Vec3& moment,
+    Vec3& H
+) noexcept {
+    H.x += block.xx * moment.x + block.xy * moment.y + block.xz * moment.z;
+    H.y += block.xy * moment.x + block.yy * moment.y + block.yz * moment.z;
+    H.z += block.xz * moment.x + block.yz * moment.y + block.zz * moment.z;
+}
+
+#undef CDFMM_HOST_DEVICE
+
 /** @brief Target-row representation of the exact sparse near-field operator. */
 struct StaticP2POperator {
     int source_count{0};
@@ -55,6 +74,28 @@ struct StaticP2POperator {
     /// @brief Returns persistent storage used by the compact representation.
     [[nodiscard]] std::size_t memory_bytes() const noexcept;
 };
+
+/** @brief Canonical target-row plan for normalised static M2L translation. */
+struct StaticM2LPlan {
+    int coefficient_count{0};
+    int matrix_count{0};
+    int level_count{0};
+    std::vector<double> matrices{};
+    std::vector<double> multipole_scaling{};
+    std::vector<double> local_scaling{};
+    std::vector<int> target_row_offsets{};
+    std::vector<int> source_nodes{};
+    std::vector<int> matrix_ids{};
+    std::vector<int> interaction_levels{};
+};
+
+/** @brief Applies one level of the canonical target-row M2L plan. */
+void apply_static_m2l_plan(
+    const StaticM2LPlan& plan,
+    int level,
+    std::span<const std::vector<double>> multipoles,
+    std::span<std::vector<double>> locals
+);
 
 //------------------------------------------------------------------------------
 // Canonical static mathematical operators

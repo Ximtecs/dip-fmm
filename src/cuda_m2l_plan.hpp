@@ -5,23 +5,14 @@
 #include <vector>
 
 #include "cdfmm/timings.hpp"
+#include "cdfmm/static_operators.hpp"
 
 namespace cdfmm {
 
-/** @brief Immutable description of one static M2L transfer class. */
-struct CudaM2LGroupView {
-  std::span<const double> matrix;
-  std::span<const int> sources;
-  std::span<const int> targets;
-  std::span<const int> levels;
-};
-
-/** @brief Persistent CUDA executor for grouped static M2L matrices. */
+/** @brief Persistent CUDA executor for the canonical target-row M2L plan. */
 class CudaM2LPlan {
 public:
-  CudaM2LPlan(int coefficient_count, std::span<const CudaM2LGroupView> groups,
-              std::span<const double> multipole_scaling,
-              std::span<const double> local_scaling);
+  explicit CudaM2LPlan(const StaticM2LPlan& plan);
   ~CudaM2LPlan();
 
   CudaM2LPlan(const CudaM2LPlan &) = delete;
