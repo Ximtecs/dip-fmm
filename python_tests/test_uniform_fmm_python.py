@@ -37,7 +37,15 @@ def test_static_backend_is_default_and_reference_is_selectable():
         target_source_indices=identities,
     )
     assert np.isfinite(static_result["H"]).all()
-    np.testing.assert_allclose(static_result["H"], reference_result["H"])
+    # The two traversal orders can leave different round-off residuals in
+    # analytically zero components.  Compare those values at an absolute
+    # tolerance close to machine precision as well as relatively elsewhere.
+    np.testing.assert_allclose(
+        static_result["H"],
+        reference_result["H"],
+        rtol=1.0e-12,
+        atol=1.0e-15,
+    )
 
 
 POSITIONS = np.array(

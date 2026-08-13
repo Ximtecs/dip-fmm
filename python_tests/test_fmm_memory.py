@@ -51,8 +51,8 @@ def test_single_particle_storage_has_manual_counts():
     assert estimate.m2l_interactions == 0
     assert estimate.p2p_pairs == 1
     assert estimate.host_static_bytes == 352
-    assert estimate.cuda_partial_bytes == 116
-    assert estimate.cuda_full_bytes == 372
+    assert estimate.cuda_partial_bytes == 148
+    assert estimate.cuda_full_bytes == 660
 
 
 def test_storage_estimate_detects_far_field_interactions():
@@ -65,7 +65,8 @@ def test_storage_estimate_detects_far_field_interactions():
     assert estimate.m2l_interactions == 2
     assert estimate.p2p_pairs == 2
     assert estimate.transfer_classes == 2
-    assert estimate.cuda_full["replicated M2L entries"] > 0
+    assert estimate.cuda_full["shared M2L matrices"] > 0
+    assert estimate.cuda_full["M2L interaction metadata"] > 0
     assert estimate.cuda_partial["M2L class matrices and indices"] > 0
 
 
