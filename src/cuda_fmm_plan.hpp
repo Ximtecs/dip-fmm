@@ -6,9 +6,9 @@
 #include <vector>
 
 #include "cdfmm/output_flags.hpp"
+#include "cdfmm/static_operators.hpp"
 #include "cdfmm/timings.hpp"
 #include "cdfmm/uniform_fmm.hpp"
-#include "cdfmm/static_operators.hpp"
 
 namespace cdfmm {
 
@@ -21,18 +21,18 @@ public:
     ~CudaFmmPlan();
 
     CudaFmmPlan(const CudaFmmPlan&) = delete;
-    CudaFmmPlan& operator=(const CudaFmmPlan&) = delete;
+  CudaFmmPlan &operator=(const CudaFmmPlan &) = delete;
 
-    void evaluate(std::span<const Vec3> moments,
-                  std::span<PotentialField> results,
-                  OutputFlags output,
-                  std::span<const int> target_source_indices);
+  void evaluate(std::span<const Vec3> moments,
+                std::span<PotentialField> results, OutputFlags output,
+                std::span<const int> target_source_indices);
 
-    [[nodiscard]] const CudaPlanStatistics& statistics() const noexcept;
-    [[nodiscard]] const CudaEvaluationTimings& evaluation_timings() const noexcept;
+  [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
+  [[nodiscard]] const CudaEvaluationTimings &
+  evaluation_timings() const noexcept;
 
 private:
-    struct Implementation;
+  struct Implementation;
     Implementation* implementation_{nullptr};
 };
 
@@ -42,23 +42,49 @@ private:
 
 /** @brief One level of dependency-ordered static coefficient applications. */
 struct CudaStaticLevel {
-    std::vector<StaticOperatorEntry> entries{};
+  std::vector<StaticOperatorEntry> entries{};
+};
+
+/** @brief One compact node-to-node translation using a shared matrix. */
+struct CudaTranslationInteraction {
+  int source_node{0};
+  int target_node{0};
+  int matrix_id{0};
+  int level{0};
+};
+
+/** @brief Shared sparse translation classes and their node relations. */
+struct CudaSharedTranslationData {
+  std::vector<StaticOperatorEntry> matrices{};
+  std::vector<CudaTranslationInteraction> interactions{};
+  int entries_per_matrix{0};
+  int matrix_count{0};
+};
+
+/** @brief Globally normalised dense M2L classes and compact interactions. */
+struct CudaM2LData {
+  std::vector<double> matrices{};
+  std::vector<CudaTranslationInteraction> interactions{};
+  std::vector<double> multipole_scaling{};
+  std::vector<double> local_scaling{};
+  int matrix_count{0};
+  int level_count{0};
 };
 
 /** @brief Immutable CPU-built operators consumed by the full CUDA plan. */
 struct CudaFullPlanData {
-    int coefficient_count{0};
+  int coefficient_count{0};
     int node_count{0};
     int source_count{0};
     int target_count{0};
-    std::vector<int> source_permutation{};
-    std::vector<int> target_permutation{};
-    std::vector<StaticOperatorEntry> p2m{};
-    std::vector<CudaStaticLevel> m2m_levels{};
-    std::vector<StaticOperatorEntry> m2l{};
-    std::vector<CudaStaticLevel> l2l_levels{};
-    std::vector<StaticOperatorEntry> l2p{};
-    StaticP2POperator p2p{};
+  std::vector<int> source_permutation{};
+  std::vector<int> target_permutation{};
+  std::vector<StaticOperatorEntry> p2m{};
+  CudaSharedTranslationData m2m{};
+  CudaM2LData m2l{};
+  CudaSharedTranslationData l2l{};
+  std::vector<StaticOperatorEntry> l2p{};
+  StaticP2POperator p2p{};
 };
 
 /**
@@ -72,14 +98,13 @@ class CudaFullPlan {
 public:
     explicit CudaFullPlan(const CudaFullPlanData& data);
     ~CudaFullPlan();
-    CudaFullPlan(const CudaFullPlan&) = delete;
-    CudaFullPlan& operator=(const CudaFullPlan&) = delete;
+  CudaFullPlan(const CudaFullPlan &) = delete;
+  CudaFullPlan &operator=(const CudaFullPlan &) = delete;
 
-    void evaluate(std::span<const Vec3> moments,
-                  std::span<Vec3> fields,
-                  std::span<const int> sorted_self_indices);
-    [[nodiscard]] const CudaPlanStatistics& statistics() const noexcept;
-    [[nodiscard]] const CudaEvaluationTimings& timings() const noexcept;
+  void evaluate(std::span<const Vec3> moments, std::span<Vec3> fields,
+                std::span<const int> sorted_self_indices);
+  [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
+  [[nodiscard]] const CudaEvaluationTimings &timings() const noexcept;
 
 private:
     struct Implementation;

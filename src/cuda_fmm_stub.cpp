@@ -1,176 +1,134 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "cdfmm/cuda_direct.hpp"
 #include "cuda_fmm_plan.hpp"
 #include "cuda_m2l_plan.hpp"
 #include "cuda_p2p_plan.hpp"
-#include "cdfmm/cuda_direct.hpp"
 
 #include <stdexcept>
 
 namespace cdfmm {
 
-bool cuda_compiled() noexcept
-{
-    return false;
-}
+bool cuda_compiled() noexcept { return false; }
 
-bool cuda_runtime_available() noexcept
-{
-    return false;
-}
+bool cuda_runtime_available() noexcept { return false; }
 
-bool cuda_direct_available() noexcept
-{
-    return false;
-}
+bool cuda_direct_available() noexcept { return false; }
 
-bool cuda_m2l_available() noexcept
-{
-    return cuda_m2l_p2p_available();
-}
+bool cuda_m2l_available() noexcept { return cuda_m2l_p2p_available(); }
 
-bool cuda_m2l_p2p_available() noexcept
-{
-    return false;
-}
+bool cuda_m2l_p2p_available() noexcept { return false; }
 
-bool cuda_full_available() noexcept
-{
-    return false;
-}
+bool cuda_full_available() noexcept { return false; }
 
-std::string cuda_runtime_description()
-{
-    return "CUDA support is not enabled in this build";
+std::string cuda_runtime_description() {
+  return "CUDA support is not enabled in this build";
 }
 
 CudaFmmPlan::CudaFmmPlan(std::span<const Vec3>, std::span<const Vec3>,
-                         ExecutionBackend)
-{
-    throw std::runtime_error(
-        "CUDA backend requested, but CDFMM_ENABLE_CUDA is OFF"
-    );
+                         ExecutionBackend) {
+  throw std::runtime_error(
+      "CUDA backend requested, but CDFMM_ENABLE_CUDA is OFF");
 }
 
 CudaFmmPlan::~CudaFmmPlan() = default;
 
-void CudaFmmPlan::evaluate(std::span<const Vec3>,
-                           std::span<PotentialField>, OutputFlags,
-                           std::span<const int>)
-{
-    throw std::runtime_error("CUDA backend is unavailable");
+void CudaFmmPlan::evaluate(std::span<const Vec3>, std::span<PotentialField>,
+                           OutputFlags, std::span<const int>) {
+  throw std::runtime_error("CUDA backend is unavailable");
 }
 
-const CudaPlanStatistics& CudaFmmPlan::statistics() const noexcept
-{
-    static const CudaPlanStatistics empty{};
-    return empty;
+const CudaPlanStatistics &CudaFmmPlan::statistics() const noexcept {
+  static const CudaPlanStatistics empty{};
+  return empty;
 }
 
-const CudaEvaluationTimings& CudaFmmPlan::evaluation_timings() const noexcept
-{
-    static const CudaEvaluationTimings empty{};
-    return empty;
+const CudaEvaluationTimings &CudaFmmPlan::evaluation_timings() const noexcept {
+  static const CudaEvaluationTimings empty{};
+  return empty;
 }
 
-CudaFullPlan::CudaFullPlan(const CudaFullPlanData&)
-{
-    throw std::runtime_error("full CUDA FMM is unavailable in this build");
+CudaFullPlan::CudaFullPlan(const CudaFullPlanData &) {
+  throw std::runtime_error("full CUDA FMM is unavailable in this build");
 }
 
 CudaFullPlan::~CudaFullPlan() = default;
 
 void CudaFullPlan::evaluate(std::span<const Vec3>, std::span<Vec3>,
-                            std::span<const int>)
-{
-    throw std::runtime_error("full CUDA FMM is unavailable in this build");
+                            std::span<const int>) {
+  throw std::runtime_error("full CUDA FMM is unavailable in this build");
 }
 
-const CudaPlanStatistics& CudaFullPlan::statistics() const noexcept
-{
-    static const CudaPlanStatistics empty{};
-    return empty;
+const CudaPlanStatistics &CudaFullPlan::statistics() const noexcept {
+  static const CudaPlanStatistics empty{};
+  return empty;
 }
 
-const CudaEvaluationTimings& CudaFullPlan::timings() const noexcept
-{
-    static const CudaEvaluationTimings empty{};
-    return empty;
+const CudaEvaluationTimings &CudaFullPlan::timings() const noexcept {
+  static const CudaEvaluationTimings empty{};
+  return empty;
 }
 
-CudaM2LPlan::CudaM2LPlan(int, std::span<const CudaM2LGroupView>)
-{
-    throw std::runtime_error(
-        "CUDA M2L requested, but CDFMM_ENABLE_CUDA is OFF"
-    );
+CudaM2LPlan::CudaM2LPlan(int, std::span<const CudaM2LGroupView>,
+                         std::span<const double>, std::span<const double>) {
+  throw std::runtime_error("CUDA M2L requested, but CDFMM_ENABLE_CUDA is OFF");
 }
 
 CudaM2LPlan::~CudaM2LPlan() = default;
 
 void CudaM2LPlan::evaluate(std::span<const std::vector<double>>,
-                           std::span<std::vector<double>>)
-{
-    throw std::runtime_error("CUDA M2L backend is unavailable");
+                           std::span<std::vector<double>>) {
+  throw std::runtime_error("CUDA M2L backend is unavailable");
 }
 
-const CudaPlanStatistics& CudaM2LPlan::statistics() const noexcept
-{
-    static const CudaPlanStatistics empty{};
-    return empty;
+const CudaPlanStatistics &CudaM2LPlan::statistics() const noexcept {
+  static const CudaPlanStatistics empty{};
+  return empty;
 }
 
-const CudaEvaluationTimings& CudaM2LPlan::timings() const noexcept
-{
-    static const CudaEvaluationTimings empty{};
-    return empty;
+const CudaEvaluationTimings &CudaM2LPlan::timings() const noexcept {
+  static const CudaEvaluationTimings empty{};
+  return empty;
 }
 
-CudaP2PPlan::CudaP2PPlan(const StaticP2POperator&)
-{
-    throw std::runtime_error("CUDA static P2P is unavailable in this build");
+CudaP2PPlan::CudaP2PPlan(const StaticP2POperator &) {
+  throw std::runtime_error("CUDA static P2P is unavailable in this build");
 }
 
 CudaP2PPlan::~CudaP2PPlan() = default;
 
-void CudaP2PPlan::begin_evaluate(std::span<const Vec3>, std::span<const int>)
-{
-    throw std::runtime_error("CUDA static P2P is unavailable in this build");
+void CudaP2PPlan::begin_evaluate(std::span<const Vec3>, std::span<const int>) {
+  throw std::runtime_error("CUDA static P2P is unavailable in this build");
 }
 
-void CudaP2PPlan::finish_evaluate(std::span<Vec3>)
-{
-    throw std::runtime_error("CUDA static P2P is unavailable in this build");
+void CudaP2PPlan::finish_evaluate(std::span<Vec3>) {
+  throw std::runtime_error("CUDA static P2P is unavailable in this build");
 }
 
-void CudaP2PPlan::cancel_evaluate() noexcept
-{
-}
+void CudaP2PPlan::cancel_evaluate() noexcept {}
 
 void CudaP2PPlan::evaluate(std::span<const Vec3>, std::span<const int>,
-                           std::span<Vec3>)
-{
-    throw std::runtime_error("CUDA static P2P is unavailable in this build");
+                           std::span<Vec3>) {
+  throw std::runtime_error("CUDA static P2P is unavailable in this build");
 }
 
-const CudaPlanStatistics& CudaP2PPlan::statistics() const noexcept
-{
-    static const CudaPlanStatistics empty{};
-    return empty;
+const CudaPlanStatistics &CudaP2PPlan::statistics() const noexcept {
+  static const CudaPlanStatistics empty{};
+  return empty;
 }
 
-const CudaEvaluationTimings& CudaP2PPlan::timings() const noexcept
-{
-    static const CudaEvaluationTimings empty{};
-    return empty;
+const CudaEvaluationTimings &CudaP2PPlan::timings() const noexcept {
+  static const CudaEvaluationTimings empty{};
+  return empty;
 }
 
-std::vector<PotentialField> cuda_direct_p2p_reference(
-    std::span<const Vec3>, std::span<const Vec3>, std::span<const Vec3>,
-    OutputFlags, std::span<const int>)
-{
-    throw std::runtime_error(
-        "CUDA direct P2P requested, but CDFMM_ENABLE_CUDA is OFF"
-    );
+std::vector<PotentialField> cuda_direct_p2p_reference(std::span<const Vec3>,
+                                                      std::span<const Vec3>,
+                                                      std::span<const Vec3>,
+                                                      OutputFlags,
+                                                      std::span<const int>) {
+  throw std::runtime_error(
+      "CUDA direct P2P requested, but CDFMM_ENABLE_CUDA is OFF");
 }
 
 } // namespace cdfmm

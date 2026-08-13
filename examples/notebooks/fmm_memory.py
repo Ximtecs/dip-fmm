@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 from math import comb
 
 import numpy as np
@@ -73,18 +72,6 @@ def shift_entries(order: int) -> int:
     return comb(order + 6, 6)
 
 
-@lru_cache(maxsize=None)
-def _m2l_nonzero_entries(order: int, dx: int, dy: int, dz: int) -> int:
-    """Count entries retained by CUDA-full for one relative box offset."""
-
-    matrix = cdfmm.static_m2l_matrix(
-        np.zeros(3, dtype=np.float64),
-        np.array([dx, dy, dz], dtype=np.float64),
-        order,
-    )
-    return int(np.count_nonzero(matrix))
-
-
 def _make_tree(positions: np.ndarray, depth: int) -> cdfmm.UniformTree:
     options = cdfmm.UniformTreeOptions()
     options.max_level = depth
@@ -128,7 +115,7 @@ def estimate_source_point_storage(
     particle_entries = p2m_or_l2p_entries_per_particle(order)
     translation_entries = shift_entries(order)
 
-    groups: dict[tuple[int, int, int, int], int] = {}
+    groups: dict[tuple[int, int, int], int] = {}
     m2l_sources: set[int] = set()
     m2l_targets: set[int] = set()
     for target in nodes:
@@ -139,7 +126,6 @@ def estimate_source_point_storage(
             if source.source_count == 0:
                 continue
             key = (
-                target.level,
                 target.ix - source.ix,
                 target.iy - source.iy,
                 target.iz - source.iz,
@@ -157,10 +143,6 @@ def estimate_source_point_storage(
         )
 
     m2l_interactions = sum(groups.values())
-    m2l_nonzero_entries = sum(
-        interaction_count * _m2l_nonzero_entries(order, dx, dy, dz)
-        for (_, dx, dy, dz), interaction_count in groups.items()
-    )
     occupied_source_nodes = sum(
         node.level > 0 and node.source_count > 0 for node in nodes
     )
@@ -172,7 +154,10 @@ def estimate_source_point_storage(
         p2p_pairs * P2P_BLOCK_BYTES + (particle_count + 1) * INT_BYTES
     )
     cached_matrix_bytes = len(groups) * coefficients**2 * DOUBLE_BYTES
-    interaction_index_bytes = m2l_interactions * 2 * INT_BYTES
+    # CPU-static and partial-CUDA groups retain source, target, and level for
+    # every interaction.  The level selects precomputed homogeneity scalings.
+    interaction_index_bytes = m2l_interactions * 3 * INT_BYTES
+    level_scaling_bytes = 2 * (depth + 1) * coefficients * DOUBLE_BYTES
     m2l_scratch_bytes = (
         2 * m2l_interactions * coefficients * DOUBLE_BYTES
     )
@@ -199,25 +184,28 @@ def estimate_source_point_storage(
             2 * particle_count * VEC3_BYTES + particle_count * INT_BYTES
         ),
         "M2L class matrices and indices": (
-            cached_matrix_bytes + interaction_index_bytes
+            cached_matrix_bytes + interaction_index_bytes + level_scaling_bytes
         ),
         "M2L packed coefficients": partial_packed_bytes,
         "M2L gathered/translated buffers": m2l_scratch_bytes,
     }
 
-    other_full_entries = (
-        2 * particle_entries * particle_count
-        + translation_entries
-        * (occupied_source_nodes + occupied_target_nodes)
-    )
     coefficient_buffer_bytes = (
         2 * len(nodes) * coefficients * DOUBLE_BYTES
     )
     cuda_full = {
         "P2P tensors": p2p_static_bytes,
-        "replicated M2L entries": m2l_nonzero_entries * STATIC_ENTRY_BYTES,
+        "shared M2L matrices": cached_matrix_bytes,
+        "M2L interaction metadata": m2l_interactions * 4 * INT_BYTES,
+        "M2L level scalings": level_scaling_bytes,
+        "shared M2M/L2L matrices": (
+            2 * depth * 8 * translation_entries * STATIC_ENTRY_BYTES
+        ),
         "other static operator entries": (
-            other_full_entries * STATIC_ENTRY_BYTES
+            2 * particle_entries * particle_count * STATIC_ENTRY_BYTES
+        ),
+        "M2M/L2L interaction metadata": (
+            (occupied_source_nodes + occupied_target_nodes) * 4 * INT_BYTES
         ),
         "geometry indices": 2 * particle_count * INT_BYTES,
         "moments, fields, and identities": (

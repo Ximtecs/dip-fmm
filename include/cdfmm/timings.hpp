@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 
 namespace cdfmm {
 
@@ -10,19 +10,19 @@ namespace cdfmm {
 // Public timing types
 //------------------------------------------------------------------------------
 
-/** @brief Accumulated monotonic wall time and invocation count for one phase. */
+/** @brief Accumulated monotonic wall time and invocation count for one phase.
+ */
 struct PhaseTiming {
-    /// @brief Accumulated wall time in seconds.
-    double total_seconds{0.0};
+  /// @brief Accumulated wall time in seconds.
+  double total_seconds{0.0};
     /// @brief Number of observations included in the accumulated time.
-    std::uint64_t calls{0};
+  std::uint64_t calls{0};
 
-    /// @brief Adds one elapsed wall-time observation.
-    void add(double seconds)
-    {
-        total_seconds += seconds;
-        ++calls;
-    }
+  /// @brief Adds one elapsed wall-time observation.
+  void add(double seconds) {
+    total_seconds += seconds;
+    ++calls;
+  }
 };
 
 /** @brief Wall-clock breakdown for fixed uniform-tree geometry construction. */
@@ -133,12 +133,14 @@ struct StaticPlanStatistics {
     /// @brief Bytes occupied by the shared M2M operator table.
     std::size_t m2m_operator_bytes{0};
     /// @brief Dense M2L matrices stored after unused classes are discarded.
-    std::size_t m2l_operators{0};
-    /// @brief Bytes occupied by the dense M2L operator table.
-    std::size_t m2l_operator_bytes{0};
-    /// @brief Shared L2L matrices stored (eight child classes per used level).
-    std::size_t l2l_operators{0};
-    /// @brief Complete-tree parent-child relations represented by L2L IDs.
+  std::size_t m2l_operators{0};
+  /// @brief Bytes occupied by the dense M2L operator table.
+  std::size_t m2l_operator_bytes{0};
+  /// @brief Bytes occupied by M2L source, target, and level metadata.
+  std::size_t m2l_interaction_bytes{0};
+  /// @brief Shared L2L matrices stored (eight child classes per used level).
+  std::size_t l2l_operators{0};
+  /// @brief Complete-tree parent-child relations represented by L2L IDs.
     std::size_t l2l_theoretical_interactions{0};
     /// @brief Bytes occupied by the shared L2L operator table.
     std::size_t l2l_operator_bytes{0};
@@ -149,34 +151,39 @@ struct StaticPlanStatistics {
     /// @brief No accuracy-changing coefficient pruning is performed.
     bool numerically_pruned{false};
     /// @brief No hot-path rotations, reflections, or permutations are used.
-    bool symmetry_compressed{false};
+  bool symmetry_compressed{false};
 
-    /// @brief Returns storage occupied only by translation operator tables.
-    [[nodiscard]] std::size_t translation_operator_bytes() const
-    {
-        return m2m_operator_bytes + m2l_operator_bytes + l2l_operator_bytes;
-    }
-    /// @brief Number of particle pairs represented by the list1 tensor.
+  /// @brief Returns storage occupied only by translation operator tables.
+  [[nodiscard]] std::size_t translation_operator_bytes() const {
+    return m2m_operator_bytes + m2l_operator_bytes + l2l_operator_bytes;
+  }
+  /// @brief Number of particle pairs represented by the list1 tensor.
     std::size_t p2p_interactions{0};
     /// @brief Six-coefficient tensor storage.
     std::size_t p2p_value_bytes{0};
     /// @brief Row and source/target index storage.
     std::size_t p2p_index_bytes{0};
     /// @brief Number of times the immutable plan has been constructed.
-    std::uint64_t construction_count{0};
+  std::uint64_t construction_count{0};
 
-    /// @brief Returns the approximate total persistent plan storage.
-    [[nodiscard]] std::size_t total_bytes() const
-    {
-        return operator_bytes + interaction_bytes + scratch_bytes;
-    }
+  /// @brief Returns the approximate total persistent plan storage.
+  [[nodiscard]] std::size_t total_bytes() const {
+    return operator_bytes + interaction_bytes + scratch_bytes;
+  }
 };
 
 /** @brief Host/device traffic and persistent storage for a CUDA plan. */
 struct CudaPlanStatistics {
-    std::size_t setup_h2d_bytes{0};
-    std::size_t evaluation_h2d_bytes{0};
-    std::size_t evaluation_d2h_bytes{0};
+  std::size_t m2m_unique_matrix_count{0};
+  std::size_t m2m_matrix_bytes{0};
+  std::size_t m2l_unique_matrix_count{0};
+  std::size_t m2l_matrix_bytes{0};
+  std::size_t m2l_interaction_metadata_bytes{0};
+  std::size_t l2l_unique_matrix_count{0};
+  std::size_t l2l_matrix_bytes{0};
+  std::size_t setup_h2d_bytes{0};
+  std::size_t evaluation_h2d_bytes{0};
+  std::size_t evaluation_d2h_bytes{0};
     std::uint64_t evaluation_h2d_calls{0};
     std::uint64_t evaluation_d2h_calls{0};
     std::size_t persistent_device_bytes{0};

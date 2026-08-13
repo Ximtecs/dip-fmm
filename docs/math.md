@@ -212,3 +212,42 @@ a conventional global sparse matrix would duplicate those dense values.
 Consequently these alternatives require benchmarks before adoption. Explicitly
 composing all stages is avoided because fill-in would approach an all-to-all
 operator and discard the FMM hierarchy and scaling.
+
+## Level-normalised uniform-tree translations
+
+For a same-level M2L interaction, let the physical box width be (h_\ell) and
+write the centre displacement as (R=h_\ell t), where the integer transfer
+vector (t) identifies a uniform-octree translation class.  The Laplace Green
+function is homogeneous, (G(h r)=h^{-1}G(r)), and hence
+
+\[
+D^\gamma G(h r)=h^{-(|\gamma|+1)}D^\gamma G(r).
+\]
+
+Since the Cartesian M2L entry is
+(T_{\beta,\alpha}(R)=D^{\alpha+\beta}G(R)), it follows exactly that
+
+\[
+T^{(\ell)}_{\beta,\alpha}(t)=
+ h_\ell^{-(|\alpha|+|\beta|+1)}
+ \widehat T_{\beta,\alpha}(t), \qquad
+\widehat T_{\beta,\alpha}(t)=D^{\alpha+\beta}G(t).
+\]
+
+Thus (T^{(\ell)}=D_L(h_\ell)\widehat T D_M(h_\ell)), with
+(D_M[\alpha,\alpha]=h_\ell^{-|\alpha|}) and
+(D_L[\beta,\beta]=h_\ell^{-(|\beta|+1)}).  The degree scalings are
+precomputed once per level and applied while gathering and scattering.  Raw
+Cartesian M2L matrices at two levels are not numerically identical because the
+physical box width changes.  The Laplace kernel and all of its derivatives are
+homogeneous, allowing the level dependence to be factored into diagonal degree
+scalings.  Consequently one normalised M2L matrix per integer transfer vector
+is sufficient for all levels.  A complete three-dimensional interaction list
+uses at most (7^3-3^3=316) such vectors.
+
+For M2M and L2L, a child centre differs from its parent centre by
+(d=h\delta), where (h) is the child box width and every component of
+(delta) is either (-1/2) or (+1/2).  There are therefore only eight
+child-offset classes.  Static plans store shared operators for those classes
+(at most eight per used level) and compact child-to-operator identifiers,
+rather than duplicating coefficient values for every parent-child edge.
