@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include <span>
 #include <cstdint>
-#include <vector>
 #include <memory>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "cdfmm/coefficients.hpp"
 #include "cdfmm/multi_index.hpp"
 #include "cdfmm/output_flags.hpp"
-#include "cdfmm/uniform_tree.hpp"
 #include "cdfmm/static_operators.hpp"
+#include "cdfmm/uniform_tree.hpp"
 
 namespace cdfmm {
 
@@ -23,14 +23,12 @@ enum class ExecutionBackend {
     CudaPartial = CudaM2LP2P,
     CudaFull,
     CudaM2L = CudaM2LP2P,
-    CudaM2LStaticP2P = CudaM2LP2P
+  CudaM2LStaticP2P = CudaM2LP2P
 };
 
-/** @brief Dense multiplication implementation for cached static M2L matrices. */
-enum class StaticMatrixBackend {
-    Portable,
-    OneMkl
-};
+/** @brief Dense multiplication implementation for cached static M2L matrices.
+ */
+enum class StaticMatrixBackend { Portable, OneMkl };
 
 /** @brief Reports whether this build includes the oneMKL matrix backend. */
 [[nodiscard]] bool one_mkl_available() noexcept;
@@ -50,7 +48,8 @@ enum class StaticMatrixBackend {
 /** @brief Compatibility alias for `cuda_m2l_p2p_available()`. */
 [[nodiscard]] bool cuda_m2l_available() noexcept;
 
-/** @brief Reports whether a complete device-resident CUDA FMM is implemented. */
+/** @brief Reports whether a complete device-resident CUDA FMM is implemented.
+ */
 [[nodiscard]] bool cuda_full_available() noexcept;
 
 /** @brief Returns a concise description of the selected CUDA device. */
@@ -72,10 +71,7 @@ struct UniformFmmOptions {
   /// @brief Complete uniform-tree geometry options.
   UniformTreeOptions tree{};
   /// @brief M2L execution backend; static grouped execution is the default.
-  enum class M2LBackend {
-      Static,
-      Reference
-  } m2l_backend{M2LBackend::Static};
+  enum class M2LBackend { Static, Reference } m2l_backend{M2LBackend::Static};
   /// @brief Multiplication implementation used by cached static M2L matrices.
   StaticMatrixBackend static_matrix_backend{StaticMatrixBackend::Portable};
   /// @brief Complete evaluation backend. Auto safely selects CPU static.
@@ -168,7 +164,8 @@ public:
            std::span<const int> target_source_indices = {});
 
   /**
-   * @brief Evaluates into caller-owned storage without allocating result arrays.
+   * @brief Evaluates into caller-owned storage without allocating result
+   * arrays.
    *
    * The object owns mutable expansions, scratch storage, and timing state.
    * Consequently calls on one object must not execute concurrently, although
@@ -221,18 +218,18 @@ private:
   class CudaFullPlanOwner;
   struct P2MPlan {
       int leaf{0};
-      StaticCoefficientOperator operator_map{};
+    StaticCoefficientOperator operator_map{};
   };
   struct M2LGroup {
-      int level{0};
-      int dx{0};
-      int dy{0};
-      int dz{0};
-      std::vector<double> matrix{};
-      std::vector<int> sources{};
-      std::vector<int> targets{};
-      std::vector<double> gathered{};
-      std::vector<double> translated{};
+    int dx{0};
+    int dy{0};
+    int dz{0};
+    std::vector<double> matrix{};
+    std::vector<int> sources{};
+    std::vector<int> targets{};
+    std::vector<int> levels{};
+    std::vector<double> gathered{};
+    std::vector<double> translated{};
   };
 
   void build_static_plan();
@@ -254,6 +251,8 @@ private:
   std::unique_ptr<CudaP2PPlanOwner> cuda_p2p_plan_{};
   std::unique_ptr<CudaFullPlanOwner> cuda_full_plan_{};
   std::vector<M2LGroup> m2l_groups_{};
+  std::vector<std::vector<double>> m2l_multipole_scaling_{};
+  std::vector<std::vector<double>> m2l_local_scaling_{};
   std::vector<P2MPlan> p2m_plans_{};
   std::vector<std::array<StaticCoefficientOperator, 8>> m2m_operators_{};
   std::vector<std::array<StaticCoefficientOperator, 8>> l2l_operators_{};
