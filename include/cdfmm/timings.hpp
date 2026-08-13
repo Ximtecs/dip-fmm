@@ -181,6 +181,8 @@ struct CudaPlanStatistics {
   std::size_t m2l_interaction_metadata_bytes{0};
   std::size_t l2l_unique_matrix_count{0};
   std::size_t l2l_matrix_bytes{0};
+  /// @brief Number of pairs in the uploaded canonical sparse P2P tensor.
+  std::size_t p2p_interaction_count{0};
   std::size_t setup_h2d_bytes{0};
   std::size_t evaluation_h2d_bytes{0};
   std::size_t evaluation_d2h_bytes{0};

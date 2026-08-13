@@ -23,6 +23,35 @@ TEST_CASE("CUDA M2L/P2P compatibility names resolve to one backend", "[cuda]")
     REQUIRE(ExecutionBackend::CudaPartial == ExecutionBackend::CudaM2LP2P);
 }
 
+TEST_CASE("production backends dispatch canonical operators per stage", "[cuda]")
+{
+    const std::vector<Vec3> positions{{-0.25, 0.0, 0.0},
+                                      {0.25, 0.0, 0.0}};
+    UniformFmmOptions options;
+    options.tree.max_level = 1;
+    options.backend = ExecutionBackend::CpuStatic;
+    UniformFmm cpu(positions, positions, options);
+    const StaticExecutionPlan cpu_plan = cpu.execution_plan();
+    REQUIRE(cpu_plan.p2m == StaticOperatorExecutor::Portable);
+    REQUIRE(cpu_plan.m2m == StaticOperatorExecutor::Portable);
+    REQUIRE(cpu_plan.m2l == StaticOperatorExecutor::Portable);
+    REQUIRE(cpu_plan.l2l == StaticOperatorExecutor::Portable);
+    REQUIRE(cpu_plan.l2p == StaticOperatorExecutor::Portable);
+    REQUIRE(cpu_plan.p2p == StaticOperatorExecutor::Portable);
+
+    if (cuda_m2l_p2p_available()) {
+        options.backend = ExecutionBackend::CudaPartial;
+        UniformFmm partial(positions, positions, options);
+        const StaticExecutionPlan partial_plan = partial.execution_plan();
+        REQUIRE(partial_plan.p2m == cpu_plan.p2m);
+        REQUIRE(partial_plan.m2m == cpu_plan.m2m);
+        REQUIRE(partial_plan.m2l == StaticOperatorExecutor::Cuda);
+        REQUIRE(partial_plan.l2l == cpu_plan.l2l);
+        REQUIRE(partial_plan.l2p == cpu_plan.l2p);
+        REQUIRE(partial_plan.p2p == StaticOperatorExecutor::Cuda);
+    }
+}
+
 TEST_CASE("full CUDA FMM is device resident across evaluations", "[cuda][manual]")
 {
     if (!cuda_full_available()) {
@@ -61,6 +90,12 @@ TEST_CASE("full CUDA FMM is device resident across evaluations", "[cuda][manual]
         REQUIRE(actual[index].H.z == Catch::Approx(expected[index].H.z).margin(3.0e-11));
     }
     const CudaPlanStatistics first = cuda.cuda_plan_statistics();
+    REQUIRE(first.m2l_unique_matrix_count ==
+            cuda.static_plan_statistics().m2l_operators);
+    REQUIRE(first.p2p_interaction_count ==
+            cuda.static_plan_statistics().p2p_interactions);
+    REQUIRE(first.m2l_unique_matrix_count <=
+            StaticPlanStatistics::theoretical_maximum_m2l_classes);
     REQUIRE(first.evaluation_h2d_bytes == positions.size() * 3 * sizeof(double));
     REQUIRE(first.evaluation_d2h_bytes == positions.size() * 3 * sizeof(double));
     REQUIRE(first.evaluation_h2d_calls == 1);
@@ -170,6 +205,10 @@ TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
     );
     REQUIRE(cuda.cuda_plan_statistics().static_m2l_upload_count == 1);
     REQUIRE(cuda.cuda_plan_statistics().static_p2p_upload_count == 1);
+    REQUIRE(cuda.cuda_plan_statistics().m2l_unique_matrix_count ==
+            cuda.static_plan_statistics().m2l_operators);
+    REQUIRE(cuda.cuda_plan_statistics().p2p_interaction_count ==
+            cuda.static_plan_statistics().p2p_interactions);
     REQUIRE(cuda.last_timings().cuda_p2p_wait.calls == 1);
     REQUIRE(cuda.last_timings().cuda_p2p_kernel.calls == 1);
     for (std::size_t index = 0; index < actual.size(); ++index) {

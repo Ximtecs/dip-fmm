@@ -272,6 +272,18 @@ moments-only H2D transfer and one final-field-only D2H transfer. Static identity
 metadata is fixed at initial evaluation and a changed map requires plan rebuild.
 `CudaM2L` is retained as a compatibility alias.
 
+All production modes now resolve the same canonical, CPU-built static operator
+plan through a per-operator executor selection. Each operator has a portable
+CPU executor, an optional oneMKL executor where measurements justify it, and a
+CUDA executor. `CudaPartial` selects CUDA only for M2L and P2P and therefore
+uses precisely the normal CPU P2M, M2M, L2L, and L2P executors (including the
+same future oneMKL improvements when those stages benefit). `CudaFull` selects
+CUDA for all six stages. Both CUDA
+modes upload the same normalised M2L class table (at most 316 matrices), level
+scaling and interaction IDs, and the same canonical sparse P2P tensor; neither
+backend derives operator mathematics independently. Device-friendly packing is
+an executor concern and does not create a second mathematical plan.
+
 ## Future milestone: true periodic magnetostatics
 
 Periodic boundaries must cover one periodic axis, two-dimensional slabs, and

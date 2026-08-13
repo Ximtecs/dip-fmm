@@ -30,6 +30,19 @@ enum class ExecutionBackend {
  */
 enum class StaticMatrixBackend { Portable, OneMkl };
 
+/** @brief Executor selected for one operator in the shared static traversal. */
+enum class StaticOperatorExecutor { Reference, Portable, OneMkl, Cuda };
+
+/** @brief Per-operator executor selection for the canonical static plan. */
+struct StaticExecutionPlan {
+  StaticOperatorExecutor p2m{StaticOperatorExecutor::Portable};
+  StaticOperatorExecutor m2m{StaticOperatorExecutor::Portable};
+  StaticOperatorExecutor m2l{StaticOperatorExecutor::Portable};
+  StaticOperatorExecutor l2l{StaticOperatorExecutor::Portable};
+  StaticOperatorExecutor l2p{StaticOperatorExecutor::Portable};
+  StaticOperatorExecutor p2p{StaticOperatorExecutor::Portable};
+};
+
 /** @brief Reports whether this build includes the oneMKL matrix backend. */
 [[nodiscard]] bool one_mkl_available() noexcept;
 
@@ -193,6 +206,8 @@ public:
   [[nodiscard]] StaticMatrixBackend static_matrix_backend() const;
   /// @brief Returns the resolved backend used by this evaluator.
   [[nodiscard]] ExecutionBackend backend() const;
+  /// @brief Returns the executor selected for every canonical static operator.
+  [[nodiscard]] StaticExecutionPlan execution_plan() const noexcept;
   /// @brief Returns CUDA traffic and persistent-allocation diagnostics.
   [[nodiscard]] const CudaPlanStatistics &cuda_plan_statistics() const;
   /// @brief Returns one-time static-plan timing and memory information.
