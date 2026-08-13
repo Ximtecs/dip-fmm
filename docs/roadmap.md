@@ -95,6 +95,8 @@ plots, and generated summaries.
 - [x] static L2L;
 - [x] fixed-target static L2P;
 - [ ] static near-field P2P tensor;
+- [ ] disk-stored problem-independent M2M, M2L, and L2L matrices indexed by
+  expansion order and tree depth;
 - [ ] further symmetry and optional tolerance-controlled compression.
 
 The target use case repeatedly evaluates a fixed geometry for changing dipole
@@ -141,6 +143,21 @@ Investigate:
 
 Reusable compact parent-to-child maps cover the eight displacement classes at
 each level.
+
+### Disk-stored problem-independent translations
+
+M2M, M2L, and L2L translation matrices for a complete uniform tree are
+independent of the particle setup.  After normalising the root domain to a
+unit cube, their translation classes and scale factors depend only on the
+expansion order and tree depth.  Investigate generating these operators once,
+serialising them in a versioned binary format, and loading them in later runs
+instead of rebuilding them during plan construction.  The cache design should
+define precision, coefficient ordering, compatibility metadata, validation,
+and portable fallback regeneration when a matching file is unavailable.
+
+P2M and P2P data may also be serialised for repeated runs of exactly the same
+geometry, but these operators are problem-dependent and are therefore separate
+from the reusable order-and-depth translation cache.
 
 ### Fixed-target L2P
 
