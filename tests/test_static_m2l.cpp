@@ -259,6 +259,21 @@ TEST_CASE("static grouped M2L matches the independent reference traversal")
         REQUIRE(static_fmm.static_matrix_backend() ==
                 StaticMatrixBackend::Portable);
         REQUIRE(static_fmm.static_plan_statistics().transfer_classes > 0);
+        const auto& plan = static_fmm.static_plan_statistics();
+        REQUIRE(plan.m2m_operators == static_cast<std::size_t>(8 * 3));
+        REQUIRE(plan.l2l_operators == static_cast<std::size_t>(8 * 3));
+        REQUIRE(plan.m2m_operators < plan.m2m_theoretical_interactions);
+        REQUIRE(plan.l2l_operators < plan.l2l_theoretical_interactions);
+        REQUIRE(plan.m2l_operators == plan.transfer_classes);
+        REQUIRE(plan.m2l_operators <=
+                StaticPlanStatistics::theoretical_maximum_m2l_classes * 3);
+        REQUIRE(plan.translation_operator_bytes() ==
+                plan.m2m_operator_bytes + plan.m2l_operator_bytes +
+                plan.l2l_operator_bytes);
+        REQUIRE(plan.dense);
+        REQUIRE_FALSE(plan.sparse);
+        REQUIRE_FALSE(plan.numerically_pruned);
+        REQUIRE_FALSE(plan.symmetry_compressed);
         for (std::size_t index = 0; index < positions.size(); ++index) {
             REQUIRE(std::isfinite(static_values[index].H.x));
             REQUIRE(std::isfinite(static_values[index].H.y));

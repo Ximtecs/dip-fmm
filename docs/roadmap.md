@@ -179,6 +179,16 @@ support performance changes with kernel and end-to-end benchmarks.
 
 ## 6. Later capabilities
 
+### Spherical-expansion alternative
+
+Investigate spherical multipole and local expansions as a future alternative
+to, rather than a replacement for, the current Cartesian implementation.  A
+decision must compare coefficient count at a given expansion order, accuracy
+against Cartesian expansions, M2M/M2L/L2L complexity, CPU and CUDA performance,
+static-operator memory, and suitability for the existing fixed-geometry,
+static-matrix architecture.  Spherical expansions are roadmap work only; the
+directly executable Cartesian operators remain the implemented formulation.
+
 After the reference and persistent-geometry investigations:
 
 1. adaptive-tree support, with interaction rules and balancing designed rather
