@@ -38,7 +38,7 @@ PROFILES = {
             "cuda-full",
         ],
     ),
-    "standard": dict(sizes=[10000, 20000, 50000], orders=[2, 4, 6, 8], depths=[2, 3, 4], evaluations=20, samples=5),
+    "standard": dict(sizes=[10000, 20000, 30000, 40000], orders=[2, 4, 6, 8], depths=[2, 3, 4], evaluations=20, samples=5),
     "full": dict(sizes=[2**10, 2**12, 2**14, 2**16], orders=[2, 3, 4, 5, 6, 8], depths=[2, 3, 4, 5], evaluations=100, samples=7),
 }
 
