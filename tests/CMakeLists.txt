@@ -11,6 +11,7 @@ add_executable(cdfmm_tests
   test_uniform_fmm.cpp
   test_static_m2l.cpp
   test_cuda_backend.cpp
+  test_parameter_selection.cpp
 )
 target_link_libraries(cdfmm_tests PRIVATE cdfmm_core Catch2::Catch2WithMain)
 cdfmm_enable_ipo(cdfmm_tests)

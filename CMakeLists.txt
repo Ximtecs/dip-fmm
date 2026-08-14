@@ -34,6 +34,7 @@ add_library(cdfmm_core
     src/uniform_fmm.cpp
     src/far_field.cpp
     src/near_field.cpp
+    src/parameter_selection.cpp
 )
 if(CDFMM_ENABLE_CUDA)
   enable_language(CUDA)

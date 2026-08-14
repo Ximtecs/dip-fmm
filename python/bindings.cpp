@@ -5,12 +5,14 @@
 #include <pybind11/stl.h>
 
 #include <cstddef>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "cdfmm/cuda_direct.hpp"
 #include "cdfmm/operators.hpp"
+#include "cdfmm/parameter_selection.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/uniform_tree.hpp"
 
@@ -201,6 +203,36 @@ py::array_t<double> points_to_array(std::span<const Vec3> points) {
     return array;
 }
 
+py::dict performance_candidate_to_dict(const PerformanceCandidate &candidate) {
+  py::dict result;
+  result["depth"] = candidate.depth;
+  result["status"] = candidate.succeeded ? "ok" : "failed";
+  result["reason"] = candidate.reason;
+  result["near_seconds"] = candidate.near_seconds;
+  result["far_seconds"] = candidate.far_seconds;
+  result["balance_ratio"] = candidate.balance_ratio;
+  result["evaluation_seconds"] = candidate.evaluation_seconds;
+  result["estimated_concurrent_time"] =
+      candidate.estimated_concurrent_seconds;
+  return result;
+}
+
+py::dict accuracy_candidate_to_dict(const AccuracyCandidate &candidate) {
+  py::dict result;
+  result["order"] = candidate.order;
+  result["depth"] = candidate.depth;
+  result["status"] = candidate.succeeded ? "ok" : "failed";
+  result["reason"] = candidate.reason;
+  result["satisfies_accuracy"] = candidate.satisfies_accuracy;
+  result["evaluation_seconds"] = candidate.evaluation_seconds;
+  result["mean_relative_error"] = candidate.mean_relative_error;
+  result["rms_relative_error"] = candidate.rms_relative_error;
+  result["maximum_relative_error"] = candidate.maximum_relative_error;
+  result["mean_absolute_error"] = candidate.mean_absolute_error;
+  result["maximum_absolute_error"] = candidate.maximum_absolute_error;
+  return result;
+}
+
 } // namespace
 
 //------------------------------------------------------------------------------
@@ -336,6 +368,117 @@ PYBIND11_MODULE(cdfmm, module) {
     module.def("cuda_m2l_available", &cuda_m2l_available);
     module.def("cuda_full_available", &cuda_full_available);
     module.def("cuda_device_description", &cuda_device_description);
+
+    module.def(
+        "suggest_depth_for_performance",
+        [](py::object source_positions, py::object target_positions,
+           py::object dipole_moments, const int order,
+           const ExecutionBackend backend, py::object candidate_depths,
+           const int repetitions, py::object target_source_indices) {
+          const auto sources = parse_vec3_array(source_positions,
+                                                "source_positions");
+          const auto targets = parse_vec3_array(target_positions,
+                                                "target_positions");
+          const auto moments = parse_vec3_array(dipole_moments,
+                                                "dipole_moments");
+          const std::vector<int> depths = candidate_depths.is_none()
+              ? std::vector<int>{} : py::cast<std::vector<int>>(candidate_depths);
+          const std::vector<int> identities = target_source_indices.is_none()
+              ? std::vector<int>{}
+              : py::cast<std::vector<int>>(target_source_indices);
+          const PerformanceSuggestion suggestion =
+              suggest_depth_for_performance(sources, targets, moments, order,
+                                            backend, depths, repetitions,
+                                            identities);
+          py::dict result;
+          result["suggested_depth"] = suggestion.suggested_depth;
+          result["order"] = suggestion.order;
+          result["branches_concurrent"] = suggestion.branches_concurrent;
+          py::list candidates;
+          for (const auto &candidate : suggestion.candidates) {
+            candidates.append(performance_candidate_to_dict(candidate));
+          }
+          result["candidates"] = candidates;
+          if (suggestion.suggested_depth >= 0) {
+            const auto selected = std::find_if(
+                suggestion.candidates.begin(), suggestion.candidates.end(),
+                [&suggestion](const auto &candidate) {
+                  return candidate.depth == suggestion.suggested_depth;
+                });
+            const py::dict diagnostics = performance_candidate_to_dict(*selected);
+            for (const auto &item : diagnostics) {
+              if (py::cast<std::string>(item.first) != "depth") {
+                result[item.first] = item.second;
+              }
+            }
+          }
+          return result;
+        },
+        py::arg("source_positions"), py::arg("target_positions"),
+        py::arg("dipole_moments"), py::arg("order") = 6,
+        py::arg("backend") = ExecutionBackend::Auto,
+        py::arg("candidate_depths") = py::none(),
+        py::arg("repetitions") = 3,
+        py::arg("target_source_indices") = py::none(),
+        "Empirically suggest a depth without changing UniformFmm defaults.");
+
+    module.def(
+        "suggest_parameters_for_accuracy",
+        [](py::object source_positions, py::object target_positions,
+           py::object dipole_moments, const double desired_accuracy,
+           const ExecutionBackend backend, py::object candidate_orders,
+           py::object candidate_depths, const std::size_t sample_size,
+           const int repetitions, py::object target_source_indices) {
+          const auto sources = parse_vec3_array(source_positions,
+                                                "source_positions");
+          const auto targets = parse_vec3_array(target_positions,
+                                                "target_positions");
+          const auto moments = parse_vec3_array(dipole_moments,
+                                                "dipole_moments");
+          const std::vector<int> orders = candidate_orders.is_none()
+              ? std::vector<int>{} : py::cast<std::vector<int>>(candidate_orders);
+          const std::vector<int> depths = candidate_depths.is_none()
+              ? std::vector<int>{} : py::cast<std::vector<int>>(candidate_depths);
+          const std::vector<int> identities = target_source_indices.is_none()
+              ? std::vector<int>{}
+              : py::cast<std::vector<int>>(target_source_indices);
+          const AccuracySuggestion suggestion =
+              suggest_parameters_for_accuracy(
+                  sources, targets, moments, desired_accuracy, backend, orders,
+                  depths, sample_size, repetitions, identities);
+          py::dict result;
+          result["suggested_order"] = suggestion.suggested_order;
+          result["suggested_depth"] = suggestion.suggested_depth;
+          result["requested_accuracy"] = suggestion.requested_accuracy;
+          result["reference_target_count"] = suggestion.reference_target_count;
+          result["reference_target_indices"] =
+              suggestion.reference_target_indices;
+          py::list candidates;
+          for (const auto &candidate : suggestion.candidates) {
+            candidates.append(accuracy_candidate_to_dict(candidate));
+          }
+          result["candidates"] = candidates;
+          if (suggestion.suggested_order >= 0) {
+            const auto selected = std::find_if(
+                suggestion.candidates.begin(), suggestion.candidates.end(),
+                [&suggestion](const auto &candidate) {
+                  return candidate.order == suggestion.suggested_order &&
+                         candidate.depth == suggestion.suggested_depth;
+                });
+            result["estimated_rms_relative_error"] =
+                selected->rms_relative_error;
+            result["evaluation_seconds"] = selected->evaluation_seconds;
+          }
+          return result;
+        },
+        py::arg("source_positions"), py::arg("target_positions"),
+        py::arg("dipole_moments"), py::arg("desired_accuracy") = 1.0e-4,
+        py::arg("backend") = ExecutionBackend::Auto,
+        py::arg("candidate_orders") = py::none(),
+        py::arg("candidate_depths") = py::none(),
+        py::arg("sample_size") = 128, py::arg("repetitions") = 3,
+        py::arg("target_source_indices") = py::none(),
+        "Suggest the fastest tested pair meeting sampled RMS field accuracy.");
 
   py::class_<UniformFmmOptions>(module, "UniformFmmOptions")
       .def(py::init<>())
