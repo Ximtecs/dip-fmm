@@ -16,6 +16,15 @@
 namespace cdfmm {
 namespace {
 
+// This translation unit contains both CUDA execution branches because they
+// share persistent plan storage, streams, and low-level launch utilities.
+// Far-field kernels implement P2M -> M2M -> M2L -> L2L -> L2P; near-field
+// kernels implement list1 P2P.  They consume the same canonical host plans as
+// the CPU executors, and separate streams retain near/far overlap.  Splitting
+// these kernels physically would add no execution abstraction and is deferred
+// until their shared device infrastructure can remain equally explicit.
+
+
 void check_cuda(const cudaError_t status, const char *operation) {
   if (status != cudaSuccess) {
     throw std::runtime_error(std::string(operation) + ": " +
