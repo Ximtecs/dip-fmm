@@ -49,15 +49,26 @@ $D_\alpha G(r)$ before returning it.  The derivation is described in
 
 ## P2M
 
+**Purpose.** P2M replaces all dipoles in a leaf by one multipole expansion
+about the leaf centre. It is the first stage of the upward pass.
+
 For source expansion centre $c_s$ and $d_j=x_j-c_s$,
 
 $$M_\alpha(c_s)=(-1)^{|\alpha|}
 \sum_j\sum_{k\in\{x,y,z\}\atop \alpha_k>0}
 m_{j,k}\frac{d_j^{\alpha-e_k}}{(\alpha-e_k)!}.$$
 
-The excluded negative-index terms make $M_0=0$ for pure dipoles.
+The excluded negative-index terms make $M_0=0$ for pure dipoles. Here $c_s$
+is the source-box centre, $x_j$ and $m_j$ are the position and moment of source
+$j$, $d_j$ points **from the centre to the source**, $k$ is a Cartesian
+component, and $M_\alpha$ is the output multipole coefficient. For fixed
+sources, $d_j$ is fixed and this is the sparse map $M=P m$ described below.
 
 ## M2M
+
+**Purpose.** M2M shifts a child's multipole expansion to its parent so that
+the parent represents every source in its subtree. Levels are processed from
+the leaves towards the root.
 
 For $d=c_{\mathrm{parent}}-c_{\mathrm{child}}$,
 
@@ -65,9 +76,17 @@ $$M_\alpha(c_{\mathrm{parent}})\mathrel{+}=
 \sum_{\gamma\le\alpha}\frac{d^\gamma}{\gamma!}
 M_{\alpha-\gamma}(c_{\mathrm{child}}).$$
 
-The additive form permits accumulation from all eight children.
+The additive form permits accumulation from all eight children. Here $d$
+points **from child centre to parent centre**, $\gamma\leq\alpha$ means
+component-wise inequality, and the input and output are the child and parent
+$M$ coefficients. A uniform tree has eight child-offset classes per level, so
+fixed geometry permits exact maps to be shared by children in a class.
 
 ## M2L
+
+**Purpose.** M2L converts the multipole expansion of a separated source box
+into a local expansion about a target box. Applying every target's `list2`
+interactions produces that level's far-field local contribution.
 
 For $R=c_{\mathrm{target}}-c_{\mathrm{source}}$,
 
@@ -76,9 +95,18 @@ $$L_\beta(c_{\mathrm{target}})\mathrel{+}=
 D_{\alpha+\beta}G(R).$$
 
 Terms reach derivative degree $2p$.  M2L is valid only for separated boxes;
-near boxes are handled by P2P.
+near boxes are handled by P2P. Here $M_\alpha$ is a source multipole
+coefficient, $L_\beta$ is a target local coefficient, $\alpha$ and $\beta$
+are Cartesian multi-indices, and $D^{\alpha+\beta}G$ is the corresponding
+Cartesian derivative of $G(R)=1/(4\pi|R|)$. Crucially, $R$ points **from the
+source centre to the target centre**. Fixed centres make these derivatives a
+reusable dense matrix $T(R)$.
 
 ## L2L
+
+**Purpose.** L2L shifts an accumulated parent local expansion to a child.
+Levels are processed from root towards leaves; a child retains its own M2L
+contribution while inheriting its parent field.
 
 For $d=c_{\mathrm{child}}-c_{\mathrm{parent}}$,
 
@@ -86,7 +114,15 @@ $$L_\beta(c_{\mathrm{child}})\mathrel{+}=
 \sum_{\gamma:\,|\beta+\gamma|\le p}
 \frac{d^\gamma}{\gamma!}L_{\beta+\gamma}(c_{\mathrm{parent}}).$$
 
+Here $d$ points **from parent centre to child centre**, the higher-degree local
+is the parent input, and $L_\beta$ is the child output. The degree bound
+prevents coefficients outside order $p$. Fixed uniform geometry again reduces
+the shifts to eight reusable classes per level.
+
 ## L2P
+
+**Purpose.** L2P evaluates a leaf local expansion at each target and produces
+the far-field potential and/or field.
 
 With $dx=x-c_t$,
 
@@ -94,6 +130,11 @@ $$\phi(x)=\sum_\beta L_\beta\frac{dx^\beta}{\beta!},$$
 
 $$H_k(x)=-\sum_{\beta_k>0}L_\beta
 \frac{dx^{\beta-e_k}}{(\beta-e_k)!}.$$
+
+Here $c_t$ is the target leaf centre, $dx$ points **from that centre to the
+target**, $L_\beta$ is the input local coefficient, and $k$ selects a field
+component. The minus sign implements $H=-\nabla\phi$. Fixed targets yield one
+immutable potential row and three immutable field rows.
 
 ## M2P
 
@@ -178,9 +219,16 @@ moment state.
 
 ## P2P
 
-P2P applies the pair formulas in the first section and sums them without
-approximation.  It supplies the near-field contribution in an FMM and the
-reference answer used by current validation tests.
+**Purpose.** P2P applies the pair formulas in the first section and sums them
+without approximation. It supplies the near-field contribution in an FMM and the
+reference answer used by current validation tests. Its input is each source
+moment $m_j$ and its output is a target contribution $(\phi_i,H_i)$;
+$r_{ij}=x_i-x_j$ points **from source to target**. `list1` selects near boxes.
+An explicit identity map excludes $i=j$ rather than treating coincident
+coordinates as identity. For fixed geometry the field is the reusable tensor
+map $H_{\mathrm{near}}=D_{\mathrm{near}}m$ below; potential retains the direct
+scalar calculation.
+
 # Static near-field tensor
 
 For fixed geometry, each list1 pair can be written as
@@ -213,12 +261,12 @@ Consequently these alternatives require benchmarks before adoption. Explicitly
 composing all stages is avoided because fill-in would approach an all-to-all
 operator and discard the FMM hierarchy and scaling.
 
-## Level-normalised uniform-tree translations
+## M2L normalisation and cross-level reuse
 
-For a same-level M2L interaction, let the physical box width be (h_\ell) and
-write the centre displacement as (R=h_\ell t), where the integer transfer
-vector (t) identifies a uniform-octree translation class.  The Laplace Green
-function is homogeneous, (G(h r)=h^{-1}G(r)), and hence
+For a same-level M2L interaction, let the physical box width be $h_\ell$ and
+write $R=h_\ell t$, where $\ell$ is the **interaction level** and the integer
+transfer vector $t$ identifies a uniform-octree translation class. The Laplace
+Green function is homogeneous, $G(h r)=h^{-1}G(r)$, and hence
 
 \[
 D^\gamma G(h r)=h^{-(|\gamma|+1)}D^\gamma G(r).
@@ -234,16 +282,22 @@ T^{(\ell)}_{\beta,\alpha}(t)=
 \widehat T_{\beta,\alpha}(t)=D^{\alpha+\beta}G(t).
 \]
 
-Thus (T^{(\ell)}=D_L(h_\ell)\widehat T D_M(h_\ell)), with
-(D_M[\alpha,\alpha]=h_\ell^{-|\alpha|}) and
-(D_L[\beta,\beta]=h_\ell^{-(|\beta|+1)}).  The degree scalings are
+Thus $T^{(\ell)}=D_L(h_\ell)\widehat T D_M(h_\ell)$, with
+$D_M[\alpha,\alpha]=h_\ell^{-|\alpha|}$ and
+$D_L[\beta,\beta]=h_\ell^{-(|\beta|+1)}$. The **normalised transfer
+matrix** $\widehat T(t)$ is level independent. **Multipole scaling** $D_M$
+converts physical multipoles before multiplication; **local scaling** $D_L$
+restores the units and degree of local coefficients. The degree scalings are
 precomputed once per level and applied while gathering and scattering.  Raw
 Cartesian M2L matrices at two levels are not numerically identical because the
 physical box width changes.  The Laplace kernel and all of its derivatives are
 homogeneous, allowing the level dependence to be factored into diagonal degree
-scalings.  Consequently one normalised M2L matrix per integer transfer vector
-is sufficient for all levels.  A complete three-dimensional interaction list
-uses at most (7^3-3^3=316) such vectors.
+scalings.  Consequently one normalised M2L matrix per integer transfer vector is
+sufficient for all levels. Each interaction stores a **transfer class ID**
+selecting $\widehat T(t)$ and its interaction level selecting the scaling
+rows. A standard octree list2 displacement lies in the $7\times7\times7$
+parent-neighbour stencil but outside the $3\times3\times3$ near stencil. It
+therefore has at most $7^3-3^3=316$ transfer classes, irrespective of depth.
 
 For M2M and L2L, a child centre differs from its parent centre by
 (d=h\delta), where (h) is the child box width and every component of

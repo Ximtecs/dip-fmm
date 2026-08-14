@@ -117,9 +117,12 @@ example dependencies and are not required by the core Python package.
 - [Installation and building](docs/installation.md)
 - [Getting started](docs/getting-started.md)
 - [Mathematical formulation](docs/math.md)
+- [Static-geometry architecture](docs/static-architecture.md)
+- [Execution backends and data transfers](docs/backends.md)
 - [Uniform tree](docs/uniform-tree.md)
 - [Operator reference](docs/operators.md)
 - [Validation and testing](docs/validation.md)
+- [Benchmarks and output schema](docs/benchmarks.md)
 - [Roadmap](docs/roadmap.md)
 
 The Sphinx/MyST site integrates Doxygen API output through Breathe and is ready

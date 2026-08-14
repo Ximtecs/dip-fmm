@@ -1197,6 +1197,9 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   launch_stage(plan.p2m_stage, reinterpret_cast<double *>(plan.sorted_moments),
                plan.multipoles);
   check_cuda(cudaEventRecord(plan.events[2], plan.stream), "record P2M");
+  // Kernels for one level can update parent coefficients concurrently, but a
+  // parent level must not consume them early. Launching levels into one stream
+  // supplies the required child-to-parent ordering without a host barrier.
   for (int level = plan.leaf_level; level >= 1; --level) {
     const std::size_t items =
         plan.m2m_interaction_count * plan.m2m_entries_per_matrix;
@@ -1216,6 +1219,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
              "clear full FMM locals");
   launch_static_m2l(plan.m2l, plan.multipoles, plan.locals, plan.stream);
   check_cuda(cudaEventRecord(plan.events[4], plan.stream), "record M2L");
+  // The downward dependency is the reverse: each parent local must be complete
+  // before the next level translates it to children. Stream order enforces it.
   for (int level = 1; level <= plan.leaf_level; ++level) {
     const std::size_t items =
         plan.l2l_interaction_count * plan.l2l_entries_per_matrix;
@@ -1240,6 +1245,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
                     plan.near_fields, plan.stream);
   check_cuda(cudaEventRecord(plan.events[7], plan.stream), "record P2P");
   if (plan.target_count != 0) {
+    // Combining and unsorting on-device keeps intermediate far/near fields
+    // private to the plan; repeated field evaluations download only user-order H.
     combine_order_kernel<<<(plan.target_count + threads - 1) / threads, threads,
                            0, plan.stream>>>(
         plan.far_fields, plan.near_fields, plan.target_permutation,
