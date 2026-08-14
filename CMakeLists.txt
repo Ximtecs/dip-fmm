@@ -8,7 +8,14 @@ option(CDFMM_BUILD_PYTHON "Build Python bindings" ON)
 option(CDFMM_INSTALL_PYTHON_TO_ENV
        "Install Python bindings into the configured interpreter environment" OFF)
 option(CDFMM_ENABLE_OPENMP "Enable internally parallel CPU execution" ON)
-option(CDFMM_ENABLE_IPO "Enable interprocedural optimisation for Release builds" OFF)
+option(CDFMM_ENABLE_LTO "Enable interprocedural/link-time optimisation" OFF)
+option(CDFMM_ENABLE_IPO "Deprecated alias for CDFMM_ENABLE_LTO" OFF)
+option(CDFMM_ENABLE_NATIVE_ARCH
+       "Optimise CPU code for the architecture of the build machine" OFF)
+option(CDFMM_ENABLE_FAST_MATH
+       "Enable non-IEEE fast floating-point transformations" OFF)
+set(CDFMM_EXTRA_COMPILE_OPTIONS "" CACHE STRING
+    "Additional semicolon-separated C++ compile options")
 option(CDFMM_ENABLE_MKL
        "Include a runtime-selectable oneMKL DGEMM backend for static M2L" OFF)
 option(CDFMM_ENABLE_CUDA "Enable optional NVIDIA CUDA execution backends" OFF)
@@ -25,6 +32,8 @@ add_library(cdfmm_core
     src/validation.cpp
     src/uniform_tree.cpp
     src/uniform_fmm.cpp
+    src/far_field.cpp
+    src/near_field.cpp
 )
 if(CDFMM_ENABLE_CUDA)
   enable_language(CUDA)
@@ -42,6 +51,32 @@ endif()
 target_include_directories(cdfmm_core PUBLIC include)
 set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+# Project optimisation options append to, rather than replace, flags selected by
+# the standard CMake build type.  Generator expressions keep host-only options
+# away from nvcc when CUDA is enabled.
+if(CDFMM_ENABLE_NATIVE_ARCH)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|IntelLLVM")
+    target_compile_options(cdfmm_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-march=native>)
+  elseif(MSVC)
+    target_compile_options(cdfmm_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/arch:AVX2>)
+  else()
+    message(FATAL_ERROR "CDFMM_ENABLE_NATIVE_ARCH is unsupported by ${CMAKE_CXX_COMPILER_ID}")
+  endif()
+endif()
+
+if(CDFMM_ENABLE_FAST_MATH)
+  if(MSVC)
+    target_compile_options(cdfmm_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/fp:fast>)
+  else()
+    target_compile_options(cdfmm_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-ffast-math>)
+  endif()
+endif()
+
+if(CDFMM_EXTRA_COMPILE_OPTIONS)
+  target_compile_options(cdfmm_core PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:${CDFMM_EXTRA_COMPILE_OPTIONS}>)
+endif()
+
 if(CDFMM_ENABLE_MKL)
   find_package(MKL CONFIG REQUIRED)
   target_link_libraries(cdfmm_core PUBLIC MKL::MKL)
@@ -55,6 +90,11 @@ if(CDFMM_ENABLE_OPENMP)
 endif()
 
 if(CDFMM_ENABLE_IPO)
+  message(DEPRECATION "CDFMM_ENABLE_IPO is deprecated; use CDFMM_ENABLE_LTO")
+  set(CDFMM_ENABLE_LTO ON)
+endif()
+
+if(CDFMM_ENABLE_LTO)
   include(CheckIPOSupported)
   check_ipo_supported(RESULT CDFMM_IPO_SUPPORTED OUTPUT CDFMM_IPO_ERROR)
   if(NOT CDFMM_IPO_SUPPORTED)
@@ -63,7 +103,7 @@ if(CDFMM_ENABLE_IPO)
 endif()
 
 function(cdfmm_enable_ipo target_name)
-  if(CDFMM_ENABLE_IPO AND CDFMM_IPO_SUPPORTED)
+  if(CDFMM_ENABLE_LTO AND CDFMM_IPO_SUPPORTED)
     set_property(
       TARGET ${target_name}
       PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE
@@ -117,4 +157,16 @@ if(CDFMM_BUILD_PYTHON)
     set(CDFMM_PYTHON_INSTALL_DIR .)
   endif()
   install(TARGETS cdfmm LIBRARY DESTINATION "${CDFMM_PYTHON_INSTALL_DIR}")
+endif()
+
+message(STATUS "CDFMM optimisation configuration")
+message(STATUS "  Build type:          ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Native architecture: ${CDFMM_ENABLE_NATIVE_ARCH}")
+message(STATUS "  IPO/LTO:             ${CDFMM_ENABLE_LTO}")
+message(STATUS "  Fast math:           ${CDFMM_ENABLE_FAST_MATH}")
+message(STATUS "  OpenMP:              ${CDFMM_ENABLE_OPENMP}")
+message(STATUS "  oneMKL:              ${CDFMM_ENABLE_MKL}")
+message(STATUS "  CUDA:                ${CDFMM_ENABLE_CUDA}")
+if(CDFMM_ENABLE_CUDA)
+  message(STATUS "  CUDA architecture:   ${CMAKE_CUDA_ARCHITECTURES}")
 endif()

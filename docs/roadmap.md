@@ -359,3 +359,52 @@ Literature starting points are:
 - [ ] global sparse M2L comparison (class reuse currently avoids duplication)
 - [ ] level sparse L2L (candidate; benchmark required)
 - [ ] global sparse L2P (candidate; benchmark required)
+
+## Future research milestone: uniformly magnetised rectangular cells
+
+Feasibility is currently unknown. No source-model architecture should be
+committed until both the near- and far-field mathematics have been studied and
+validated. The intended research boundary is:
+
+```text
+SOURCE MODEL
+├── Point dipole
+│   ├── near field: dipole tensor
+│   └── far field: current dipole P2M
+│
+└── Uniform rectangular prism
+    ├── near field
+    │   ├── standard prism tensor
+    │   └── volume-averaged prism tensor
+    │
+    └── far field
+        └── finite-prism multipole construction [research required]
+```
+
+For the near field, investigate replacing the point-dipole 3 x 3 interaction
+tensor with a separate rectangular-prism demagnetisation tensor. The MagTense
+`develop` branch is the reference implementation: examine
+`source/TileDemagTensor/TileRectangularPrismTensor.f90` for the standard tensor,
+which evaluates the field of a uniformly magnetised source prism at a target
+position. This is the closest analogue of current P2P. Also examine
+`source/TileDemagTensor/TileRectangularPrismAvgTensor.f90` for the recently
+added receiving-volume-averaged tensor. The latter implements the definite
+integral formulation, including `F1` and `F2`, from Fukushima et al., *Volume
+Average Demagnetizing Tensor of Rectangular Prisms*, and may better represent a
+finite receiving micromagnetic cell. Research must decide which target
+quantity this library and eventual MagTense integration require.
+
+Changing P2P alone must not be assumed sufficient. Far-field research must ask:
+
+- whether the Cartesian expansion represents a finite cuboid exactly to a
+  requested order through a modified P2M;
+- which uniformly magnetised cuboid multipole moments are non-zero and whether
+  they can be calculated analytically during static initialisation;
+- whether M2M, M2L, L2L, and L2P remain unchanged after that construction;
+- how finite-cell convergence compares with the point-dipole model;
+- whether a volume-averaged target also requires a modified L2P; and
+- at what separation the point-dipole approximation is already sufficient.
+
+The common M2M/M2L/L2L machinery should ideally remain source-model independent,
+but this is a hypothesis to verify mathematically, not a guaranteed design.
+No cube or prism operator is implemented by this milestone description.

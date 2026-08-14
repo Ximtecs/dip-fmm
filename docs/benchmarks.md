@@ -304,3 +304,34 @@ The static backend caches all geometry-dependent operator maps, including
 grouped M2L translation matrices, reusable gather/scatter buffers, and sparse
 near-field tensors. Morton stable sorting remains serial, and complete-tree
 storage can become expensive at excessive depth.
+
+## Reproducible optimisation configuration
+
+A portable Release build uses the compiler's normal optimised Release flags and
+produces a binary suitable for other compatible machines:
+
+```console
+cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Release
+```
+
+For measurements confined to the build workstation, native instruction
+selection and CMake's checked interprocedural optimisation can be enabled:
+
+```console
+cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCDFMM_ENABLE_NATIVE_ARCH=ON \
+    -DCDFMM_ENABLE_LTO=ON
+```
+
+`CDFMM_ENABLE_NATIVE_ARCH` is off by default because such a binary may fail on
+older processors. `CDFMM_ENABLE_FAST_MATH` is also off by default and is not
+part of the canonical benchmark configuration: it can alter IEEE behaviour,
+reproducibility, and numerical error, so scientific results require independent
+validation when it is used. Advanced users may append semicolon-separated C++
+options with `CDFMM_EXTRA_COMPILE_OPTIONS`; these do not replace build-type or
+standard CMake compiler flags and are deliberately not forwarded to CUDA.
+Record the configuration summary printed by CMake, compiler version, backend,
+CUDA architecture/device where applicable, and thread environment with every
+reported benchmark result.
