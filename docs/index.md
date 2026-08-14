@@ -1,18 +1,21 @@
 # dip-fmm documentation
 
-`dip-fmm` is a C++20 reference implementation of Cartesian fast-multipole
+`dip-fmm` is a C++20 implementation of Cartesian fast-multipole
 operators for point-dipole interactions.  The magnetic field $H$ is its primary
 output; scalar-potential evaluation is optional.
 
-The CPU mathematical operators, complete uniform tree geometry, and functional
-reference uniform FMM are implemented. The traversal is a correctness baseline
-and deliberately has no adaptive-tree or fixed-geometry optimisation.
+The mathematical operators, complete uniform-tree geometry, reusable static
+plans, and portable CPU traversal are implemented. Optional oneMKL, partial
+CUDA, and full CUDA execution consume the same canonical operators. The tree
+is currently non-adaptive.
 
 ```{toctree}
 :maxdepth: 2
 :caption: User guide
 
 overview
+static-architecture
+backends
 installation
 getting-started
 fmm-overview

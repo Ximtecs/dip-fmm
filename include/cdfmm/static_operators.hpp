@@ -13,27 +13,51 @@ namespace cdfmm {
 // Public types
 //------------------------------------------------------------------------------
 
-/** @brief One non-zero entry of a geometry-dependent coefficient map. */
+/**
+ * @brief One non-zero entry of a geometry-dependent coefficient map.
+ *
+ * Indices address flattened input and output arrays. Entries are immutable
+ * after plan construction and may be applied in any order when each output
+ * has a single writer, or accumulated additively otherwise.
+ */
 struct StaticOperatorEntry {
     int output{0};
     int input{0};
     double value{0.0};
 };
 
-/** @brief Compact exact representation of a sparse linear operator. */
+/**
+ * @brief Compact exact representation of a sparse linear operator.
+ *
+ * This is mathematical operator data rather than evaluation scratch. The
+ * entry list omits exact zeros from P2M and triangular translations and is
+ * reused for every moment state associated with the fixed geometry.
+ */
 struct StaticCoefficientOperator {
     int input_size{0};
     int output_size{0};
     std::vector<StaticOperatorEntry> entries{};
 };
 
-/** @brief Precomputed potential and field rows for one fixed target offset. */
+/**
+ * @brief Precomputed potential and field rows for one fixed target offset.
+ *
+ * All four arrays use `MultiIndexSet` coefficient order. The object is an
+ * immutable CPU-side local-evaluation operator; CUDA-full repacks its non-zero
+ * field entries during initialisation.
+ */
 struct StaticL2PEvaluator {
     std::vector<double> potential{};
     std::array<std::vector<double>, 3> field{};
 };
 
-/** @brief Six independent entries of one fixed dipole interaction tensor. */
+/**
+ * @brief Six independent entries of one fixed dipole interaction tensor.
+ *
+ * The target/source indices use Morton-sorted particle order. Symmetry stores
+ * only xx, xy, xz, yy, yz and zz; the block contains immutable mathematical
+ * data and no per-evaluation moment or field storage.
+ */
 struct StaticDipoleBlock {
     int target{0};
     int source{0};
@@ -64,7 +88,13 @@ CDFMM_HOST_DEVICE inline void accumulate_static_dipole_block(
 
 #undef CDFMM_HOST_DEVICE
 
-/** @brief Target-row representation of the exact sparse near-field operator. */
+/**
+ * @brief Target-row representation of the exact sparse near-field operator.
+ *
+ * `row_offsets[t]..row_offsets[t+1]` is the contiguous block range for sorted
+ * target `t`. The representation is immutable after construction, is shared
+ * by CPU and CUDA packings, and maps changing sorted moments to near fields.
+ */
 struct StaticP2POperator {
     int source_count{0};
     int target_count{0};
@@ -75,7 +105,16 @@ struct StaticP2POperator {
     [[nodiscard]] std::size_t memory_bytes() const noexcept;
 };
 
-/** @brief Canonical target-row plan for normalised static M2L translation. */
+/**
+ * @brief Canonical immutable execution plan for normalised static M2L.
+ *
+ * `matrices` contains column-major, level-independent transfer-class matrices.
+ * Multipole and local scaling are laid out `[level][coefficient]` and restore
+ * physical box width. For target node `t`, row offsets select parallel entries
+ * in `source_nodes`, `matrix_ids`, and `interaction_levels`. CPU, oneMKL, and
+ * CUDA execution derive from this single mathematical representation; the
+ * vectors contain no mutable evaluation coefficients or device ownership.
+ */
 struct StaticM2LPlan {
     int coefficient_count{0};
     int matrix_count{0};

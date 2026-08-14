@@ -224,6 +224,9 @@ UniformFmm::UniformFmm(const std::vector<Vec3>& source_positions,
 }
 
 void UniformFmm::build_static_plan() {
+  // This is the geometry-dependent half of the evaluator. None of the data
+  // built here depends on dipole moments, so it remains valid for every later
+  // evaluate() call; see docs/static-architecture.md.
   const auto total_start = Clock::now();
   const auto nodes = tree_.nodes();
   using Key = std::tuple<int, int, int>;
@@ -255,6 +258,9 @@ void UniformFmm::build_static_plan() {
     const double child_half_width =
         nodes[static_cast<std::size_t>(level_offset(level))].half_width;
     for (int child_class = 0; child_class < 8; ++child_class) {
+      // Parity of the three child coordinates identifies one of the eight
+      // parent-child displacements. Sharing by class avoids storing a copy of
+      // the same triangular map for every tree edge.
       const Vec3 child_offset{
           (child_class & 1) != 0 ? child_half_width : -child_half_width,
           (child_class & 2) != 0 ? child_half_width : -child_half_width,
@@ -316,6 +322,9 @@ void UniformFmm::build_static_plan() {
     m2l_plan_.local_scaling.resize(
         scaling_offset + static_cast<std::size_t>(coefficient_count));
     double inverse_width_power = 1.0;
+    // The matrices below are dimensionless and level independent. These two
+    // degree-dependent factors restore physical box width; see the M2L
+    // normalisation section in docs/math.md.
     for (int degree = 0; degree <= basis_.order() + 1; ++degree) {
       for (int index = 0; index < coefficient_count; ++index) {
         if (basis_[index].degree() == degree) {
@@ -347,6 +356,9 @@ void UniformFmm::build_static_plan() {
   std::partial_sum(m2l_plan_.target_row_offsets.begin(),
                    m2l_plan_.target_row_offsets.end(),
                    m2l_plan_.target_row_offsets.begin());
+  // Convert discovered interactions to CSR-like target rows. A target's
+  // contributions are contiguous, giving the portable and CUDA executors one
+  // output owner and deterministic accumulation without atomics on the CPU.
   m2l_plan_.source_nodes.resize(interaction_count);
   m2l_plan_.matrix_ids.resize(interaction_count);
   m2l_plan_.interaction_levels.resize(interaction_count);
@@ -568,6 +580,8 @@ void UniformFmm::static_m2l(const int level) {
       m2l_plan_.local_scaling.data() + static_cast<std::size_t>(level) * n;
 
   auto phase_start = Clock::now();
+  // oneMKL works most effectively on columns sharing one transfer matrix.
+  // Gather applies multipole scaling while preserving the canonical plan.
 #pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
   for (std::ptrdiff_t group_index = 0; group_index < group_count;
        ++group_index) {
@@ -645,6 +659,9 @@ void UniformFmm::static_m2l(const int level) {
 
   phase_start = Clock::now();
   for (M2LGroup &group : m2l_groups_) {
+    // Scatter is deliberately serial across groups: different transfer
+    // classes can address the same target local, so parallel groups would
+    // otherwise require atomics or private reduction buffers.
     for (std::size_t column = 0; column < group.targets.size(); ++column) {
       if (group.levels[column] != level) {
         continue;
@@ -707,6 +724,8 @@ void UniformFmm::upward_pass_prepared() {
   for (std::ptrdiff_t occupied_index = 0;
        occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
        ++occupied_index) {
+    // Occupied leaves have disjoint multipole vectors. Each worker therefore
+    // owns its output and no synchronisation is needed inside P2M.
     const int leaf_index =
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
     const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
@@ -797,6 +816,8 @@ void UniformFmm::downward_pass() {
 
     const auto nodes = tree_.nodes();
     for (int level = 1; level <= tree_.leaf_level(); ++level) {
+        // Parent locals must be inherited before this level's M2L is added.
+        // Advancing levels in order makes the parent-child dependency explicit.
         const int begin = level_offset(level);
         const int end = level_offset(level + 1);
 
@@ -984,6 +1005,8 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
   PendingCudaP2PGuard p2p_guard(use_cuda_p2p ? cuda_p2p_plan_->plan.get()
                                              : nullptr);
   if (use_cuda_p2p) {
+    // Near-field P2P is independent of the far-field hierarchy. Starting it
+    // now overlaps its private CUDA stream with CPU P2M/M2M and CUDA M2L.
     cuda_p2p_plan_->plan->begin_evaluate(sorted_dipole_moments_,
                                          sorted_self_indices_);
     p2p_guard.arm();
@@ -1025,6 +1048,8 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
         has_flag(output, OutputFlags::Field)) {
         std::fill(near_fields_.begin(), near_fields_.end(), Vec3{});
         if (use_cuda_p2p) {
+            // This is the first point at which final assembly needs the near
+            // field, so delaying the wait preserves all available overlap.
             const auto wait_start = Clock::now();
       cuda_p2p_plan_->plan->finish_evaluate(near_fields_);
       last_timings_.cuda_p2p_wait.add(elapsed_seconds(wait_start));
@@ -1055,6 +1080,8 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
           ? output
           : (has_flag(output, OutputFlags::Potential) ? OutputFlags::Potential
                                                       : OutputFlags::None);
+  // The compact static tensor represents H only. Potential requests retain
+  // the direct list1 formula rather than changing the tensor representation.
   if (reference_near_output != OutputFlags::None) {
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
     for (std::ptrdiff_t occupied_index = 0;

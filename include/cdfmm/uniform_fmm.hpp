@@ -15,6 +15,7 @@
 
 namespace cdfmm {
 
+/** @brief Location and implementation used for a complete FMM evaluation. */
 enum class ExecutionBackend {
     Auto,
     CpuReference,
@@ -33,7 +34,12 @@ enum class StaticMatrixBackend { Portable, OneMkl };
 /** @brief Executor selected for one operator in the shared static traversal. */
 enum class StaticOperatorExecutor { Reference, Portable, OneMkl, Cuda };
 
-/** @brief Per-operator executor selection for the canonical static plan. */
+/**
+ * @brief Per-operator executor selection for the canonical static plan.
+ *
+ * This small value object reports resolved placement; it owns neither
+ * operators nor scratch buffers. See `docs/backends.md` for transfer flow.
+ */
 struct StaticExecutionPlan {
   StaticOperatorExecutor p2m{StaticOperatorExecutor::Portable};
   StaticOperatorExecutor m2m{StaticOperatorExecutor::Portable};
@@ -231,10 +237,18 @@ private:
   class CudaM2LPlanOwner;
   class CudaP2PPlanOwner;
   class CudaFullPlanOwner;
+  /** @brief Immutable leaf index and geometry-specific P2M coefficient map. */
   struct P2MPlan {
       int leaf{0};
     StaticCoefficientOperator operator_map{};
   };
+  /**
+   * @brief oneMKL-only gather/GEMM/scatter packing for one transfer class.
+   *
+   * Source, target, and level metadata is fixed; gathered and translated are
+   * persistent scratch reused by evaluations. Portable and CUDA paths consume
+   * the canonical `StaticM2LPlan` directly and do not allocate these buffers.
+   */
   struct M2LGroup {
     int matrix_id{0};
     std::vector<int> sources{};
@@ -253,6 +267,7 @@ private:
   void cuda_m2l();
   void l2l_downward();
 
+  // Fixed geometry and immutable operator descriptions outlive every call.
   UniformTree tree_;
   MultiIndexSet basis_;
   M2LBackend m2l_backend_{M2LBackend::Static};
@@ -270,6 +285,7 @@ private:
   StaticP2POperator p2p_operator_{};
   StaticM2LPlan m2l_plan_{};
   StaticPlanStatistics static_plan_statistics_{};
+  // Mutable coefficient and result storage makes one evaluator non-reentrant.
   std::vector<CoeffVector> multipoles_{};
   std::vector<CoeffVector> locals_{};
   std::vector<Vec3> sorted_dipole_moments_{};

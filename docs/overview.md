@@ -22,17 +22,17 @@ for later optimisation.
 - optional potential and/or magnetic-field output;
 - a complete, non-adaptive, Morton-sorted uniform octree with source and target
   ranges plus `list1` and `list2` interactions;
-- a functional reference `UniformFmm` with upward and downward passes, direct
+- a functional static `UniformFmm` with upward and downward passes, direct
   list1 near fields, target unsorting, and inspectable node expansions;
 - C++ validation helpers, tests, examples, a small benchmark, and Python
   bindings for direct evaluation and tree inspection.
 
 ## Limitations
 
-The complete traversal is intentionally a straightforward CPU reference. The
-adaptive tree, persistent geometry plan, translation caching, CUDA kernels,
-and MagTense/Fortran interface are planned rather than
-implemented.  See the [roadmap](roadmap.md) for sequencing.
+The tree is uniform rather than adaptive, and MagTense/Fortran integration is
+not implemented. Portable CPU, oneMKL M2L, partial CUDA, and full CUDA
+execution are available when their optional build dependencies are enabled.
+See the [backend guide](backends.md) and [roadmap](roadmap.md).
 
 ## Architecture
 
@@ -44,3 +44,8 @@ the mathematical operators remain independent and testable in isolation.
 [Mathematical formulation](math.md) defines
 the shared conventions, while the [API reference](api.rst) exposes the public
 headers through Doxygen and Breathe.
+
+For initialisation/evaluation data flow and ownership boundaries, start with
+[Static-geometry architecture](static-architecture.md). Exact operator
+equations and M2L scaling conventions are in the
+[Mathematical formulation](math.md).
