@@ -151,7 +151,8 @@ python benchmarks/run_benchmarks.py --profile quick --max-threads 4
 ```
 
 The preset sets `CMAKE_CXX_COMPILER=icpx`, `CDFMM_ENABLE_OPENMP=ON`, and
-`CDFMM_ENABLE_IPO=ON`. A portable serial build remains available with
+`CDFMM_ENABLE_LTO=ON`. LTO is enabled by default for Release builds. A
+portable serial build remains available with
 `-DCDFMM_ENABLE_OPENMP=OFF`. OpenMP uses the standard runtime controls:
 
 ```console
@@ -307,31 +308,37 @@ storage can become expensive at excessive depth.
 
 ## Reproducible optimisation configuration
 
-A portable Release build uses the compiler's normal optimised Release flags and
-produces a binary suitable for other compatible machines:
+Release builds enable LTO and native CPU instruction selection by default:
 
 ```console
 cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release
 ```
 
-For measurements confined to the build workstation, native instruction
-selection and CMake's checked interprocedural optimisation can be enabled:
+The resulting binary is optimised for the build machine and may not run on an
+older or otherwise incompatible processor. Disable native instruction selection
+when a portable binary is required:
 
 ```console
 cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCDFMM_ENABLE_NATIVE_ARCH=ON \
-    -DCDFMM_ENABLE_LTO=ON
+    -DCDFMM_ENABLE_NATIVE_ARCH=OFF
 ```
 
-`CDFMM_ENABLE_NATIVE_ARCH` is off by default because such a binary may fail on
-older processors. `CDFMM_ENABLE_FAST_MATH` is also off by default and is not
-part of the canonical benchmark configuration: it can alter IEEE behaviour,
-reproducibility, and numerical error, so scientific results require independent
-validation when it is used. Advanced users may append semicolon-separated C++
-options with `CDFMM_EXTRA_COMPILE_OPTIONS`; these do not replace build-type or
-standard CMake compiler flags and are deliberately not forwarded to CUDA.
+Fast math remains off by default. Enable it explicitly with:
+
+```console
+cmake -S . -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCDFMM_ENABLE_FAST_MATH=ON
+```
+
+Fast math is not part of the canonical benchmark configuration: it can alter
+IEEE behaviour, reproducibility, and numerical error, so scientific results
+require independent validation when it is used. Advanced users may append
+semicolon-separated C++ options with `CDFMM_EXTRA_COMPILE_OPTIONS`; these do
+not replace build-type or standard CMake compiler flags and are deliberately
+not forwarded to CUDA.
 Record the configuration summary printed by CMake, compiler version, backend,
 CUDA architecture/device where applicable, and thread environment with every
 reported benchmark result.

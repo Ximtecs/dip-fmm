@@ -485,10 +485,12 @@ OMP_NUM_THREADS=16 ./build-bench/benchmarks/benchmark_uniform_fmm --help
 ```
 
 The benchmark preset selects `icpx`, OpenMP, Release `-O3`, native CPU tuning,
-and IPO when supported. For explicit configuration, the equivalent core
+and LTO when supported. LTO is enabled by default for Release builds. For
+explicit configuration, the equivalent core
 settings are `CXX=icpx cmake -S . -B build-bench -G Ninja
 -DCMAKE_BUILD_TYPE=Release -DCDFMM_BUILD_BENCHMARKS=ON
--DCDFMM_ENABLE_OPENMP=ON`. Disable internal parallelism with
+-DCDFMM_ENABLE_OPENMP=ON -DCDFMM_ENABLE_NATIVE_ARCH=ON
+-DCDFMM_ENABLE_LTO=ON`. Disable internal parallelism with
 `-DCDFMM_ENABLE_OPENMP=OFF`; otherwise use `OMP_NUM_THREADS` or the benchmark's
 `--threads` option. See [Performance benchmarks](benchmarks.md) for the complete
 runner workflow.

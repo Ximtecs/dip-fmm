@@ -8,10 +8,10 @@ option(CDFMM_BUILD_PYTHON "Build Python bindings" ON)
 option(CDFMM_INSTALL_PYTHON_TO_ENV
        "Install Python bindings into the configured interpreter environment" OFF)
 option(CDFMM_ENABLE_OPENMP "Enable internally parallel CPU execution" ON)
-option(CDFMM_ENABLE_LTO "Enable interprocedural/link-time optimisation" OFF)
+option(CDFMM_ENABLE_LTO "Enable interprocedural/link-time optimisation" ON)
 option(CDFMM_ENABLE_IPO "Deprecated alias for CDFMM_ENABLE_LTO" OFF)
 option(CDFMM_ENABLE_NATIVE_ARCH
-       "Optimise CPU code for the architecture of the build machine" OFF)
+       "Optimise CPU code for the architecture of the build machine" ON)
 option(CDFMM_ENABLE_FAST_MATH
        "Enable non-IEEE fast floating-point transformations" OFF)
 set(CDFMM_EXTRA_COMPILE_OPTIONS "" CACHE STRING
