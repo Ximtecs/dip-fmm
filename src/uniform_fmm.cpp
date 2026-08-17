@@ -52,6 +52,7 @@ void accumulate_timings(EvaluationTimings &aggregate,
   accumulate_phase(aggregate.local_reset, value.local_reset);
   accumulate_phase(aggregate.l2l, value.l2l);
   accumulate_phase(aggregate.m2l, value.m2l);
+  accumulate_phase(aggregate.m2l_scale, value.m2l_scale);
   accumulate_phase(aggregate.m2l_gather, value.m2l_gather);
   accumulate_phase(aggregate.m2l_multiply, value.m2l_multiply);
   accumulate_phase(aggregate.m2l_scatter, value.m2l_scatter);
@@ -633,6 +634,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     last_timings_.p2m.add(device.p2m_seconds);
     last_timings_.m2m.add(device.m2m_seconds);
     last_timings_.m2l.add(device.m2l_seconds);
+    last_timings_.m2l_scale.add(device.scale_seconds);
     last_timings_.m2l_multiply.add(device.multiply_seconds);
     last_timings_.l2l.add(device.l2l_seconds);
     last_timings_.l2p.add(device.l2p_seconds);

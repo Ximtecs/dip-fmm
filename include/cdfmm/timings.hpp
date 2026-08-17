@@ -65,6 +65,8 @@ struct EvaluationTimings {
     PhaseTiming l2l{};
     /// @brief Time spent translating well-separated multipoles to locals.
     PhaseTiming m2l{};
+    /// @brief Time spent pre-scaling multipoles for CUDA M2L execution.
+    PhaseTiming m2l_scale{};
     /// @brief Time spent packing source multipoles for grouped M2L.
     PhaseTiming m2l_gather{};
     /// @brief Time spent applying grouped dense M2L matrices.
@@ -179,6 +181,14 @@ struct CudaPlanStatistics {
   std::size_t m2l_unique_matrix_count{0};
   std::size_t m2l_matrix_bytes{0};
   std::size_t m2l_interaction_metadata_bytes{0};
+  /// @brief Number of canonical source-to-target M2L interactions.
+  std::size_t m2l_interaction_count{0};
+  /// @brief Number of non-empty target rows executed by CUDA M2L.
+  std::size_t m2l_active_row_count{0};
+  /// @brief Persistent CUDA M2L evaluation scratch in bytes.
+  std::size_t m2l_scratch_bytes{0};
+  /// @brief Threads used by each CUDA M2L target-row kernel block.
+  int m2l_threads_per_block{0};
   std::size_t l2l_unique_matrix_count{0};
   std::size_t l2l_matrix_bytes{0};
   /// @brief Number of pairs in the uploaded canonical sparse P2P tensor.
@@ -203,6 +213,7 @@ struct CudaEvaluationTimings {
     double gather_seconds{0.0};
     double multiply_seconds{0.0};
     double scatter_seconds{0.0};
+    double scale_seconds{0.0};
     double kernel_seconds{0.0};
     double d2h_seconds{0.0};
     double p2m_seconds{0.0};

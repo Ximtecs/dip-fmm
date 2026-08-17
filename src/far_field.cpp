@@ -359,6 +359,7 @@ void UniformFmm::cuda_m2l() {
   const CudaEvaluationTimings &device = cuda_m2l_plan_->plan->timings();
   last_timings_.cuda_h2d.add(device.h2d_seconds);
   last_timings_.cuda_m2l_h2d.add(device.h2d_seconds);
+  last_timings_.m2l_scale.add(device.scale_seconds);
   last_timings_.m2l_multiply.add(device.multiply_seconds);
   last_timings_.cuda_kernel.add(device.kernel_seconds);
   last_timings_.cuda_d2h.add(device.d2h_seconds);
