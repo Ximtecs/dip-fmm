@@ -2,6 +2,7 @@
 
 #include "cdfmm/cuda_direct.hpp"
 #include "cuda_fmm_plan.hpp"
+#include "profile.hpp"
 #include "cuda_m2l_plan.hpp"
 #include "cuda_p2p_plan.hpp"
 
@@ -1179,29 +1180,39 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   };
   check_cuda(cudaEventRecord(plan.events[0], plan.stream),
              "record full FMM start");
-  if (!moments.empty()) {
-    check_cuda(cudaMemcpyAsync(plan.moments, plan.pinned_moments,
-                               moments.size_bytes(), cudaMemcpyHostToDevice,
-                               plan.stream),
-               "upload full FMM moments");
-    permute_moments_kernel<<<(plan.source_count + threads - 1) / threads,
-                             threads, 0, plan.stream>>>(
-        plan.moments, plan.source_permutation, plan.source_count,
-        plan.sorted_moments);
+  {
+    detail::ProfileRange transfer_range{"cdfmm/input_preparation/moments_h2d"};
+    if (!moments.empty()) {
+      check_cuda(cudaMemcpyAsync(plan.moments, plan.pinned_moments,
+                                 moments.size_bytes(), cudaMemcpyHostToDevice,
+                                 plan.stream),
+                 "upload full FMM moments");
+      detail::ProfileRange permutation_range{
+          "cdfmm/input_preparation/moment_permutation"};
+      permute_moments_kernel<<<(plan.source_count + threads - 1) / threads,
+                               threads, 0, plan.stream>>>(
+          plan.moments, plan.source_permutation, plan.source_count,
+          plan.sorted_moments);
+    }
   }
   check_cuda(cudaEventRecord(plan.events[1], plan.stream),
              "record moments upload");
-  check_cuda(cudaMemsetAsync(plan.multipoles, 0,
-                             static_cast<std::size_t>(plan.node_count) *
-                                 plan.coefficient_count * sizeof(double),
-                             plan.stream),
-             "clear full FMM multipoles");
-  launch_stage(plan.p2m_stage, reinterpret_cast<double *>(plan.sorted_moments),
-               plan.multipoles);
+  {
+    detail::ProfileRange p2m_range{"cdfmm/far_field/p2m"};
+    check_cuda(cudaMemsetAsync(plan.multipoles, 0,
+                               static_cast<std::size_t>(plan.node_count) *
+                                   plan.coefficient_count * sizeof(double),
+                               plan.stream),
+               "clear full FMM multipoles");
+    launch_stage(plan.p2m_stage,
+                 reinterpret_cast<double *>(plan.sorted_moments),
+                 plan.multipoles);
+  }
   check_cuda(cudaEventRecord(plan.events[2], plan.stream), "record P2M");
   // Kernels for one level can update parent coefficients concurrently, but a
   // parent level must not consume them early. Launching levels into one stream
   // supplies the required child-to-parent ordering without a host barrier.
+  detail::ProfileRange m2m_range{"cdfmm/far_field/m2m"};
   for (int level = plan.leaf_level; level >= 1; --level) {
     const std::size_t items =
         plan.m2m_interaction_count * plan.m2m_entries_per_matrix;
@@ -1214,6 +1225,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
     }
   }
   check_cuda(cudaEventRecord(plan.events[3], plan.stream), "record M2M");
+  m2m_range.end();
+  detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
   check_cuda(cudaMemsetAsync(plan.locals, 0,
                              static_cast<std::size_t>(plan.node_count) *
                                  plan.coefficient_count * sizeof(double),
@@ -1221,6 +1234,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
              "clear full FMM locals");
   launch_static_m2l(plan.m2l, plan.multipoles, plan.locals, plan.stream);
   check_cuda(cudaEventRecord(plan.events[4], plan.stream), "record M2L");
+  m2l_range.end();
+  detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
   // The downward dependency is the reverse: each parent local must be complete
   // before the next level translates it to children. Stream order enforces it.
   for (int level = 1; level <= plan.leaf_level; ++level) {
@@ -1235,6 +1250,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
     }
   }
   check_cuda(cudaEventRecord(plan.events[5], plan.stream), "record L2L");
+  l2l_range.end();
+  detail::ProfileRange l2p_range{"cdfmm/far_field/l2p"};
   check_cuda(cudaMemsetAsync(plan.far_fields, 0,
                              static_cast<std::size_t>(plan.target_count) *
                                  sizeof(Vec3),
@@ -1243,9 +1260,13 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   launch_stage(plan.l2p_stage, plan.locals,
                reinterpret_cast<double *>(plan.far_fields));
   check_cuda(cudaEventRecord(plan.events[6], plan.stream), "record L2P");
+  l2p_range.end();
+  detail::ProfileRange p2p_range{"cdfmm/near_field/p2p"};
   launch_static_p2p(plan.p2p, plan.sorted_moments, plan.self_indices,
                     plan.near_fields, plan.stream);
   check_cuda(cudaEventRecord(plan.events[7], plan.stream), "record P2P");
+  p2p_range.end();
+  detail::ProfileRange combine_range{"cdfmm/combine"};
   if (plan.target_count != 0) {
     // Combining and unsorting on-device keeps intermediate far/near fields
     // private to the plan; repeated field evaluations download only user-order H.
@@ -1256,11 +1277,15 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   }
   check_cuda(cudaEventRecord(plan.events[8], plan.stream),
              "record accumulation");
-  if (!fields.empty()) {
-    check_cuda(cudaMemcpyAsync(plan.pinned_fields, plan.final_fields,
-                               fields.size_bytes(), cudaMemcpyDeviceToHost,
-                               plan.stream),
-               "download full FMM fields");
+  combine_range.end();
+  {
+    detail::ProfileRange transfer_range{"cdfmm/output/final_field_d2h"};
+    if (!fields.empty()) {
+      check_cuda(cudaMemcpyAsync(plan.pinned_fields, plan.final_fields,
+                                 fields.size_bytes(), cudaMemcpyDeviceToHost,
+                                 plan.stream),
+                 "download full FMM fields");
+    }
   }
   check_cuda(cudaEventRecord(plan.events[9], plan.stream),
              "record field download");

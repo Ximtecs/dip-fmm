@@ -1,5 +1,9 @@
 # Performance benchmarks
 
+Benchmark timing answers how fast a deterministic workload is. To investigate
+why it takes that long with `perf`, NVIDIA Nsight, and the same benchmark
+driver, see the dedicated [profiling guide](profiling.md).
+
 ## Complete reset, build, test, and rough benchmark
 
 Run from the repository root. This resets all build directories but preserves

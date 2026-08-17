@@ -15,6 +15,7 @@
 
 #include "cdfmm/operators.hpp"
 #include "cuda_m2l_plan.hpp"
+#include "profile.hpp"
 #include "uniform_fmm_internal.hpp"
 
 namespace cdfmm {
@@ -40,6 +41,7 @@ inline double elapsed_seconds(const Clock::time_point start) {
 } // namespace
 
 void UniformFmm::static_m2l(const int level) {
+  detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
   if (static_matrix_backend_ == StaticMatrixBackend::Portable) {
     const auto phase_start = Clock::now();
     apply_static_m2l_plan(m2l_plan_, level, multipoles_, locals_);
@@ -156,19 +158,25 @@ void UniformFmm::upward_pass(std::span<const Vec3> dipole_moments) {
 }
 
 void UniformFmm::prepare_moments(std::span<const Vec3> dipole_moments) {
+  detail::ProfileRange input_range{"cdfmm/input_preparation"};
   if (dipole_moments.size() != tree_.sorted_source_positions().size()) {
     throw std::invalid_argument(
         "UniformFmm::upward_pass requires one dipole moment per source "
         "position");
   }
 
-  auto phase_start = Clock::now();
-  // Flat node-major storage permits one streaming reset instead of one small
-  // fill and one vector-metadata load per tree node.
-  std::fill(multipoles_.begin(), multipoles_.end(), 0.0);
-  last_timings_.multipole_reset.add(elapsed_seconds(phase_start));
+  {
+    const auto phase_start = Clock::now();
+    detail::ProfileRange reset_range{"cdfmm/far_field/multipole_reset"};
+    // Flat node-major storage permits one streaming reset instead of one small
+    // fill and one vector-metadata load per tree node.
+    std::fill(multipoles_.begin(), multipoles_.end(), 0.0);
+    last_timings_.multipole_reset.add(elapsed_seconds(phase_start));
+  }
 
-  phase_start = Clock::now();
+  const auto phase_start = Clock::now();
+  detail::ProfileRange permutation_range{
+      "cdfmm/input_preparation/moment_permutation"};
   const auto permutation = tree_.source_permutation();
 #pragma omp parallel for schedule(static) if (permutation.size() >= 256)
   for (std::ptrdiff_t sorted_index = 0;
@@ -187,6 +195,7 @@ void UniformFmm::upward_pass_prepared() {
   const auto occupied_leaves = tree_.occupied_source_leaves();
   const StaticOperatorExecutor p2m_executor = execution_plan().p2m;
   auto phase_start = Clock::now();
+  detail::ProfileRange p2m_range{"cdfmm/far_field/p2m"};
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
   for (std::ptrdiff_t occupied_index = 0;
        occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
@@ -219,8 +228,10 @@ void UniformFmm::upward_pass_prepared() {
     }
   }
   last_timings_.p2m.add(elapsed_seconds(phase_start));
+  p2m_range.end();
 
   phase_start = Clock::now();
+  detail::ProfileRange m2m_range{"cdfmm/far_field/m2m"};
   const StaticOperatorExecutor m2m_executor = execution_plan().m2m;
 // One team traverses all dependent levels; the implicit omp-for barrier
 // makes each parent level complete before its parent is consumed.
@@ -266,9 +277,12 @@ void UniformFmm::upward_pass_prepared() {
 //------------------------------------------------------------------------------
 
 void UniformFmm::downward_pass() {
+  detail::ProfileRange downward_range{"cdfmm/far_field/downward"};
   auto phase_start = Clock::now();
+  detail::ProfileRange reset_range{"cdfmm/far_field/local_reset"};
   std::fill(locals_.begin(), locals_.end(), 0.0);
   last_timings_.local_reset.add(elapsed_seconds(phase_start));
+  reset_range.end();
 
   if (execution_plan().m2l == StaticOperatorExecutor::Cuda) {
     cuda_m2l();
@@ -284,6 +298,7 @@ void UniformFmm::downward_pass() {
     const int end = level_offset(level + 1);
 
     phase_start = Clock::now();
+    detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
 #pragma omp parallel for schedule(static) if (end - begin >= 8)
     for (int target_index = begin; target_index < end; ++target_index) {
       const TreeNode &target = nodes[static_cast<std::size_t>(target_index)];
@@ -305,6 +320,7 @@ void UniformFmm::downward_pass() {
       }
     }
     last_timings_.l2l.add(elapsed_seconds(phase_start));
+    l2l_range.end();
 
     if (m2l_backend_ == M2LBackend::Static) {
       phase_start = Clock::now();
@@ -314,6 +330,7 @@ void UniformFmm::downward_pass() {
     }
 
     phase_start = Clock::now();
+    detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
 #pragma omp parallel for schedule(static) if (end - begin >= 8)
     for (int target_index = begin; target_index < end; ++target_index) {
       const TreeNode &target = nodes[static_cast<std::size_t>(target_index)];
@@ -336,6 +353,7 @@ void UniformFmm::downward_pass() {
 }
 
 void UniformFmm::cuda_m2l() {
+  detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
   const auto phase_start = Clock::now();
   cuda_m2l_plan_->plan->evaluate(multipoles_, locals_);
   const CudaEvaluationTimings &device = cuda_m2l_plan_->plan->timings();
@@ -349,6 +367,7 @@ void UniformFmm::cuda_m2l() {
 }
 
 void UniformFmm::l2l_downward() {
+  detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
   const auto nodes = tree_.nodes();
   for (int level = 1; level <= tree_.leaf_level(); ++level) {
     const int begin = level_offset(level);

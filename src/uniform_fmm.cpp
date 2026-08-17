@@ -25,6 +25,7 @@
 #include "cuda_m2l_plan.hpp"
 #include "cuda_p2p_plan.hpp"
 #include "near_field.hpp"
+#include "profile.hpp"
 #include "uniform_fmm_internal.hpp"
 
 namespace cdfmm {
@@ -592,6 +593,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
                                std::span<PotentialField> results,
                                const OutputFlags output,
                                std::span<const int> target_source_indices) {
+  detail::ProfileRange evaluation_range{"cdfmm/evaluate"};
   const std::size_t target_count = tree_.sorted_target_positions().size();
   if (results.size() != target_count) {
     throw std::invalid_argument(
@@ -619,6 +621,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     const auto evaluation_start = Clock::now();
     prepare_self_indices(target_source_indices);
     std::vector<Vec3> fields(target_count);
+    detail::ProfileRange device_range{"cdfmm/cuda_full"};
     cuda_full_plan_->plan->evaluate(dipole_moments, fields,
                                     sorted_self_indices_);
     for (std::size_t target = 0; target < target_count; ++target) {
@@ -661,8 +664,11 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     p2p_guard.arm();
   }
 
-  upward_pass_prepared();
-  downward_pass();
+  {
+    detail::ProfileRange far_range{"cdfmm/far_field"};
+    upward_pass_prepared();
+    downward_pass();
+  }
 
   const auto nodes = tree_.nodes();
   const auto targets = tree_.sorted_target_positions();
@@ -671,6 +677,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
   const auto occupied_leaves = tree_.occupied_target_leaves();
 
   auto phase_start = Clock::now();
+  detail::ProfileRange l2p_range{"cdfmm/far_field/l2p"};
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
   for (std::ptrdiff_t occupied_index = 0;
        occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
@@ -695,6 +702,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
 
   if (execution_plan().p2p != StaticOperatorExecutor::Reference &&
       has_flag(output, OutputFlags::Field)) {
+    detail::ProfileRange near_range{"cdfmm/near_field"};
     std::fill(near_fields_.begin(), near_fields_.end(), Vec3{});
     if (use_cuda_p2p) {
       // This is the first point at which final assembly needs the near
@@ -713,6 +721,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
       last_timings_.p2p.add(device.h2d_seconds + device.kernel_seconds +
                             device.d2h_seconds);
     } else {
+      detail::ProfileRange p2p_range{"cdfmm/near_field/p2p"};
       const auto p2p_start = Clock::now();
       detail::evaluate_static_near_field(p2p_operator_, sorted_dipole_moments_,
                                          near_fields_, sorted_self_indices_);
@@ -724,6 +733,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
   }
 
   phase_start = Clock::now();
+  detail::ProfileRange output_range{"cdfmm/output_permutation"};
   const OutputFlags reference_near_output =
       execution_plan().p2p == StaticOperatorExecutor::Reference
           ? output
