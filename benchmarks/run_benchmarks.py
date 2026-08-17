@@ -59,6 +59,7 @@ EVALUATION_PHASES = [
 ]
 
 M2L_SUBPHASES = [
+    ("m2l_scale", "Scale"),
     ("m2l_gather", "Gather"),
     ("m2l_multiply", "Matrix multiply"),
     ("m2l_scatter", "Scatter"),

@@ -310,6 +310,7 @@ def test_phase_plots_include_cuda_transfer_and_kernel_timings():
 
 def test_phase_plots_expose_static_matrix_work():
     assert M2L_SUBPHASES == [
+        ("m2l_scale", "Scale"),
         ("m2l_gather", "Gather"),
         ("m2l_multiply", "Matrix multiply"),
         ("m2l_scatter", "Scatter"),
@@ -332,6 +333,7 @@ def test_cuda_m2l_device_phases_are_nested_without_double_counting():
     assert "cuda_d2h" not in top_level_columns
     assert nested_columns == {
         "cuda_m2l_h2d",
+        "m2l_scale",
         "m2l_gather",
         "m2l_multiply",
         "m2l_scatter",

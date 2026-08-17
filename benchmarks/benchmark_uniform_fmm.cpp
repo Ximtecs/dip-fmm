@@ -434,7 +434,7 @@ std::string static_multiply_backend(const BenchmarkBackend backend)
     }
     if (backend == BenchmarkBackend::CudaM2LP2P ||
         backend == BenchmarkBackend::CudaFull) {
-        return "cuBLAS";
+        return "custom-cuda";
     }
     return "not_applicable";
 }
@@ -984,9 +984,9 @@ int main(int argc, char** argv)
             selected_backend == BenchmarkBackend::CudaFull;
         const std::string m2l_strategy =
             selected_backend == BenchmarkBackend::CudaM2LP2P
-            ? "cached-dense-m2l-and-sparse-list1-p2p"
+            ? "shared-cuda-target-row-m2l-and-sparse-list1-p2p"
             : (selected_backend == BenchmarkBackend::CudaFull
-                ? "full-device-resident-static-fmm"
+                ? "full-device-resident-shared-cuda-target-row-m2l"
             : (static_matrix
                 ? "cached-dense-m2l-matrix-per-transfer-class"
                 : (selected_backend == BenchmarkBackend::CpuReference
@@ -1024,7 +1024,7 @@ int main(int argc, char** argv)
                "source_sorting,target_morton,target_sorting,ranges,interaction_lists,"
                "evaluation_median,evaluation_mean,evaluations_per_second,"
                "amortised_seconds,moment_permutation,multipole_reset,p2m,m2m,"
-               "local_reset,l2l,m2l,m2l_gather,m2l_multiply,m2l_scatter,"
+               "local_reset,l2l,m2l,m2l_scale,m2l_gather,m2l_multiply,m2l_scatter,"
                "l2p,p2p,result_unpermutation,cuda_h2d,"
                "cuda_kernel,cuda_d2h,cuda_m2l_h2d,cuda_m2l_d2h,"
                "cuda_p2p_h2d,cuda_p2p_kernel,cuda_p2p_d2h,cuda_p2p_wait,"
@@ -1045,6 +1045,9 @@ int main(int argc, char** argv)
                "cuda_evaluation_h2d_bytes,cuda_evaluation_d2h_bytes,"
                "cuda_evaluation_h2d_calls,cuda_evaluation_d2h_calls,"
                "cuda_static_m2l_upload_count,cuda_static_p2p_upload_count,"
+               "cuda_m2l_interactions,cuda_m2l_active_rows,"
+               "cuda_m2l_metadata_bytes,cuda_m2l_scratch_bytes,"
+               "cuda_m2l_threads_per_block,"
                "cuda_persistent_device_bytes\n";
         const char* build_type =
 #ifdef NDEBUG
@@ -1084,6 +1087,7 @@ int main(int argc, char** argv)
             << phase_mean(timing.p2m) << ',' << phase_mean(timing.m2m) << ','
             << phase_mean(timing.local_reset) << ',' << phase_mean(timing.l2l)
             << ',' << phase_mean(timing.m2l)
+            << ',' << phase_mean(timing.m2l_scale)
             << ',' << phase_mean(timing.m2l_gather)
             << ',' << phase_mean(timing.m2l_multiply)
             << ',' << phase_mean(timing.m2l_scatter)
@@ -1132,6 +1136,11 @@ int main(int argc, char** argv)
             << ',' << cuda_statistics.evaluation_d2h_calls
             << ',' << cuda_statistics.static_m2l_upload_count
             << ',' << cuda_statistics.static_p2p_upload_count
+            << ',' << cuda_statistics.m2l_interaction_count
+            << ',' << cuda_statistics.m2l_active_row_count
+            << ',' << cuda_statistics.m2l_interaction_metadata_bytes
+            << ',' << cuda_statistics.m2l_scratch_bytes
+            << ',' << cuda_statistics.m2l_threads_per_block
             << ',' << cuda_statistics.persistent_device_bytes << '\n';
 
         if (!options.output.empty()) {
