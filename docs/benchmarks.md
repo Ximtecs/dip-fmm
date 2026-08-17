@@ -134,9 +134,10 @@ The static plan caches sparse P2M maps per occupied source leaf, shared
 triangular M2M and L2L maps, dense M2L matrices per transfer class, fixed L2P
 rows per target, and sparse list-1 P2P tensor blocks. CSV columns report
 construction time and storage across these operators. Runtime instrumentation
-separates `m2l_gather`, `m2l_multiply`, and `m2l_scatter` for the dense M2L
-strategy. The older per-interaction M2L traversal is retained only as a
-validation reference.
+separates `m2l_scale`, `m2l_gather`, `m2l_multiply`, and `m2l_scatter` for
+dense M2L strategies. CUDA uses `m2l_scale` for its device pre-scaling pass;
+CPU grouped execution uses gather, multiply, and scatter. The older
+per-interaction M2L traversal is retained only as a validation reference.
 
 Gathering and matrix application are scheduled across independent transfer
 classes with OpenMP. Each worker processes a complete grouped matrix operation;
@@ -175,8 +176,8 @@ direct-reference accuracy, tree phases, and evaluation phases. Median elapsed
 wall time across samples is the primary result. Input generation, reporting,
 and file output are outside timed regions.
 
-`m2l` is a top-level parent phase. `m2l_gather`, `m2l_multiply`, and
-`m2l_scatter` partition its static-matrix work and appear in a separate nested
+`m2l` is a top-level parent phase. `m2l_scale`, `m2l_gather`, `m2l_multiply`,
+and `m2l_scatter` partition its static-matrix work and appear in a separate nested
 breakdown. They are excluded from top-level phase-share normalisation so the
 same M2L time is not counted twice. For hybrid CUDA M2L/P2P, multipole H2D and
 local-coefficient D2H are included in this nested partition as well;

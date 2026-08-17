@@ -36,8 +36,8 @@ The C++ suite selects CPU reference/static backends explicitly and compares
 `CudaFull` with both paths and assert the moments-only H2D and field-only D2H
 contract. CUDA tests remain excluded from hosted CI.
 
-The partial path performs CPU moment permutation, P2M and M2M; GPU gather,
-static M2L cuBLAS multiplication and scatter; then CPU L2L and L2P. The cached
+The partial path performs CPU moment permutation, P2M and M2M; the shared CUDA
+target-row M2L executor; then CPU L2L and L2P. The cached
 full path applies every CPU-built static operator on the GPU and keeps
 multipoles, locals, near fields, and far fields resident between phases.
 sparse list-1 P2P tensor runs independently on a second CUDA stream and joins
@@ -48,8 +48,9 @@ The CUDA direct convenience evaluator is an O(N^2) validation reference, not
 an FMM backend. It uploads geometry when called and must not be used to claim a
 moment-only repeated far-field transfer contract.
 
-`EvaluationTimings` records operation-specific CUDA M2L and P2P durations with
-CUDA events plus the single final P2P host wait. Because the two device streams
+`EvaluationTimings` records operation-specific CUDA M2L scaling, multiplication,
+and P2P durations with CUDA events plus the single final P2P host wait. Because
+the two device streams
 can overlap, their durations must not be summed as a sequential critical path;
 compare them with the complete caller wall time in `total`.
 

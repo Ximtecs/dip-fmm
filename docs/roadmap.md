@@ -264,7 +264,7 @@ development workflow.
 - [x] persistent device geometry, input, output, stream, and pinned staging buffers
 - [x] direct all-to-all CUDA dipole reference
 - [x] static M2L matrices and interaction metadata uploaded once
-- [x] CUDA M2L gather, cuBLAS multiply, and race-free atomic scatter
+- [x] shared deterministic CUDA target-row M2L with pre-scaled multipoles
 - [x] static list-1 P2P tensors uploaded once and evaluated on CUDA
 - [x] independent CUDA P2P stream overlapped with the far-field chain
 - [x] genuine hybrid CUDA-M2L/P2P FMM and CPU-static comparison benchmarks
@@ -274,7 +274,7 @@ development workflow.
 - [x] field-only D2H repeated evaluation
 - [x] persistent CUDA direct-P2P buffers and user-order output
 - [x] device source and target permutations
-- [ ] custom-versus-cuBLAS M2L microbenchmarks
+- [ ] revisit class-grouped cuBLAS only if target-row M2L misses a future regime
 - [ ] CUDA Graph investigation and retention if measurements justify it
 - [x] CPU-static versus CUDA-M2L/P2P problem-size and order sweep infrastructure
 - [x] manual CUDA validation workflow (CUDA remains excluded from GitHub CI)
@@ -300,6 +300,57 @@ modes upload the same normalised M2L class table (at most 316 matrices), level
 scaling and interaction IDs, and the same canonical sparse P2P tensor; neither
 backend derives operator mathematics independently. Device-friendly packing is
 an executor concern and does not create a second mathematical plan.
+
+## Kohnke-inspired CUDA M2L optimisation [research]
+
+Use Kohnke et al., [*A CUDA fast multipole method with highly efficient M2L
+far field evaluation*](https://doi.org/10.1177/1094342020964857),
+*International Journal of High Performance Computing Applications* 35(1),
+97--117 (2021), as inspiration for future profiling-led research. The paper is
+relevant because it treats CUDA M2L execution as the limiting far-field cost;
+M2L is likewise the dominant repeated-evaluation bottleneck in the current
+`dip-fmm` CUDA implementation.
+
+The paper's algorithms use spherical-harmonic, complex-valued expansions,
+whereas `dip-fmm` currently uses Cartesian, real-valued multipole and local
+coefficients. Its transformations and execution schemes are therefore not
+directly applicable implementations. Any adaptation must be derived for the
+Cartesian basis and validated independently. Spherical-harmonic FMM remains
+the separate **Spherical-expansion alternative** roadmap topic and is not part
+of this investigation.
+
+Future Cartesian M2L research should investigate:
+
+- presorting and reorganising M2L interactions during static initialisation so
+  repeated GPU evaluation performs minimal bookkeeping;
+- grouping interactions to improve reuse of the existing M2L operators;
+- symmetry among the current Cartesian M2L displacement classes, including
+  whether axis permutations, rotations, and reflections allow several classes
+  to share one representative operator;
+- the corresponding Cartesian coefficient permutations and sign changes,
+  derived explicitly for the repository's coefficient ordering;
+- whether symmetry accelerates execution rather than merely reducing matrix
+  storage;
+- combining symmetry-based execution with batching interactions by M2L matrix
+  or transfer class;
+- benchmarking every candidate against the existing representation of at most
+  316 transfer-class matrices;
+- measuring complete repeated FMM evaluation time, M2L time, memory traffic,
+  cache behaviour, register pressure, and occupancy; and
+- retaining presorting or symmetry techniques only when they improve actual
+  repeated-evaluation performance without unacceptable regressions.
+
+As a separate CPU investigation, determine whether the improved target-row
+approach can accelerate the portable, OpenMP, or oneMKL M2L executors. Measure
+active-row traversal, scaling placement, pre-scaled multipoles, and
+class-grouped reuse against the current CPU implementation. Retain any CPU
+adaptation only when complete repeated-evaluation benchmarks show a benefit;
+do not assume that the CUDA execution strategy transfers profitably to CPUs.
+
+CUDA Dynamic Parallelism and alternative GPU memory-management strategies are
+lower-priority ideas from the paper. Investigate them only if future profiling
+identifies launch organisation or memory management as a material bottleneck;
+they are not planned changes.
 
 ## Future milestone: true periodic magnetostatics
 
