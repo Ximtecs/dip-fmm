@@ -13,7 +13,8 @@ dependencies:
   - jupyterlab
   - ipykernel
   - ipywidgets
-  - cmake>=3.24
+  # CMake 3.25 introduced the CUDA::nvtx3 imported target.
+  - cmake>=3.25
   - ninja
   # Intel oneAPI icpx is the reference high-performance C++20 compiler.
   - dpcpp_linux-64

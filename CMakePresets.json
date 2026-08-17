@@ -115,6 +115,16 @@
         "MKL_INTERFACE": "lp64",
         "MKL_THREADING": "gnu_thread"
       }
+    },
+    {
+      "name": "profile-all",
+      "displayName": "Combined CUDA, oneMKL, and NVTX profiling build",
+      "inherits": "benchmark-all",
+      "binaryDir": "${sourceDir}/build-profile-all",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CDFMM_ENABLE_PROFILING": "ON"
+      }
     }
   ],
   "buildPresets": [
@@ -147,6 +157,10 @@
     {
       "name": "benchmark-all",
       "configurePreset": "benchmark-all"
+    },
+    {
+      "name": "profile-all",
+      "configurePreset": "profile-all"
     }
   ],
   "testPresets": [

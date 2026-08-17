@@ -18,7 +18,13 @@ conda env update \
 
 conda activate cdfmm
 
-rm -rf build build-release build-bench build-bench-mkl build-bench-all
+rm -rf \
+  build \
+  build-release \
+  build-bench \
+  build-bench-mkl \
+  build-bench-all \
+  build-profile-all
 
 cmake --preset dev
 cmake --build --preset dev -j

@@ -10,4 +10,6 @@ dependencies:
   - cuda-nvcc=13.3.*
   - cuda-cudart-dev=13.3.*
   - cuda-libraries-dev=13.3.*
+  # Supply the header-only NVTX3 API used by profiling-enabled CUDA builds.
+  - cuda-nvtx-dev=13.3.*
   - libcublas-dev

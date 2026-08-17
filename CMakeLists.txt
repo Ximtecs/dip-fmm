@@ -44,7 +44,13 @@ if(CDFMM_ENABLE_CUDA)
   target_sources(cdfmm_core PRIVATE src/cuda_fmm.cu)
   target_link_libraries(cdfmm_core PUBLIC CUDA::cudart)
   if(CDFMM_ENABLE_PROFILING)
-    target_link_libraries(cdfmm_core PUBLIC CUDA::nvToolsExt)
+    if(NOT TARGET CUDA::nvtx3)
+      message(FATAL_ERROR
+        "CDFMM_ENABLE_PROFILING requires CMake 3.25 or newer for CUDA::nvtx3")
+    endif()
+    # NVTX3 is header-only. CUDA 12.9 and newer no longer provide the legacy
+    # nvToolsExt binary library or its corresponding imported CMake target.
+    target_link_libraries(cdfmm_core PUBLIC CUDA::nvtx3)
     target_compile_definitions(cdfmm_core PUBLIC CDFMM_ENABLE_NVTX=1)
   endif()
   target_compile_definitions(cdfmm_core PUBLIC CDFMM_ENABLE_CUDA=1)

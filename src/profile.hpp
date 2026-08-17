@@ -2,7 +2,7 @@
 #pragma once
 
 #ifdef CDFMM_ENABLE_NVTX
-#include <nvToolsExt.h>
+#include <nvtx3/nvToolsExt.h>
 #endif
 
 namespace cdfmm::detail {
