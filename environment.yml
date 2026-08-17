@@ -9,6 +9,7 @@ dependencies:
   - pytest
   # Interactive scientific examples and the VSCode-compatible notebook kernel.
   - matplotlib
+  - pandas
   - jupyterlab
   - ipykernel
   - ipywidgets

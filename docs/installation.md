@@ -181,6 +181,7 @@ newer.
 | Python | Run the bindings and development tools |
 | NumPy | Supply Python numerical arrays |
 | Matplotlib | Plot operator convergence and uniform-tree geometry |
+| pandas | Tabulate parameter-selection measurements in notebooks |
 | JupyterLab | Run the interactive scientific examples |
 | ipykernel | Expose the `cdfmm` environment as a notebook kernel |
 | ipywidgets | Provide optional interactive notebook controls |
@@ -221,8 +222,9 @@ Conda installation does not register it automatically, run:
 python -m ipykernel install --user --name cdfmm --display-name "Python (cdfmm)"
 ```
 
-The notebooks use Matplotlib and ipywidgets for optional visual controls while
-calling the compiled C++ operator implementations for all numerical work.
+The notebooks use Matplotlib, pandas, and ipywidgets for plotting, tabulation,
+and optional visual controls while calling the compiled C++ operator
+implementations for all numerical work.
 
 ### Compiler strategy and platform status
 

@@ -1,6 +1,13 @@
+import json
+from pathlib import Path
+
 import numpy as np
 
 import cdfmm
+
+
+REPOSITORY_ROOT = Path(__file__).parents[1]
+NOTEBOOK = REPOSITORY_ROOT / "examples/notebooks/13_parameter_selection.ipynb"
 
 
 def geometry():
@@ -64,3 +71,24 @@ def test_unreasonable_candidate_is_recorded_not_raised():
                   if candidate["depth"] == 9)
     assert failed["status"] == "failed"
     assert failed["reason"]
+
+
+def test_parameter_selection_notebook_sweeps_particles_orders_and_depths():
+    notebook = json.loads(NOTEBOOK.read_text(encoding="utf-8"))
+
+    assert notebook["nbformat"] == 4
+    assert notebook["metadata"]["kernelspec"]["display_name"] == "cdfmm"
+    sources = [
+        "".join(cell["source"])
+        for cell in notebook["cells"]
+        if cell["cell_type"] == "code"
+    ]
+    combined_source = "\n".join(sources)
+    assert "particle_counts = [1000, 5000, 10000, 30000]" in sources[0]
+    assert "performance_orders = [2, 4, 6, 8]" in sources[0]
+    assert "candidate_depths = [2, 3, 4]" in sources[0]
+    assert "for particle_count in particle_counts" in combined_source
+    assert "for order in performance_orders" in combined_source
+    assert "plt.subplots(" in combined_source
+    for index, source in enumerate(sources):
+        compile(source, f"{NOTEBOOK.name}:cell-{index}", "exec")

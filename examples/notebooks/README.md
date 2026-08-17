@@ -30,6 +30,7 @@ The sequence follows the data flow through the implemented operators:
 | `10_uniform_downward_pass.ipynb` | M2L/L2L routes, list1 near field, and complete-FMM accuracy |
 | `11_fmm3d_comparison.ipynb` | CUDA-full, CUDA-partial, and oneMKL performance versus FMM3D 2.1.0 |
 | `12_cuda_memory_usage.ipynb` | Estimated-versus-measured total and intermediate CPU/CUDA plan storage sweeps |
+| `13_parameter_selection.ipynb` | Empirical depth and order selection for performance and accuracy |
 
 Select the `Python (cdfmm)` kernel in JupyterLab or VSCode. Important
 parameters are collected near the top of each notebook, and all random
