@@ -50,7 +50,7 @@ def test_single_particle_storage_has_manual_counts():
     assert estimate.transfer_classes == 0
     assert estimate.m2l_interactions == 0
     assert estimate.p2p_pairs == 1
-    assert estimate.host_static_bytes == 424
+    assert estimate.host_static_bytes == 440
     assert estimate.cuda_partial_bytes == 332
     assert estimate.cuda_full_bytes == 700
 

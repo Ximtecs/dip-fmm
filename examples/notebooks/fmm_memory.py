@@ -150,11 +150,16 @@ def estimate_source_point_storage(
         p2p_pairs * P2P_BLOCK_BYTES + (particle_count + 1) * INT_BYTES
     )
     cached_matrix_bytes = len(groups) * coefficients**2 * DOUBLE_BYTES
-    # The canonical target-row plan stores one row offset per tree node and
-    # source, matrix-class, and level indices for every interaction.
-    interaction_index_bytes = (
+    # The canonical target-row plan stores one row offset per tree node;
+    # source, matrix-class, and level indices for every interaction; and two
+    # node-index bounds for every level. The latter let portable M2L visit only
+    # the targets owned by the requested level.
+    cuda_interaction_index_bytes = (
         len(nodes) + 1 + 3 * m2l_interactions
     ) * INT_BYTES
+    interaction_index_bytes = (
+        cuda_interaction_index_bytes + 2 * (depth + 1) * INT_BYTES
+    )
     level_scaling_bytes = 2 * (depth + 1) * coefficients * DOUBLE_BYTES
     host_static = {
         "P2P tensors": p2p_static_bytes,
@@ -174,7 +179,9 @@ def estimate_source_point_storage(
             2 * particle_count * VEC3_BYTES + particle_count * INT_BYTES
         ),
         "M2L class matrices and indices": (
-            cached_matrix_bytes + interaction_index_bytes + level_scaling_bytes
+            cached_matrix_bytes
+            + cuda_interaction_index_bytes
+            + level_scaling_bytes
         ),
         "M2L multipole and local buffers": coefficient_buffer_bytes,
     }
@@ -182,7 +189,7 @@ def estimate_source_point_storage(
     cuda_full = {
         "P2P tensors": p2p_static_bytes,
         "shared M2L matrices": cached_matrix_bytes,
-        "M2L interaction metadata": interaction_index_bytes,
+        "M2L interaction metadata": cuda_interaction_index_bytes,
         "M2L level scalings": level_scaling_bytes,
         "shared M2M/L2L matrices": (
             2 * depth * 8 * translation_entries * STATIC_ENTRY_BYTES
