@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
-#include <set>
 #include <stdexcept>
 #include <tuple>
 
@@ -441,6 +440,8 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
     const int leaf_begin = level_offset(max_level_);
     const int leaf_end = static_cast<int>(nodes_.size());
     leaf_indices_.resize(static_cast<std::size_t>(leaf_end - leaf_begin));
+    occupied_source_leaves_.reserve(leaf_indices_.size());
+    occupied_target_leaves_.reserve(leaf_indices_.size());
     for (int index = leaf_begin; index < leaf_end; ++index) {
         leaf_indices_[static_cast<std::size_t>(index - leaf_begin)] = index;
         if (nodes_[static_cast<std::size_t>(index)].source_count() > 0) {
@@ -456,50 +457,62 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
     // These boxes define the direct near field in a uniform FMM.
     const auto lists_start = Clock::now();
     for (int level = 0; level <= max_level_; ++level) {
-      const int begin = level_offset(level);
-      const int end = level_offset(level + 1);
-      #pragma omp parallel for schedule(static) if(end - begin >= 64)
-      for (int index = begin; index < end; ++index) {
-        TreeNode& node = nodes_[static_cast<std::size_t>(index)];
-        const int n = boxes_per_dim(level);
-        std::set<int> l1;
-        for (int dz = -1; dz <= 1; ++dz) {
-            for (int dy = -1; dy <= 1; ++dy) {
-                for (int dx = -1; dx <= 1; ++dx) {
-                    const int nx = node.ix + dx;
-                    const int ny = node.iy + dy;
-                    const int nz = node.iz + dz;
-                    if (nx >= 0 && nx < n && ny >= 0 && ny < n && nz >= 0 && nz < n) {
-                        l1.insert(node_index(node.level, nx, ny, nz));
+        const int begin = level_offset(level);
+        const int end = level_offset(level + 1);
+#pragma omp parallel for schedule(static) if (end - begin >= 64)
+        for (int index = begin; index < end; ++index) {
+            TreeNode& node = nodes_[static_cast<std::size_t>(index)];
+            const int n = boxes_per_dim(level);
+            node.list1.clear();
+            node.list1.reserve(27);
+            for (int dz = -1; dz <= 1; ++dz) {
+                for (int dy = -1; dy <= 1; ++dy) {
+                    for (int dx = -1; dx <= 1; ++dx) {
+                        const int nx = node.ix + dx;
+                        const int ny = node.iy + dy;
+                        const int nz = node.iz + dz;
+                        if (nx >= 0 && nx < n && ny >= 0 && ny < n &&
+                            nz >= 0 && nz < n) {
+                            node.list1.push_back(
+                                node_index(node.level, nx, ny, nz)
+                            );
+                        }
                     }
                 }
             }
-        }
-        node.list1.assign(l1.begin(), l1.end());
+            // Flat node indices define the historical deterministic list order.
+            std::sort(node.list1.begin(), node.list1.end());
 
-        if (node.level == 0) {
-            node.list2.clear();
-            continue;
-        }
+            if (node.level == 0) {
+                node.list2.clear();
+                continue;
+            }
 
         // list2 contains children of the parent's list1 boxes minus this
         // node's own list1.  Thus every entry is well separated at this level
         // but its parent is adjacent to this node's parent, which is the
         // classical uniform-tree M2L interaction criterion.
-        std::set<int> l2;
-        const TreeNode& parent = nodes_.at(node.parent);
-        for (const int parent_neighbour : parent.list1) {
-            const TreeNode& parent_node = nodes_.at(parent_neighbour);
-            for (const int child : parent_node.children) {
-                l2.insert(child);
+            std::vector<int> candidates;
+            candidates.reserve(27 * 8);
+            const TreeNode& parent = nodes_.at(node.parent);
+            for (const int parent_neighbour : parent.list1) {
+                const TreeNode& parent_node = nodes_.at(parent_neighbour);
+                for (const int child : parent_node.children) {
+                    candidates.push_back(child);
+                }
             }
+            // Parent neighbours and their children are unique in a uniform tree.
+            // Sorting a bounded contiguous buffer preserves historical order
+            // without balanced-tree node allocations or pointer chasing.
+            std::sort(candidates.begin(), candidates.end());
+            node.list2.clear();
+            node.list2.reserve(189);
+            std::set_difference(
+                candidates.begin(), candidates.end(),
+                node.list1.begin(), node.list1.end(),
+                std::back_inserter(node.list2)
+            );
         }
-        for (const int near_node : node.list1) {
-            l2.erase(near_node);
-        }
-        l2.erase(node.index);
-        node.list2.assign(l2.begin(), l2.end());
-      }
     }
     build_timings_.interaction_lists.add(
         std::chrono::duration<double>(Clock::now() - lists_start).count()

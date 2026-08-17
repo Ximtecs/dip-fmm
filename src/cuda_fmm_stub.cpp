@@ -75,8 +75,7 @@ CudaM2LPlan::CudaM2LPlan(const StaticM2LPlan&) {
 
 CudaM2LPlan::~CudaM2LPlan() = default;
 
-void CudaM2LPlan::evaluate(std::span<const std::vector<double>>,
-                           std::span<std::vector<double>>) {
+void CudaM2LPlan::evaluate(std::span<const double>, std::span<double>) {
   throw std::runtime_error("CUDA M2L backend is unavailable");
 }
 

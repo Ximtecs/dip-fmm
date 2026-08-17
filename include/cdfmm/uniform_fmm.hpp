@@ -266,6 +266,12 @@ private:
   void static_m2l(int level);
   void cuda_m2l();
   void l2l_downward();
+  [[nodiscard]] std::span<double> multipole_for_node(int node_index) noexcept;
+  [[nodiscard]] std::span<const double> multipole_for_node(
+      int node_index) const noexcept;
+  [[nodiscard]] std::span<double> local_for_node(int node_index) noexcept;
+  [[nodiscard]] std::span<const double> local_for_node(
+      int node_index) const noexcept;
 
   // Fixed geometry and immutable operator descriptions outlive every call.
   UniformTree tree_;
@@ -286,8 +292,10 @@ private:
   StaticM2LPlan m2l_plan_{};
   StaticPlanStatistics static_plan_statistics_{};
   // Mutable coefficient and result storage makes one evaluator non-reentrant.
-  std::vector<CoeffVector> multipoles_{};
-  std::vector<CoeffVector> locals_{};
+  // All fixed-width node expansions share one node-major allocation. This
+  // removes two heap allocations per node and lets resets stream linearly.
+  std::vector<double> multipoles_{};
+  std::vector<double> locals_{};
   std::vector<Vec3> sorted_dipole_moments_{};
   std::vector<PotentialField> sorted_results_{};
   std::vector<Vec3> near_fields_{};
