@@ -19,6 +19,8 @@ set(CDFMM_EXTRA_COMPILE_OPTIONS "" CACHE STRING
 option(CDFMM_ENABLE_MKL
        "Include a runtime-selectable oneMKL DGEMM backend for static M2L" OFF)
 option(CDFMM_ENABLE_CUDA "Enable optional NVIDIA CUDA execution backends" OFF)
+option(CDFMM_ENABLE_PROFILING
+       "Enable NVTX ranges for perf and NVIDIA Nsight captures" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,6 +43,10 @@ if(CDFMM_ENABLE_CUDA)
   find_package(CUDAToolkit REQUIRED)
   target_sources(cdfmm_core PRIVATE src/cuda_fmm.cu)
   target_link_libraries(cdfmm_core PUBLIC CUDA::cudart)
+  if(CDFMM_ENABLE_PROFILING)
+    target_link_libraries(cdfmm_core PUBLIC CUDA::nvToolsExt)
+    target_compile_definitions(cdfmm_core PUBLIC CDFMM_ENABLE_NVTX=1)
+  endif()
   target_compile_definitions(cdfmm_core PUBLIC CDFMM_ENABLE_CUDA=1)
   set_target_properties(cdfmm_core PROPERTIES
     CUDA_STANDARD 20
@@ -168,6 +174,7 @@ message(STATUS "  Fast math:           ${CDFMM_ENABLE_FAST_MATH}")
 message(STATUS "  OpenMP:              ${CDFMM_ENABLE_OPENMP}")
 message(STATUS "  oneMKL:              ${CDFMM_ENABLE_MKL}")
 message(STATUS "  CUDA:                ${CDFMM_ENABLE_CUDA}")
+message(STATUS "  NVTX profiling:      ${CDFMM_ENABLE_PROFILING}")
 if(CDFMM_ENABLE_CUDA)
   message(STATUS "  CUDA architecture:   ${CMAKE_CUDA_ARCHITECTURES}")
 endif()

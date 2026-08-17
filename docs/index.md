@@ -27,6 +27,7 @@ operators
 validation
 examples
 benchmarks
+profiling
 parameter-selection
 roadmap
 ```

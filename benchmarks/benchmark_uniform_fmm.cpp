@@ -46,6 +46,7 @@ struct Options {
     bool direct{true};
     bool workload_comparison{true};
     bool cuda_status{false};
+    bool profile{false};
     std::string backend{"cpu-static-matrix"};
     std::string output{};
 };
@@ -68,9 +69,30 @@ enum class BenchmarkBackend {
 
 Options parse_options(const int argc, char** argv)
 {
+    bool profile_requested = false;
+    for (int index = 1; index < argc; ++index) {
+        profile_requested = profile_requested ||
+            std::string_view(argv[index]) == "--profile";
+    }
+
     Options options;
+    if (profile_requested) {
+        options.profile = true;
+        options.evaluations = 1;
+        options.warmups = 1;
+        options.samples = 1;
+        options.direct = false;
+        options.workload_comparison = false;
+    }
     for (int index = 1; index < argc; ++index) {
         const std::string key = argv[index];
+        if (key == "--profile") {
+            continue;
+        }
+        if (key == "--direct") {
+            options.direct = true;
+            continue;
+        }
         if (key == "--no-direct") {
             options.direct = false;
             continue;
@@ -501,6 +523,28 @@ int main(int argc, char** argv)
         const char* openmp_status = "disabled";
 #endif
 
+        if (options.profile) {
+            std::cerr
+                << "CDFMM profiling workload\n"
+                << "------------------------\n"
+                << "Backend:        "
+                << benchmark_backend_name(selected_backend) << '\n'
+                << "Sources:        " << options.sources << '\n'
+                << "Targets:        " << options.targets << '\n'
+                << "Depth:          " << options.depth << '\n'
+                << "Order:          " << options.order << '\n'
+                << "Warmups:        " << options.warmups << '\n'
+                << "Evaluations:    " << options.evaluations << '\n'
+                << "Samples:        " << options.samples << '\n'
+                << "Seed:           " << options.seed << '\n'
+                << "Threads:        " << thread_count << '\n'
+#ifdef CDFMM_ENABLE_NVTX
+                << "NVTX:           enabled\n";
+#else
+                << "NVTX:           disabled\n";
+#endif
+        }
+
 #ifdef CDFMM_USE_OPENMP
         int warmed_threads = 0;
         #pragma omp parallel reduction(+:warmed_threads)
@@ -542,7 +586,7 @@ int main(int argc, char** argv)
         constexpr int repeated_evaluation_count = 10;
         const int state_count = options.warmups + std::max(
             options.evaluations,
-            repeated_evaluation_count
+            options.workload_comparison ? repeated_evaluation_count : 1
         );
         std::vector<std::vector<Vec3>> moment_states(
             static_cast<std::size_t>(state_count),
