@@ -18,8 +18,8 @@ public:
   CudaM2LPlan(const CudaM2LPlan &) = delete;
     CudaM2LPlan& operator=(const CudaM2LPlan&) = delete;
 
-    void evaluate(std::span<const std::vector<double>> multipoles,
-                  std::span<std::vector<double>> raw_locals);
+    void evaluate(std::span<const double> multipoles,
+                  std::span<double> raw_locals);
 
     [[nodiscard]] const CudaPlanStatistics& statistics() const noexcept;
     [[nodiscard]] const CudaEvaluationTimings& timings() const noexcept;
