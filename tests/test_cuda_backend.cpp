@@ -100,6 +100,8 @@ TEST_CASE("full CUDA FMM is device resident across evaluations", "[cuda][manual]
     REQUIRE(first.evaluation_d2h_bytes == positions.size() * 3 * sizeof(double));
     REQUIRE(first.evaluation_h2d_calls == 1);
     REQUIRE(first.evaluation_d2h_calls == 1);
+    REQUIRE(cuda.last_timings().cuda_p2p_kernel.calls == 1);
+    REQUIRE(cuda.last_timings().cuda_p2p_kernel.total_seconds > 0.0);
     const auto second = cuda.evaluate(moments, OutputFlags::Field, identities);
     REQUIRE(second.size() == positions.size());
     const CudaPlanStatistics repeated = cuda.cuda_plan_statistics();
@@ -415,4 +417,20 @@ TEST_CASE("CUDA M2L/P2P accepts empty geometry", "[cuda][manual]")
 
     REQUIRE(result.empty());
     REQUIRE(fmm.last_timings().cuda_p2p_wait.calls == 1);
+}
+
+TEST_CASE("full CUDA accepts empty geometry", "[cuda][manual]")
+{
+    if (!cuda_full_available()) {
+        SUCCEED("full CUDA FMM is unavailable");
+        return;
+    }
+
+    UniformFmmOptions options;
+    options.backend = ExecutionBackend::CudaFull;
+    UniformFmm fmm(std::vector<Vec3>{}, std::vector<Vec3>{}, options);
+    const auto result = fmm.evaluate({}, OutputFlags::Field);
+
+    REQUIRE(result.empty());
+    REQUIRE(fmm.last_timings().cuda_p2p_kernel.calls == 1);
 }

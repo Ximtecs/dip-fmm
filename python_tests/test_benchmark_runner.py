@@ -350,7 +350,7 @@ def test_cuda_p2p_is_reported_as_an_independent_overlapping_lane():
     assert CUDA_P2P_PHASES[-1] == ("cuda_p2p_wait", "Final host wait")
 
 
-def test_full_cuda_phases_do_not_double_count_aggregate_kernel_time():
+def test_full_cuda_phases_report_p2p_as_an_independent_lane():
     row = {"execution_backend": "cuda-full"}
     top_level_columns = {
         column for column, _ in top_level_evaluation_phases(row)
@@ -360,9 +360,9 @@ def test_full_cuda_phases_do_not_double_count_aggregate_kernel_time():
     assert "cuda_d2h" in top_level_columns
     assert "cuda_kernel" not in top_level_columns
     assert "p2m" in top_level_columns
-    assert "p2p" in top_level_columns
+    assert "p2p" not in top_level_columns
     assert nested_m2l_phases(row) == []
-    assert independent_p2p_phases(row) == []
+    assert independent_p2p_phases(row) == CUDA_P2P_PHASES
 
 
 def test_direct_backends_participate_in_thread_scaling_without_duplicate_max():

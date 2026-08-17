@@ -98,7 +98,7 @@ def top_level_evaluation_phases(
     if backend == "cuda-full":
         return [
             phase for phase in EVALUATION_PHASES
-            if phase[0] != "cuda_kernel"
+            if phase[0] not in {"p2p", "cuda_kernel"}
         ]
     return EVALUATION_PHASES
 
@@ -120,7 +120,7 @@ def independent_p2p_phases(
     row: dict[str, str],
 ) -> list[tuple[str, str]]:
     """Return the independently scheduled CUDA P2P lane."""
-    if row.get("execution_backend") == "cuda-partial":
+    if row.get("execution_backend") in {"cuda-partial", "cuda-full"}:
         return CUDA_P2P_PHASES
     return []
 

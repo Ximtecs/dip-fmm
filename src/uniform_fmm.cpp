@@ -637,6 +637,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     last_timings_.l2l.add(device.l2l_seconds);
     last_timings_.l2p.add(device.l2p_seconds);
     last_timings_.p2p.add(device.p2p_seconds);
+    last_timings_.cuda_p2p_kernel.add(device.p2p_seconds);
     last_timings_.result_unpermutation.add(device.accumulation_seconds);
     last_timings_.cuda_kernel.add(device.kernel_seconds);
     last_timings_.cuda_d2h.add(device.d2h_seconds);

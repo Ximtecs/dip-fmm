@@ -20,7 +20,8 @@ rm -rf \
   build-cuda \
   build-bench \
   build-bench-mkl \
-  build-bench-all
+  build-bench-all \
+  build-profile-all
 
 cmake --fresh --preset cuda
 cmake --build --preset cuda -j"$(nproc)"
@@ -180,10 +181,13 @@ breakdown. They are excluded from top-level phase-share normalisation so the
 same M2L time is not counted twice. For hybrid CUDA M2L/P2P, multipole H2D and
 local-coefficient D2H are included in this nested partition as well;
 `cuda_kernel` is a diagnostic sum and is not counted as another top-level
-phase. The hybrid backend additionally reports `cuda_p2p_h2d`,
-`cuda_p2p_kernel`, `cuda_p2p_d2h`, and the single residual
-`cuda_p2p_wait`. These form an independent overlapping lane and are excluded
-from sequential top-level phase-share normalisation.
+phase. Both CUDA FMM backends report their independently scheduled near-field
+work in the CUDA P2P lane. The hybrid backend includes `cuda_p2p_h2d`,
+`cuda_p2p_kernel`, `cuda_p2p_d2h`, and the single residual `cuda_p2p_wait`.
+The full CUDA backend keeps the moments and near-field result device-resident,
+so only `cuda_p2p_kernel` is non-zero. These values are excluded from
+sequential top-level phase-share normalisation because P2P can overlap the
+far-field hierarchy.
 
 Every automated benchmark row records two end-to-end workloads: exactly one
 construction plus one evaluation, and exactly one construction plus ten
