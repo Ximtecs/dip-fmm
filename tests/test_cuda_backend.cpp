@@ -266,10 +266,11 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
         int particle_count;
         bool separate_targets;
     };
-    const std::array<Scenario, 3> scenarios{{
+    const std::array<Scenario, 4> scenarios{{
         {2, 2, 24, false},
         {3, 3, 48, true},
         {3, 5, 64, false},
+        {4, 2, 32, true},
     }};
 
     for (const Scenario scenario : scenarios) {
@@ -339,6 +340,12 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
                 full_statistics.m2l_matrix_bytes);
         REQUIRE(partial_statistics.m2l_interaction_metadata_bytes ==
                 full_statistics.m2l_interaction_metadata_bytes);
+        REQUIRE(partial_statistics.m2l_interaction_count ==
+                full_statistics.m2l_interaction_count);
+        REQUIRE(partial_statistics.m2l_active_row_count ==
+                full_statistics.m2l_active_row_count);
+        REQUIRE(partial_statistics.m2l_threads_per_block ==
+                full_statistics.m2l_threads_per_block);
         REQUIRE(partial_statistics.p2p_interaction_count ==
                 full_statistics.p2p_interaction_count);
         REQUIRE(partial_statistics.static_m2l_upload_count == 1);
@@ -373,15 +380,19 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
         REQUIRE(partial_statistics.persistent_device_bytes ==
                 partial_statistics.setup_h2d_bytes + 2 * coefficient_bytes +
                     sources.size() * sizeof(Vec3) +
-                    targets.size() * (sizeof(Vec3) + sizeof(int)));
+                    targets.size() * (sizeof(Vec3) + sizeof(int)) +
+                    partial_statistics.m2l_scratch_bytes);
         REQUIRE(full_statistics.persistent_device_bytes ==
                 full_statistics.setup_h2d_bytes + 2 * coefficient_bytes +
                     2 * sources.size() * sizeof(Vec3) +
-                    3 * targets.size() * sizeof(Vec3));
+                    3 * targets.size() * sizeof(Vec3) +
+                    full_statistics.m2l_scratch_bytes);
+        REQUIRE(partial.last_timings().m2l_scale.calls == 1);
         REQUIRE(partial.last_timings().m2l_multiply.calls == 1);
         REQUIRE(partial.last_timings().m2l_gather.calls == 0);
         REQUIRE(partial.last_timings().m2l_scatter.calls == 0);
         REQUIRE(full.last_timings().m2l_multiply.calls == 1);
+        REQUIRE(full.last_timings().m2l_scale.calls == 1);
         REQUIRE(full.last_timings().m2l_gather.calls == 0);
         REQUIRE(full.last_timings().m2l_scatter.calls == 0);
 
