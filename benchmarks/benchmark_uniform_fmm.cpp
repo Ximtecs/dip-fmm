@@ -78,7 +78,7 @@ Options parse_options(const int argc, char** argv)
     Options options;
     if (profile_requested) {
         options.profile = true;
-        options.evaluations = 1;
+        options.evaluations = 10;
         options.warmups = 1;
         options.samples = 1;
         options.direct = false;

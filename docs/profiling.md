@@ -6,9 +6,22 @@ Benchmarking measures **how fast** a workload is; profiling explains **why** it
 takes that long. `benchmark_uniform_fmm --profile` uses the benchmark's normal
 geometry, moment states, seed, backend, depth, order, thread controls, and
 production evaluator. It changes only the measurement policy: unless explicitly
-overridden, one warm-up, one sample, and one evaluation are run, while direct
-validation and the 1-versus-10 workload comparison are disabled. `--direct` or
+overridden, one warm-up, one sample, and ten consecutive timed evaluations are
+run, while direct validation and the 1-versus-10 workload comparison are
+disabled. The repeated evaluations appear back-to-back in profiler timelines.
+`--evaluations N` changes their count, while `--direct` or
 `--accuracy-targets N` explicitly restores validation.
+
+Update the declared development and CUDA dependencies before configuring a
+profiling build. The CUDA environment file includes the NVTX3 development
+headers required by CUDA 12.9 and newer, while the development environment
+provides CMake 3.25 or newer for its `CUDA::nvtx3` imported target:
+
+```console
+conda env update -n cdfmm -f environment.yml
+conda env update -n cdfmm -f environment-cuda.yml
+conda activate cdfmm
+```
 
 Use an optimised build with symbols. CPU profiling does not require NVTX:
 
@@ -18,13 +31,14 @@ cmake -S . -B build-profile -DCMAKE_BUILD_TYPE=RelWithDebInfo \
 cmake --build build-profile -j
 ```
 
-For CUDA timelines, enable CUDA and the optional, compile-time NVTX ranges:
+For combined CUDA and oneMKL profiling, use the profiling preset. It inherits
+the CUDA, oneMKL, OpenMP, and native-architecture settings from
+`benchmark-all`, enables NVTX3 ranges, and retains debug symbols:
 
 ```console
-cmake -S . -B build-cuda-profile -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-    -DCDFMM_BUILD_BENCHMARKS=ON -DCDFMM_ENABLE_CUDA=ON \
-    -DCDFMM_ENABLE_NATIVE_ARCH=ON -DCDFMM_ENABLE_PROFILING=ON
-cmake --build build-cuda-profile -j
+cmake --fresh --preset profile-all
+cmake --build --preset profile-all -j
+./build-profile-all/benchmarks/benchmark_uniform_fmm --cuda-status
 ```
 
 With profiling disabled the range abstraction is an empty object: evaluation
@@ -61,7 +75,7 @@ launch gaps and synchronisation:
 ```console
 nsys profile --trace=cuda,nvtx,osrt --sample=cpu \
     --output=cdfmm_cuda_full \
-    build-cuda-profile/benchmarks/benchmark_uniform_fmm \
+    build-profile-all/benchmarks/benchmark_uniform_fmm \
     --backend cuda-full --sources 50000 --targets 50000 \
     --depth 4 --order 6 --profile
 ```
@@ -78,7 +92,7 @@ kernel:
 
 ```console
 ncu --set full --kernel-name regex:.*m2l.* --launch-count 1 \
-    build-cuda-profile/benchmarks/benchmark_uniform_fmm \
+    build-profile-all/benchmarks/benchmark_uniform_fmm \
     --backend cuda-full --sources 50000 --targets 50000 \
     --depth 4 --order 6 --profile
 ```
