@@ -597,14 +597,10 @@ CudaM2LPlan::~CudaM2LPlan() {
   cudaStreamDestroy(plan.stream); delete implementation_;
 }
 
-void CudaM2LPlan::evaluate(const std::span<const std::vector<double>> multipoles,
-                           const std::span<std::vector<double>> locals) {
+void CudaM2LPlan::evaluate(const std::span<const double> multipoles,
+                           const std::span<double> locals) {
   auto& plan = *implementation_;
-  const int n = plan.coefficient_count;
-  for (int node = 0; node < plan.node_count; ++node) {
-    std::copy(multipoles[node].begin(), multipoles[node].end(),
-              plan.host_multipoles.begin() + static_cast<std::ptrdiff_t>(node) * n);
-  }
+  std::copy(multipoles.begin(), multipoles.end(), plan.host_multipoles.begin());
   check_cuda(cudaEventRecord(plan.start, plan.stream), "record M2L start");
   check_cuda(cudaMemcpyAsync(plan.multipoles, plan.host_multipoles.data(),
       plan.host_multipoles.size() * sizeof(double), cudaMemcpyHostToDevice,
@@ -619,10 +615,7 @@ void CudaM2LPlan::evaluate(const std::span<const std::vector<double>> multipoles
       plan.stream), "download M2L locals");
   check_cuda(cudaEventRecord(plan.d2h, plan.stream), "record M2L D2H");
   check_cuda(cudaEventSynchronize(plan.d2h), "wait for M2L");
-  for (int node = 0; node < plan.node_count; ++node) {
-    std::copy_n(plan.host_locals.begin() + static_cast<std::ptrdiff_t>(node) * n,
-                n, locals[node].begin());
-  }
+  std::copy(plan.host_locals.begin(), plan.host_locals.end(), locals.begin());
   const auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
     float ms = 0.0F; check_cuda(cudaEventElapsedTime(&ms, first, second), "time M2L");
     return static_cast<double>(ms) * 1.0e-3;

@@ -127,10 +127,10 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
         "The oneMKL static-matrix backend is unavailable in this build");
   }
 
-  multipoles_.assign(tree_.nodes().size(),
-                     CoeffVector(static_cast<std::size_t>(basis_.size()), 0.0));
-  locals_.assign(tree_.nodes().size(),
-                 CoeffVector(static_cast<std::size_t>(basis_.size()), 0.0));
+  const std::size_t coefficient_values =
+      tree_.nodes().size() * static_cast<std::size_t>(basis_.size());
+  multipoles_.assign(coefficient_values, 0.0);
+  locals_.assign(coefficient_values, 0.0);
   sorted_dipole_moments_.resize(source_positions.size());
   if (m2l_backend_ == M2LBackend::Static) {
     build_static_plan();
@@ -181,10 +181,10 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
         "The oneMKL static-matrix backend is unavailable in this build");
   }
 
-  multipoles_.assign(tree_.nodes().size(),
-                     CoeffVector(static_cast<std::size_t>(basis_.size()), 0.0));
-  locals_.assign(tree_.nodes().size(),
-                 CoeffVector(static_cast<std::size_t>(basis_.size()), 0.0));
+  const std::size_t coefficient_values =
+      tree_.nodes().size() * static_cast<std::size_t>(basis_.size());
+  multipoles_.assign(coefficient_values, 0.0);
+  locals_.assign(coefficient_values, 0.0);
   sorted_dipole_moments_.resize(source_positions.size());
   sorted_results_.resize(target_positions.size());
   near_fields_.resize(target_positions.size());
@@ -214,6 +214,7 @@ void UniformFmm::build_static_plan() {
 
   auto phase_start = Clock::now();
   const auto sorted_positions = tree_.sorted_source_positions();
+  p2m_plans_.reserve(tree_.occupied_source_leaves().size());
   for (const int leaf_index : tree_.occupied_source_leaves()) {
     const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
     P2MPlan plan;
@@ -291,30 +292,44 @@ void UniformFmm::build_static_plan() {
   m2l_plan_.matrix_count = static_cast<int>(classes.size());
   m2l_plan_.level_count = tree_.leaf_level() + 1;
   m2l_plan_.target_row_offsets.assign(nodes.size() + 1, 0);
+  m2l_plan_.level_target_begin.resize(
+      static_cast<std::size_t>(m2l_plan_.level_count));
+  m2l_plan_.level_target_end.resize(
+      static_cast<std::size_t>(m2l_plan_.level_count));
+
+  const std::size_t scaling_size =
+      static_cast<std::size_t>(m2l_plan_.level_count) * coefficient_count;
+  m2l_plan_.multipole_scaling.resize(scaling_size);
+  m2l_plan_.local_scaling.resize(scaling_size);
+  std::vector<double> inverse_width_powers(
+      static_cast<std::size_t>(basis_.order() + 2), 1.0);
 
   for (int level = 0; level <= tree_.leaf_level(); ++level) {
+    m2l_plan_.level_target_begin[static_cast<std::size_t>(level)] =
+        level_offset(level);
+    m2l_plan_.level_target_end[static_cast<std::size_t>(level)] =
+        level_offset(level + 1);
     const double box_width =
         2.0 * nodes[static_cast<std::size_t>(level_offset(level))].half_width;
     const std::size_t scaling_offset =
         static_cast<std::size_t>(level) * coefficient_count;
-    m2l_plan_.multipole_scaling.resize(
-        scaling_offset + static_cast<std::size_t>(coefficient_count));
-    m2l_plan_.local_scaling.resize(scaling_offset +
-                                   static_cast<std::size_t>(coefficient_count));
-    double inverse_width_power = 1.0;
     // The matrices below are dimensionless and level independent. These two
     // degree-dependent factors restore physical box width; see the M2L
     // normalisation section in docs/math.md.
-    for (int degree = 0; degree <= basis_.order() + 1; ++degree) {
-      for (int index = 0; index < coefficient_count; ++index) {
-        if (basis_[index].degree() == degree) {
-          m2l_plan_.multipole_scaling[scaling_offset + index] =
-              inverse_width_power;
-          m2l_plan_.local_scaling[scaling_offset + index] =
-              inverse_width_power / box_width;
-        }
-      }
-      inverse_width_power /= box_width;
+    inverse_width_powers[0] = 1.0;
+    for (int degree = 1; degree <= basis_.order() + 1; ++degree) {
+      inverse_width_powers[static_cast<std::size_t>(degree)] =
+          inverse_width_powers[static_cast<std::size_t>(degree - 1)] /
+          box_width;
+    }
+    // Each coefficient is filled once from its known degree, rather than
+    // rescanning the complete basis for every possible degree.
+    for (int index = 0; index < coefficient_count; ++index) {
+      const int degree = basis_[index].degree();
+      m2l_plan_.multipole_scaling[scaling_offset + index] =
+          inverse_width_powers[static_cast<std::size_t>(degree)];
+      m2l_plan_.local_scaling[scaling_offset + index] =
+          inverse_width_powers[static_cast<std::size_t>(degree + 1)];
     }
   }
 
@@ -367,7 +382,9 @@ void UniformFmm::build_static_plan() {
       sizeof(double);
   const std::size_t metadata_bytes =
       (m2l_plan_.target_row_offsets.size() + m2l_plan_.source_nodes.size() +
-       m2l_plan_.matrix_ids.size() + m2l_plan_.interaction_levels.size()) *
+       m2l_plan_.matrix_ids.size() + m2l_plan_.interaction_levels.size() +
+       m2l_plan_.level_target_begin.size() +
+       m2l_plan_.level_target_end.size()) *
       sizeof(int);
   static_plan_statistics_.operator_bytes += matrix_bytes + scaling_bytes;
   static_plan_statistics_.m2l_operator_bytes += matrix_bytes + scaling_bytes;
@@ -666,11 +683,11 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
       if (execution_plan().l2p != StaticOperatorExecutor::Reference) {
         sorted_results_[target_index] = apply_static_l2p_evaluator(
             l2p_evaluators_[target_index],
-            locals_[static_cast<std::size_t>(leaf_index)], output);
+            local_for_node(leaf_index), output);
       } else {
         sorted_results_[target_index] =
             l2p_eval(basis_, leaf.centre, targets[target_index],
-                     locals_[static_cast<std::size_t>(leaf_index)], output);
+                     local_for_node(leaf_index), output);
       }
     }
   }
@@ -807,15 +824,45 @@ const StaticPlanStatistics &UniformFmm::static_plan_statistics() const {
 }
 
 std::span<const double> UniformFmm::multipole(const int node_index) const {
-  return multipoles_.at(static_cast<std::size_t>(node_index));
+  if (node_index < 0 ||
+      static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
+    throw std::out_of_range("multipole node index is out of range");
+  }
+  return multipole_for_node(node_index);
 }
 
 std::span<const double> UniformFmm::local(const int node_index) const {
-  return locals_.at(static_cast<std::size_t>(node_index));
+  if (node_index < 0 ||
+      static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
+    throw std::out_of_range("local node index is out of range");
+  }
+  return local_for_node(node_index);
 }
 
 std::span<const double> UniformFmm::root_multipole() const {
-  return multipoles_.front();
+  return multipole_for_node(0);
+}
+
+std::span<double> UniformFmm::multipole_for_node(const int node_index) noexcept {
+  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  return {multipoles_.data() + static_cast<std::size_t>(node_index) * n, n};
+}
+
+std::span<const double> UniformFmm::multipole_for_node(
+    const int node_index) const noexcept {
+  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  return {multipoles_.data() + static_cast<std::size_t>(node_index) * n, n};
+}
+
+std::span<double> UniformFmm::local_for_node(const int node_index) noexcept {
+  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  return {locals_.data() + static_cast<std::size_t>(node_index) * n, n};
+}
+
+std::span<const double> UniformFmm::local_for_node(
+    const int node_index) const noexcept {
+  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  return {locals_.data() + static_cast<std::size_t>(node_index) * n, n};
 }
 
 const EvaluationTimings &UniformFmm::last_timings() const {

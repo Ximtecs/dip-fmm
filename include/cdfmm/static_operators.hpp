@@ -126,9 +126,20 @@ struct StaticM2LPlan {
     std::vector<int> source_nodes{};
     std::vector<int> matrix_ids{};
     std::vector<int> interaction_levels{};
+    /// Node-index bounds for each level in the level-ordered uniform tree.
+    std::vector<int> level_target_begin{};
+    std::vector<int> level_target_end{};
 };
 
 /** @brief Applies one level of the canonical target-row M2L plan. */
+void apply_static_m2l_plan(
+    const StaticM2LPlan& plan,
+    int level,
+    std::span<const double> multipoles,
+    std::span<double> locals
+);
+
+/** @brief Compatibility overload for independently allocated node vectors. */
 void apply_static_m2l_plan(
     const StaticM2LPlan& plan,
     int level,

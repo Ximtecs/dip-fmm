@@ -15,6 +15,52 @@ namespace cdfmm {
 void apply_static_m2l_plan(
     const StaticM2LPlan& plan,
     const int level,
+    const std::span<const double> multipoles,
+    const std::span<double> locals
+) {
+    const int n = plan.coefficient_count;
+    const int target_begin =
+        plan.level_target_begin[static_cast<std::size_t>(level)];
+    const int target_end =
+        plan.level_target_end[static_cast<std::size_t>(level)];
+    const double* multipole_scale = plan.multipole_scaling.data() +
+        static_cast<std::size_t>(level) * n;
+    const double* local_scale = plan.local_scaling.data() +
+        static_cast<std::size_t>(level) * n;
+
+    // Uniform-tree nodes are level ordered. Iterating only this level avoids
+    // revisiting every other node for each downward-pass level; one iteration
+    // owns one target coefficient and therefore needs no atomic accumulation.
+    const std::ptrdiff_t output_count =
+        static_cast<std::ptrdiff_t>(target_end - target_begin) * n;
+#pragma omp parallel for schedule(static) if (output_count >= 256)
+    for (std::ptrdiff_t output = 0; output < output_count; ++output) {
+        const int target = target_begin + static_cast<int>(output / n);
+        const int beta = static_cast<int>(output % n);
+        double value = 0.0;
+        const int row_begin = plan.target_row_offsets[target];
+        const int row_end = plan.target_row_offsets[target + 1];
+        for (int interaction = row_begin; interaction < row_end;
+             ++interaction) {
+            const int source = plan.source_nodes[interaction];
+            const int matrix_id = plan.matrix_ids[interaction];
+            const double* matrix_column = plan.matrices.data() +
+                static_cast<std::size_t>(matrix_id) * n * n + beta;
+            const double* source_M = multipoles.data() +
+                static_cast<std::size_t>(source) * n;
+            for (int alpha = 0; alpha < n; ++alpha) {
+                value += matrix_column[static_cast<std::size_t>(alpha) * n] *
+                    multipole_scale[alpha] * source_M[alpha];
+            }
+        }
+        locals[static_cast<std::size_t>(target) * n + beta] +=
+            local_scale[beta] * value;
+    }
+}
+
+void apply_static_m2l_plan(
+    const StaticM2LPlan& plan,
+    const int level,
     const std::span<const std::vector<double>> multipoles,
     const std::span<std::vector<double>> locals
 ) {
