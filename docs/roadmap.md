@@ -97,6 +97,8 @@ plots, and generated summaries.
 - [ ] static near-field P2P tensor;
 - [ ] disk-stored problem-independent M2M, M2L, and L2L matrices indexed by
   expansion order and tree depth;
+- [ ] length normalization to an internal unit root box, with consistent
+  moment, potential, and field scaling;
 - [ ] further symmetry and optional tolerance-controlled compression.
 
 The target use case repeatedly evaluates a fixed geometry for changing dipole
@@ -106,6 +108,26 @@ the three components of each dipole moment change between evaluations.
 
 The complete far-field static pipeline is now the default repeated-geometry
 path.  The independent reference path remains available for validation.
+
+### Length normalization
+
+Add an optional, internal coordinate transformation that maps the physical
+root box to `[-0.5, +0.5]^3`, so its side length is always one. If the physical
+root-box side length is `ell` and its centre is `c`, use
+
+$$\hat{x}=\frac{x-c}{\ell}.$$
+
+Apply the corresponding homogeneity factors consistently to dipole moments,
+multipole and local coefficients, scalar potential, and magnetic field. For
+example, using normalized moments $\hat{m}=m/\ell^3$ gives
+$\hat{H}=H$ and $\hat{\phi}=\phi/\ell$; the inverse transformation must restore
+all returned quantities to the user's physical units. Validate the complete
+scaling convention for every output mode and for both direct and FMM paths.
+
+Normalization must remain an implementation detail: users continue to supply
+and receive physical coordinates, moments, potential, and field. A boolean
+option controls whether length normalization is enabled, but normalized
+geometry and coefficients are not exposed through the public interface.
 
 ### Static P2M operator
 
