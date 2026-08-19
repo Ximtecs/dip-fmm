@@ -19,6 +19,32 @@ class RelativeErrorMetrics:
     maximum: float
 
 
+def is_out_of_memory_error(error: BaseException) -> bool:
+    """Return whether an exception reports a host or CUDA allocation failure.
+
+    pybind11 maps ``std::bad_alloc`` to ``MemoryError``, while CUDA allocation
+    failures reach Python as ``RuntimeError`` with a runtime-specific message.
+    Keep this predicate deliberately narrow so unrelated CUDA failures are not
+    hidden by long benchmark sweeps.
+    """
+
+    if isinstance(error, MemoryError):
+        return True
+
+    message = str(error).casefold()
+    allocation_markers = (
+        "out of memory",
+        "cannot allocate memory",
+        "failed to allocate",
+        "memory allocation",
+        "cudaerrormemoryallocation",
+        "cuda_error_out_of_memory",
+        "std::bad_alloc",
+        "bad allocation",
+    )
+    return any(marker in message for marker in allocation_markers)
+
+
 def fmm3d_laplace_nterms(eps: float) -> int:
     """Return FMM3D v2.1.0's Laplace expansion order for ``eps``.
 

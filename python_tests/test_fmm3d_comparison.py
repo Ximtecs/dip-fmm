@@ -9,6 +9,7 @@ import pytest
 from examples.notebooks.fmm3d_comparison import (
     fmm3d_laplace_nterms,
     fmm3d_source_fields,
+    is_out_of_memory_error,
     relative_error_metrics,
     timed_call,
     validate_source_point_geometry,
@@ -82,6 +83,25 @@ def test_timed_call_returns_the_synchronous_result():
     assert seconds >= 0.0
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        MemoryError(),
+        RuntimeError("CUDA failure: out of memory"),
+        RuntimeError("cudaErrorMemoryAllocation"),
+        RuntimeError("std::bad_alloc"),
+    ],
+)
+def test_out_of_memory_detection_accepts_host_and_cuda_failures(error):
+    assert is_out_of_memory_error(error)
+
+
+def test_out_of_memory_detection_rejects_unrelated_runtime_failures():
+    assert not is_out_of_memory_error(
+        RuntimeError("CUDA kernel launch failed: invalid configuration")
+    )
+
+
 def test_source_point_geometry_accepts_coincident_identity_mapping():
     positions = np.array([[0.0, 0.0, 0.0], [0.5, -0.25, 0.75]])
 
@@ -130,7 +150,8 @@ def test_comparison_notebook_is_valid_json_with_compilable_code_cells():
         for cell in notebook["cells"]
         if cell["cell_type"] == "code"
     ]
-    assert "PARTICLE_COUNTS = [10_000, 20_000, 30_000]" in sources[0]
+    assert "GPU_ONLY = True" in sources[0]
+    assert "PARTICLE_COUNTS = [20_000, 40_000, 60_000]" in sources[0]
     assert "EXPANSION_ORDERS = [4, 6, 8]" in sources[0]
     assert "TREE_DEPTHS = [2, 3, 4]" in sources[0]
     assert "FMM3D_EPS_VALUES = [1.0e-3, 1.0e-4]" in sources[0]
@@ -139,6 +160,10 @@ def test_comparison_notebook_is_valid_json_with_compilable_code_cells():
     assert "ExecutionBackend.CUDA_FULL" in combined
     assert "ExecutionBackend.CUDA_PARTIAL" in combined
     assert "StaticMatrixBackend.ONE_MKL" in combined
+    assert "if not GPU_ONLY and not cdfmm.one_mkl_available()" in combined
+    assert "if not GPU_ONLY:" in combined
+    assert "is_out_of_memory_error(error)" in combined
+    assert "skipped_cases.append" in combined
     assert "median_timed_evaluations" in combined
     assert "plan = make_cdfmm_plan" in combined
     assert "for _ in range(WARMUP_EVALUATIONS)" in combined
