@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "cdfmm/cuda_direct.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
 #include "cuda_fmm_plan.hpp"
@@ -327,7 +328,11 @@ WorkloadTiming benchmark_cuda_direct_workload(
     for (int sample = 0; sample < samples; ++sample) {
         const auto total_start = Clock::now();
         const auto construction_start = Clock::now();
-        cdfmm::CudaFmmPlan plan(source_positions, target_positions);
+        cdfmm::CudaDirectPlan plan(
+            source_positions,
+            target_positions,
+            source_identities
+        );
         std::vector<cdfmm::PotentialField> results(target_positions.size());
         const double construction_seconds = std::chrono::duration<double>(
             Clock::now() - construction_start
@@ -338,8 +343,7 @@ WorkloadTiming benchmark_cuda_direct_workload(
             plan.evaluate(
                 moment_states[static_cast<std::size_t>(evaluation)],
                 results,
-                cdfmm::OutputFlags::Field,
-                source_identities
+                cdfmm::OutputFlags::Field
             );
         }
         const double evaluation_seconds = std::chrono::duration<double>(
@@ -621,15 +625,18 @@ int main(int argc, char** argv)
         // evaluation. Timed setup still includes all per-plan allocation,
         // handle creation, static uploads, and geometry-plan construction.
         if (selected_backend == BenchmarkBackend::CudaDirect) {
-            CudaFmmPlan warmup_plan(source_positions, target_positions);
+            CudaDirectPlan warmup_plan(
+                source_positions,
+                target_positions,
+                source_identities
+            );
             std::vector<PotentialField> warmup_results(
                 target_positions.size()
             );
             warmup_plan.evaluate(
                 moment_states.front(),
                 warmup_results,
-                OutputFlags::Field,
-                source_identities
+                OutputFlags::Field
             );
         } else if (selected_backend == BenchmarkBackend::CudaM2LP2P ||
                    selected_backend == BenchmarkBackend::CudaFull) {
@@ -717,12 +724,13 @@ int main(int argc, char** argv)
         }
 
         std::unique_ptr<UniformFmm> fmm;
-        std::unique_ptr<CudaFmmPlan> cuda_direct_plan;
+        std::unique_ptr<CudaDirectPlan> cuda_direct_plan;
         const auto setup_start = Clock::now();
         if (selected_backend == BenchmarkBackend::CudaDirect) {
-            cuda_direct_plan = std::make_unique<CudaFmmPlan>(
+            cuda_direct_plan = std::make_unique<CudaDirectPlan>(
                 source_positions,
-                target_positions
+                target_positions,
+                source_identities
             );
         } else if (selected_backend != BenchmarkBackend::CpuDirect) {
             fmm = std::make_unique<UniformFmm>(
@@ -767,8 +775,7 @@ int main(int argc, char** argv)
             cuda_direct_plan->evaluate(
                 moments,
                 result,
-                OutputFlags::Field,
-                source_identities
+                OutputFlags::Field
             );
             const auto& device = cuda_direct_plan->evaluation_timings();
             direct_timings.cuda_h2d.add(device.h2d_seconds);

@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <algorithm>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -369,6 +370,55 @@ PYBIND11_MODULE(cdfmm, module) {
     module.def("cuda_m2l_available", &cuda_m2l_available);
     module.def("cuda_full_available", &cuda_full_available);
     module.def("cuda_device_description", &cuda_device_description);
+
+    py::class_<CudaDirectPlan>(
+        module,
+        "CudaDirectPlan",
+        "Persistent O(N^2) CUDA direct plan for fixed source/target geometry."
+    )
+        .def(
+            py::init([](py::object source_positions,
+                        py::object target_positions,
+                        py::object target_source_indices) {
+              const std::vector<Vec3> sources =
+                  parse_vec3_array(source_positions, "source_positions");
+              const std::vector<Vec3> targets =
+                  parse_vec3_array(target_positions, "target_positions");
+              const std::vector<int> identities =
+                  target_source_indices.is_none()
+                  ? std::vector<int>{}
+                  : py::cast<std::vector<int>>(target_source_indices);
+
+              std::unique_ptr<CudaDirectPlan> plan;
+              {
+                py::gil_scoped_release release;
+                plan = std::make_unique<CudaDirectPlan>(
+                    sources, targets, identities
+                );
+              }
+              return plan;
+            }),
+            py::arg("source_positions"), py::arg("target_positions"),
+            py::arg("target_source_indices") = py::none(),
+            "Create a persistent CUDA direct plan for fixed geometry.")
+        .def(
+            "evaluate",
+            [](CudaDirectPlan &plan, py::object dipole_moments,
+               const std::string &output) {
+              const std::vector<Vec3> moments =
+                  parse_vec3_array(dipole_moments, "dipole_moments");
+              const OutputFlags output_flags = parse_output(output);
+              std::vector<PotentialField> results(plan.target_count());
+              {
+                py::gil_scoped_release release;
+                plan.evaluate(moments, results, output_flags);
+              }
+              return potential_fields_to_dict(results);
+            },
+            py::arg("dipole_moments"), py::arg("output") = "field",
+            "Evaluate one moment state using the persistent CUDA geometry.")
+        .def_property_readonly("source_count", &CudaDirectPlan::source_count)
+        .def_property_readonly("target_count", &CudaDirectPlan::target_count);
 
     module.def(
         "suggest_depth_for_performance",

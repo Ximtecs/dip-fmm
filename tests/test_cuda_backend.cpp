@@ -146,7 +146,13 @@ TEST_CASE("CUDA direct P2P agrees with the CPU direct reference", "[cuda]")
     const auto actual = cuda_direct_p2p_reference(
         targets, sources, moments, OutputFlags::Both
     );
+    CudaDirectPlan plan(sources, targets);
+    std::vector<PotentialField> persistent_actual(targets.size());
+    plan.evaluate(moments, persistent_actual, OutputFlags::Both);
+
     REQUIRE(cuda_direct_available());
+    REQUIRE(plan.source_count() == sources.size());
+    REQUIRE(plan.target_count() == targets.size());
     for (std::size_t index = 0; index < targets.size(); ++index) {
             REQUIRE(actual[index].phi ==
                     Catch::Approx(direct[index].phi).epsilon(2.0e-13));
@@ -155,6 +161,14 @@ TEST_CASE("CUDA direct P2P agrees with the CPU direct reference", "[cuda]")
             REQUIRE(actual[index].H.y ==
                     Catch::Approx(direct[index].H.y).epsilon(2.0e-13));
             REQUIRE(actual[index].H.z ==
+                    Catch::Approx(direct[index].H.z).epsilon(2.0e-13));
+            REQUIRE(persistent_actual[index].phi ==
+                    Catch::Approx(direct[index].phi).epsilon(2.0e-13));
+            REQUIRE(persistent_actual[index].H.x ==
+                    Catch::Approx(direct[index].H.x).epsilon(2.0e-13));
+            REQUIRE(persistent_actual[index].H.y ==
+                    Catch::Approx(direct[index].H.y).epsilon(2.0e-13));
+            REQUIRE(persistent_actual[index].H.z ==
                     Catch::Approx(direct[index].H.z).epsilon(2.0e-13));
     }
 }

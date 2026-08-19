@@ -12,30 +12,6 @@
 
 namespace cdfmm {
 
-/** @brief Persistent device-resident O(N^2) direct-reference plan. */
-class CudaFmmPlan {
-public:
-    CudaFmmPlan(std::span<const Vec3> source_positions,
-                std::span<const Vec3> target_positions,
-                ExecutionBackend backend = ExecutionBackend::CpuStatic);
-    ~CudaFmmPlan();
-
-    CudaFmmPlan(const CudaFmmPlan&) = delete;
-  CudaFmmPlan &operator=(const CudaFmmPlan &) = delete;
-
-  void evaluate(std::span<const Vec3> moments,
-                std::span<PotentialField> results, OutputFlags output,
-                std::span<const int> target_source_indices);
-
-  [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
-  [[nodiscard]] const CudaEvaluationTimings &
-  evaluation_timings() const noexcept;
-
-private:
-  struct Implementation;
-    Implementation* implementation_{nullptr};
-};
-
 //------------------------------------------------------------------------------
 // Full static FMM plan
 //------------------------------------------------------------------------------

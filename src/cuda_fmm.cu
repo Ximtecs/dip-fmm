@@ -540,8 +540,7 @@ __global__ void dipole_field_kernel(
 
 } // namespace
 
-struct CudaFmmPlan::Implementation {
-    ExecutionBackend backend{ExecutionBackend::CpuStatic};
+struct CudaDirectPlan::Implementation {
     std::size_t source_count{0};
     std::size_t target_count{0};
     Vec3* device_sources{nullptr};
@@ -589,9 +588,11 @@ std::string cuda_runtime_description() {
         std::to_string(properties.minor) + ")";
 }
 
-CudaFmmPlan::CudaFmmPlan(const std::span<const Vec3> source_positions,
-                         const std::span<const Vec3> target_positions,
-                         const ExecutionBackend backend)
+CudaDirectPlan::CudaDirectPlan(
+    const std::span<const Vec3> source_positions,
+    const std::span<const Vec3> target_positions,
+    const std::span<const int> target_source_indices
+)
     : implementation_(new Implementation{}) {
   if (!cuda_runtime_available()) {
     delete implementation_;
@@ -600,10 +601,32 @@ CudaFmmPlan::CudaFmmPlan(const std::span<const Vec3> source_positions,
         "CUDA backend requested, but no CUDA-capable device is available");
   }
   auto &plan = *implementation_;
-  plan.backend = backend;
-    plan.source_count = source_positions.size();
-    plan.target_count = target_positions.size();
-    plan.self_indices.assign(plan.target_count, -1);
+  plan.source_count = source_positions.size();
+  plan.target_count = target_positions.size();
+  if (!target_source_indices.empty() &&
+      target_source_indices.size() != plan.target_count) {
+    delete implementation_;
+    implementation_ = nullptr;
+    throw std::invalid_argument(
+        "CudaDirectPlan requires one source identity per target");
+  }
+  for (const int source_index : target_source_indices) {
+    if (source_index < -1 ||
+        source_index >= static_cast<int>(plan.source_count)) {
+      delete implementation_;
+      implementation_ = nullptr;
+      throw std::invalid_argument(
+          "CudaDirectPlan source identity is out of range");
+    }
+  }
+  plan.self_indices.assign(plan.target_count, -1);
+  if (!target_source_indices.empty()) {
+    std::copy(
+        target_source_indices.begin(),
+        target_source_indices.end(),
+        plan.self_indices.begin()
+    );
+  }
     check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
                "cudaStreamCreateWithFlags");
     check_cuda(cudaEventCreate(&plan.evaluation_start),
@@ -665,7 +688,7 @@ CudaFmmPlan::CudaFmmPlan(const std::span<const Vec3> source_positions,
   plan.statistics.static_m2l_upload_count = 0;
 }
 
-CudaFmmPlan::~CudaFmmPlan() {
+CudaDirectPlan::~CudaDirectPlan() {
   if (implementation_ == nullptr) {
     return;
   }
@@ -687,10 +710,11 @@ CudaFmmPlan::~CudaFmmPlan() {
     delete implementation_;
 }
 
-void CudaFmmPlan::evaluate(const std::span<const Vec3> moments,
-                           const std::span<PotentialField> results,
-                           const OutputFlags output,
-                           const std::span<const int> target_source_indices) {
+void CudaDirectPlan::evaluate(
+    const std::span<const Vec3> moments,
+    const std::span<PotentialField> results,
+    const OutputFlags output
+) {
   auto &plan = *implementation_;
   if (moments.size() != plan.source_count ||
       results.size() != plan.target_count) {
@@ -706,19 +730,6 @@ void CudaFmmPlan::evaluate(const std::span<const Vec3> moments,
     plan.statistics.evaluation_h2d_bytes = moment_bytes;
     plan.statistics.evaluation_h2d_calls = 1;
 
-    if (!target_source_indices.empty() &&
-        !std::equal(target_source_indices.begin(), target_source_indices.end(),
-                    plan.self_indices.begin())) {
-        std::copy(target_source_indices.begin(), target_source_indices.end(),
-                  plan.self_indices.begin());
-        check_cuda(cudaMemcpyAsync(plan.device_self_indices,
-                                   plan.self_indices.data(),
-                               plan.target_count * sizeof(int),
-                               cudaMemcpyHostToDevice, plan.stream),
-               "upload changed identity map");
-    plan.statistics.evaluation_h2d_bytes += plan.target_count * sizeof(int);
-    ++plan.statistics.evaluation_h2d_calls;
-  }
   check_cuda(cudaEventRecord(plan.h2d_complete, plan.stream),
              "record CUDA H2D completion");
 
@@ -785,11 +796,20 @@ void CudaFmmPlan::evaluate(const std::span<const Vec3> moments,
   }
 }
 
-const CudaPlanStatistics &CudaFmmPlan::statistics() const noexcept {
+std::size_t CudaDirectPlan::source_count() const noexcept {
+  return implementation_->source_count;
+}
+
+std::size_t CudaDirectPlan::target_count() const noexcept {
+  return implementation_->target_count;
+}
+
+const CudaPlanStatistics &CudaDirectPlan::statistics() const noexcept {
   return implementation_->statistics;
 }
 
-const CudaEvaluationTimings &CudaFmmPlan::evaluation_timings() const noexcept {
+const CudaEvaluationTimings &
+CudaDirectPlan::evaluation_timings() const noexcept {
   return implementation_->evaluation_timings;
 }
 
@@ -807,9 +827,9 @@ std::vector<PotentialField> cuda_direct_p2p_reference(
         "cuda_direct_p2p_reference identity map has incorrect length");
   }
 
-  CudaFmmPlan plan(sources, targets);
+  CudaDirectPlan plan(sources, targets, target_source_indices);
     std::vector<PotentialField> results(targets.size());
-    plan.evaluate(moments, results, output, target_source_indices);
+    plan.evaluate(moments, results, output);
     return results;
 }
 

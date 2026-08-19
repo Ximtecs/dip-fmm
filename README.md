@@ -26,8 +26,9 @@ never substitute an O(N^2) direct calculation for an FMM traversal.
 L2P on the CPU, applies cached dense M2L
 matrices with cuBLAS, and applies the cached sparse list-1 P2P tensor on an
 independent CUDA stream. `CudaM2L` remains a compatibility alias. The
-separately exposed
-`cuda_direct_p2p_reference` is the O(N^2) GPU numerical reference.
+separately exposed `cuda_direct_p2p_reference` is the O(N^2) GPU numerical
+reference. For changing moments on fixed geometry, `CudaDirectPlan` retains
+positions and the self-identity map on the device across evaluations.
 
 ## Status
 

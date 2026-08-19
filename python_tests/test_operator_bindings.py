@@ -92,6 +92,12 @@ def test_cuda_direct_p2p_reference_python():
                 DIPOLE_MOMENTS,
                 target_source_indices=identities,
             )
+        with pytest.raises(RuntimeError):
+            cdfmm.CudaDirectPlan(
+                SOURCE_POSITIONS,
+                SOURCE_POSITIONS,
+                target_source_indices=identities,
+            )
         return
 
     expected = cdfmm.direct_p2p_reference(
@@ -111,6 +117,27 @@ def test_cuda_direct_p2p_reference_python():
 
     np.testing.assert_allclose(actual["H"], expected["H"])
     np.testing.assert_allclose(actual["phi"], expected["phi"])
+
+    plan = cdfmm.CudaDirectPlan(
+        SOURCE_POSITIONS,
+        SOURCE_POSITIONS,
+        target_source_indices=identities,
+    )
+    assert plan.source_count == SOURCE_POSITIONS.shape[0]
+    assert plan.target_count == SOURCE_POSITIONS.shape[0]
+
+    for scale in (1.0, -0.25):
+        scaled_moments = scale * DIPOLE_MOMENTS
+        expected = cdfmm.direct_p2p_reference(
+            SOURCE_POSITIONS,
+            SOURCE_POSITIONS,
+            scaled_moments,
+            output="both",
+            target_source_indices=identities,
+        )
+        actual = plan.evaluate(scaled_moments, output="both")
+        np.testing.assert_allclose(actual["H"], expected["H"])
+        np.testing.assert_allclose(actual["phi"], expected["phi"])
 
 
 def test_p2m_python():

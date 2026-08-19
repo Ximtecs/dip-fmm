@@ -25,25 +25,30 @@ std::string cuda_runtime_description() {
   return "CUDA support is not enabled in this build";
 }
 
-CudaFmmPlan::CudaFmmPlan(std::span<const Vec3>, std::span<const Vec3>,
-                         ExecutionBackend) {
+CudaDirectPlan::CudaDirectPlan(std::span<const Vec3>, std::span<const Vec3>,
+                               std::span<const int>) {
   throw std::runtime_error(
       "CUDA backend requested, but CDFMM_ENABLE_CUDA is OFF");
 }
 
-CudaFmmPlan::~CudaFmmPlan() = default;
+CudaDirectPlan::~CudaDirectPlan() = default;
 
-void CudaFmmPlan::evaluate(std::span<const Vec3>, std::span<PotentialField>,
-                           OutputFlags, std::span<const int>) {
+void CudaDirectPlan::evaluate(std::span<const Vec3>,
+                              std::span<PotentialField>, OutputFlags) {
   throw std::runtime_error("CUDA backend is unavailable");
 }
 
-const CudaPlanStatistics &CudaFmmPlan::statistics() const noexcept {
+std::size_t CudaDirectPlan::source_count() const noexcept { return 0; }
+
+std::size_t CudaDirectPlan::target_count() const noexcept { return 0; }
+
+const CudaPlanStatistics &CudaDirectPlan::statistics() const noexcept {
   static const CudaPlanStatistics empty{};
   return empty;
 }
 
-const CudaEvaluationTimings &CudaFmmPlan::evaluation_timings() const noexcept {
+const CudaEvaluationTimings &
+CudaDirectPlan::evaluation_timings() const noexcept {
   static const CudaEvaluationTimings empty{};
   return empty;
 }
