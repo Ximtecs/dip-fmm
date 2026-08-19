@@ -66,4 +66,10 @@ TEST_CASE("Direct all-to-all reference excludes singular self pairs") {
       ),
       std::invalid_argument
   );
+  REQUIRE_THROWS_AS(
+      direct_p2p_reference(
+          positions, positions, std::vector<Vec3>{moments.front()}
+      ),
+      std::invalid_argument
+  );
 }

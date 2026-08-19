@@ -15,6 +15,7 @@
 #include "cdfmm/parameter_selection.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/uniform_tree.hpp"
+#include "cdfmm/validation.hpp"
 
 namespace py = pybind11;
 using namespace cdfmm;
@@ -681,6 +682,66 @@ PYBIND11_MODULE(cdfmm, module) {
       py::arg("target"), py::arg("sources"), py::arg("moments"),
       py::arg("output") = "field", py::arg("self_index") = -1,
       "Sum direct point-dipole contributions at one target.");
+
+  module.def(
+      "direct_p2p_reference",
+      [](py::object target_positions, py::object source_positions,
+         py::object dipole_moments, const std::string &output,
+         py::object target_source_indices) {
+        const std::vector<Vec3> targets =
+            parse_vec3_array(target_positions, "target_positions");
+        const std::vector<Vec3> sources =
+            parse_vec3_array(source_positions, "source_positions");
+        const std::vector<Vec3> moments =
+            parse_vec3_array(dipole_moments, "dipole_moments");
+        const OutputFlags output_flags = parse_output(output);
+        const std::vector<int> identities = target_source_indices.is_none()
+            ? std::vector<int>{}
+            : py::cast<std::vector<int>>(target_source_indices);
+
+        std::vector<PotentialField> results;
+        {
+          py::gil_scoped_release release;
+          results = direct_p2p_reference(
+              targets, sources, moments, output_flags, identities
+          );
+        }
+        return potential_fields_to_dict(results);
+      },
+      py::arg("target_positions"), py::arg("source_positions"),
+      py::arg("dipole_moments"), py::arg("output") = "field",
+      py::arg("target_source_indices") = py::none(),
+      "Evaluate the batched O(N^2) direct dipole reference on the CPU.");
+
+  module.def(
+      "cuda_direct_p2p_reference",
+      [](py::object target_positions, py::object source_positions,
+         py::object dipole_moments, const std::string &output,
+         py::object target_source_indices) {
+        const std::vector<Vec3> targets =
+            parse_vec3_array(target_positions, "target_positions");
+        const std::vector<Vec3> sources =
+            parse_vec3_array(source_positions, "source_positions");
+        const std::vector<Vec3> moments =
+            parse_vec3_array(dipole_moments, "dipole_moments");
+        const OutputFlags output_flags = parse_output(output);
+        const std::vector<int> identities = target_source_indices.is_none()
+            ? std::vector<int>{}
+            : py::cast<std::vector<int>>(target_source_indices);
+
+        std::vector<PotentialField> results;
+        {
+          py::gil_scoped_release release;
+          results = cuda_direct_p2p_reference(
+              targets, sources, moments, output_flags, identities
+          );
+        }
+        return potential_fields_to_dict(results);
+      },
+      py::arg("target_positions"), py::arg("source_positions"),
+      py::arg("dipole_moments"), py::arg("output") = "field",
+      py::arg("target_source_indices") = py::none(),
+      "Evaluate the batched O(N^2) direct dipole reference on a CUDA device.");
 
   module.def(
       "p2m_dipole",

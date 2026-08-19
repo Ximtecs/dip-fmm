@@ -37,6 +37,82 @@ def direct_field(target_position):
     return result["H"]
 
 
+def test_direct_p2p_reference_python():
+    identities = np.arange(SOURCE_POSITIONS.shape[0], dtype=np.int32)
+    result = cdfmm.direct_p2p_reference(
+        SOURCE_POSITIONS,
+        SOURCE_POSITIONS,
+        DIPOLE_MOMENTS,
+        output="both",
+        target_source_indices=identities,
+    )
+
+    expected_fields = []
+    expected_potentials = []
+    for target_index, target_position in enumerate(SOURCE_POSITIONS):
+        expected = cdfmm.p2p_dipole_sum(
+            target_position,
+            SOURCE_POSITIONS,
+            DIPOLE_MOMENTS,
+            output="both",
+            self_index=target_index,
+        )
+        expected_fields.append(expected["H"])
+        expected_potentials.append(expected["phi"])
+
+    np.testing.assert_allclose(result["H"], expected_fields)
+    np.testing.assert_allclose(result["phi"], expected_potentials)
+
+
+def test_direct_p2p_reference_python_validates_inputs():
+    with pytest.raises(ValueError, match="one moment per source"):
+        cdfmm.direct_p2p_reference(
+            SOURCE_POSITIONS,
+            SOURCE_POSITIONS,
+            DIPOLE_MOMENTS[:2],
+        )
+
+    with pytest.raises(ValueError, match="one source identity per target"):
+        cdfmm.direct_p2p_reference(
+            SOURCE_POSITIONS,
+            SOURCE_POSITIONS,
+            DIPOLE_MOMENTS,
+            target_source_indices=[0],
+        )
+
+
+def test_cuda_direct_p2p_reference_python():
+    identities = np.arange(SOURCE_POSITIONS.shape[0], dtype=np.int32)
+
+    if not cdfmm.cuda_direct_available():
+        with pytest.raises(RuntimeError):
+            cdfmm.cuda_direct_p2p_reference(
+                SOURCE_POSITIONS,
+                SOURCE_POSITIONS,
+                DIPOLE_MOMENTS,
+                target_source_indices=identities,
+            )
+        return
+
+    expected = cdfmm.direct_p2p_reference(
+        SOURCE_POSITIONS,
+        SOURCE_POSITIONS,
+        DIPOLE_MOMENTS,
+        output="both",
+        target_source_indices=identities,
+    )
+    actual = cdfmm.cuda_direct_p2p_reference(
+        SOURCE_POSITIONS,
+        SOURCE_POSITIONS,
+        DIPOLE_MOMENTS,
+        output="both",
+        target_source_indices=identities,
+    )
+
+    np.testing.assert_allclose(actual["H"], expected["H"])
+    np.testing.assert_allclose(actual["phi"], expected["phi"])
+
+
 def test_p2m_python():
     indices = cdfmm.multi_indices(2)
     coefficients = cdfmm.p2m_dipole(

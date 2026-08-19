@@ -73,6 +73,10 @@ std::vector<PotentialField> direct_p2p_reference(
     std::span<const Vec3> dipole_moments, OutputFlags output,
     std::span<const int> target_source_indices)
 {
+  if (dipole_moments.size() != source_positions.size()) {
+    throw std::invalid_argument(
+        "direct_p2p_reference requires one moment per source");
+  }
   if (!target_source_indices.empty() &&
       target_source_indices.size() != target_positions.size()) {
     throw std::invalid_argument(
