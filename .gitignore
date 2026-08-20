@@ -34,6 +34,7 @@ docs/_build/
 .mypy_cache/
 
 benchmark_results/
+p2p_sweep_results/
 profiling_results/
 /cdfmm_cpu_portable.data
 build-bench/
