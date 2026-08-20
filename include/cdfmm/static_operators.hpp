@@ -105,6 +105,95 @@ struct StaticP2POperator {
     [[nodiscard]] std::size_t memory_bytes() const noexcept;
 };
 
+/** @brief Persistent-memory breakdown for a static P2P execution packing. */
+struct StaticP2PMemory {
+  std::size_t tensor_bytes{0};
+  std::size_t index_bytes{0};
+  std::size_t row_metadata_bytes{0};
+  std::size_t leaf_metadata_bytes{0};
+  std::size_t scratch_bytes{0};
+
+  /// @brief Returns all persistent and scratch bytes represented above.
+  [[nodiscard]] std::size_t total_bytes() const noexcept;
+};
+
+/**
+ * @brief Source-index and structure-of-arrays packing of canonical P2P rows.
+ *
+ * Target identity is implied by `row_offsets`. The six tensor streams retain
+ * the canonical interaction order, so this packing removes redundant target
+ * indices without changing the accumulation order.
+ */
+struct StaticP2PCompactPlan {
+  int source_count{0};
+  int target_count{0};
+  std::vector<int> row_offsets{};
+  std::vector<int> source_indices{};
+  std::array<std::vector<double>, 6> tensors{};
+
+  /// @brief Returns the storage breakdown for this execution packing.
+  [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
+/** @brief Particle ranges defining one dense target/source leaf pair. */
+struct StaticP2PLeafPair {
+  int target_begin{0};
+  int target_count{0};
+  int source_begin{0};
+  int source_count{0};
+};
+
+/** @brief Metadata for one compact dense target/source leaf tensor block. */
+struct StaticP2PLeafBlock {
+  int source_begin{0};
+  int source_count{0};
+  std::size_t tensor_offset{0};
+};
+
+/**
+ * @brief Compact leaf-grouped execution packing of the canonical P2P tensor.
+ *
+ * One row describes each occupied target leaf. Leaf blocks are dense in
+ * target-major, source-minor order and therefore need no particle indices.
+ * Arbitrary, unequal, and partially occupied leaf sizes are supported.
+ */
+struct StaticP2PLeafPlan {
+  int source_count{0};
+  int target_count{0};
+  std::vector<int> target_begins{};
+  std::vector<int> target_counts{};
+  std::vector<int> leaf_row_offsets{};
+  std::vector<StaticP2PLeafBlock> blocks{};
+  std::array<std::vector<double>, 6> tensors{};
+  int minimum_occupancy{0};
+  int maximum_occupancy{0};
+  double mean_occupancy{0.0};
+  int unique_occupancies{0};
+  bool uniform_occupancy{false};
+
+  /// @brief Returns the storage breakdown for this execution packing.
+  [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
+/**
+ * @brief Full 3 x 3 BSR packing with an immutable self-identity policy.
+ *
+ * Symmetric canonical tensors are expanded from six to nine coefficients.
+ * Entries selected by `target_source_indices` are stored as exact zero blocks
+ * because generic sparse libraries cannot skip a changing identity per row.
+ */
+struct StaticP2PBsrPlan {
+  int source_count{0};
+  int target_count{0};
+  std::vector<int> row_offsets{};
+  std::vector<int> source_indices{};
+  std::vector<double> values{};
+  std::vector<int> target_source_indices{};
+
+  /// @brief Returns known BSR value and index storage.
+  [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
 /**
  * @brief Canonical immutable execution plan for normalised static M2L.
  *
@@ -201,6 +290,26 @@ void apply_static_m2l_plan(
     std::span<const std::array<int, 2>> interactions
 );
 
+/** @brief Packs canonical particle rows into six contiguous tensor streams. */
+[[nodiscard]] StaticP2PCompactPlan
+build_static_p2p_compact_plan(const StaticP2POperator &operator_map);
+
+/**
+ * @brief Packs dense target/source leaf pairs from a canonical P2P operator.
+ *
+ * The supplied pairs must partition complete canonical rows into dense leaf
+ * rectangles. This explicit contract prevents an execution packing from
+ * silently changing the mathematical interaction set.
+ */
+[[nodiscard]] StaticP2PLeafPlan
+build_static_p2p_leaf_plan(const StaticP2POperator &operator_map,
+                           std::span<const StaticP2PLeafPair> leaf_pairs);
+
+/** @brief Expands canonical tensors into full BSR(3) blocks. */
+[[nodiscard]] StaticP2PBsrPlan
+build_static_p2p_bsr_plan(const StaticP2POperator &operator_map,
+                          std::span<const int> target_source_indices = {});
+
 /**
  * @brief Applies the compact static near-field tensor additively.
  *
@@ -214,6 +323,22 @@ void apply_static_p2p_operator(
     std::span<Vec3> H,
     std::span<const int> target_source_indices = {}
 );
+
+/** @brief Applies the source-only SoA particle-row packing additively. */
+void apply_static_p2p_compact_plan(
+    const StaticP2PCompactPlan &plan, std::span<const Vec3> dipole_moments,
+    std::span<Vec3> H, std::span<const int> target_source_indices = {});
+
+/** @brief Applies the compact leaf-grouped tensor packing additively. */
+void apply_static_p2p_leaf_plan(
+    const StaticP2PLeafPlan &plan, std::span<const Vec3> dipole_moments,
+    std::span<Vec3> H, std::span<const int> target_source_indices = {});
+
+/** @brief Applies the portable full BSR(3) reference packing additively. */
+void apply_static_p2p_bsr_plan(const StaticP2PBsrPlan &plan,
+                               std::span<const Vec3> dipole_moments,
+                               std::span<Vec3> H,
+                               std::span<const int> target_source_indices = {});
 
 /** @brief Applies a compact static operator additively to an output vector. */
 void apply_static_operator(

@@ -70,6 +70,174 @@ TEST_CASE("compact static P2P honours explicit self identity") {
   }
 }
 
+TEST_CASE("P2P execution packings preserve canonical rows and self identity") {
+  const std::vector<Vec3> sources{
+      {-0.4, 0.1, 0.2}, {0.3, -0.2, 0.5}, {0.8, 0.4, -0.1}};
+  const std::vector<Vec3> targets{
+      {0.1, 0.6, 0.3}, {-0.7, -0.3, 0.2}, {1.5, 1.5, 1.5}};
+  const std::vector<std::array<int, 2>> interactions{
+      {0, 0}, {0, 2}, {1, 0}, {1, 1}};
+  const StaticP2POperator canonical =
+      build_static_p2p_operator(targets, sources, interactions);
+  const StaticP2PCompactPlan compact = build_static_p2p_compact_plan(canonical);
+  const std::vector<StaticP2PLeafPair> leaf_pairs{
+      {0, 1, 0, 1}, {0, 1, 2, 1}, {1, 1, 0, 2}};
+  const StaticP2PLeafPlan leaf =
+      build_static_p2p_leaf_plan(canonical, leaf_pairs);
+  const std::vector<int> self_indices{-1, 1, -1};
+  const StaticP2PBsrPlan bsr =
+      build_static_p2p_bsr_plan(canonical, self_indices);
+
+  std::mt19937 generator(8123);
+  std::uniform_real_distribution<double> random(-1.0, 1.0);
+  for (int state = 0; state < 5; ++state) {
+    std::vector<Vec3> moments(sources.size());
+    for (Vec3 &moment : moments) {
+      moment = {random(generator), random(generator), random(generator)};
+    }
+    std::vector<Vec3> expected(targets.size());
+    std::vector<Vec3> compact_result(targets.size());
+    std::vector<Vec3> leaf_result(targets.size());
+    std::vector<Vec3> bsr_result(targets.size());
+    apply_static_p2p_operator(canonical, moments, expected, self_indices);
+    apply_static_p2p_compact_plan(compact, moments, compact_result,
+                                  self_indices);
+    apply_static_p2p_leaf_plan(leaf, moments, leaf_result, self_indices);
+    apply_static_p2p_bsr_plan(bsr, moments, bsr_result, self_indices);
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+      REQUIRE(compact_result[target].x ==
+              Catch::Approx(expected[target].x).margin(3.0e-15));
+      REQUIRE(compact_result[target].y ==
+              Catch::Approx(expected[target].y).margin(3.0e-15));
+      REQUIRE(compact_result[target].z ==
+              Catch::Approx(expected[target].z).margin(3.0e-15));
+      REQUIRE(leaf_result[target].x ==
+              Catch::Approx(expected[target].x).margin(3.0e-15));
+      REQUIRE(leaf_result[target].y ==
+              Catch::Approx(expected[target].y).margin(3.0e-15));
+      REQUIRE(leaf_result[target].z ==
+              Catch::Approx(expected[target].z).margin(3.0e-15));
+      REQUIRE(bsr_result[target].x ==
+              Catch::Approx(expected[target].x).margin(3.0e-15));
+      REQUIRE(bsr_result[target].y ==
+              Catch::Approx(expected[target].y).margin(3.0e-15));
+      REQUIRE(bsr_result[target].z ==
+              Catch::Approx(expected[target].z).margin(3.0e-15));
+    }
+  }
+
+  REQUIRE(compact.memory().tensor_bytes ==
+          interactions.size() * 6 * sizeof(double));
+  REQUIRE(compact.memory().index_bytes == interactions.size() * sizeof(int));
+  REQUIRE(leaf.memory().tensor_bytes ==
+          interactions.size() * 6 * sizeof(double));
+  REQUIRE(leaf.memory().index_bytes == 0);
+  REQUIRE(leaf.blocks.size() == leaf_pairs.size());
+  REQUIRE(bsr.memory().tensor_bytes ==
+          interactions.size() * 9 * sizeof(double));
+  const std::vector<int> changed_self_indices{-1, -1, -1};
+  const std::vector<Vec3> changed_moments(sources.size(), Vec3{1.0, 0.0, 0.0});
+  std::vector<Vec3> rejected(targets.size());
+  REQUIRE_THROWS_AS(apply_static_p2p_bsr_plan(bsr, changed_moments, rejected,
+                                              changed_self_indices),
+                    std::invalid_argument);
+}
+
+TEST_CASE("P2P packings preserve singular distinct coincident particles") {
+  const std::vector<Vec3> sources{{0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
+  const std::vector<Vec3> targets{{0.0, 0.0, 0.0}};
+  const std::vector<Vec3> moments{{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}};
+  const std::vector<std::array<int, 2>> interactions{{0, 0}, {0, 1}};
+  const StaticP2POperator canonical =
+      build_static_p2p_operator(targets, sources, interactions);
+  const StaticP2PCompactPlan compact = build_static_p2p_compact_plan(canonical);
+  const StaticP2PLeafPlan leaf = build_static_p2p_leaf_plan(
+      canonical, std::array<StaticP2PLeafPair, 1>{{{0, 1, 0, 2}}});
+  const std::array<int, 1> identities{0};
+  const StaticP2PBsrPlan bsr = build_static_p2p_bsr_plan(canonical, identities);
+  std::array<Vec3, 1> compact_result{};
+  std::array<Vec3, 1> leaf_result{};
+  std::array<Vec3, 1> bsr_result{};
+  apply_static_p2p_compact_plan(compact, moments, compact_result, identities);
+  apply_static_p2p_leaf_plan(leaf, moments, leaf_result, identities);
+  apply_static_p2p_bsr_plan(bsr, moments, bsr_result, identities);
+  REQUIRE(std::isnan(compact_result[0].x));
+  REQUIRE(std::isnan(leaf_result[0].x));
+  REQUIRE(std::isnan(bsr_result[0].x));
+}
+
+TEST_CASE("leaf P2P packing handles irregular occupancies across depths") {
+  std::vector<Vec3> positions{{-0.99, -0.99, -0.99},
+                              {0.99, 0.99, 0.99},
+                              {-0.99, 0.99, -0.99},
+                              {0.99, -0.99, 0.99}};
+  std::mt19937 generator(7129);
+  std::uniform_real_distribution<double> coordinate(-0.98, 0.98);
+  for (int particle = 0; particle < 28; ++particle) {
+    positions.push_back(
+        {coordinate(generator), coordinate(generator), coordinate(generator)});
+  }
+
+  for (const int depth : {1, 2, 3}) {
+    UniformTreeOptions options;
+    options.max_level = depth;
+    options.root_centre = Vec3{};
+    options.root_half_width = 1.0;
+    const UniformTree tree(positions, positions, options);
+    const auto nodes = tree.nodes();
+    std::vector<std::array<int, 2>> interactions;
+    std::vector<StaticP2PLeafPair> leaf_pairs;
+    for (const int leaf_index : tree.occupied_target_leaves()) {
+      const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+      for (const int neighbour_index : leaf.list1) {
+        const TreeNode &neighbour =
+            nodes[static_cast<std::size_t>(neighbour_index)];
+        if (neighbour.source_count() == 0) {
+          continue;
+        }
+        leaf_pairs.push_back({static_cast<int>(leaf.target_begin),
+                              static_cast<int>(leaf.target_count()),
+                              static_cast<int>(neighbour.source_begin),
+                              static_cast<int>(neighbour.source_count())});
+        for (std::size_t target = leaf.target_begin; target < leaf.target_end;
+             ++target) {
+          for (std::size_t source = neighbour.source_begin;
+               source < neighbour.source_end; ++source) {
+            interactions.push_back(
+                {static_cast<int>(target), static_cast<int>(source)});
+          }
+        }
+      }
+    }
+    const StaticP2POperator canonical =
+        build_static_p2p_operator(tree.sorted_target_positions(),
+                                  tree.sorted_source_positions(), interactions);
+    const StaticP2PLeafPlan leaf =
+        build_static_p2p_leaf_plan(canonical, leaf_pairs);
+    std::vector<Vec3> moments(positions.size());
+    std::vector<int> identities(positions.size());
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+      moments[index] = {coordinate(generator), coordinate(generator),
+                        coordinate(generator)};
+      identities[index] = static_cast<int>(index);
+    }
+    std::vector<Vec3> expected(positions.size());
+    std::vector<Vec3> actual(positions.size());
+    apply_static_p2p_operator(canonical, moments, expected, identities);
+    apply_static_p2p_leaf_plan(leaf, moments, actual, identities);
+    for (std::size_t target = 0; target < positions.size(); ++target) {
+      REQUIRE(actual[target].x ==
+              Catch::Approx(expected[target].x).epsilon(2.0e-13));
+      REQUIRE(actual[target].y ==
+              Catch::Approx(expected[target].y).epsilon(2.0e-13));
+      REQUIRE(actual[target].z ==
+              Catch::Approx(expected[target].z).epsilon(2.0e-13));
+    }
+    REQUIRE(leaf.maximum_occupancy >= leaf.minimum_occupancy);
+    REQUIRE(leaf.unique_occupancies >= 1);
+  }
+}
+
 TEST_CASE("static P2M matches the independent dipole operator") {
   std::mt19937 generator(731);
   std::uniform_real_distribution<double> random(-0.8, 0.8);
