@@ -12,6 +12,7 @@ import cdfmm
 
 STATIC_ENTRY_BYTES = 16
 P2P_BLOCK_BYTES = 56
+P2P_SOA_INTERACTION_BYTES = 52
 VEC3_BYTES = 24
 DOUBLE_BYTES = 8
 INT_BYTES = 4
@@ -149,6 +150,10 @@ def estimate_source_point_storage(
     p2p_static_bytes = (
         p2p_pairs * P2P_BLOCK_BYTES + (particle_count + 1) * INT_BYTES
     )
+    p2p_soa_bytes = (
+        p2p_pairs * P2P_SOA_INTERACTION_BYTES
+        + (particle_count + 1) * INT_BYTES
+    )
     cached_matrix_bytes = len(groups) * coefficients**2 * DOUBLE_BYTES
     # The canonical target-row plan stores one row offset per tree node;
     # source, matrix-class, and level indices for every interaction; and two
@@ -162,7 +167,8 @@ def estimate_source_point_storage(
     )
     level_scaling_bytes = 2 * (depth + 1) * coefficients * DOUBLE_BYTES
     host_static = {
-        "P2P tensors": p2p_static_bytes,
+        "canonical P2P tensors": p2p_static_bytes,
+        "CPU SoA P2P packing": p2p_soa_bytes,
         "P2M maps": particle_entries * particle_count * STATIC_ENTRY_BYTES,
         "shared M2M/L2L maps": (
             2 * depth * 8 * translation_entries * STATIC_ENTRY_BYTES
