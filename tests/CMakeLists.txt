@@ -13,6 +13,7 @@ add_executable(cdfmm_tests
   test_cuda_backend.cpp
   test_cuda_m2l.cpp
   test_parameter_selection.cpp
+  test_cuboid.cpp
 )
 target_link_libraries(cdfmm_tests PRIVATE cdfmm_core Catch2::Catch2WithMain)
 target_include_directories(cdfmm_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)

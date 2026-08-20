@@ -25,6 +25,44 @@ $$H_{ij}=\frac{1}{4\pi}\left[
 The kernel is singular at zero separation.  A source-point evaluation must
 explicitly skip its self-interaction.
 
+## Finite cuboid geometry
+
+An axis-aligned uniformly magnetised cuboid has side lengths
+$h=(h_x,h_y,h_z)$ and volume $V=h_xh_yh_z$. Runtime data always remains the
+**total magnetic moment** $m=VM$; geometry plans absorb source-volume
+normalisation, so every direct evaluation has the common form $H=Km$.
+Sources and targets are selected independently as point dipoles or uniform
+cuboids, and points or volume-averaged cuboids, respectively.
+
+For $\beta\in\mathbb N_0^3$, define the factorial-normalised cuboid average
+
+$$J_\beta(d,h)=\frac1V\int_V\frac{(d+u)^\beta}{\beta!}\,du.$$
+
+Its exact finite sum contains only component-wise even $\gamma\le\beta$:
+
+$$J_\beta=\sum_\gamma\frac{d^{\beta-\gamma}}{(\beta-\gamma)!}
+\prod_q\frac{h_q^{\gamma_q}}{2^{\gamma_q}(\gamma_q+1)!}.$$
+
+Cuboid P2M replaces each point monomial in the P2M equation by
+$J_{\alpha-e_k}$. Volume-averaged L2P similarly replaces its potential row by
+$J_\beta$ and field row by $-J_{\beta-e_k}$. M2M, M2L and L2L are unchanged
+because translations act on the resulting Cartesian expansion coefficients.
+
+Direct geometry stores exactly the six symmetric Cartesian components
+$K_{xx},K_{xy},K_{xz},K_{yy},K_{yz},K_{zz}$, each an $N_t\times N_s$ matrix.
+Nine GEMVs apply these six matrices to the three packed moment components.
+Point self interactions are zeroed only through explicit identity; finite
+cuboid self interactions are included (a cube gives $H=-M/3$). The prism
+corner formulas and finite-volume Newell primitives are independently
+implemented from published analytical results and are validated against the
+MagTense `getN_prism_3D` and `getAvgN_prism_3D` conventions without copying
+GPL source code.
+
+For a centred cube the degree-three correction is proportional to
+$D_x^2+D_y^2+D_z^2=\nabla^2$ and vanishes outside the source. The first
+physical shape correction is therefore multipole degree five, with relative
+scale $O((h/R)^4)$; a general non-cubic cuboid does not have this cancellation.
+
 ## Cartesian multi-indices
 
 For $\alpha=(\alpha_x,\alpha_y,\alpha_z)\in\mathbb N_0^3$,
