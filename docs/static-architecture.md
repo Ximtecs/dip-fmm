@@ -60,6 +60,17 @@ lets portable CPU and CUDA executors consume identical mathematical data. The
 oneMKL executor derives a gather/multiply/scatter packing from it without
 changing the canonical plan.
 
+P2P follows the same separation. `StaticP2POperator` is the exact canonical
+target-row tensor. Execution experiments derive source-only SoA, compact dense
+leaf rectangles, or full BSR(3) blocks without changing it. Standalone CUDA
+plans keep each packing resident on the device and compare one-thread-per-row,
+one-block-per-leaf, and cuSPARSE execution. Production CPU execution uses SoA.
+Production hybrid and full CUDA execution use BSR(3) when a fixed self-identity
+map is supplied and its configured memory budget permits; otherwise they use
+canonical rows. See the
+[static P2P execution study](static-p2p.md) for storage, correctness
+constraints, and measured dispatch recommendations.
+
 The word *plan* is reserved here for immutable, precomputed execution
 descriptions reused across evaluations. Mutable coefficient and result arrays
 are scratch/state rather than plans. CUDA plan objects additionally own device

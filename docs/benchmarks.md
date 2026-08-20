@@ -4,6 +4,13 @@ Benchmark timing answers how fast a deterministic workload is. To investigate
 why it takes that long with `perf`, NVIDIA Nsight, and the same benchmark
 driver, see the dedicated [profiling guide](profiling.md).
 
+The isolated fixed-geometry near-field benchmark and current results are in
+the [static P2P execution study](static-p2p.md). It compares canonical rows,
+source-only SoA, compact leaf blocks, portable BSR(3), and oneMKL BSR(3).
+In a CUDA-enabled build, `--cuda` adds canonical CUDA, CUDA SoA, the
+shared-memory leaf kernel, and cuSPARSE BSR(3), with transfers and kernel time
+reported separately.
+
 ## Complete reset, build, test, and rough benchmark
 
 Run from the repository root. This resets all build directories but preserves

@@ -102,6 +102,24 @@ DRAM throughput, L1/L2 behaviour, occupancy, register pressure, warp and
 instruction efficiency, and arithmetic intensity. CUDA capture validation is
 manual and requires suitable NVIDIA hardware and tools.
 
+For the isolated static near-field alternatives, use the dedicated benchmark
+so the canonical, SoA, leaf-block, and cuSPARSE BSR(3) calls appear together:
+
+```console
+nsys profile --trace=cuda,osrt --sample=cpu \
+    --output=cdfmm_static_p2p \
+    build-profile-all/benchmarks/benchmark_p2p \
+    --cuda --depth 2 --occupancy 8 --evaluations 20
+
+ncu --set full --launch-count 1 \
+    build-profile-all/benchmarks/benchmark_p2p \
+    --cuda --depth 2 --occupancy 32 --evaluations 2
+```
+
+Use the Systems kernel list to identify the internal cuSPARSE BSR kernel before
+adding an Nsight Compute kernel-name filter. Compare kernel time and achieved
+bandwidth independently of H2D/D2H time; the benchmark prints both views.
+
 ## Representative cases and near/far balance
 
 Suggested source-point cases use the fixed default seed `314159`:
