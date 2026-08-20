@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cdfmm/coefficients.hpp"
+#include "cdfmm/cuboid.hpp"
 #include "cdfmm/multi_index.hpp"
 #include "cdfmm/output_flags.hpp"
 #include "cdfmm/static_operators.hpp"
@@ -104,6 +105,10 @@ struct UniformFmmOptions {
   StaticMatrixBackend static_matrix_backend{StaticMatrixBackend::Portable};
   /// @brief Complete evaluation backend. Auto safely selects CPU static.
   ExecutionBackend backend{ExecutionBackend::Auto};
+  /// @brief Physical model represented by every source.
+  SourceGeometry source_geometry{SourceGeometry::PointDipole};
+  /// @brief Cuboid dimensions: one common size or one per source in user order.
+  std::vector<CuboidSize> source_sizes{};
   /**
    * @brief Optional immutable target-to-source self-identity map.
    *
@@ -281,6 +286,7 @@ private:
   };
 
   void build_static_plan();
+  void initialise_source_geometry(const UniformFmmOptions &options);
   void initialise_p2p_policy(const UniformFmmOptions &options);
   void build_cuda_p2p_plan();
   void build_cuda_full_plan();
@@ -305,6 +311,8 @@ private:
   M2LBackend m2l_backend_{M2LBackend::Static};
   StaticMatrixBackend static_matrix_backend_{StaticMatrixBackend::Portable};
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
+  SourceGeometry source_geometry_{SourceGeometry::PointDipole};
+  std::vector<CuboidSize> sorted_source_sizes_{};
   P2PExecutionPacking p2p_execution_packing_{P2PExecutionPacking::Reference};
   std::size_t cuda_p2p_bsr_max_bytes_{20ULL * 1024ULL * 1024ULL * 1024ULL};
   mutable CudaPlanStatistics empty_cuda_statistics_{};

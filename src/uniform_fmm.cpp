@@ -106,6 +106,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
     throw std::invalid_argument(
         "UniformFmmOptions.expansion_order must be >= 0");
   }
+  initialise_source_geometry(options);
 
   backend_ = options.backend;
   if (backend_ == ExecutionBackend::Auto) {
@@ -163,6 +164,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
     throw std::invalid_argument(
         "UniformFmmOptions.expansion_order must be >= 0");
   }
+  initialise_source_geometry(options);
 
   backend_ = options.backend;
   if (backend_ == ExecutionBackend::Auto) {
@@ -229,9 +231,46 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
     }
   }
 
+  // Finite cuboid self fields are physical; identity maps only remove
+  // singular point-dipole self interactions.
+  if (source_geometry_ == SourceGeometry::UniformCuboid) {
+    return;
+  }
+
   fixed_target_source_indices_ = identities;
   prepare_self_indices(identities);
   fixed_sorted_self_indices_ = sorted_self_indices_;
+}
+
+void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
+  source_geometry_ = options.source_geometry;
+  const std::size_t count = tree_.sorted_source_positions().size();
+  if (source_geometry_ == SourceGeometry::PointDipole) {
+    if (!options.source_sizes.empty()) {
+      throw std::invalid_argument(
+          "point-dipole sources do not accept cuboid sizes");
+    }
+    return;
+  }
+  if (options.source_sizes.size() != 1 &&
+      options.source_sizes.size() != count) {
+    throw std::invalid_argument(
+        "cuboid sizes must contain one or one per source");
+  }
+  if (options.backend == ExecutionBackend::CpuReference ||
+      (options.backend == ExecutionBackend::Auto &&
+       options.m2l_backend == M2LBackend::Reference)) {
+    throw std::invalid_argument("UniformCuboid sources require a static backend");
+  }
+  if (options.source_sizes.size() == 1) {
+    sorted_source_sizes_ = options.source_sizes;
+    return;
+  }
+  sorted_source_sizes_.resize(count);
+  const auto permutation = tree_.source_permutation();
+  for (std::size_t sorted = 0; sorted < count; ++sorted) {
+    sorted_source_sizes_[sorted] = options.source_sizes[permutation[sorted]];
+  }
 }
 
 void UniformFmm::build_cuda_p2p_plan() {
@@ -271,9 +310,20 @@ void UniformFmm::build_static_plan() {
     const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
     P2MPlan plan;
     plan.leaf = leaf_index;
-    plan.operator_map = build_static_p2m_operator(
-        basis_, leaf.centre,
-        sorted_positions.subspan(leaf.source_begin, leaf.source_count()));
+    const auto leaf_positions =
+        sorted_positions.subspan(leaf.source_begin, leaf.source_count());
+    if (source_geometry_ == SourceGeometry::UniformCuboid) {
+      const std::span<const CuboidSize> leaf_sizes =
+          sorted_source_sizes_.size() == 1
+              ? std::span<const CuboidSize>(sorted_source_sizes_)
+              : std::span<const CuboidSize>(sorted_source_sizes_).subspan(
+                    leaf.source_begin, leaf.source_count());
+      plan.operator_map = build_static_cuboid_p2m_operator(
+          basis_, leaf.centre, leaf_positions, leaf_sizes);
+    } else {
+      plan.operator_map = build_static_p2m_operator(
+          basis_, leaf.centre, leaf_positions);
+    }
     static_plan_statistics_.operator_bytes +=
         plan.operator_map.entries.size() * sizeof(StaticOperatorEntry);
     p2m_plans_.push_back(std::move(plan));
@@ -512,8 +562,9 @@ void UniformFmm::build_static_plan() {
       }
     }
   }
-  p2p_operator_ =
-      build_static_p2p_operator(targets, sorted_positions, near_interactions);
+  p2p_operator_ = build_static_p2p_operator(
+      targets, sorted_positions, near_interactions, source_geometry_,
+      sorted_source_sizes_);
   p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
   if (backend_ == ExecutionBackend::CpuStatic) {
     p2p_execution_packing_ = P2PExecutionPacking::ParticleRowSoa;
@@ -657,6 +708,9 @@ void UniformFmm::prepare_self_indices(
 
 std::span<const int> UniformFmm::resolve_self_indices(
     const std::span<const int> target_source_indices) const {
+  if (source_geometry_ == SourceGeometry::UniformCuboid) {
+    return {};
+  }
   if (!fixed_target_source_indices_.has_value()) {
     return target_source_indices;
   }

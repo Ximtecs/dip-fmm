@@ -28,6 +28,84 @@ TEST_CASE("automatic FMM execution resolves to a truthful CPU backend")
     REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::ParticleRowSoa);
 }
 
+TEST_CASE("cuboid FMM includes finite centre self field", "[uniform_fmm][cuboid]")
+{
+    const std::vector<Vec3> positions{{0.0, 0.0, 0.0}};
+    const CuboidSize cube{0.2, 0.2, 0.2};
+    const double volume = cube.volume();
+    const std::vector<Vec3> moments{{volume, -2.0 * volume, 0.5 * volume}};
+    UniformFmmOptions options;
+    options.expansion_order = 5;
+    options.tree.max_level = 0;
+    options.source_geometry = SourceGeometry::UniformCuboid;
+    options.source_sizes = {cube};
+    options.fixed_target_source_indices = std::vector<int>{0};
+    UniformFmm fmm(positions, positions, options);
+    const std::vector<int> identities{0};
+    const auto result = fmm.evaluate(moments, OutputFlags::Field, identities);
+    REQUIRE(result[0].H.x == Catch::Approx(-1.0 / 3.0).margin(2.0e-13));
+    REQUIRE(result[0].H.y == Catch::Approx(2.0 / 3.0).margin(2.0e-13));
+    REQUIRE(result[0].H.z == Catch::Approx(-1.0 / 6.0).margin(2.0e-13));
+}
+
+TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
+{
+    std::vector<Vec3> positions;
+    std::vector<Vec3> moments;
+    const CuboidSize cube{0.08, 0.08, 0.08};
+    for (int iz = 0; iz < 3; ++iz) {
+        for (int iy = 0; iy < 3; ++iy) {
+            for (int ix = 0; ix < 3; ++ix) {
+                positions.push_back({0.2 * ix, 0.2 * iy, 0.2 * iz});
+                moments.push_back({cube.volume() * (0.3 + 0.07 * ix),
+                                   cube.volume() * (-0.2 + 0.05 * iy),
+                                   cube.volume() * (0.4 - 0.03 * iz)});
+            }
+        }
+    }
+    const DenseDirectPlan direct(
+        positions, positions, SourceGeometry::UniformCuboid,
+        TargetGeometry::Point, std::span<const CuboidSize>(&cube, 1));
+    const auto reference = direct.evaluate(moments, DenseDirectBackend::Portable);
+    const auto error_at_order = [&](const int order) {
+        UniformFmmOptions options;
+        options.expansion_order = order;
+        options.tree.max_level = 2;
+        options.tree.root_centre = {0.2, 0.2, 0.2};
+        options.tree.root_half_width = 0.21;
+        options.source_geometry = SourceGeometry::UniformCuboid;
+        options.source_sizes = {cube};
+        UniformFmm fmm(positions, positions, options);
+        const auto approximate = fmm.evaluate(moments);
+        double difference_squared = 0.0;
+        double reference_squared = 0.0;
+        for (std::size_t i = 0; i < reference.size(); ++i) {
+            const Vec3 difference = approximate[i].H - reference[i];
+            difference_squared += dot(difference, difference);
+            reference_squared += dot(reference[i], reference[i]);
+        }
+        return std::sqrt(difference_squared / reference_squared);
+    };
+    const double low_order_error = error_at_order(2);
+    const double high_order_error = error_at_order(6);
+    REQUIRE(high_order_error < 0.5 * low_order_error);
+    REQUIRE(high_order_error < 1.0e-2);
+}
+
+TEST_CASE("static cuboid P2P reuses exact pair tensors", "[cuboid][p2p]")
+{
+    const std::array<Vec3, 1> positions{{{0.0, 0.0, 0.0}}};
+    const std::array<CuboidSize, 1> sizes{{{0.1, 0.1, 0.1}}};
+    const std::array<std::array<int, 2>, 1> interactions{{{0, 0}}};
+    const auto sparse = build_static_p2p_operator(
+        positions, positions, interactions, SourceGeometry::UniformCuboid, sizes);
+    const PairTensor exact = build_pair_tensor(
+        {}, {}, SourceGeometry::UniformCuboid, TargetGeometry::Point, sizes[0]);
+    REQUIRE(sparse.blocks[0].xx == exact.xx);
+    REQUIRE(sparse.blocks[0].yy == exact.yy);
+    REQUIRE(sparse.blocks[0].zz == exact.zz);
+}
+
 TEST_CASE("fixed P2P identities are optional and immutable",
           "[uniform_fmm][p2p]") {
   const std::vector<Vec3> positions{

@@ -363,8 +363,16 @@ StaticP2PMemory StaticP2PBsrPlan::memory() const noexcept {
 StaticP2POperator build_static_p2p_operator(
     const std::span<const Vec3> target_positions,
     const std::span<const Vec3> source_positions,
-    const std::span<const std::array<int, 2>> interactions)
+    const std::span<const std::array<int, 2>> interactions,
+    const SourceGeometry source_geometry,
+    const std::span<const CuboidSize> source_sizes)
 {
+    if (source_geometry == SourceGeometry::UniformCuboid &&
+        source_sizes.size() != 1 &&
+        source_sizes.size() != source_positions.size()) {
+        throw std::invalid_argument(
+            "static cuboid P2P sizes must be common or per source");
+    }
     StaticP2POperator result;
     result.source_count = static_cast<int>(source_positions.size());
     result.target_count = static_cast<int>(target_positions.size());
@@ -373,7 +381,6 @@ StaticP2POperator build_static_p2p_operator(
     std::vector<std::array<int, 2>> sorted(interactions.begin(), interactions.end());
     std::sort(sorted.begin(), sorted.end());
     result.blocks.reserve(sorted.size());
-    constexpr double prefactor = 1.0 / (4.0 * std::numbers::pi);
     for (const auto pair : sorted) {
         const int target = pair[0];
         const int source = pair[1];
@@ -383,8 +390,8 @@ StaticP2POperator build_static_p2p_operator(
         }
         const Vec3 r = target_positions[static_cast<std::size_t>(target)] -
             source_positions[static_cast<std::size_t>(source)];
-        const double r2 = dot(r, r);
-        if (r2 == 0.0) {
+        if (source_geometry == SourceGeometry::PointDipole &&
+            dot(r, r) == 0.0) {
             // Preserve the block so an explicit identity map can skip it. If
             // it is not a self pair, NaNs deliberately expose the same
             // undefined point-dipole singularity as the reference operator.
@@ -394,18 +401,16 @@ StaticP2POperator build_static_p2p_operator(
             ++result.row_offsets[static_cast<std::size_t>(target) + 1];
             continue;
         }
-        const double inverse_r = 1.0 / std::sqrt(r2);
-        const double inverse_r3 = inverse_r / r2;
-        const double common = 3.0 * prefactor * inverse_r3 / r2;
-        const double diagonal = prefactor * inverse_r3;
+        const CuboidSize source_size =
+            source_geometry == SourceGeometry::UniformCuboid
+                ? source_sizes[source_sizes.size() == 1 ? 0 : source]
+                : CuboidSize{};
+        const PairTensor tensor = build_pair_tensor(
+            target_positions[target], source_positions[source], source_geometry,
+            TargetGeometry::Point, source_size);
         result.blocks.push_back({
-            target, source,
-            common * r.x * r.x - diagonal,
-            common * r.x * r.y,
-            common * r.x * r.z,
-            common * r.y * r.y - diagonal,
-            common * r.y * r.z,
-            common * r.z * r.z - diagonal
+            target, source, tensor.xx, tensor.xy, tensor.xz,
+            tensor.yy, tensor.yz, tensor.zz
         });
         ++result.row_offsets[static_cast<std::size_t>(target) + 1];
     }

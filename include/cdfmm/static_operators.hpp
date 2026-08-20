@@ -304,7 +304,9 @@ void apply_static_m2l_plan(
 [[nodiscard]] StaticP2POperator build_static_p2p_operator(
     std::span<const Vec3> target_positions,
     std::span<const Vec3> source_positions,
-    std::span<const std::array<int, 2>> interactions
+    std::span<const std::array<int, 2>> interactions,
+    SourceGeometry source_geometry = SourceGeometry::PointDipole,
+    std::span<const CuboidSize> source_sizes = {}
 );
 
 /** @brief Packs canonical particle rows into six contiguous tensor streams. */
