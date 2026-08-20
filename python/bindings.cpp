@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "cdfmm/cuda_direct.hpp"
+#include "cdfmm/cuda_cuboid.hpp"
 #include "cdfmm/cuboid.hpp"
 #include "cdfmm/operators.hpp"
 #include "cdfmm/parameter_selection.hpp"
@@ -954,6 +955,12 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
     py::enum_<TargetGeometry>(module, "TargetGeometry")
         .value("POINT", TargetGeometry::Point)
         .value("VOLUME_AVERAGED_CUBOID", TargetGeometry::VolumeAveragedCuboid);
+    py::enum_<DenseDirectBackend>(module, "DenseDirectBackend")
+        .value("AUTOMATIC", DenseDirectBackend::Automatic)
+        .value("PORTABLE", DenseDirectBackend::Portable)
+        .value("ONE_MKL", DenseDirectBackend::OneMkl);
+    module.def("dense_direct_mkl_available", &dense_direct_mkl_available);
+    module.def("cuda_dense_direct_available", &cuda_dense_direct_available);
     py::class_<CuboidSize>(module, "CuboidSize")
         .def(py::init<double, double, double>(), py::arg("hx"), py::arg("hy"),
              py::arg("hz"))
@@ -979,14 +986,65 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
             py::arg("source_sizes") = std::vector<CuboidSize>{},
             py::arg("target_sizes") = std::vector<CuboidSize>{},
             py::arg("target_source_indices") = std::vector<int>{})
-        .def("evaluate", [](const DenseDirectPlan& plan, py::object moments) {
-            return points_to_array(plan.evaluate(
-                parse_vec3_array(moments, "total_moments")));
-        })
+        .def("evaluate", [](const DenseDirectPlan& plan, py::object moments,
+                            const DenseDirectBackend backend) {
+            const std::vector<Vec3> parsed_moments =
+                parse_vec3_array(moments, "total_moments");
+            std::vector<Vec3> result;
+            {
+                py::gil_scoped_release release;
+                result = plan.evaluate(parsed_moments, backend);
+            }
+            return points_to_array(result);
+        }, py::arg("total_moments"),
+            py::arg("backend") = DenseDirectBackend::Automatic)
         .def_property_readonly("source_count", &DenseDirectPlan::source_count)
         .def_property_readonly("target_count", &DenseDirectPlan::target_count)
         .def_property_readonly("tensor_memory_bytes",
                                &DenseDirectPlan::tensor_memory_bytes)
         .def_property_readonly("tensor_component_count",
                                &DenseDirectPlan::tensor_component_count);
+    py::class_<CudaDenseDirectPlan>(module, "CudaDenseDirectPlan")
+        .def(py::init([](py::object sources, py::object targets,
+                         SourceGeometry source_geometry,
+                         TargetGeometry target_geometry,
+                         const std::vector<CuboidSize>& source_sizes,
+                         const std::vector<CuboidSize>& target_sizes,
+                         const std::vector<int>& identities) {
+            const std::vector<Vec3> parsed_sources =
+                parse_vec3_array(sources, "source_positions");
+            const std::vector<Vec3> parsed_targets =
+                parse_vec3_array(targets, "target_positions");
+            std::unique_ptr<CudaDenseDirectPlan> plan;
+            {
+                py::gil_scoped_release release;
+                plan = std::make_unique<CudaDenseDirectPlan>(
+                    parsed_sources, parsed_targets, source_geometry,
+                    target_geometry, source_sizes, target_sizes, identities);
+            }
+            return plan;
+        }), py::arg("source_positions"), py::arg("target_positions"),
+            py::arg("source_geometry") = SourceGeometry::PointDipole,
+            py::arg("target_geometry") = TargetGeometry::Point,
+            py::arg("source_sizes") = std::vector<CuboidSize>{},
+            py::arg("target_sizes") = std::vector<CuboidSize>{},
+            py::arg("target_source_indices") = std::vector<int>{})
+        .def("evaluate", [](CudaDenseDirectPlan& plan, py::object moments) {
+            const std::vector<Vec3> parsed_moments =
+                parse_vec3_array(moments, "total_moments");
+            std::vector<Vec3> result;
+            {
+                py::gil_scoped_release release;
+                result = plan.evaluate(parsed_moments);
+            }
+            return points_to_array(result);
+        }, py::arg("total_moments"))
+        .def_property_readonly("source_count",
+                               &CudaDenseDirectPlan::source_count)
+        .def_property_readonly("target_count",
+                               &CudaDenseDirectPlan::target_count)
+        .def_property_readonly("tensor_memory_bytes",
+                               &CudaDenseDirectPlan::tensor_memory_bytes)
+        .def_property_readonly("persistent_device_bytes",
+                               &CudaDenseDirectPlan::persistent_device_bytes);
 }

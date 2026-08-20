@@ -2,6 +2,7 @@
 #pragma once
 
 #include "cdfmm/cuboid.hpp"
+#include "cdfmm/cuda_cuboid.hpp"
 
 // Convenience umbrella header for the complete public C++ interface.
 #include "cdfmm/coefficients.hpp"

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cdfmm/cuda_direct.hpp"
+#include "cdfmm/cuda_cuboid.hpp"
 #include "cdfmm/cuda_p2p.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
@@ -171,6 +172,52 @@ TEST_CASE("CUDA direct P2P agrees with the CPU direct reference", "[cuda]")
                     Catch::Approx(direct[index].H.y).epsilon(2.0e-13));
             REQUIRE(persistent_actual[index].H.z ==
                     Catch::Approx(direct[index].H.z).epsilon(2.0e-13));
+    }
+}
+
+TEST_CASE("CUDA dense cuboid direct plan agrees with portable CPU",
+          "[cuda][manual]")
+{
+    if (!cuda_dense_direct_available()) {
+        SUCCEED("CUDA dense cuboid backend is unavailable");
+        return;
+    }
+
+    const std::vector<Vec3> positions{
+        {-1.0, -1.0, 0.0},
+        {1.0, -1.0, 0.0},
+        {-1.0, 1.0, 0.0},
+        {1.0, 1.0, 0.0}
+    };
+    const std::vector<Vec3> moments{
+        {0.7, -0.2, 0.1},
+        {-0.4, 0.8, 0.3},
+        {0.2, 0.1, -0.6},
+        {-0.3, -0.5, 0.9}
+    };
+    const std::array<CuboidSize, 1> cube{{{0.5, 0.5, 0.5}}};
+    const DenseDirectPlan cpu(
+        positions, positions, SourceGeometry::UniformCuboid,
+        TargetGeometry::Point, cube);
+    CudaDenseDirectPlan cuda(
+        positions, positions, SourceGeometry::UniformCuboid,
+        TargetGeometry::Point, cube);
+
+    const auto expected = cpu.evaluate(
+        moments, DenseDirectBackend::Portable);
+    const auto actual = cuda.evaluate(moments);
+
+    REQUIRE(cuda.source_count() == positions.size());
+    REQUIRE(cuda.target_count() == positions.size());
+    REQUIRE(cuda.tensor_memory_bytes() == cpu.tensor_memory_bytes());
+    REQUIRE(cuda.persistent_device_bytes() >= cuda.tensor_memory_bytes());
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        REQUIRE(actual[index].x ==
+                Catch::Approx(expected[index].x).epsilon(2.0e-13));
+        REQUIRE(actual[index].y ==
+                Catch::Approx(expected[index].y).epsilon(2.0e-13));
+        REQUIRE(actual[index].z ==
+                Catch::Approx(expected[index].z).epsilon(2.0e-13));
     }
 }
 
