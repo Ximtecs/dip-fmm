@@ -17,7 +17,7 @@ option(CDFMM_ENABLE_FAST_MATH
 set(CDFMM_EXTRA_COMPILE_OPTIONS "" CACHE STRING
     "Additional semicolon-separated C++ compile options")
 option(CDFMM_ENABLE_MKL
-       "Include a runtime-selectable oneMKL DGEMM backend for static M2L" OFF)
+       "Include runtime-selectable oneMKL dense operator backends" OFF)
 option(CDFMM_ENABLE_CUDA "Enable optional NVIDIA CUDA execution backends" OFF)
 option(CDFMM_ENABLE_PROFILING
        "Enable NVTX ranges for perf and NVIDIA Nsight captures" OFF)

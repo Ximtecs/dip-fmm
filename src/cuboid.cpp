@@ -181,16 +181,11 @@ PairTensor cuboid_point_tensor(const Vec3& r, const CuboidSize& source)
             scale * off_diagonal[2], -scale * diagonal[2]};
 }
 
-void gemv(const std::vector<double>& matrix, const std::size_t rows,
-          const std::size_t columns, const std::vector<double>& input,
-          std::vector<double>& output, const bool add)
+void portable_gemv(const std::vector<double>& matrix, const std::size_t rows,
+                   const std::size_t columns,
+                   const std::vector<double>& input,
+                   std::vector<double>& output, const bool add)
 {
-#ifdef CDFMM_USE_MKL
-    cblas_dgemv(CblasRowMajor, CblasNoTrans, static_cast<MKL_INT>(rows),
-                static_cast<MKL_INT>(columns), 1.0, matrix.data(),
-                static_cast<MKL_INT>(columns), input.data(), 1,
-                add ? 1.0 : 0.0, output.data(), 1);
-#else
     if (!add) {
         std::fill(output.begin(), output.end(), 0.0);
     }
@@ -201,10 +196,41 @@ void gemv(const std::vector<double>& matrix, const std::size_t rows,
         }
         output[row] += value;
     }
+}
+
+void gemv(const std::vector<double>& matrix, const std::size_t rows,
+          const std::size_t columns, const std::vector<double>& input,
+          std::vector<double>& output, const bool add,
+          const DenseDirectBackend backend)
+{
+    if (backend == DenseDirectBackend::Portable) {
+        portable_gemv(matrix, rows, columns, input, output, add);
+        return;
+    }
+
+#ifdef CDFMM_USE_MKL
+    if (backend == DenseDirectBackend::OneMkl) {
+        cblas_dgemv(CblasRowMajor, CblasNoTrans, static_cast<MKL_INT>(rows),
+                    static_cast<MKL_INT>(columns), 1.0, matrix.data(),
+                    static_cast<MKL_INT>(columns), input.data(), 1,
+                    add ? 1.0 : 0.0, output.data(), 1);
+        return;
+    }
 #endif
+
+    throw std::invalid_argument("unsupported dense direct backend");
 }
 
 } // namespace
+
+bool dense_direct_mkl_available() noexcept
+{
+#ifdef CDFMM_USE_MKL
+    return true;
+#else
+    return false;
+#endif
+}
 
 double cuboid_averaged_monomial(const MultiIndex& beta, const Vec3& d,
                                 const CuboidSize& h)
@@ -323,11 +349,22 @@ DenseDirectPlan::DenseDirectPlan(
 }
 
 std::vector<Vec3> DenseDirectPlan::evaluate(
-    const std::span<const Vec3> total_moments) const
+    const std::span<const Vec3> total_moments,
+    DenseDirectBackend backend) const
 {
     if (total_moments.size() != ns_) {
         throw std::invalid_argument("dense direct plan requires one moment per source");
     }
+    if (backend == DenseDirectBackend::Automatic) {
+        backend = dense_direct_mkl_available() ? DenseDirectBackend::OneMkl :
+            DenseDirectBackend::Portable;
+    }
+    if (backend == DenseDirectBackend::OneMkl &&
+        !dense_direct_mkl_available()) {
+        throw std::runtime_error(
+            "oneMKL dense direct backend is not enabled in this build");
+    }
+
     std::array<std::vector<double>, 3> moments;
     std::array<std::vector<double>, 3> fields;
     for (auto& component : moments) {
@@ -341,15 +378,15 @@ std::vector<Vec3> DenseDirectPlan::evaluate(
         moments[1][source] = total_moments[source].y;
         moments[2][source] = total_moments[source].z;
     }
-    gemv(matrices_[0], nt_, ns_, moments[0], fields[0], false);
-    gemv(matrices_[1], nt_, ns_, moments[1], fields[0], true);
-    gemv(matrices_[2], nt_, ns_, moments[2], fields[0], true);
-    gemv(matrices_[1], nt_, ns_, moments[0], fields[1], false);
-    gemv(matrices_[3], nt_, ns_, moments[1], fields[1], true);
-    gemv(matrices_[4], nt_, ns_, moments[2], fields[1], true);
-    gemv(matrices_[2], nt_, ns_, moments[0], fields[2], false);
-    gemv(matrices_[4], nt_, ns_, moments[1], fields[2], true);
-    gemv(matrices_[5], nt_, ns_, moments[2], fields[2], true);
+    gemv(matrices_[0], nt_, ns_, moments[0], fields[0], false, backend);
+    gemv(matrices_[1], nt_, ns_, moments[1], fields[0], true, backend);
+    gemv(matrices_[2], nt_, ns_, moments[2], fields[0], true, backend);
+    gemv(matrices_[1], nt_, ns_, moments[0], fields[1], false, backend);
+    gemv(matrices_[3], nt_, ns_, moments[1], fields[1], true, backend);
+    gemv(matrices_[4], nt_, ns_, moments[2], fields[1], true, backend);
+    gemv(matrices_[2], nt_, ns_, moments[0], fields[2], false, backend);
+    gemv(matrices_[4], nt_, ns_, moments[1], fields[2], true, backend);
+    gemv(matrices_[5], nt_, ns_, moments[2], fields[2], true, backend);
     std::vector<Vec3> result(nt_);
     for (std::size_t target = 0; target < nt_; ++target) {
         result[target] = {fields[0][target], fields[1][target], fields[2][target]};

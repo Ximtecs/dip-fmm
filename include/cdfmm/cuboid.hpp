@@ -74,6 +74,16 @@ struct PairTensor {
 // Persistent dense direct operator
 //------------------------------------------------------------------------------
 
+/** @brief Selects the GEMV implementation used by a dense direct plan. */
+enum class DenseDirectBackend {
+    Automatic,
+    Portable,
+    OneMkl
+};
+
+/** @brief Reports whether this build contains the oneMKL dense backend. */
+[[nodiscard]] bool dense_direct_mkl_available() noexcept;
+
 /**
  * @brief Six-matrix dense direct plan for fixed, independently selected geometry.
  *
@@ -92,9 +102,20 @@ public:
         std::span<const int> target_source_indices = {}
     );
 
-    /// @brief Applies the cached tensors to one total-moment state.
+    /**
+     * @brief Applies the cached tensors to one total-moment state.
+     *
+     * Automatic selects oneMKL when it is compiled into the library and the
+     * portable implementation otherwise. Explicit selection makes comparative
+     * benchmarks reproducible without rebuilding the geometry plan.
+     *
+     * @param total_moments Total source moments in source order.
+     * @param backend Dense matrix-vector implementation to use.
+     * @return Magnetic field values in target order.
+     */
     [[nodiscard]] std::vector<Vec3> evaluate(
-        std::span<const Vec3> total_moments
+        std::span<const Vec3> total_moments,
+        DenseDirectBackend backend = DenseDirectBackend::Automatic
     ) const;
 
     [[nodiscard]] std::size_t source_count() const noexcept { return ns_; }

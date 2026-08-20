@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <numbers>
+#include <stdexcept>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
@@ -50,10 +51,21 @@ TEST_CASE("dense direct stores six rectangular matrices and reuses them")
     }
     const std::array<Vec3, 2> moments{{{1.0, 2.0, 3.0}, {-2.0, 1.0, 0.5}}};
     const auto first = plan.evaluate(moments);
-    const auto second = plan.evaluate(moments);
+    const auto second = plan.evaluate(moments, DenseDirectBackend::Portable);
     REQUIRE(first[2].x == second[2].x);
     REQUIRE(first[2].y == second[2].y);
     REQUIRE(first[2].z == second[2].z);
+
+    if (dense_direct_mkl_available()) {
+        const auto mkl = plan.evaluate(moments, DenseDirectBackend::OneMkl);
+        REQUIRE(mkl[2].x == Catch::Approx(first[2].x));
+        REQUIRE(mkl[2].y == Catch::Approx(first[2].y));
+        REQUIRE(mkl[2].z == Catch::Approx(first[2].z));
+    } else {
+        REQUIRE_THROWS_AS(
+            plan.evaluate(moments, DenseDirectBackend::OneMkl),
+            std::runtime_error);
+    }
 }
 
 TEST_CASE("cuboid P2M and L2P use volume averaged monomials")
