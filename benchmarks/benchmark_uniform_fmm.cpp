@@ -443,6 +443,20 @@ std::string static_multiply_backend(const BenchmarkBackend backend)
     return "not_applicable";
 }
 
+std::string_view p2p_packing_name(const cdfmm::P2PExecutionPacking packing) {
+  switch (packing) {
+  case cdfmm::P2PExecutionPacking::Reference:
+    return "reference";
+  case cdfmm::P2PExecutionPacking::CanonicalAos:
+    return "canonical-aos";
+  case cdfmm::P2PExecutionPacking::ParticleRowSoa:
+    return "particle-row-soa";
+  case cdfmm::P2PExecutionPacking::CudaBsr3:
+    return "cuda-bsr3";
+  }
+  throw std::logic_error("unrecognised P2P execution packing");
+}
+
 std::string mkl_version()
 {
 #ifdef CDFMM_USE_MKL
@@ -616,6 +630,9 @@ int main(int argc, char** argv)
             selected_backend == BenchmarkBackend::CudaM2LP2P ||
             selected_backend == BenchmarkBackend::CudaFull) {
             selected_options = cpu_options(fmm_options, selected_backend);
+        }
+        if (!direct_backend) {
+          selected_options.fixed_target_source_indices = source_identities;
         }
 
         const double missing = std::numeric_limits<double>::quiet_NaN();
@@ -1026,25 +1043,33 @@ int main(int argc, char** argv)
         out << "sources,targets,depth,order,threads,seed,evaluations,samples,"
                "execution_backend,cuda_compiled,cuda_available,cuda_device,"
                "one_mkl_available,"
-               "compiler,compiler_version,build_type,openmp_status,openmp_version,"
-               "fmm_setup_seconds,tree_total,root_bounds,node_construction,topology,source_morton,"
-               "source_sorting,target_morton,target_sorting,ranges,interaction_lists,"
+               "compiler,compiler_version,build_type,openmp_status,openmp_"
+               "version,"
+               "fmm_setup_seconds,tree_total,root_bounds,node_construction,"
+               "topology,source_morton,"
+               "source_sorting,target_morton,target_sorting,ranges,interaction_"
+               "lists,"
                "evaluation_median,evaluation_mean,evaluations_per_second,"
                "amortised_seconds,moment_permutation,multipole_reset,p2m,m2m,"
-               "local_reset,l2l,m2l,m2l_scale,m2l_gather,m2l_multiply,m2l_scatter,"
+               "local_reset,l2l,m2l,m2l_scale,m2l_gather,m2l_multiply,m2l_"
+               "scatter,"
                "l2p,p2p,result_unpermutation,cuda_h2d,"
                "cuda_kernel,cuda_d2h,cuda_m2l_h2d,cuda_m2l_d2h,"
                "cuda_p2p_h2d,cuda_p2p_kernel,cuda_p2p_d2h,cuda_p2p_wait,"
                "direct_seconds,accuracy_targets,accuracy_reference_seconds,"
-               "mean_relative_error,rms_relative_error,max_relative_error,total_nodes,"
+               "mean_relative_error,rms_relative_error,max_relative_error,"
+               "total_nodes,"
                "occupied_source_leaves,occupied_target_leaves,m2l_translations,"
-               "near_field_pairs,m2l_strategy,static_multiply_backend,mkl_version,"
+               "near_field_pairs,m2l_strategy,static_multiply_backend,p2p_"
+               "packing,"
+               "mkl_version,"
                "static_plan_seconds,p2m_plan_seconds,m2m_plan_seconds,"
                "m2l_plan_seconds,l2l_plan_seconds,l2p_plan_seconds,"
                "p2p_tensor_plan_seconds,p2p_static_interactions,"
                "p2p_tensor_value_bytes,p2p_index_bytes,"
                "cached_m2l_matrices,cached_operator_bytes,"
-               "static_interaction_bytes,static_scratch_bytes,static_plan_bytes,"
+               "static_interaction_bytes,static_scratch_bytes,static_plan_"
+               "bytes,"
                "workload_1_creation_median,workload_1_evaluation_median,"
                "workload_1_total_median,workload_10_creation_median,"
                "workload_10_evaluation_median,workload_10_total_median,"
@@ -1055,6 +1080,10 @@ int main(int argc, char** argv)
                "cuda_m2l_interactions,cuda_m2l_active_rows,"
                "cuda_m2l_metadata_bytes,cuda_m2l_scratch_bytes,"
                "cuda_m2l_threads_per_block,"
+               "cuda_p2p_tensor_bytes,cuda_p2p_index_bytes,"
+               "cuda_p2p_row_metadata_bytes,cuda_p2p_leaf_metadata_bytes,"
+               "cuda_p2p_identity_bytes,cuda_p2p_scratch_bytes,"
+               "cuda_p2p_threads_per_block,"
                "cuda_persistent_device_bytes\n";
         const char* build_type =
 #ifdef NDEBUG
@@ -1064,18 +1093,18 @@ int main(int argc, char** argv)
 #endif
         const int recorded_depth = direct_backend ? 0 : options.depth;
         const int recorded_order = direct_backend ? 0 : options.order;
-        out << options.sources << ',' << options.targets << ',' << recorded_depth
-            << ',' << recorded_order << ',' << thread_count << ',' << options.seed
-            << ',' << options.evaluations << ',' << options.samples << ','
+        out << options.sources << ',' << options.targets << ','
+            << recorded_depth << ',' << recorded_order << ',' << thread_count
+            << ',' << options.seed << ',' << options.evaluations << ','
+            << options.samples << ','
             << benchmark_backend_name(selected_backend) << ','
-            << (cuda_compiled() ? 1 : 0) << ','
-            << (cuda_available() ? 1 : 0) << ",\""
+            << (cuda_compiled() ? 1 : 0) << ',' << (cuda_available() ? 1 : 0)
+            << ",\""
             << (cuda_available() ? cuda_device_description() : std::string{})
-            << "\"," << (one_mkl_available() ? 1 : 0) << ','
-            << compiler_name() << ",\"" << compiler_version() << "\","
-            << build_type
-            << ',' << openmp_status << ',' << openmp_version << ','
-            << setup_seconds << ',' << tree.total.total_seconds << ','
+            << "\"," << (one_mkl_available() ? 1 : 0) << ',' << compiler_name()
+            << ",\"" << compiler_version() << "\"," << build_type << ','
+            << openmp_status << ',' << openmp_version << ',' << setup_seconds
+            << ',' << tree.total.total_seconds << ','
             << tree.root_bounds.total_seconds << ','
             << tree.node_construction.total_seconds << ','
             << tree.topology.total_seconds << ','
@@ -1084,21 +1113,19 @@ int main(int argc, char** argv)
             << tree.target_morton.total_seconds << ','
             << tree.target_sorting.total_seconds << ','
             << tree.ranges.total_seconds << ','
-            << tree.interaction_lists.total_seconds << ','
-            << evaluation_median << ',' << evaluation_mean << ','
-            << 1.0 / evaluation_median << ','
-            << evaluation_median + setup_seconds /
-                static_cast<double>(options.evaluations) << ','
-            << phase_mean(timing.moment_permutation) << ','
+            << tree.interaction_lists.total_seconds << ',' << evaluation_median
+            << ',' << evaluation_mean << ',' << 1.0 / evaluation_median << ','
+            << evaluation_median +
+                   setup_seconds / static_cast<double>(options.evaluations)
+            << ',' << phase_mean(timing.moment_permutation) << ','
             << phase_mean(timing.multipole_reset) << ','
             << phase_mean(timing.p2m) << ',' << phase_mean(timing.m2m) << ','
             << phase_mean(timing.local_reset) << ',' << phase_mean(timing.l2l)
-            << ',' << phase_mean(timing.m2l)
-            << ',' << phase_mean(timing.m2l_scale)
-            << ',' << phase_mean(timing.m2l_gather)
-            << ',' << phase_mean(timing.m2l_multiply)
-            << ',' << phase_mean(timing.m2l_scatter)
-            << ',' << phase_mean(timing.l2p)
+            << ',' << phase_mean(timing.m2l) << ','
+            << phase_mean(timing.m2l_scale) << ','
+            << phase_mean(timing.m2l_gather) << ','
+            << phase_mean(timing.m2l_multiply) << ','
+            << phase_mean(timing.m2l_scatter) << ',' << phase_mean(timing.l2p)
             << ',' << phase_mean(timing.p2p) << ','
             << phase_mean(timing.result_unpermutation) << ','
             << phase_mean(timing.cuda_h2d) << ','
@@ -1109,46 +1136,50 @@ int main(int argc, char** argv)
             << phase_mean(timing.cuda_p2p_h2d) << ','
             << phase_mean(timing.cuda_p2p_kernel) << ','
             << phase_mean(timing.cuda_p2p_d2h) << ','
-            << phase_mean(timing.cuda_p2p_wait) << ',' << direct_seconds
-            << ',' << accuracy_target_count
-            << ',' << accuracy_reference_seconds
-            << ',' << metrics.mean_relative_error << ','
-            << metrics.rms_relative_error << ',' << metrics.max_relative_error
-            << ',' << total_nodes << ','
-            << occupied_source_leaves << ','
-            << occupied_target_leaves << ','
-            << m2l_translations << ',' << near_pairs << ','
-            << m2l_strategy << ',' << multiply_backend << ',' << multiply_version
-            << ',' << static_plan.total.total_seconds
-            << ',' << static_plan.p2m_plan.total_seconds
-            << ',' << static_plan.m2m_plan.total_seconds
-            << ',' << static_plan.m2l_plan.total_seconds
-            << ',' << static_plan.l2l_plan.total_seconds
-            << ',' << static_plan.l2p_plan.total_seconds
-            << ',' << static_plan.p2p_tensor_plan.total_seconds
-            << ',' << static_plan.p2p_interactions
-            << ',' << static_plan.p2p_value_bytes
-            << ',' << static_plan.p2p_index_bytes
-            << ',' << static_plan.transfer_classes
-            << ',' << static_plan.operator_bytes
-            << ',' << static_plan.interaction_bytes
-            << ',' << static_plan.scratch_bytes
+            << phase_mean(timing.cuda_p2p_wait) << ',' << direct_seconds << ','
+            << accuracy_target_count << ',' << accuracy_reference_seconds << ','
+            << metrics.mean_relative_error << ',' << metrics.rms_relative_error
+            << ',' << metrics.max_relative_error << ',' << total_nodes << ','
+            << occupied_source_leaves << ',' << occupied_target_leaves << ','
+            << m2l_translations << ',' << near_pairs << ',' << m2l_strategy
+            << ',' << multiply_backend << ','
+            << (fmm ? p2p_packing_name(fmm->p2p_execution_packing())
+                    : std::string_view{"direct"})
+            << ',' << multiply_version << ',' << static_plan.total.total_seconds
+            << ',' << static_plan.p2m_plan.total_seconds << ','
+            << static_plan.m2m_plan.total_seconds << ','
+            << static_plan.m2l_plan.total_seconds << ','
+            << static_plan.l2l_plan.total_seconds << ','
+            << static_plan.l2p_plan.total_seconds << ','
+            << static_plan.p2p_tensor_plan.total_seconds << ','
+            << static_plan.p2p_interactions << ','
+            << static_plan.p2p_value_bytes << ',' << static_plan.p2p_index_bytes
+            << ',' << static_plan.transfer_classes << ','
+            << static_plan.operator_bytes << ','
+            << static_plan.interaction_bytes << ',' << static_plan.scratch_bytes
             << ',' << static_plan.total_bytes();
         write_workload(out, selected_single);
         write_workload(out, selected_repeated);
-        out << ',' << cuda_statistics.setup_h2d_bytes
-            << ',' << cuda_statistics.evaluation_h2d_bytes
-            << ',' << cuda_statistics.evaluation_d2h_bytes
-            << ',' << cuda_statistics.evaluation_h2d_calls
-            << ',' << cuda_statistics.evaluation_d2h_calls
-            << ',' << cuda_statistics.static_m2l_upload_count
-            << ',' << cuda_statistics.static_p2p_upload_count
-            << ',' << cuda_statistics.m2l_interaction_count
-            << ',' << cuda_statistics.m2l_active_row_count
-            << ',' << cuda_statistics.m2l_interaction_metadata_bytes
-            << ',' << cuda_statistics.m2l_scratch_bytes
-            << ',' << cuda_statistics.m2l_threads_per_block
-            << ',' << cuda_statistics.persistent_device_bytes << '\n';
+        out << ',' << cuda_statistics.setup_h2d_bytes << ','
+            << cuda_statistics.evaluation_h2d_bytes << ','
+            << cuda_statistics.evaluation_d2h_bytes << ','
+            << cuda_statistics.evaluation_h2d_calls << ','
+            << cuda_statistics.evaluation_d2h_calls << ','
+            << cuda_statistics.static_m2l_upload_count << ','
+            << cuda_statistics.static_p2p_upload_count << ','
+            << cuda_statistics.m2l_interaction_count << ','
+            << cuda_statistics.m2l_active_row_count << ','
+            << cuda_statistics.m2l_interaction_metadata_bytes << ','
+            << cuda_statistics.m2l_scratch_bytes << ','
+            << cuda_statistics.m2l_threads_per_block << ','
+            << cuda_statistics.p2p_tensor_bytes << ','
+            << cuda_statistics.p2p_index_bytes << ','
+            << cuda_statistics.p2p_row_metadata_bytes << ','
+            << cuda_statistics.p2p_leaf_metadata_bytes << ','
+            << cuda_statistics.p2p_identity_bytes << ','
+            << cuda_statistics.p2p_scratch_bytes << ','
+            << cuda_statistics.p2p_threads_per_block << ','
+            << cuda_statistics.persistent_device_bytes << '\n';
 
         if (!options.output.empty()) {
             std::cout << "Wrote " << options.output << "\n";
