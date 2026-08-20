@@ -76,3 +76,37 @@ Notebook 12 requires the current compiled `cdfmm` module, including the
 reconstructs the
 current host and CUDA storage layouts from tree interactions without allocating
 CUDA plans, so oversized configurations can be inspected safely.
+
+## MagTense cuboid comparison setup
+
+The direct uniformly magnetised cube comparison uses an isolated environment
+because MagTense 2.2.0 pins older NumPy and Intel runtime packages than the main
+development environment. Create the complete environment from the repository
+root, build the combined CUDA/oneMKL/portable-CPU Python module, and launch the
+notebook with:
+
+```console
+conda env create -f environment-magtense.yml
+conda activate cdfmm-magtense
+module load cuda
+cmake --preset magtense --fresh
+cmake --build --preset magtense -j
+python -m pytest python_tests/test_magtense_cuboid_comparison.py -v
+jupyter lab examples/simple_notebooks/simple_cuboid_magtense_compare.ipynb
+```
+
+Set `CDFMM_BACKEND` in the physical-problem cell to `"normal-cpu"`,
+`"mkl-cpu"`, or `"cuda"`. All three modes use the same physical geometry and
+error analysis; unavailable compiled backends are reported explicitly.
+
+Load the CUDA module before configuring. A failed CUDA configuration leaves an
+incomplete Ninja directory, so run `cmake --preset magtense --fresh` again
+after loading the module; do not invoke the build preset until configuration
+has completed successfully. This preset uses MKL's `intel_thread` backend and
+disables cdfmm's separate GNU OpenMP runtime to avoid loading two incompatible
+OpenMP runtimes into the comparison process.
+
+This initial comparison evaluates each finite source cube at every cube centre,
+including the finite self-field. MagTense's public Python API provides point
+evaluation for rectangular prisms, so the exact receiving-volume-averaged
+cuboid tensor remains outside this comparison.
