@@ -1,0 +1,31 @@
+name: cdfmm-magtense
+channels:
+  # MagTense publishes separate CPU-labelled Conda packages.
+  - cmt-dtu-energy/label/cpu
+  # Supply the Intel Fortran and oneMKL runtimes used by MagTense 2.2.0.
+  - https://software.repos.intel.com/python/conda/
+  - conda-forge
+dependencies:
+  # MagTense 2.2.0 is the newest release built for Python 3.11.
+  - python=3.11
+  - magtense=2.2.0=py3.11_cpu
+  # Headers and CMake metadata allow the same cdfmm build to expose oneMKL.
+  - mkl-devel=2023.1.0
+  - numpy=1.25.2
+  # MagTense 2.2.0 imports pkg_resources from Setuptools.
+  - setuptools<81
+
+  # Build and test the cdfmm Python extension in this isolated environment.
+  - c-compiler
+  - cxx-compiler
+  - cmake>=3.25
+  - ninja
+  - pip
+  - pytest
+  - scikit-build-core>=0.8
+  - pybind11>=2.13
+
+  # Run the interactive comparison notebook.
+  - matplotlib
+  - jupyterlab
+  - ipykernel

@@ -40,6 +40,19 @@
       }
     },
     {
+      "name": "magtense",
+      "displayName": "CUDA, oneMKL, and portable CPU MagTense comparison build",
+      "inherits": "notebooks",
+      "binaryDir": "${sourceDir}/build-magtense",
+      "cacheVariables": {
+        "CDFMM_INSTALL_PYTHON_TO_ENV": "ON",
+        "CDFMM_BUILD_TESTS": "ON",
+        "CDFMM_BUILD_BENCHMARKS": "OFF",
+        "CDFMM_ENABLE_OPENMP": "OFF",
+        "MKL_THREADING": "intel_thread"
+      }
+    },
+    {
       "name": "dev",
       "displayName": "Developer build",
       "generator": "Ninja",
@@ -139,6 +152,11 @@
       "targets": ["install"]
     },
     {
+      "name": "magtense",
+      "configurePreset": "magtense",
+      "targets": ["install"]
+    },
+    {
       "name": "dev",
       "configurePreset": "dev"
     },
@@ -174,6 +192,13 @@
     {
       "name": "notebooks",
       "configurePreset": "notebooks",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "magtense",
+      "configurePreset": "magtense",
       "output": {
         "outputOnFailure": true
       }
