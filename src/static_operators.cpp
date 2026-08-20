@@ -177,6 +177,41 @@ StaticCoefficientOperator build_static_p2m_operator(
     return result;
 }
 
+StaticCoefficientOperator build_static_cuboid_p2m_operator(
+    const MultiIndexSet& basis,
+    const Vec3& centre,
+    const std::span<const Vec3> source_positions,
+    const std::span<const CuboidSize> source_sizes)
+{
+    if (source_sizes.size() != 1 && source_sizes.size() != source_positions.size()) {
+        throw std::invalid_argument("cuboid P2M sizes must be common or per source");
+    }
+    StaticCoefficientOperator result;
+    result.input_size = static_cast<int>(3 * source_positions.size());
+    result.output_size = basis.size();
+    for (std::size_t source = 0; source < source_positions.size(); ++source) {
+        const Vec3 d = source_positions[source] - centre;
+        const CuboidSize h = source_sizes[source_sizes.size() == 1 ? 0 : source];
+        for (int alpha_index = 0; alpha_index < basis.size(); ++alpha_index) {
+            const MultiIndex alpha = basis[alpha_index];
+            const double sign = alpha.degree() % 2 == 0 ? 1.0 : -1.0;
+            const MultiIndex shifted[3] = {{alpha.ax - 1, alpha.ay, alpha.az},
+                                           {alpha.ax, alpha.ay - 1, alpha.az},
+                                           {alpha.ax, alpha.ay, alpha.az - 1}};
+            const int components[3] = {alpha.ax, alpha.ay, alpha.az};
+            for (int component = 0; component < 3; ++component) {
+                if (components[component] > 0) {
+                    result.entries.push_back({
+                        alpha_index, static_cast<int>(3 * source) + component,
+                        sign * cuboid_averaged_monomial(shifted[component], d, h)
+                    });
+                }
+            }
+        }
+    }
+    return result;
+}
+
 StaticCoefficientOperator build_static_m2m_operator(
     const MultiIndexSet& basis,
     const Vec3& d)
@@ -252,6 +287,36 @@ StaticL2PEvaluator build_static_l2p_evaluator(
                 -MultiIndexSet::monomial_over_factorial(
                     dx, {beta.ax, beta.ay, beta.az - 1}
                 );
+        }
+    }
+    return result;
+}
+
+StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
+    const MultiIndexSet& basis, const Vec3& centre, const Vec3& target,
+    const CuboidSize& target_size)
+{
+    StaticL2PEvaluator result;
+    result.potential.resize(static_cast<std::size_t>(basis.size()));
+    for (auto& row : result.field) {
+        row.resize(static_cast<std::size_t>(basis.size()));
+    }
+    const Vec3 dx = target - centre;
+    for (int beta_index = 0; beta_index < basis.size(); ++beta_index) {
+        const MultiIndex beta = basis[beta_index];
+        result.potential[beta_index] = cuboid_averaged_monomial(
+            beta, dx, target_size);
+        if (beta.ax > 0) {
+            result.field[0][beta_index] = -cuboid_averaged_monomial(
+                {beta.ax - 1, beta.ay, beta.az}, dx, target_size);
+        }
+        if (beta.ay > 0) {
+            result.field[1][beta_index] = -cuboid_averaged_monomial(
+                {beta.ax, beta.ay - 1, beta.az}, dx, target_size);
+        }
+        if (beta.az > 0) {
+            result.field[2][beta_index] = -cuboid_averaged_monomial(
+                {beta.ax, beta.ay, beta.az - 1}, dx, target_size);
         }
     }
     return result;

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "cdfmm/operators.hpp"
+#include "cdfmm/cuboid.hpp"
 
 namespace cdfmm {
 
@@ -258,6 +259,14 @@ void apply_static_m2l_plan(
     std::span<const Vec3> source_positions
 );
 
+/** @brief Builds cuboid-averaged P2M for fixed source centres and dimensions. */
+[[nodiscard]] StaticCoefficientOperator build_static_cuboid_p2m_operator(
+    const MultiIndexSet& basis,
+    const Vec3& centre,
+    std::span<const Vec3> source_positions,
+    std::span<const CuboidSize> source_sizes
+);
+
 /** @brief Builds the triangular map M_parent += A(d) M_child. */
 [[nodiscard]] StaticCoefficientOperator build_static_m2m_operator(
     const MultiIndexSet& basis,
@@ -275,6 +284,14 @@ void apply_static_m2l_plan(
     const MultiIndexSet& basis,
     const Vec3& centre,
     const Vec3& target
+);
+
+/** @brief Builds rows evaluating the volume average over a fixed cuboid target. */
+[[nodiscard]] StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
+    const MultiIndexSet& basis,
+    const Vec3& centre,
+    const Vec3& target,
+    const CuboidSize& target_size
 );
 
 /**

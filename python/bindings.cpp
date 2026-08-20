@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "cdfmm/cuda_direct.hpp"
+#include "cdfmm/cuboid.hpp"
 #include "cdfmm/operators.hpp"
 #include "cdfmm/parameter_selection.hpp"
 #include "cdfmm/uniform_fmm.hpp"
@@ -947,4 +948,45 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
       py::arg("local_coefficients"), py::arg("local_centre"),
       py::arg("target_position"), py::arg("order"), py::arg("output") = "field",
       "Evaluate a local expansion at one target position.");
+    py::enum_<SourceGeometry>(module, "SourceGeometry")
+        .value("POINT_DIPOLE", SourceGeometry::PointDipole)
+        .value("UNIFORM_CUBOID", SourceGeometry::UniformCuboid);
+    py::enum_<TargetGeometry>(module, "TargetGeometry")
+        .value("POINT", TargetGeometry::Point)
+        .value("VOLUME_AVERAGED_CUBOID", TargetGeometry::VolumeAveragedCuboid);
+    py::class_<CuboidSize>(module, "CuboidSize")
+        .def(py::init<double, double, double>(), py::arg("hx"), py::arg("hy"),
+             py::arg("hz"))
+        .def_readwrite("hx", &CuboidSize::hx)
+        .def_readwrite("hy", &CuboidSize::hy)
+        .def_readwrite("hz", &CuboidSize::hz)
+        .def_property_readonly("volume", &CuboidSize::volume);
+    py::class_<DenseDirectPlan>(module, "DenseDirectPlan")
+        .def(py::init([](py::object sources, py::object targets,
+                         SourceGeometry source_geometry,
+                         TargetGeometry target_geometry,
+                         const std::vector<CuboidSize>& source_sizes,
+                         const std::vector<CuboidSize>& target_sizes,
+                         const std::vector<int>& identities) {
+            return std::make_unique<DenseDirectPlan>(
+                parse_vec3_array(sources, "source_positions"),
+                parse_vec3_array(targets, "target_positions"),
+                source_geometry, target_geometry, source_sizes, target_sizes,
+                identities);
+        }), py::arg("source_positions"), py::arg("target_positions"),
+            py::arg("source_geometry") = SourceGeometry::PointDipole,
+            py::arg("target_geometry") = TargetGeometry::Point,
+            py::arg("source_sizes") = std::vector<CuboidSize>{},
+            py::arg("target_sizes") = std::vector<CuboidSize>{},
+            py::arg("target_source_indices") = std::vector<int>{})
+        .def("evaluate", [](const DenseDirectPlan& plan, py::object moments) {
+            return points_to_array(plan.evaluate(
+                parse_vec3_array(moments, "total_moments")));
+        })
+        .def_property_readonly("source_count", &DenseDirectPlan::source_count)
+        .def_property_readonly("target_count", &DenseDirectPlan::target_count)
+        .def_property_readonly("tensor_memory_bytes",
+                               &DenseDirectPlan::tensor_memory_bytes)
+        .def_property_readonly("tensor_component_count",
+                               &DenseDirectPlan::tensor_component_count);
 }
