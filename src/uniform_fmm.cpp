@@ -244,6 +244,9 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
 
 void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
   source_geometry_ = options.source_geometry;
+  use_cuboid_p2m_ =
+      source_geometry_ == SourceGeometry::UniformCuboid &&
+      options.use_cuboid_p2m;
   const std::size_t count = tree_.sorted_source_positions().size();
   if (source_geometry_ == SourceGeometry::PointDipole) {
     if (!options.source_sizes.empty()) {
@@ -312,7 +315,7 @@ void UniformFmm::build_static_plan() {
     plan.leaf = leaf_index;
     const auto leaf_positions =
         sorted_positions.subspan(leaf.source_begin, leaf.source_count());
-    if (source_geometry_ == SourceGeometry::UniformCuboid) {
+    if (use_cuboid_p2m_) {
       const std::span<const CuboidSize> leaf_sizes =
           sorted_source_sizes_.size() == 1
               ? std::span<const CuboidSize>(sorted_source_sizes_)

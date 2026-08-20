@@ -46,6 +46,18 @@ TEST_CASE("cuboid FMM includes finite centre self field", "[uniform_fmm][cuboid]
     REQUIRE(result[0].H.x == Catch::Approx(-1.0 / 3.0).margin(2.0e-13));
     REQUIRE(result[0].H.y == Catch::Approx(2.0 / 3.0).margin(2.0e-13));
     REQUIRE(result[0].H.z == Catch::Approx(-1.0 / 6.0).margin(2.0e-13));
+
+    // Disabling cuboid P2M must not change the exact cuboid near field.
+    options.use_cuboid_p2m = false;
+    UniformFmm point_p2m_fmm(positions, positions, options);
+    const auto point_p2m_result =
+        point_p2m_fmm.evaluate(moments, OutputFlags::Field, identities);
+    REQUIRE(point_p2m_result[0].H.x ==
+            Catch::Approx(-1.0 / 3.0).margin(2.0e-13));
+    REQUIRE(point_p2m_result[0].H.y ==
+            Catch::Approx(2.0 / 3.0).margin(2.0e-13));
+    REQUIRE(point_p2m_result[0].H.z ==
+            Catch::Approx(-1.0 / 6.0).margin(2.0e-13));
 }
 
 TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
@@ -67,7 +79,8 @@ TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
         positions, positions, SourceGeometry::UniformCuboid,
         TargetGeometry::Point, std::span<const CuboidSize>(&cube, 1));
     const auto reference = direct.evaluate(moments, DenseDirectBackend::Portable);
-    const auto error_at_order = [&](const int order) {
+    const auto error_at_order = [&](const int order,
+                                    const bool use_cuboid_p2m) {
         UniformFmmOptions options;
         options.expansion_order = order;
         options.tree.max_level = 2;
@@ -75,6 +88,7 @@ TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
         options.tree.root_half_width = 0.21;
         options.source_geometry = SourceGeometry::UniformCuboid;
         options.source_sizes = {cube};
+        options.use_cuboid_p2m = use_cuboid_p2m;
         UniformFmm fmm(positions, positions, options);
         const auto approximate = fmm.evaluate(moments);
         double difference_squared = 0.0;
@@ -86,10 +100,12 @@ TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
         }
         return std::sqrt(difference_squared / reference_squared);
     };
-    const double low_order_error = error_at_order(2);
-    const double high_order_error = error_at_order(6);
+    const double low_order_error = error_at_order(2, true);
+    const double high_order_error = error_at_order(6, true);
+    const double point_p2m_error = error_at_order(6, false);
     REQUIRE(high_order_error < 0.5 * low_order_error);
     REQUIRE(high_order_error < 1.0e-2);
+    REQUIRE(std::abs(high_order_error - point_p2m_error) > 1.0e-5);
 }
 
 TEST_CASE("static cuboid P2P reuses exact pair tensors", "[cuboid][p2p]")

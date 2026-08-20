@@ -110,6 +110,15 @@ struct UniformFmmOptions {
   /// @brief Cuboid dimensions: one common size or one per source in user order.
   std::vector<CuboidSize> source_sizes{};
   /**
+   * @brief Uses finite cuboid moments in P2M for uniform-cuboid sources.
+   *
+   * When false, P2M uses the ordinary point-dipole operator while P2P still
+   * uses the exact cuboid-to-point tensor. This comparison mode isolates the
+   * accuracy contribution from finite-source P2M moments. It has no effect for
+   * point-dipole sources.
+   */
+  bool use_cuboid_p2m{true};
+  /**
    * @brief Optional immutable target-to-source self-identity map.
    *
    * Entries use original user ordering. Supplying the map permits CUDA to
@@ -312,6 +321,7 @@ private:
   StaticMatrixBackend static_matrix_backend_{StaticMatrixBackend::Portable};
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
   SourceGeometry source_geometry_{SourceGeometry::PointDipole};
+  bool use_cuboid_p2m_{false};
   std::vector<CuboidSize> sorted_source_sizes_{};
   P2PExecutionPacking p2p_execution_packing_{P2PExecutionPacking::Reference};
   std::size_t cuda_p2p_bsr_max_bytes_{20ULL * 1024ULL * 1024ULL * 1024ULL};
