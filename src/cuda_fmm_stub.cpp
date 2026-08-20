@@ -94,7 +94,23 @@ const CudaEvaluationTimings &CudaM2LPlan::timings() const noexcept {
   return empty;
 }
 
-CudaP2PPlan::CudaP2PPlan(const StaticP2POperator &) {
+CudaP2PPlan::CudaP2PPlan(const StaticP2POperator &, std::span<const int>) {
+  throw std::runtime_error("CUDA static P2P is unavailable in this build");
+}
+
+CudaP2PPlan::CudaP2PPlan(const StaticP2PCompactPlan &, std::span<const int>) {
+  throw std::runtime_error("CUDA compact P2P is unavailable in this build");
+}
+
+CudaP2PPlan::CudaP2PPlan(const StaticP2PLeafPlan &, std::span<const int>) {
+  throw std::runtime_error("CUDA leaf P2P is unavailable in this build");
+}
+
+CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan &) {
+  throw std::runtime_error("CUDA BSR P2P is unavailable in this build");
+}
+
+CudaP2PPlan::CudaP2PPlan(int, int, std::span<const int>, bool) {
   throw std::runtime_error("CUDA static P2P is unavailable in this build");
 }
 

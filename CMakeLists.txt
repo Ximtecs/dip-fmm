@@ -42,7 +42,7 @@ if(CDFMM_ENABLE_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
   target_sources(cdfmm_core PRIVATE src/cuda_fmm.cu)
-  target_link_libraries(cdfmm_core PUBLIC CUDA::cudart)
+  target_link_libraries(cdfmm_core PUBLIC CUDA::cudart CUDA::cusparse)
   if(CDFMM_ENABLE_PROFILING)
     if(NOT TARGET CUDA::nvtx3)
       message(FATAL_ERROR

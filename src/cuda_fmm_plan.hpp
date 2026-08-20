@@ -51,6 +51,10 @@ struct CudaFullPlanData {
   CudaSharedTranslationData l2l{};
   std::vector<StaticOperatorEntry> l2p{};
   StaticP2POperator p2p{};
+  StaticP2PBsrPlan p2p_bsr{};
+  std::vector<int> fixed_self_indices{};
+  bool use_p2p_bsr{false};
+  bool has_fixed_self_indices{false};
 };
 
 /**

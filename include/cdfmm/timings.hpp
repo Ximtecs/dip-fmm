@@ -191,8 +191,16 @@ struct CudaPlanStatistics {
   int m2l_threads_per_block{0};
   std::size_t l2l_unique_matrix_count{0};
   std::size_t l2l_matrix_bytes{0};
-  /// @brief Number of pairs in the uploaded canonical sparse P2P tensor.
+  /// @brief Number of particle pairs in the uploaded P2P packing.
   std::size_t p2p_interaction_count{0};
+  std::size_t p2p_tensor_bytes{0};
+  std::size_t p2p_index_bytes{0};
+  std::size_t p2p_row_metadata_bytes{0};
+  std::size_t p2p_leaf_metadata_bytes{0};
+  std::size_t p2p_identity_bytes{0};
+  std::size_t p2p_scratch_bytes{0};
+  /// @brief Threads per block for a custom P2P kernel, or zero for cuSPARSE.
+  int p2p_threads_per_block{0};
   std::size_t setup_h2d_bytes{0};
   std::size_t evaluation_h2d_bytes{0};
   std::size_t evaluation_d2h_bytes{0};
