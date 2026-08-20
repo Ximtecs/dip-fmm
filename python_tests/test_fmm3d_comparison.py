@@ -153,7 +153,7 @@ def test_comparison_notebook_is_valid_json_with_compilable_code_cells():
     assert "GPU_ONLY = True" in sources[0]
     assert "PARTICLE_COUNTS = [20_000, 40_000, 60_000]" in sources[0]
     assert "EXPANSION_ORDERS = [4, 6, 8]" in sources[0]
-    assert "TREE_DEPTHS = [2, 3, 4]" in sources[0]
+    assert "TREE_DEPTHS = [3, 4]" in sources[0]
     assert "FMM3D_EPS_VALUES = [1.0e-3, 1.0e-4]" in sources[0]
     assert "VECTOR_BATCH_SIZE is added by this notebook" in sources[0]
     combined = "\n".join(sources)
