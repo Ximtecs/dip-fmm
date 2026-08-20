@@ -25,6 +25,38 @@ TEST_CASE("automatic FMM execution resolves to a truthful CPU backend")
     const std::vector<Vec3> positions{{-0.25, 0.0, 0.0}, {0.25, 0.0, 0.0}};
     UniformFmm fmm(positions);
     REQUIRE(fmm.backend() == ExecutionBackend::CpuStatic);
+    REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::ParticleRowSoa);
+}
+
+TEST_CASE("fixed P2P identities are optional and immutable",
+          "[uniform_fmm][p2p]") {
+  const std::vector<Vec3> positions{
+      {-0.4, 0.0, 0.0}, {0.1, 0.2, 0.0}, {0.35, -0.15, 0.1}};
+  const std::vector<Vec3> moments{
+      {0.2, -0.3, 0.5}, {-0.1, 0.7, 0.4}, {0.6, 0.2, -0.5}};
+  const std::vector<int> identities{0, 1, 2};
+
+  UniformFmmOptions options;
+  options.tree.max_level = 0;
+  options.fixed_target_source_indices = identities;
+  UniformFmm fmm(positions, positions, options);
+
+  const auto implicit = fmm.evaluate(moments, OutputFlags::Field);
+  const auto explicit_map =
+      fmm.evaluate(moments, OutputFlags::Field, identities);
+  REQUIRE(implicit.size() == explicit_map.size());
+  for (std::size_t index = 0; index < implicit.size(); ++index) {
+    REQUIRE(implicit[index].H.x ==
+            Catch::Approx(explicit_map[index].H.x).margin(1.0e-14));
+    REQUIRE(implicit[index].H.y ==
+            Catch::Approx(explicit_map[index].H.y).margin(1.0e-14));
+    REQUIRE(implicit[index].H.z ==
+            Catch::Approx(explicit_map[index].H.z).margin(1.0e-14));
+  }
+
+  REQUIRE_THROWS_AS(
+      fmm.evaluate(moments, OutputFlags::Field, std::vector<int>{-1, 1, 2}),
+      std::invalid_argument);
 }
 
 namespace {

@@ -23,6 +23,10 @@ def test_static_backend_is_default_and_reference_is_selectable():
     options.tree.max_level = 2
     static_fmm = cdfmm.UniformFmm(sources, sources, options)
     assert static_fmm.m2l_backend == cdfmm.M2LBackend.Static
+    assert (
+        static_fmm.p2p_execution_packing
+        == cdfmm.P2PExecutionPacking.PARTICLE_ROW_SOA
+    )
 
     options.m2l_backend = cdfmm.M2LBackend.Reference
     options.backend = cdfmm.ExecutionBackend.CPU_REFERENCE
@@ -186,3 +190,21 @@ def test_complete_source_point_evaluation_uses_explicit_identities():
         ]
     )
     np.testing.assert_allclose(actual, direct, rtol=1.0e-14, atol=1.0e-14)
+
+
+def test_fixed_identity_option_is_used_when_evaluate_omits_the_map():
+    identities = np.arange(len(POSITIONS), dtype=int)
+    options = cdfmm.UniformFmmOptions()
+    options.backend = cdfmm.ExecutionBackend.CPU_STATIC
+    options.tree.max_level = 0
+    options.fixed_target_source_indices = identities.tolist()
+    options.cuda_p2p_bsr_max_bytes = 1234
+    fmm = cdfmm.UniformFmm(POSITIONS, POSITIONS, options)
+
+    implicit = fmm.evaluate(MOMENTS)["H"]
+    explicit = fmm.evaluate(
+        MOMENTS, target_source_indices=identities
+    )["H"]
+
+    np.testing.assert_allclose(implicit, explicit, rtol=0.0, atol=0.0)
+    assert options.cuda_p2p_bsr_max_bytes == 1234

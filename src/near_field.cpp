@@ -13,18 +13,18 @@ namespace cdfmm::detail {
 //
 // Multipole and local expansions do not belong here.  UniformFmm combines this
 // result with the independent expansion branch as H = H_far + H_near.  Both
-// executors consume the one canonical P2P plan built with the geometry; no
+// executors consume a packing derived once from the canonical P2P plan; no
 // backend-specific interaction list is constructed during evaluation.
 
 void evaluate_static_near_field(
-    const StaticP2POperator &p2p_operator,
+    const StaticP2PCompactPlan &p2p_plan,
     const std::span<const Vec3> sorted_dipole_moments,
     const std::span<Vec3> near_fields,
     const std::span<const int> sorted_self_indices) {
   // Each target row owns its accumulation.  The packed ordering is therefore
   // deterministic and race free without atomics or per-thread temporaries.
-  apply_static_p2p_operator(p2p_operator, sorted_dipole_moments, near_fields,
-                            sorted_self_indices);
+  apply_static_p2p_compact_plan(p2p_plan, sorted_dipole_moments, near_fields,
+                                sorted_self_indices);
 }
 
 void evaluate_reference_near_field(

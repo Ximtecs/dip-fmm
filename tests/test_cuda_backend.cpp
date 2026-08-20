@@ -8,8 +8,9 @@
 #include <numeric>
 #include <vector>
 
-#include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/cuda_direct.hpp"
+#include "cdfmm/cuda_p2p.hpp"
+#include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
 
 using namespace cdfmm;
@@ -173,6 +174,102 @@ TEST_CASE("CUDA direct P2P agrees with the CPU direct reference", "[cuda]")
     }
 }
 
+TEST_CASE("CUDA static P2P packings agree with canonical CPU rows",
+          "[cuda][manual]") {
+  if (!cuda_m2l_p2p_available()) {
+    SUCCEED("CUDA static P2P is unavailable");
+    return;
+  }
+
+  std::vector<Vec3> positions;
+  for (int index = 0; index < 24; ++index) {
+    const double value = static_cast<double>(index);
+    positions.push_back(
+        {-0.9 + 1.8 * static_cast<double>((index * 17) % 29) / 28.0,
+         -0.9 + 1.8 * static_cast<double>((index * 11) % 31) / 30.0,
+         -0.9 + 1.8 * static_cast<double>((index * 7) % 37) / 36.0});
+  }
+  UniformTreeOptions tree_options;
+  tree_options.max_level = 2;
+  tree_options.root_centre = Vec3{};
+  tree_options.root_half_width = 1.0;
+  const UniformTree tree(positions, positions, tree_options);
+  const auto nodes = tree.nodes();
+  std::vector<std::array<int, 2>> interactions;
+  std::vector<StaticP2PLeafPair> leaf_pairs;
+  for (const int leaf_index : tree.occupied_target_leaves()) {
+    const TreeNode &leaf_node = nodes[static_cast<std::size_t>(leaf_index)];
+    for (const int neighbour_index : leaf_node.list1) {
+      const TreeNode &neighbour =
+          nodes[static_cast<std::size_t>(neighbour_index)];
+      if (neighbour.source_count() == 0) {
+        continue;
+      }
+      leaf_pairs.push_back({static_cast<int>(leaf_node.target_begin),
+                            static_cast<int>(leaf_node.target_count()),
+                            static_cast<int>(neighbour.source_begin),
+                            static_cast<int>(neighbour.source_count())});
+      for (std::size_t target = leaf_node.target_begin;
+           target < leaf_node.target_end; ++target) {
+        for (std::size_t source = neighbour.source_begin;
+             source < neighbour.source_end; ++source) {
+          interactions.push_back(
+              {static_cast<int>(target), static_cast<int>(source)});
+        }
+      }
+    }
+  }
+
+  const StaticP2POperator canonical =
+      build_static_p2p_operator(tree.sorted_target_positions(),
+                                tree.sorted_source_positions(), interactions);
+  const StaticP2PCompactPlan compact = build_static_p2p_compact_plan(canonical);
+  const StaticP2PLeafPlan leaf =
+      build_static_p2p_leaf_plan(canonical, leaf_pairs);
+  std::vector<int> identities(positions.size());
+  std::iota(identities.begin(), identities.end(), 0);
+  const StaticP2PBsrPlan bsr = build_static_p2p_bsr_plan(canonical, identities);
+  std::vector<Vec3> moments(positions.size());
+  for (std::size_t index = 0; index < moments.size(); ++index) {
+    const double value = static_cast<double>(index);
+    moments[index] = {std::sin(value), std::cos(value), std::sin(0.3 * value)};
+  }
+  std::vector<Vec3> expected(positions.size());
+  apply_static_p2p_operator(canonical, moments, expected, identities);
+
+  const auto verify = [&](CudaP2PPlan &plan) {
+    std::vector<Vec3> actual(positions.size());
+    plan.evaluate(moments, identities, actual);
+    for (std::size_t target = 0; target < actual.size(); ++target) {
+      REQUIRE(actual[target].x ==
+              Catch::Approx(expected[target].x).margin(3.0e-11));
+      REQUIRE(actual[target].y ==
+              Catch::Approx(expected[target].y).margin(3.0e-11));
+      REQUIRE(actual[target].z ==
+              Catch::Approx(expected[target].z).margin(3.0e-11));
+    }
+    REQUIRE(plan.timings().kernel_seconds > 0.0);
+    REQUIRE(plan.statistics().p2p_interaction_count == canonical.blocks.size());
+    REQUIRE(plan.statistics().evaluation_h2d_bytes ==
+            moments.size() * sizeof(Vec3));
+  };
+
+  CudaP2PPlan canonical_cuda(canonical, identities);
+  verify(canonical_cuda);
+  CudaP2PPlan compact_cuda(compact, identities);
+  verify(compact_cuda);
+  CudaP2PPlan leaf_cuda(leaf, identities);
+  verify(leaf_cuda);
+  REQUIRE(leaf_cuda.statistics().p2p_scratch_bytes > 0);
+  REQUIRE(leaf_cuda.statistics().p2p_leaf_metadata_bytes > 0);
+  CudaP2PPlan bsr_cuda(bsr);
+  verify(bsr_cuda);
+  std::vector<int> changed_identities(identities.size(), -1);
+  std::vector<Vec3> rejected(positions.size());
+  REQUIRE_THROWS_AS(bsr_cuda.evaluate(moments, changed_identities, rejected),
+                    std::invalid_argument);
+}
+
 TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
 {
     if (!cuda_m2l_p2p_available()) {
@@ -319,10 +416,17 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
         options.tree.root_half_width = 1.0;
         options.backend = ExecutionBackend::CpuStatic;
         UniformFmm cpu(sources, targets, options);
+        options.fixed_target_source_indices = identities;
         options.backend = ExecutionBackend::CudaPartial;
         UniformFmm partial(sources, targets, options);
         options.backend = ExecutionBackend::CudaFull;
         UniformFmm full(sources, targets, options);
+
+        REQUIRE(partial.p2p_execution_packing() ==
+                P2PExecutionPacking::CudaBsr3);
+        REQUIRE(full.p2p_execution_packing() == P2PExecutionPacking::CudaBsr3);
+        REQUIRE(partial.cuda_plan_statistics().p2p_identity_bytes == 0);
+        REQUIRE(full.cuda_plan_statistics().p2p_identity_bytes == 0);
 
         const auto expected =
             cpu.evaluate(moments, OutputFlags::Field, identities);
@@ -426,6 +530,29 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
         REQUIRE(full.cuda_plan_statistics().evaluation_h2d_calls == 2);
         REQUIRE(full.cuda_plan_statistics().evaluation_d2h_calls == 2);
     }
+}
+
+TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
+          "[cuda][manual]") {
+  if (!cuda_m2l_p2p_available()) {
+    SUCCEED("CUDA M2L/P2P is unavailable");
+    return;
+  }
+
+  const std::vector<Vec3> positions{
+      {-0.5, 0.0, 0.0}, {0.25, 0.1, -0.2}, {0.4, -0.3, 0.2}};
+  const std::vector<int> identities{0, 1, 2};
+  UniformFmmOptions options;
+  options.backend = ExecutionBackend::CudaPartial;
+  options.tree.max_level = 0;
+  options.fixed_target_source_indices = identities;
+  options.cuda_p2p_bsr_max_bytes = 0;
+
+  UniformFmm fmm(positions, positions, options);
+
+  REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::CanonicalAos);
+  REQUIRE(fmm.cuda_plan_statistics().p2p_identity_bytes ==
+          positions.size() * sizeof(int));
 }
 
 TEST_CASE("CUDA M2L/P2P accepts empty geometry", "[cuda][manual]")

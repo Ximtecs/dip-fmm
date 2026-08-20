@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -33,6 +34,14 @@ enum class StaticMatrixBackend { Portable, OneMkl };
 
 /** @brief Executor selected for one operator in the shared static traversal. */
 enum class StaticOperatorExecutor { Reference, Portable, OneMkl, Cuda };
+
+/** @brief Storage packing selected for repeated list1 P2P execution. */
+enum class P2PExecutionPacking {
+  Reference,
+  CanonicalAos,
+  ParticleRowSoa,
+  CudaBsr3
+};
 
 /**
  * @brief Per-operator executor selection for the canonical static plan.
@@ -95,6 +104,17 @@ struct UniformFmmOptions {
   StaticMatrixBackend static_matrix_backend{StaticMatrixBackend::Portable};
   /// @brief Complete evaluation backend. Auto safely selects CPU static.
   ExecutionBackend backend{ExecutionBackend::Auto};
+  /**
+   * @brief Optional immutable target-to-source self-identity map.
+   *
+   * Entries use original user ordering. Supplying the map permits CUDA to
+   * embed self exclusions in a cuSPARSE BSR(3) plan; omitting it retains the
+   * dynamic-identity canonical CUDA path. The map must contain one entry per
+   * target when present.
+   */
+  std::optional<std::vector<int>> fixed_target_source_indices{};
+  /// @brief Maximum persistent bytes permitted for an automatic CUDA BSR plan.
+  std::size_t cuda_p2p_bsr_max_bytes{20ULL * 1024ULL * 1024ULL * 1024ULL};
 };
 
 using M2LBackend = UniformFmmOptions::M2LBackend;
@@ -214,6 +234,8 @@ public:
   [[nodiscard]] ExecutionBackend backend() const;
   /// @brief Returns the executor selected for every canonical static operator.
   [[nodiscard]] StaticExecutionPlan execution_plan() const noexcept;
+  /// @brief Returns the resolved P2P storage packing used for evaluation.
+  [[nodiscard]] P2PExecutionPacking p2p_execution_packing() const noexcept;
   /// @brief Returns CUDA traffic and persistent-allocation diagnostics.
   [[nodiscard]] const CudaPlanStatistics &cuda_plan_statistics() const;
   /// @brief Returns one-time static-plan timing and memory information.
@@ -259,10 +281,14 @@ private:
   };
 
   void build_static_plan();
+  void initialise_p2p_policy(const UniformFmmOptions &options);
+  void build_cuda_p2p_plan();
   void build_cuda_full_plan();
   void prepare_moments(std::span<const Vec3> dipole_moments);
   void upward_pass_prepared();
   void prepare_self_indices(std::span<const int> target_source_indices);
+  [[nodiscard]] std::span<const int>
+  resolve_self_indices(std::span<const int> target_source_indices) const;
   void static_m2l(int level);
   void cuda_m2l();
   void l2l_downward();
@@ -279,6 +305,8 @@ private:
   M2LBackend m2l_backend_{M2LBackend::Static};
   StaticMatrixBackend static_matrix_backend_{StaticMatrixBackend::Portable};
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
+  P2PExecutionPacking p2p_execution_packing_{P2PExecutionPacking::Reference};
+  std::size_t cuda_p2p_bsr_max_bytes_{20ULL * 1024ULL * 1024ULL * 1024ULL};
   mutable CudaPlanStatistics empty_cuda_statistics_{};
   std::unique_ptr<CudaM2LPlanOwner> cuda_m2l_plan_{};
   std::unique_ptr<CudaP2PPlanOwner> cuda_p2p_plan_{};
@@ -289,6 +317,7 @@ private:
   std::vector<std::array<StaticCoefficientOperator, 8>> l2l_operators_{};
   std::vector<StaticL2PEvaluator> l2p_evaluators_{};
   StaticP2POperator p2p_operator_{};
+  StaticP2PCompactPlan p2p_compact_plan_{};
   StaticM2LPlan m2l_plan_{};
   StaticPlanStatistics static_plan_statistics_{};
   // Mutable coefficient and result storage makes one evaluator non-reentrant.
@@ -300,6 +329,8 @@ private:
   std::vector<PotentialField> sorted_results_{};
   std::vector<Vec3> near_fields_{};
   std::vector<int> sorted_self_indices_{};
+  std::optional<std::vector<int>> fixed_target_source_indices_{};
+  std::vector<int> fixed_sorted_self_indices_{};
   EvaluationTimings last_timings_{};
   EvaluationTimings aggregate_timings_{};
 };

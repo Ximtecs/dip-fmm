@@ -10,8 +10,8 @@
 
 namespace cdfmm::detail {
 
-/** @brief Applies the canonical packed list1 tensor without allocating. */
-void evaluate_static_near_field(const StaticP2POperator &p2p_operator,
+/** @brief Applies the default compact SoA list1 packing without allocating. */
+void evaluate_static_near_field(const StaticP2PCompactPlan &p2p_plan,
                                 std::span<const Vec3> sorted_dipole_moments,
                                 std::span<Vec3> near_fields,
                                 std::span<const int> sorted_self_indices);

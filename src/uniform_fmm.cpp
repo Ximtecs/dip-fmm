@@ -134,6 +134,10 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
   multipoles_.assign(coefficient_values, 0.0);
   locals_.assign(coefficient_values, 0.0);
   sorted_dipole_moments_.resize(source_positions.size());
+  sorted_results_.resize(tree_.sorted_target_positions().size());
+  near_fields_.resize(tree_.sorted_target_positions().size());
+  sorted_self_indices_.resize(tree_.sorted_target_positions().size(), -1);
+  initialise_p2p_policy(options);
   if (m2l_backend_ == M2LBackend::Static) {
     build_static_plan();
   }
@@ -141,8 +145,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
     cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
         std::make_unique<CudaM2LPlan>(m2l_plan_));
     if (!tree_.sorted_target_positions().empty()) {
-      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-          std::make_unique<CudaP2PPlan>(p2p_operator_));
+      build_cuda_p2p_plan();
     }
   }
   if (backend_ == ExecutionBackend::CudaFull) {
@@ -191,18 +194,65 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
   sorted_results_.resize(target_positions.size());
   near_fields_.resize(target_positions.size());
   sorted_self_indices_.resize(target_positions.size(), -1);
+  initialise_p2p_policy(options);
   if (m2l_backend_ == M2LBackend::Static) {
     build_static_plan();
   }
   if (backend_ == ExecutionBackend::CudaM2LP2P) {
     cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
         std::make_unique<CudaM2LPlan>(m2l_plan_));
-    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-        std::make_unique<CudaP2PPlan>(p2p_operator_));
+    build_cuda_p2p_plan();
   }
   if (backend_ == ExecutionBackend::CudaFull) {
     build_cuda_full_plan();
   }
+}
+
+void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
+  cuda_p2p_bsr_max_bytes_ = options.cuda_p2p_bsr_max_bytes;
+  if (!options.fixed_target_source_indices.has_value()) {
+    return;
+  }
+
+  const std::vector<int> &identities =
+      options.fixed_target_source_indices.value();
+  const std::size_t target_count = tree_.sorted_target_positions().size();
+  const std::size_t source_count = tree_.sorted_source_positions().size();
+  if (identities.size() != target_count) {
+    throw std::invalid_argument(
+        "fixed_target_source_indices must contain one entry per target");
+  }
+  for (const int source_index : identities) {
+    if (source_index < -1 || source_index >= static_cast<int>(source_count)) {
+      throw std::invalid_argument(
+          "fixed_target_source_indices contains an invalid source index");
+    }
+  }
+
+  fixed_target_source_indices_ = identities;
+  prepare_self_indices(identities);
+  fixed_sorted_self_indices_ = sorted_self_indices_;
+}
+
+void UniformFmm::build_cuda_p2p_plan() {
+  if (fixed_target_source_indices_.has_value()) {
+    StaticP2PBsrPlan bsr =
+        build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_);
+    if (bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_) {
+      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+          std::make_unique<CudaP2PPlan>(bsr));
+      p2p_execution_packing_ = P2PExecutionPacking::CudaBsr3;
+      return;
+    }
+  }
+
+  const std::span<const int> fixed_identities =
+      fixed_target_source_indices_.has_value()
+          ? std::span<const int>(fixed_sorted_self_indices_)
+          : std::span<const int>{};
+  cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+      std::make_unique<CudaP2PPlan>(p2p_operator_, fixed_identities));
+  p2p_execution_packing_ = P2PExecutionPacking::CanonicalAos;
 }
 
 void UniformFmm::build_static_plan() {
@@ -464,13 +514,18 @@ void UniformFmm::build_static_plan() {
   }
   p2p_operator_ =
       build_static_p2p_operator(targets, sorted_positions, near_interactions);
+  p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
+  if (backend_ == ExecutionBackend::CpuStatic) {
+    p2p_execution_packing_ = P2PExecutionPacking::ParticleRowSoa;
+  }
   static_plan_statistics_.p2p_interactions = p2p_operator_.blocks.size();
   static_plan_statistics_.p2p_value_bytes =
       p2p_operator_.blocks.size() * 6 * sizeof(double);
   static_plan_statistics_.p2p_index_bytes =
-      p2p_operator_.row_offsets.size() * sizeof(int) +
-      p2p_operator_.blocks.size() * 2 * sizeof(int);
-  static_plan_statistics_.operator_bytes += p2p_operator_.memory_bytes();
+      p2p_compact_plan_.row_offsets.size() * sizeof(int) +
+      p2p_compact_plan_.source_indices.size() * sizeof(int);
+  static_plan_statistics_.operator_bytes +=
+      p2p_operator_.memory_bytes() + p2p_compact_plan_.memory().total_bytes();
   static_plan_statistics_.p2p_tensor_plan.add(elapsed_seconds(phase_start));
   static_plan_statistics_.total.add(elapsed_seconds(total_start));
   ++static_plan_statistics_.construction_count;
@@ -556,6 +611,16 @@ void UniformFmm::build_cuda_full_plan() {
     }
   }
   data.p2p = p2p_operator_;
+  if (fixed_target_source_indices_.has_value()) {
+    data.has_fixed_self_indices = true;
+    data.fixed_self_indices = fixed_sorted_self_indices_;
+    data.p2p_bsr =
+        build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_);
+    data.use_p2p_bsr =
+        data.p2p_bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_;
+  }
+  p2p_execution_packing_ = data.use_p2p_bsr ? P2PExecutionPacking::CudaBsr3
+                                            : P2PExecutionPacking::CanonicalAos;
   cuda_full_plan_ =
       std::make_unique<CudaFullPlanOwner>(std::make_unique<CudaFullPlan>(data));
 }
@@ -590,12 +655,30 @@ void UniformFmm::prepare_self_indices(
   }
 }
 
+std::span<const int> UniformFmm::resolve_self_indices(
+    const std::span<const int> target_source_indices) const {
+  if (!fixed_target_source_indices_.has_value()) {
+    return target_source_indices;
+  }
+  const std::vector<int> &fixed = fixed_target_source_indices_.value();
+  if (target_source_indices.empty()) {
+    return fixed;
+  }
+  if (!std::equal(target_source_indices.begin(), target_source_indices.end(),
+                  fixed.begin(), fixed.end())) {
+    throw std::invalid_argument(
+        "fixed target-to-source identity map changed; rebuild the FMM plan");
+  }
+  return target_source_indices;
+}
+
 void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
                                std::span<PotentialField> results,
                                const OutputFlags output,
                                std::span<const int> target_source_indices) {
   detail::ProfileRange evaluation_range{"cdfmm/evaluate"};
   const std::size_t target_count = tree_.sorted_target_positions().size();
+  target_source_indices = resolve_self_indices(target_source_indices);
   if (results.size() != target_count) {
     throw std::invalid_argument(
         "UniformFmm::evaluate_into requires one result per target");
@@ -726,8 +809,9 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     } else {
       detail::ProfileRange p2p_range{"cdfmm/near_field/p2p"};
       const auto p2p_start = Clock::now();
-      detail::evaluate_static_near_field(p2p_operator_, sorted_dipole_moments_,
-                                         near_fields_, sorted_self_indices_);
+      detail::evaluate_static_near_field(p2p_compact_plan_,
+                                         sorted_dipole_moments_, near_fields_,
+                                         sorted_self_indices_);
       last_timings_.p2p.add(elapsed_seconds(p2p_start));
     }
     for (std::size_t target = 0; target < target_count; ++target) {
@@ -809,6 +893,9 @@ StaticExecutionPlan UniformFmm::execution_plan() const noexcept {
           StaticOperatorExecutor::Portable,
           StaticOperatorExecutor::Portable};
 }
+P2PExecutionPacking UniformFmm::p2p_execution_packing() const noexcept {
+  return p2p_execution_packing_;
+}
 const CudaPlanStatistics &UniformFmm::cuda_plan_statistics() const {
   if (cuda_full_plan_) {
     return cuda_full_plan_->plan->statistics();
@@ -827,6 +914,14 @@ const CudaPlanStatistics &UniformFmm::cuda_plan_statistics() const {
     empty_cuda_statistics_.persistent_device_bytes +=
         p2p.persistent_device_bytes;
     empty_cuda_statistics_.p2p_interaction_count = p2p.p2p_interaction_count;
+    empty_cuda_statistics_.p2p_tensor_bytes = p2p.p2p_tensor_bytes;
+    empty_cuda_statistics_.p2p_index_bytes = p2p.p2p_index_bytes;
+    empty_cuda_statistics_.p2p_row_metadata_bytes = p2p.p2p_row_metadata_bytes;
+    empty_cuda_statistics_.p2p_leaf_metadata_bytes =
+        p2p.p2p_leaf_metadata_bytes;
+    empty_cuda_statistics_.p2p_identity_bytes = p2p.p2p_identity_bytes;
+    empty_cuda_statistics_.p2p_scratch_bytes = p2p.p2p_scratch_bytes;
+    empty_cuda_statistics_.p2p_threads_per_block = p2p.p2p_threads_per_block;
     empty_cuda_statistics_.static_p2p_upload_count =
         p2p.static_p2p_upload_count;
   }

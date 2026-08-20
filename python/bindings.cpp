@@ -362,6 +362,12 @@ PYBIND11_MODULE(cdfmm, module) {
         .value("CUDA_M2L", ExecutionBackend::CudaM2L)
         .value("CUDA_M2L_STATIC_P2P", ExecutionBackend::CudaM2LStaticP2P);
 
+    py::enum_<P2PExecutionPacking>(module, "P2PExecutionPacking")
+        .value("REFERENCE", P2PExecutionPacking::Reference)
+        .value("CANONICAL_AOS", P2PExecutionPacking::CanonicalAos)
+        .value("PARTICLE_ROW_SOA", P2PExecutionPacking::ParticleRowSoa)
+        .value("CUDA_BSR3", P2PExecutionPacking::CudaBsr3);
+
     module.def("cuda_compiled", &cuda_compiled);
     module.def("one_mkl_available", &one_mkl_available);
     module.def("cuda_available", &cuda_available);
@@ -531,152 +537,173 @@ PYBIND11_MODULE(cdfmm, module) {
         py::arg("target_source_indices") = py::none(),
         "Suggest the fastest tested pair meeting sampled RMS field accuracy.");
 
-  py::class_<UniformFmmOptions>(module, "UniformFmmOptions")
-      .def(py::init<>())
-      .def_readwrite("expansion_order", &UniformFmmOptions::expansion_order)
-      .def_readwrite("tree", &UniformFmmOptions::tree)
-      .def_readwrite("m2l_backend", &UniformFmmOptions::m2l_backend)
-      .def_readwrite("static_matrix_backend",
-                     &UniformFmmOptions::static_matrix_backend)
-      .def_readwrite("backend", &UniformFmmOptions::backend);
+    py::class_<UniformFmmOptions>(module, "UniformFmmOptions")
+        .def(py::init<>())
+        .def_readwrite("expansion_order", &UniformFmmOptions::expansion_order)
+        .def_readwrite("tree", &UniformFmmOptions::tree)
+        .def_readwrite("m2l_backend", &UniformFmmOptions::m2l_backend)
+        .def_readwrite("static_matrix_backend",
+                       &UniformFmmOptions::static_matrix_backend)
+        .def_readwrite("backend", &UniformFmmOptions::backend)
+        .def_readwrite("fixed_target_source_indices",
+                       &UniformFmmOptions::fixed_target_source_indices)
+        .def_readwrite("cuda_p2p_bsr_max_bytes",
+                       &UniformFmmOptions::cuda_p2p_bsr_max_bytes);
 
-  py::class_<UniformFmm>(module, "UniformFmm")
-      .def(py::init([](py::object source_positions,
-                       const UniformFmmOptions &options) {
-             return UniformFmm(
-                 parse_vec3_array(source_positions, "source_positions"),
-                 options);
-           }),
-           py::arg("source_positions"),
-           py::arg("options") = UniformFmmOptions{})
-      .def(py::init([](py::object source_positions, py::object target_positions,
-                       const UniformFmmOptions &options) {
-             return UniformFmm(
-                 parse_vec3_array(source_positions, "source_positions"),
-                 parse_vec3_array(target_positions, "target_positions"),
-                 options);
-           }),
-           py::arg("source_positions"), py::arg("target_positions"),
-           py::arg("options") = UniformFmmOptions{})
-      .def(
-          "upward_pass",
-          [](UniformFmm &fmm, py::object dipole_moments) {
-            fmm.upward_pass(parse_vec3_array(dipole_moments, "dipole_moments"));
-          },
-          py::arg("dipole_moments"),
-          "Replace all node multipoles using moments in original source order.")
-      .def("downward_pass", &UniformFmm::downward_pass)
-      .def(
-          "evaluate",
-          [](UniformFmm &fmm, py::object dipole_moments,
-             const std::string &output, py::object target_source_indices) {
-            const std::vector<Vec3> moments =
-                parse_vec3_array(dipole_moments, "dipole_moments");
-            std::vector<int> identities;
-            if (!target_source_indices.is_none()) {
-              identities = py::cast<std::vector<int>>(target_source_indices);
-            }
-            return potential_fields_to_dict(
-                fmm.evaluate(moments, parse_output(output), identities));
-          },
-          py::arg("dipole_moments"), py::arg("output") = "field",
-          py::arg("target_source_indices") = py::none(),
-          "Run the complete FMM and return values in target order.")
-      .def_property_readonly("tree", &UniformFmm::tree,
-                             py::return_value_policy::reference_internal)
-      .def_property_readonly(
-          "expansion_order",
-          [](const UniformFmm &fmm) { return fmm.basis().order(); })
-      .def_property_readonly("m2l_backend", &UniformFmm::m2l_backend)
-      .def_property_readonly("backend", &UniformFmm::backend)
-      .def_property_readonly(
-          "cuda_plan_statistics",
-          [](const UniformFmm &fmm) {
-            const CudaPlanStatistics &statistics = fmm.cuda_plan_statistics();
-            py::dict result;
-            result["m2m_unique_matrix_count"] =
-                statistics.m2m_unique_matrix_count;
-            result["m2m_matrix_bytes"] = statistics.m2m_matrix_bytes;
-            result["m2l_unique_matrix_count"] =
-                statistics.m2l_unique_matrix_count;
-            result["m2l_matrix_bytes"] = statistics.m2l_matrix_bytes;
-            result["m2l_interaction_metadata_bytes"] =
-                statistics.m2l_interaction_metadata_bytes;
-            result["l2l_unique_matrix_count"] =
-                statistics.l2l_unique_matrix_count;
-            result["l2l_matrix_bytes"] = statistics.l2l_matrix_bytes;
-            result["setup_h2d_bytes"] = statistics.setup_h2d_bytes;
-            result["evaluation_h2d_bytes"] = statistics.evaluation_h2d_bytes;
-            result["evaluation_d2h_bytes"] = statistics.evaluation_d2h_bytes;
-            result["evaluation_h2d_calls"] = statistics.evaluation_h2d_calls;
-            result["evaluation_d2h_calls"] = statistics.evaluation_d2h_calls;
-            result["persistent_device_bytes"] =
-                statistics.persistent_device_bytes;
-            result["plan_generation_count"] = statistics.plan_generation_count;
-            result["static_upload_count"] = statistics.static_upload_count;
-            result["static_m2l_upload_count"] =
-                statistics.static_m2l_upload_count;
-            return result;
-          })
-      .def_property_readonly(
-          "static_plan_statistics",
-          [](const UniformFmm &fmm) {
-            const StaticPlanStatistics &statistics =
-                fmm.static_plan_statistics();
-            py::dict result;
-            result["transfer_classes"] = statistics.transfer_classes;
-            result["interactions"] = statistics.interactions;
-            result["operator_bytes"] = statistics.operator_bytes;
-            result["interaction_bytes"] = statistics.interaction_bytes;
-            result["scratch_bytes"] = statistics.scratch_bytes;
-            result["m2m_operators"] = statistics.m2m_operators;
-            result["m2m_theoretical_interactions"] =
-                statistics.m2m_theoretical_interactions;
-            result["m2m_operator_bytes"] = statistics.m2m_operator_bytes;
-            result["m2l_operators"] = statistics.m2l_operators;
-            result["m2l_theoretical_maximum_classes"] =
-                StaticPlanStatistics::theoretical_maximum_m2l_classes;
-            result["m2l_operator_bytes"] = statistics.m2l_operator_bytes;
-            result["m2l_interaction_bytes"] = statistics.m2l_interaction_bytes;
-            result["l2l_operators"] = statistics.l2l_operators;
-            result["l2l_theoretical_interactions"] =
-                statistics.l2l_theoretical_interactions;
-            result["l2l_operator_bytes"] = statistics.l2l_operator_bytes;
-            result["translation_operator_bytes"] =
-                statistics.translation_operator_bytes();
-            result["dense"] = statistics.dense;
-            result["sparse"] = statistics.sparse;
-            result["numerically_pruned"] = statistics.numerically_pruned;
-            result["symmetry_compressed"] = statistics.symmetry_compressed;
-            result["total_bytes"] = statistics.total_bytes();
-            result["setup_seconds"] = statistics.total.total_seconds;
-            return result;
-          })
-      .def_property_readonly("root_multipole",
-                             [](const UniformFmm &fmm) {
-                               const auto coefficients = fmm.root_multipole();
-                               return coefficients_to_array(CoeffVector(
-                                   coefficients.begin(), coefficients.end()));
-                             })
-      .def(
-          "multipole",
-          [](const UniformFmm &fmm, const int node_index) {
-            const auto coefficients = fmm.multipole(node_index);
-            return coefficients_to_array(
-                CoeffVector(coefficients.begin(), coefficients.end()));
-          },
-          py::arg("node_index"))
-      .def(
-          "local",
-          [](const UniformFmm &fmm, const int node_index) {
-            const auto coefficients = fmm.local(node_index);
-            return coefficients_to_array(
-                CoeffVector(coefficients.begin(), coefficients.end()));
-          },
-          py::arg("node_index"));
+    py::class_<UniformFmm>(module, "UniformFmm")
+        .def(py::init([](py::object source_positions,
+                         const UniformFmmOptions &options) {
+               return UniformFmm(
+                   parse_vec3_array(source_positions, "source_positions"),
+                   options);
+             }),
+             py::arg("source_positions"),
+             py::arg("options") = UniformFmmOptions{})
+        .def(py::init([](py::object source_positions,
+                         py::object target_positions,
+                         const UniformFmmOptions &options) {
+               return UniformFmm(
+                   parse_vec3_array(source_positions, "source_positions"),
+                   parse_vec3_array(target_positions, "target_positions"),
+                   options);
+             }),
+             py::arg("source_positions"), py::arg("target_positions"),
+             py::arg("options") = UniformFmmOptions{})
+        .def(
+            "upward_pass",
+            [](UniformFmm &fmm, py::object dipole_moments) {
+              fmm.upward_pass(
+                  parse_vec3_array(dipole_moments, "dipole_moments"));
+            },
+            py::arg("dipole_moments"),
+            "Replace all node multipoles using moments in original source "
+            "order.")
+        .def("downward_pass", &UniformFmm::downward_pass)
+        .def(
+            "evaluate",
+            [](UniformFmm &fmm, py::object dipole_moments,
+               const std::string &output, py::object target_source_indices) {
+              const std::vector<Vec3> moments =
+                  parse_vec3_array(dipole_moments, "dipole_moments");
+              std::vector<int> identities;
+              if (!target_source_indices.is_none()) {
+                identities = py::cast<std::vector<int>>(target_source_indices);
+              }
+              return potential_fields_to_dict(
+                  fmm.evaluate(moments, parse_output(output), identities));
+            },
+            py::arg("dipole_moments"), py::arg("output") = "field",
+            py::arg("target_source_indices") = py::none(),
+            "Run the complete FMM and return values in target order.")
+        .def_property_readonly("tree", &UniformFmm::tree,
+                               py::return_value_policy::reference_internal)
+        .def_property_readonly(
+            "expansion_order",
+            [](const UniformFmm &fmm) { return fmm.basis().order(); })
+        .def_property_readonly("m2l_backend", &UniformFmm::m2l_backend)
+        .def_property_readonly("backend", &UniformFmm::backend)
+        .def_property_readonly("p2p_execution_packing",
+                               &UniformFmm::p2p_execution_packing)
+        .def_property_readonly(
+            "cuda_plan_statistics",
+            [](const UniformFmm &fmm) {
+              const CudaPlanStatistics &statistics = fmm.cuda_plan_statistics();
+              py::dict result;
+              result["m2m_unique_matrix_count"] =
+                  statistics.m2m_unique_matrix_count;
+              result["m2m_matrix_bytes"] = statistics.m2m_matrix_bytes;
+              result["m2l_unique_matrix_count"] =
+                  statistics.m2l_unique_matrix_count;
+              result["m2l_matrix_bytes"] = statistics.m2l_matrix_bytes;
+              result["m2l_interaction_metadata_bytes"] =
+                  statistics.m2l_interaction_metadata_bytes;
+              result["l2l_unique_matrix_count"] =
+                  statistics.l2l_unique_matrix_count;
+              result["l2l_matrix_bytes"] = statistics.l2l_matrix_bytes;
+              result["setup_h2d_bytes"] = statistics.setup_h2d_bytes;
+              result["evaluation_h2d_bytes"] = statistics.evaluation_h2d_bytes;
+              result["evaluation_d2h_bytes"] = statistics.evaluation_d2h_bytes;
+              result["evaluation_h2d_calls"] = statistics.evaluation_h2d_calls;
+              result["evaluation_d2h_calls"] = statistics.evaluation_d2h_calls;
+              result["persistent_device_bytes"] =
+                  statistics.persistent_device_bytes;
+              result["p2p_tensor_bytes"] = statistics.p2p_tensor_bytes;
+              result["p2p_index_bytes"] = statistics.p2p_index_bytes;
+              result["p2p_row_metadata_bytes"] =
+                  statistics.p2p_row_metadata_bytes;
+              result["p2p_leaf_metadata_bytes"] =
+                  statistics.p2p_leaf_metadata_bytes;
+              result["p2p_identity_bytes"] = statistics.p2p_identity_bytes;
+              result["p2p_scratch_bytes"] = statistics.p2p_scratch_bytes;
+              result["p2p_threads_per_block"] =
+                  statistics.p2p_threads_per_block;
+              result["plan_generation_count"] =
+                  statistics.plan_generation_count;
+              result["static_upload_count"] = statistics.static_upload_count;
+              result["static_m2l_upload_count"] =
+                  statistics.static_m2l_upload_count;
+              return result;
+            })
+        .def_property_readonly(
+            "static_plan_statistics",
+            [](const UniformFmm &fmm) {
+              const StaticPlanStatistics &statistics =
+                  fmm.static_plan_statistics();
+              py::dict result;
+              result["transfer_classes"] = statistics.transfer_classes;
+              result["interactions"] = statistics.interactions;
+              result["operator_bytes"] = statistics.operator_bytes;
+              result["interaction_bytes"] = statistics.interaction_bytes;
+              result["scratch_bytes"] = statistics.scratch_bytes;
+              result["m2m_operators"] = statistics.m2m_operators;
+              result["m2m_theoretical_interactions"] =
+                  statistics.m2m_theoretical_interactions;
+              result["m2m_operator_bytes"] = statistics.m2m_operator_bytes;
+              result["m2l_operators"] = statistics.m2l_operators;
+              result["m2l_theoretical_maximum_classes"] =
+                  StaticPlanStatistics::theoretical_maximum_m2l_classes;
+              result["m2l_operator_bytes"] = statistics.m2l_operator_bytes;
+              result["m2l_interaction_bytes"] =
+                  statistics.m2l_interaction_bytes;
+              result["l2l_operators"] = statistics.l2l_operators;
+              result["l2l_theoretical_interactions"] =
+                  statistics.l2l_theoretical_interactions;
+              result["l2l_operator_bytes"] = statistics.l2l_operator_bytes;
+              result["translation_operator_bytes"] =
+                  statistics.translation_operator_bytes();
+              result["dense"] = statistics.dense;
+              result["sparse"] = statistics.sparse;
+              result["numerically_pruned"] = statistics.numerically_pruned;
+              result["symmetry_compressed"] = statistics.symmetry_compressed;
+              result["total_bytes"] = statistics.total_bytes();
+              result["setup_seconds"] = statistics.total.total_seconds;
+              return result;
+            })
+        .def_property_readonly("root_multipole",
+                               [](const UniformFmm &fmm) {
+                                 const auto coefficients = fmm.root_multipole();
+                                 return coefficients_to_array(CoeffVector(
+                                     coefficients.begin(), coefficients.end()));
+                               })
+        .def(
+            "multipole",
+            [](const UniformFmm &fmm, const int node_index) {
+              const auto coefficients = fmm.multipole(node_index);
+              return coefficients_to_array(
+                  CoeffVector(coefficients.begin(), coefficients.end()));
+            },
+            py::arg("node_index"))
+        .def(
+            "local",
+            [](const UniformFmm &fmm, const int node_index) {
+              const auto coefficients = fmm.local(node_index);
+              return coefficients_to_array(
+                  CoeffVector(coefficients.begin(), coefficients.end()));
+            },
+            py::arg("node_index"));
 
-  module.def("morton_encode", &morton_encode);
-  module.def("morton_decode", &morton_decode);
+    module.def("morton_encode", &morton_encode);
+    module.def("morton_decode", &morton_decode);
 
     module.def(
       "multi_indices",
