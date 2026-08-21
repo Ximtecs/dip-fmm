@@ -7,6 +7,7 @@
 #include <limits>
 #include <numbers>
 #include <stdexcept>
+#include <type_traits>
 
 #ifdef CDFMM_USE_MKL
 #include <mkl.h>
@@ -181,16 +182,17 @@ PairTensor cuboid_point_tensor(const Vec3& r, const CuboidSize& source)
             scale * off_diagonal[2], -scale * diagonal[2]};
 }
 
-void portable_gemv(const std::vector<double>& matrix, const std::size_t rows,
+template <typename Scalar>
+void portable_gemv(const std::vector<Scalar>& matrix, const std::size_t rows,
                    const std::size_t columns,
-                   const std::vector<double>& input,
-                   std::vector<double>& output, const bool add)
+                   const std::vector<Scalar>& input,
+                   std::vector<Scalar>& output, const bool add)
 {
     if (!add) {
         std::fill(output.begin(), output.end(), 0.0);
     }
     for (std::size_t row = 0; row < rows; ++row) {
-        double value = 0.0;
+        Scalar value = Scalar{0};
         for (std::size_t column = 0; column < columns; ++column) {
             value += matrix[row * columns + column] * input[column];
         }
@@ -198,9 +200,10 @@ void portable_gemv(const std::vector<double>& matrix, const std::size_t rows,
     }
 }
 
-void gemv(const std::vector<double>& matrix, const std::size_t rows,
-          const std::size_t columns, const std::vector<double>& input,
-          std::vector<double>& output, const bool add,
+template <typename Scalar>
+void gemv(const std::vector<Scalar>& matrix, const std::size_t rows,
+          const std::size_t columns, const std::vector<Scalar>& input,
+          std::vector<Scalar>& output, const bool add,
           const DenseDirectBackend backend)
 {
     if (backend == DenseDirectBackend::Portable) {
@@ -210,10 +213,19 @@ void gemv(const std::vector<double>& matrix, const std::size_t rows,
 
 #ifdef CDFMM_USE_MKL
     if (backend == DenseDirectBackend::OneMkl) {
-        cblas_dgemv(CblasRowMajor, CblasNoTrans, static_cast<MKL_INT>(rows),
-                    static_cast<MKL_INT>(columns), 1.0, matrix.data(),
-                    static_cast<MKL_INT>(columns), input.data(), 1,
-                    add ? 1.0 : 0.0, output.data(), 1);
+        if constexpr (std::is_same_v<Scalar, float>) {
+            cblas_sgemv(CblasRowMajor, CblasNoTrans,
+                        static_cast<MKL_INT>(rows),
+                        static_cast<MKL_INT>(columns), 1.0F, matrix.data(),
+                        static_cast<MKL_INT>(columns), input.data(), 1,
+                        add ? 1.0F : 0.0F, output.data(), 1);
+        } else {
+            cblas_dgemv(CblasRowMajor, CblasNoTrans,
+                        static_cast<MKL_INT>(rows),
+                        static_cast<MKL_INT>(columns), 1.0, matrix.data(),
+                        static_cast<MKL_INT>(columns), input.data(), 1,
+                        add ? 1.0 : 0.0, output.data(), 1);
+        }
         return;
     }
 #endif
@@ -302,9 +314,14 @@ DenseDirectPlan::DenseDirectPlan(
     const TargetGeometry target_geometry,
     const std::span<const CuboidSize> source_sizes,
     const std::span<const CuboidSize> target_sizes,
-    const std::span<const int> target_source_indices)
-    : ns_(source_positions.size()), nt_(target_positions.size())
+    const std::span<const int> target_source_indices,
+    const StaticPrecision static_precision)
+    : ns_(source_positions.size()), nt_(target_positions.size()),
+      static_precision_(static_precision)
 {
+    if (static_precision_ == StaticPrecision::Float32) {
+        matrices_.emplace<FloatMatrices>();
+    }
     if ((!source_sizes.empty() && source_sizes.size() != 1 &&
          source_sizes.size() != ns_) ||
         (!target_sizes.empty() && target_sizes.size() != 1 &&
@@ -321,9 +338,11 @@ DenseDirectPlan::DenseDirectPlan(
         target_sizes.empty()) {
         throw std::invalid_argument("cuboid targets require dimensions");
     }
-    for (auto& matrix : matrices_) {
-        matrix.resize(ns_ * nt_);
-    }
+    std::visit([&](auto& matrices) {
+        for (auto& matrix : matrices) {
+            matrix.resize(ns_ * nt_);
+        }
+    }, matrices_);
     for (std::size_t target = 0; target < nt_; ++target) {
         for (std::size_t source = 0; source < ns_; ++source) {
             const bool identity = !target_source_indices.empty() &&
@@ -338,12 +357,15 @@ DenseDirectPlan::DenseDirectPlan(
                 identity && source_geometry == SourceGeometry::PointDipole &&
                     target_geometry == TargetGeometry::Point);
             const std::size_t index = target * ns_ + source;
-            matrices_[0][index] = tensor.xx;
-            matrices_[1][index] = tensor.xy;
-            matrices_[2][index] = tensor.xz;
-            matrices_[3][index] = tensor.yy;
-            matrices_[4][index] = tensor.yz;
-            matrices_[5][index] = tensor.zz;
+            std::visit([&](auto& matrices) {
+                using Scalar = typename std::decay_t<decltype(matrices)>::value_type::value_type;
+                matrices[0][index] = static_cast<Scalar>(tensor.xx);
+                matrices[1][index] = static_cast<Scalar>(tensor.xy);
+                matrices[2][index] = static_cast<Scalar>(tensor.xz);
+                matrices[3][index] = static_cast<Scalar>(tensor.yy);
+                matrices[4][index] = static_cast<Scalar>(tensor.yz);
+                matrices[5][index] = static_cast<Scalar>(tensor.zz);
+            }, matrices_);
         }
     }
 }
@@ -365,38 +387,57 @@ std::vector<Vec3> DenseDirectPlan::evaluate(
             "oneMKL dense direct backend is not enabled in this build");
     }
 
-    std::array<std::vector<double>, 3> moments;
-    std::array<std::vector<double>, 3> fields;
-    for (auto& component : moments) {
-        component.resize(ns_);
-    }
-    for (auto& component : fields) {
-        component.resize(nt_);
-    }
-    for (std::size_t source = 0; source < ns_; ++source) {
-        moments[0][source] = total_moments[source].x;
-        moments[1][source] = total_moments[source].y;
-        moments[2][source] = total_moments[source].z;
-    }
-    gemv(matrices_[0], nt_, ns_, moments[0], fields[0], false, backend);
-    gemv(matrices_[1], nt_, ns_, moments[1], fields[0], true, backend);
-    gemv(matrices_[2], nt_, ns_, moments[2], fields[0], true, backend);
-    gemv(matrices_[1], nt_, ns_, moments[0], fields[1], false, backend);
-    gemv(matrices_[3], nt_, ns_, moments[1], fields[1], true, backend);
-    gemv(matrices_[4], nt_, ns_, moments[2], fields[1], true, backend);
-    gemv(matrices_[2], nt_, ns_, moments[0], fields[2], false, backend);
-    gemv(matrices_[4], nt_, ns_, moments[1], fields[2], true, backend);
-    gemv(matrices_[5], nt_, ns_, moments[2], fields[2], true, backend);
     std::vector<Vec3> result(nt_);
-    for (std::size_t target = 0; target < nt_; ++target) {
-        result[target] = {fields[0][target], fields[1][target], fields[2][target]};
-    }
+    std::visit([&](const auto& matrices) {
+        using Scalar = typename std::decay_t<decltype(matrices)>::value_type::value_type;
+        auto& moments = [&]() -> auto& {
+            if constexpr (std::is_same_v<Scalar, float>) {
+                return float_moments_;
+            } else {
+                return double_moments_;
+            }
+        }();
+        auto& fields = [&]() -> auto& {
+            if constexpr (std::is_same_v<Scalar, float>) {
+                return float_fields_;
+            } else {
+                return double_fields_;
+            }
+        }();
+        for (auto& component : moments) {
+            component.resize(ns_);
+        }
+        for (auto& component : fields) {
+            component.resize(nt_);
+        }
+        for (std::size_t source = 0; source < ns_; ++source) {
+            moments[0][source] = static_cast<Scalar>(total_moments[source].x);
+            moments[1][source] = static_cast<Scalar>(total_moments[source].y);
+            moments[2][source] = static_cast<Scalar>(total_moments[source].z);
+        }
+        gemv(matrices[0], nt_, ns_, moments[0], fields[0], false, backend);
+        gemv(matrices[1], nt_, ns_, moments[1], fields[0], true, backend);
+        gemv(matrices[2], nt_, ns_, moments[2], fields[0], true, backend);
+        gemv(matrices[1], nt_, ns_, moments[0], fields[1], false, backend);
+        gemv(matrices[3], nt_, ns_, moments[1], fields[1], true, backend);
+        gemv(matrices[4], nt_, ns_, moments[2], fields[1], true, backend);
+        gemv(matrices[2], nt_, ns_, moments[0], fields[2], false, backend);
+        gemv(matrices[4], nt_, ns_, moments[1], fields[2], true, backend);
+        gemv(matrices[5], nt_, ns_, moments[2], fields[2], true, backend);
+        for (std::size_t target = 0; target < nt_; ++target) {
+            result[target] = {static_cast<double>(fields[0][target]),
+                              static_cast<double>(fields[1][target]),
+                              static_cast<double>(fields[2][target])};
+        }
+    }, matrices_);
     return result;
 }
 
 std::size_t DenseDirectPlan::tensor_memory_bytes() const noexcept
 {
-    return 6 * ns_ * nt_ * sizeof(double);
+    const std::size_t scalar_bytes = static_precision_ == StaticPrecision::Float32
+        ? sizeof(float) : sizeof(double);
+    return 6 * ns_ * nt_ * scalar_bytes;
 }
 
 } // namespace cdfmm

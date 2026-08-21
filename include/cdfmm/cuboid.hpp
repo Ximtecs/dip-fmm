@@ -4,10 +4,12 @@
 #include <array>
 #include <cstddef>
 #include <span>
+#include <variant>
 #include <vector>
 
 #include "cdfmm/coefficients.hpp"
 #include "cdfmm/multi_index.hpp"
+#include "cdfmm/precision.hpp"
 
 namespace cdfmm {
 
@@ -99,7 +101,8 @@ public:
         TargetGeometry target_geometry = TargetGeometry::Point,
         std::span<const CuboidSize> source_sizes = {},
         std::span<const CuboidSize> target_sizes = {},
-        std::span<const int> target_source_indices = {}
+        std::span<const int> target_source_indices = {},
+        StaticPrecision static_precision = StaticPrecision::Float64
     );
 
     /**
@@ -121,16 +124,30 @@ public:
     [[nodiscard]] std::size_t source_count() const noexcept { return ns_; }
     [[nodiscard]] std::size_t target_count() const noexcept { return nt_; }
     [[nodiscard]] std::size_t tensor_memory_bytes() const noexcept;
-    [[nodiscard]] std::size_t tensor_component_count() const noexcept { return 6; }
-    [[nodiscard]] const std::array<std::vector<double>, 6>& matrices() const noexcept
+    /// @brief Returns the scalar precision of the six immutable matrices.
+    [[nodiscard]] StaticPrecision static_precision() const noexcept
     {
-        return matrices_;
+        return static_precision_;
+    }
+    [[nodiscard]] std::size_t tensor_component_count() const noexcept { return 6; }
+    /** @brief Returns FP64 matrices for compatibility with default plans. */
+    [[nodiscard]] const std::array<std::vector<double>, 6>& matrices() const
+    {
+        return std::get<DoubleMatrices>(matrices_);
     }
 
 private:
     std::size_t ns_{0};
     std::size_t nt_{0};
-    std::array<std::vector<double>, 6> matrices_{};
+    using FloatMatrices = std::array<std::vector<float>, 6>;
+    using DoubleMatrices = std::array<std::vector<double>, 6>;
+    StaticPrecision static_precision_{StaticPrecision::Float64};
+    std::variant<FloatMatrices, DoubleMatrices> matrices_{DoubleMatrices{}};
+    // Component staging is retained and reused across repeated evaluations.
+    mutable std::array<std::vector<float>, 3> float_moments_{};
+    mutable std::array<std::vector<float>, 3> float_fields_{};
+    mutable std::array<std::vector<double>, 3> double_moments_{};
+    mutable std::array<std::vector<double>, 3> double_fields_{};
 };
 
 } // namespace cdfmm

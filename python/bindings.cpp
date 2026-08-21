@@ -28,6 +28,18 @@ namespace {
 using DoubleArray =
     py::array_t<double, py::array::c_style | py::array::forcecast>;
 
+StaticPrecision parse_static_precision(const std::string& value)
+{
+    if (value == "float32") {
+        return StaticPrecision::Float32;
+    }
+    if (value == "float64") {
+        return StaticPrecision::Float64;
+    }
+    throw std::invalid_argument(
+        "static_precision must be 'float32' or 'float64'");
+}
+
 //------------------------------------------------------------------------------
 // Python conversion helpers
 //------------------------------------------------------------------------------
@@ -962,6 +974,9 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
         .value("AUTOMATIC", DenseDirectBackend::Automatic)
         .value("PORTABLE", DenseDirectBackend::Portable)
         .value("ONE_MKL", DenseDirectBackend::OneMkl);
+    py::enum_<StaticPrecision>(module, "StaticPrecision")
+        .value("FLOAT32", StaticPrecision::Float32)
+        .value("FLOAT64", StaticPrecision::Float64);
     module.def("dense_direct_mkl_available", &dense_direct_mkl_available);
     module.def("cuda_dense_direct_available", &cuda_dense_direct_available);
     py::class_<CuboidSize>(module, "CuboidSize")
@@ -977,18 +992,20 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
                          TargetGeometry target_geometry,
                          const std::vector<CuboidSize>& source_sizes,
                          const std::vector<CuboidSize>& target_sizes,
-                         const std::vector<int>& identities) {
+                         const std::vector<int>& identities,
+                         const std::string& static_precision) {
             return std::make_unique<DenseDirectPlan>(
                 parse_vec3_array(sources, "source_positions"),
                 parse_vec3_array(targets, "target_positions"),
                 source_geometry, target_geometry, source_sizes, target_sizes,
-                identities);
+                identities, parse_static_precision(static_precision));
         }), py::arg("source_positions"), py::arg("target_positions"),
             py::arg("source_geometry") = SourceGeometry::PointDipole,
             py::arg("target_geometry") = TargetGeometry::Point,
             py::arg("source_sizes") = std::vector<CuboidSize>{},
             py::arg("target_sizes") = std::vector<CuboidSize>{},
-            py::arg("target_source_indices") = std::vector<int>{})
+            py::arg("target_source_indices") = std::vector<int>{},
+            py::arg("static_precision") = "float64")
         .def("evaluate", [](const DenseDirectPlan& plan, py::object moments,
                             const DenseDirectBackend backend) {
             const std::vector<Vec3> parsed_moments =
@@ -1005,6 +1022,8 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
         .def_property_readonly("target_count", &DenseDirectPlan::target_count)
         .def_property_readonly("tensor_memory_bytes",
                                &DenseDirectPlan::tensor_memory_bytes)
+        .def_property_readonly("static_precision",
+                               &DenseDirectPlan::static_precision)
         .def_property_readonly("tensor_component_count",
                                &DenseDirectPlan::tensor_component_count);
     py::class_<CudaDenseDirectPlan>(module, "CudaDenseDirectPlan")

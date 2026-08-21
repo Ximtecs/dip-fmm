@@ -17,6 +17,7 @@ overview
 static-architecture
 backends
 installation
+precision
 getting-started
 fmm-overview
 math
