@@ -166,6 +166,8 @@ def test_comparison_notebook_is_valid_json_with_compilable_code_cells():
     assert "skipped_cases.append" in combined
     assert "median_timed_evaluations" in combined
     assert "plan = make_cdfmm_plan" in combined
+    assert "options.fixed_target_source_indices = identities.tolist()" in combined
+    assert "target_source_indices=identities" not in combined
     assert "for _ in range(WARMUP_EVALUATIONS)" in combined
     assert "nd=len(batch)" in combined
     for index, source in enumerate(sources):
