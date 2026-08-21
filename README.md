@@ -17,6 +17,11 @@ for (const auto& moments : moment_states) {
 }
 ```
 
+`options.precision` selects true FP32 or FP64 execution; FP32 is the default.
+In FP32 mode all static operators, expansion state, arithmetic, scratch, and
+CUDA buffers use FP32, while input positions and moments may still be supplied
+as FP64. Python results and coefficient arrays use the selected NumPy dtype.
+
 Python exposes the same default and `cdfmm.M2LBackend.Reference` fallback.
 
 Execution can be selected with `options.backend`: `CpuReference` or
