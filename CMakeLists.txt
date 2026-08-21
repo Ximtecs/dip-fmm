@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
-project(cartesian_dipole_fmm LANGUAGES CXX)
+
+# oneMKL's CMake package uses the detected C compiler family to expose the
+# matching OpenMP threading layer.  Enable C even though cdfmm itself is C++ so
+# GNU builds can select MKL_THREADING=gnu_thread.
+project(cartesian_dipole_fmm LANGUAGES C CXX)
 
 option(CDFMM_BUILD_TESTS "Build C++ tests" ON)
 option(CDFMM_BUILD_EXAMPLES "Build examples" ON)
@@ -93,7 +97,10 @@ endif()
 
 if(CDFMM_ENABLE_MKL)
   find_package(MKL CONFIG REQUIRED)
-  target_link_libraries(cdfmm_core PUBLIC MKL::MKL)
+  # oneMKL's Conda package exposes the environment-wide include directory.
+  # Keeping it private prevents Intel compiler compatibility headers such as
+  # <complex> from shadowing libstdc++ in pybind11 and downstream consumers.
+  target_link_libraries(cdfmm_core PRIVATE MKL::MKL)
   target_compile_definitions(cdfmm_core PUBLIC CDFMM_USE_MKL=1)
 endif()
 

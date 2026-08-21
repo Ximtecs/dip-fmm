@@ -5,6 +5,27 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).parents[1]
 
 
+def test_notebook_preset_supports_gnu_mkl_without_intel_header_leakage():
+    presets = json.loads(
+        (REPOSITORY_ROOT / "CMakePresets.json").read_text(encoding="utf-8")
+    )
+    configure_presets = {
+        preset["name"]: preset for preset in presets["configurePresets"]
+    }
+    cmake_source = (REPOSITORY_ROOT / "CMakeLists.txt").read_text(
+        encoding="utf-8"
+    )
+
+    cuda = configure_presets["cuda"]
+    notebooks = configure_presets["notebooks"]
+
+    assert "project(cartesian_dipole_fmm LANGUAGES C CXX)" in cmake_source
+    assert notebooks["cacheVariables"]["MKL_THREADING"] == "gnu_thread"
+    assert cuda["environment"]["CPATH"] == ""
+    assert cuda["environment"]["CPLUS_INCLUDE_PATH"] == ""
+    assert cuda["environment"]["CXXFLAGS"] == ""
+
+
 def test_combined_profiling_preset_enables_nvtx_with_debug_symbols():
     presets = json.loads(
         (REPOSITORY_ROOT / "CMakePresets.json").read_text(encoding="utf-8")

@@ -12,7 +12,10 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build-cuda",
       "environment": {
-        "NVCC_PREPEND_FLAGS": ""
+        "NVCC_PREPEND_FLAGS": "",
+        "CPATH": "",
+        "CPLUS_INCLUDE_PATH": "",
+        "CXXFLAGS": ""
       },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
