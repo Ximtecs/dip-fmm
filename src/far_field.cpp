@@ -148,13 +148,187 @@ void UniformFmm::static_m2l(const int level) {
   last_timings_.m2l_scatter.add(elapsed_seconds(phase_start));
 }
 
+void UniformFmm::static_m2l_float(const int level) {
+  detail::ProfileRange m2l_range{"cdfmm/far_field/m2l_fp32"};
+  if (static_matrix_backend_ == StaticMatrixBackend::Portable) {
+    const auto phase_start = Clock::now();
+    apply_static_m2l_plan(m2l_plan_float_, level, multipoles_float_,
+                          locals_float_);
+    last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
+    return;
+  }
+
+  const int n = basis_.size();
+  const std::ptrdiff_t group_count =
+      static_cast<std::ptrdiff_t>(m2l_groups_float_.size());
+  const float *multipole_scale = m2l_plan_float_.multipole_scaling.data() +
+      static_cast<std::size_t>(level) * n;
+  const float *local_scale = m2l_plan_float_.local_scaling.data() +
+      static_cast<std::size_t>(level) * n;
+
+  auto phase_start = Clock::now();
+#pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
+  for (std::ptrdiff_t group_index = 0; group_index < group_count;
+       ++group_index) {
+    FloatM2LGroup &group =
+        m2l_groups_float_[static_cast<std::size_t>(group_index)];
+    for (std::size_t column = 0; column < group.sources.size(); ++column) {
+      if (group.levels[column] != level) {
+        continue;
+      }
+      const auto M = multipole_float_for_node(group.sources[column]);
+      for (int alpha = 0; alpha < n; ++alpha) {
+        group.gathered[static_cast<std::size_t>(alpha) + column * n] =
+            multipole_scale[alpha] * M[static_cast<std::size_t>(alpha)];
+      }
+    }
+  }
+  last_timings_.m2l_gather.add(elapsed_seconds(phase_start));
+
+  phase_start = Clock::now();
+#ifdef CDFMM_USE_MKL
+#pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
+  for (std::ptrdiff_t group_index = 0; group_index < group_count;
+       ++group_index) {
+    FloatM2LGroup &group =
+        m2l_groups_float_[static_cast<std::size_t>(group_index)];
+    const auto first =
+        std::lower_bound(group.levels.begin(), group.levels.end(), level);
+    const auto last = std::upper_bound(first, group.levels.end(), level);
+    const int columns = static_cast<int>(last - first);
+    if (columns == 0) {
+      continue;
+    }
+    const std::size_t column_offset =
+        static_cast<std::size_t>(first - group.levels.begin());
+    const float *matrix = m2l_plan_float_.matrices.data() +
+        static_cast<std::size_t>(group.matrix_id) * n * n;
+    const int previous_mkl_threads = mkl_set_num_threads_local(1);
+    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, columns, n,
+                1.0F, matrix, n,
+                group.gathered.data() + column_offset * n, n, 0.0F,
+                group.translated.data() + column_offset * n, n);
+    mkl_set_num_threads_local(previous_mkl_threads);
+  }
+#else
+  throw std::runtime_error("The oneMKL FP32 backend is unavailable");
+#endif
+  last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
+
+  phase_start = Clock::now();
+  for (FloatM2LGroup &group : m2l_groups_float_) {
+    for (std::size_t column = 0; column < group.targets.size(); ++column) {
+      if (group.levels[column] != level) {
+        continue;
+      }
+      const auto L = local_float_for_node(group.targets[column]);
+      for (int beta = 0; beta < n; ++beta) {
+        L[static_cast<std::size_t>(beta)] += local_scale[beta] *
+            group.translated[static_cast<std::size_t>(beta) + column * n];
+      }
+    }
+  }
+  last_timings_.m2l_scatter.add(elapsed_seconds(phase_start));
+}
+
 //------------------------------------------------------------------------------
 // Upward pass
 //------------------------------------------------------------------------------
 
 void UniformFmm::upward_pass(std::span<const Vec3> dipole_moments) {
+  if (precision_ == StaticPrecision::Float32) {
+    prepare_moments_float(dipole_moments);
+    upward_pass_prepared_float();
+    return;
+  }
   prepare_moments(dipole_moments);
   upward_pass_prepared();
+}
+
+void UniformFmm::prepare_moments_float(
+    const std::span<const Vec3> dipole_moments) {
+  detail::ProfileRange input_range{"cdfmm/input_preparation_fp32"};
+  if (dipole_moments.size() != tree_.sorted_source_positions().size()) {
+    throw std::invalid_argument(
+        "UniformFmm::upward_pass requires one dipole moment per source "
+        "position");
+  }
+  auto phase_start = Clock::now();
+  std::fill(multipoles_float_.begin(), multipoles_float_.end(), 0.0F);
+  last_timings_.multipole_reset.add(elapsed_seconds(phase_start));
+
+  phase_start = Clock::now();
+  const auto permutation = tree_.source_permutation();
+#pragma omp parallel for schedule(static) if (permutation.size() >= 256)
+  for (std::ptrdiff_t sorted_index = 0;
+       sorted_index < static_cast<std::ptrdiff_t>(permutation.size());
+       ++sorted_index) {
+    const Vec3 moment = dipole_moments[static_cast<std::size_t>(
+        permutation[static_cast<std::size_t>(sorted_index)])];
+    const double scale = float_coordinate_scale_;
+    sorted_dipole_moments_float_[static_cast<std::size_t>(sorted_index)] = {
+        static_cast<float>(moment.x / scale / scale / scale),
+        static_cast<float>(moment.y / scale / scale / scale),
+        static_cast<float>(moment.z / scale / scale / scale)};
+  }
+  last_timings_.moment_permutation.add(elapsed_seconds(phase_start));
+}
+
+void UniformFmm::upward_pass_prepared_float() {
+  const auto nodes = tree_.nodes();
+  const auto occupied_leaves = tree_.occupied_source_leaves();
+  auto phase_start = Clock::now();
+#pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
+  for (std::ptrdiff_t occupied_index = 0;
+       occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
+       ++occupied_index) {
+    const int leaf_index =
+        occupied_leaves[static_cast<std::size_t>(occupied_index)];
+    const FloatStaticCoefficientOperator &operator_map =
+        p2m_plans_float_[static_cast<std::size_t>(occupied_index)].operator_map;
+    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+    const auto M = multipole_float_for_node(leaf_index);
+    for (const FloatStaticOperatorEntry &entry : operator_map.entries) {
+      const FloatVec3 &moment =
+          sorted_dipole_moments_float_[leaf.source_begin +
+              static_cast<std::size_t>(entry.input / 3)];
+      const float component = entry.input % 3 == 0
+          ? moment.x
+          : (entry.input % 3 == 1 ? moment.y : moment.z);
+      M[static_cast<std::size_t>(entry.output)] += entry.value * component;
+    }
+  }
+  last_timings_.p2m.add(elapsed_seconds(phase_start));
+
+  phase_start = Clock::now();
+#pragma omp parallel if (nodes.size() >= 64)
+  {
+    for (int level = tree_.leaf_level() - 1; level >= 0; --level) {
+      const int begin = level_offset(level);
+      const int end = level_offset(level + 1);
+#pragma omp for schedule(static)
+      for (int parent_index = begin; parent_index < end; ++parent_index) {
+        const TreeNode &parent = nodes[static_cast<std::size_t>(parent_index)];
+        if (parent.source_count() == 0) {
+          continue;
+        }
+        const auto parent_M = multipole_float_for_node(parent_index);
+        for (const int child_index : parent.children) {
+          const TreeNode &child = nodes[static_cast<std::size_t>(child_index)];
+          if (child.source_count() == 0) {
+            continue;
+          }
+          const int child_class =
+              (child.ix & 1) | ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
+          apply_static_operator(
+              m2m_operators_float_[static_cast<std::size_t>(child.level)]
+                                  [child_class],
+              multipole_float_for_node(child_index), parent_M);
+        }
+      }
+    }
+  }
+  last_timings_.m2m.add(elapsed_seconds(phase_start));
 }
 
 void UniformFmm::prepare_moments(std::span<const Vec3> dipole_moments) {
@@ -277,6 +451,10 @@ void UniformFmm::upward_pass_prepared() {
 //------------------------------------------------------------------------------
 
 void UniformFmm::downward_pass() {
+  if (precision_ == StaticPrecision::Float32) {
+    downward_pass_float();
+    return;
+  }
   detail::ProfileRange downward_range{"cdfmm/far_field/downward"};
   auto phase_start = Clock::now();
   detail::ProfileRange reset_range{"cdfmm/far_field/local_reset"};
@@ -349,6 +527,56 @@ void UniformFmm::downward_pass() {
       }
     }
     last_timings_.m2l.add(elapsed_seconds(phase_start));
+  }
+}
+
+void UniformFmm::downward_pass_float() {
+  auto phase_start = Clock::now();
+  std::fill(locals_float_.begin(), locals_float_.end(), 0.0F);
+  last_timings_.local_reset.add(elapsed_seconds(phase_start));
+
+  const bool cuda_m2l_executor =
+      execution_plan().m2l == StaticOperatorExecutor::Cuda;
+  if (cuda_m2l_executor) {
+    phase_start = Clock::now();
+    cuda_m2l_plan_->plan->evaluate(multipoles_float_, locals_float_);
+    const CudaEvaluationTimings &device = cuda_m2l_plan_->plan->timings();
+    last_timings_.cuda_h2d.add(device.h2d_seconds);
+    last_timings_.cuda_m2l_h2d.add(device.h2d_seconds);
+    last_timings_.m2l_scale.add(device.scale_seconds);
+    last_timings_.m2l_multiply.add(device.multiply_seconds);
+    last_timings_.cuda_kernel.add(device.kernel_seconds);
+    last_timings_.cuda_d2h.add(device.d2h_seconds);
+    last_timings_.cuda_m2l_d2h.add(device.d2h_seconds);
+    last_timings_.m2l.add(elapsed_seconds(phase_start));
+  }
+
+  const auto nodes = tree_.nodes();
+  for (int level = 1; level <= tree_.leaf_level(); ++level) {
+    const int begin = level_offset(level);
+    const int end = level_offset(level + 1);
+    phase_start = Clock::now();
+#pragma omp parallel for schedule(static) if (end - begin >= 8)
+    for (int target_index = begin; target_index < end; ++target_index) {
+      const TreeNode &target = nodes[static_cast<std::size_t>(target_index)];
+      if (target.target_count() == 0) {
+        continue;
+      }
+      const int child_class =
+          (target.ix & 1) | ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
+      apply_static_operator(
+          l2l_operators_float_[static_cast<std::size_t>(target.level)]
+                              [child_class],
+          local_float_for_node(target.parent),
+          local_float_for_node(target_index));
+    }
+    last_timings_.l2l.add(elapsed_seconds(phase_start));
+
+    if (!cuda_m2l_executor) {
+      phase_start = Clock::now();
+      static_m2l_float(level);
+      last_timings_.m2l.add(elapsed_seconds(phase_start));
+    }
   }
 }
 

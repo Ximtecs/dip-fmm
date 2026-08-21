@@ -37,6 +37,14 @@ struct CudaSharedTranslationData {
   int matrix_count{0};
 };
 
+/** @brief FP32 shared sparse translations and node relations. */
+struct FloatCudaSharedTranslationData {
+  std::vector<FloatStaticOperatorEntry> matrices{};
+  std::vector<CudaTranslationInteraction> interactions{};
+  int entries_per_matrix{0};
+  int matrix_count{0};
+};
+
 /** @brief Immutable CPU-built operators consumed by the full CUDA plan. */
 struct CudaFullPlanData {
   int coefficient_count{0};
@@ -57,6 +65,26 @@ struct CudaFullPlanData {
   bool has_fixed_self_indices{false};
 };
 
+/** @brief Immutable FP32 operators consumed by the full CUDA plan. */
+struct FloatCudaFullPlanData {
+  int coefficient_count{0};
+  int node_count{0};
+  int source_count{0};
+  int target_count{0};
+  std::vector<int> source_permutation{};
+  std::vector<int> target_permutation{};
+  std::vector<FloatStaticOperatorEntry> p2m{};
+  FloatCudaSharedTranslationData m2m{};
+  FloatStaticM2LPlan m2l{};
+  FloatCudaSharedTranslationData l2l{};
+  std::vector<FloatStaticOperatorEntry> l2p{};
+  FloatStaticP2POperator p2p{};
+  FloatStaticP2PBsrPlan p2p_bsr{};
+  std::vector<int> fixed_self_indices{};
+  bool use_p2p_bsr{false};
+  bool has_fixed_self_indices{false};
+};
+
 /**
  * @brief Owns a complete device-resident static CUDA FMM evaluation plan.
  *
@@ -67,11 +95,15 @@ struct CudaFullPlanData {
 class CudaFullPlan {
 public:
     explicit CudaFullPlan(const CudaFullPlanData& data);
+    explicit CudaFullPlan(const FloatCudaFullPlanData& data);
     ~CudaFullPlan();
   CudaFullPlan(const CudaFullPlan &) = delete;
   CudaFullPlan &operator=(const CudaFullPlan &) = delete;
 
   void evaluate(std::span<const Vec3> moments, std::span<Vec3> fields,
+                std::span<const int> sorted_self_indices);
+  void evaluate(std::span<const FloatVec3> moments,
+                std::span<FloatVec3> fields,
                 std::span<const int> sorted_self_indices);
   [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
   [[nodiscard]] const CudaEvaluationTimings &timings() const noexcept;

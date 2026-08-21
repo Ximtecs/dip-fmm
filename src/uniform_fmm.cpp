@@ -101,7 +101,8 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const UniformFmmOptions &options)
     : tree_(source_positions, options.tree), basis_(options.expansion_order),
       m2l_backend_(options.m2l_backend),
-      static_matrix_backend_(options.static_matrix_backend) {
+      static_matrix_backend_(options.static_matrix_backend),
+      precision_(options.precision) {
   if (options.expansion_order < 0) {
     throw std::invalid_argument(
         "UniformFmmOptions.expansion_order must be >= 0");
@@ -132,19 +133,44 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
 
   const std::size_t coefficient_values =
       tree_.nodes().size() * static_cast<std::size_t>(basis_.size());
-  multipoles_.assign(coefficient_values, 0.0);
-  locals_.assign(coefficient_values, 0.0);
-  sorted_dipole_moments_.resize(source_positions.size());
-  sorted_results_.resize(tree_.sorted_target_positions().size());
-  near_fields_.resize(tree_.sorted_target_positions().size());
+  if (precision_ == StaticPrecision::Float32) {
+    multipoles_float_.assign(coefficient_values, 0.0F);
+    locals_float_.assign(coefficient_values, 0.0F);
+    sorted_dipole_moments_float_.resize(source_positions.size());
+    sorted_results_float_.resize(tree_.sorted_target_positions().size());
+    near_fields_float_.resize(tree_.sorted_target_positions().size());
+  } else {
+    multipoles_.assign(coefficient_values, 0.0);
+    locals_.assign(coefficient_values, 0.0);
+    sorted_dipole_moments_.resize(source_positions.size());
+    sorted_results_.resize(tree_.sorted_target_positions().size());
+    near_fields_.resize(tree_.sorted_target_positions().size());
+  }
   sorted_self_indices_.resize(tree_.sorted_target_positions().size(), -1);
   initialise_p2p_policy(options);
-  if (m2l_backend_ == M2LBackend::Static) {
+  if (m2l_backend_ == M2LBackend::Static ||
+      precision_ == StaticPrecision::Float32) {
     build_static_plan();
   }
+  static_plan_statistics_.state_bytes = precision_ == StaticPrecision::Float32
+      ? (multipoles_float_.size() + locals_float_.size()) * sizeof(float) +
+            sorted_dipole_moments_float_.size() * sizeof(FloatVec3) +
+            sorted_results_float_.size() * sizeof(FloatPotentialField) +
+            near_fields_float_.size() * sizeof(FloatVec3) +
+            sorted_self_indices_.size() * sizeof(int)
+      : (multipoles_.size() + locals_.size()) * sizeof(double) +
+            sorted_dipole_moments_.size() * sizeof(Vec3) +
+            sorted_results_.size() * sizeof(PotentialField) +
+            near_fields_.size() * sizeof(Vec3) +
+            sorted_self_indices_.size() * sizeof(int);
   if (backend_ == ExecutionBackend::CudaM2LP2P) {
-    cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
-        std::make_unique<CudaM2LPlan>(m2l_plan_));
+    if (precision_ == StaticPrecision::Float32) {
+      cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
+          std::make_unique<CudaM2LPlan>(m2l_plan_float_));
+    } else {
+      cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
+          std::make_unique<CudaM2LPlan>(m2l_plan_));
+    }
     if (!tree_.sorted_target_positions().empty()) {
       build_cuda_p2p_plan();
     }
@@ -159,7 +185,8 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const UniformFmmOptions &options)
     : tree_(source_positions, target_positions, options.tree),
       basis_(options.expansion_order),
-      static_matrix_backend_(options.static_matrix_backend) {
+      static_matrix_backend_(options.static_matrix_backend),
+      precision_(options.precision) {
   if (options.expansion_order < 0) {
     throw std::invalid_argument(
         "UniformFmmOptions.expansion_order must be >= 0");
@@ -190,19 +217,44 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
 
   const std::size_t coefficient_values =
       tree_.nodes().size() * static_cast<std::size_t>(basis_.size());
-  multipoles_.assign(coefficient_values, 0.0);
-  locals_.assign(coefficient_values, 0.0);
-  sorted_dipole_moments_.resize(source_positions.size());
-  sorted_results_.resize(target_positions.size());
-  near_fields_.resize(target_positions.size());
+  if (precision_ == StaticPrecision::Float32) {
+    multipoles_float_.assign(coefficient_values, 0.0F);
+    locals_float_.assign(coefficient_values, 0.0F);
+    sorted_dipole_moments_float_.resize(source_positions.size());
+    sorted_results_float_.resize(target_positions.size());
+    near_fields_float_.resize(target_positions.size());
+  } else {
+    multipoles_.assign(coefficient_values, 0.0);
+    locals_.assign(coefficient_values, 0.0);
+    sorted_dipole_moments_.resize(source_positions.size());
+    sorted_results_.resize(target_positions.size());
+    near_fields_.resize(target_positions.size());
+  }
   sorted_self_indices_.resize(target_positions.size(), -1);
   initialise_p2p_policy(options);
-  if (m2l_backend_ == M2LBackend::Static) {
+  if (m2l_backend_ == M2LBackend::Static ||
+      precision_ == StaticPrecision::Float32) {
     build_static_plan();
   }
+  static_plan_statistics_.state_bytes = precision_ == StaticPrecision::Float32
+      ? (multipoles_float_.size() + locals_float_.size()) * sizeof(float) +
+            sorted_dipole_moments_float_.size() * sizeof(FloatVec3) +
+            sorted_results_float_.size() * sizeof(FloatPotentialField) +
+            near_fields_float_.size() * sizeof(FloatVec3) +
+            sorted_self_indices_.size() * sizeof(int)
+      : (multipoles_.size() + locals_.size()) * sizeof(double) +
+            sorted_dipole_moments_.size() * sizeof(Vec3) +
+            sorted_results_.size() * sizeof(PotentialField) +
+            near_fields_.size() * sizeof(Vec3) +
+            sorted_self_indices_.size() * sizeof(int);
   if (backend_ == ExecutionBackend::CudaM2LP2P) {
-    cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
-        std::make_unique<CudaM2LPlan>(m2l_plan_));
+    if (precision_ == StaticPrecision::Float32) {
+      cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
+          std::make_unique<CudaM2LPlan>(m2l_plan_float_));
+    } else {
+      cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
+          std::make_unique<CudaM2LPlan>(m2l_plan_));
+    }
     build_cuda_p2p_plan();
   }
   if (backend_ == ExecutionBackend::CudaFull) {
@@ -277,6 +329,24 @@ void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
 }
 
 void UniformFmm::build_cuda_p2p_plan() {
+  if (precision_ == StaticPrecision::Float32) {
+    if (fixed_target_source_indices_.has_value() &&
+        p2p_bsr_plan_float_.memory().total_bytes() <=
+            cuda_p2p_bsr_max_bytes_) {
+      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+          std::make_unique<CudaP2PPlan>(p2p_bsr_plan_float_));
+      p2p_execution_packing_ = P2PExecutionPacking::CudaBsr3;
+      return;
+    }
+    const std::span<const int> fixed_identities =
+        fixed_target_source_indices_.has_value()
+            ? std::span<const int>(fixed_sorted_self_indices_)
+            : std::span<const int>{};
+    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+        std::make_unique<CudaP2PPlan>(p2p_operator_float_, fixed_identities));
+    p2p_execution_packing_ = P2PExecutionPacking::CanonicalAos;
+    return;
+  }
   if (fixed_target_source_indices_.has_value()) {
     StaticP2PBsrPlan bsr =
         build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_);
@@ -306,8 +376,59 @@ void UniformFmm::build_static_plan() {
   using Key = std::tuple<int, int, int>;
   std::map<Key, std::vector<std::pair<int, int>>> classes;
 
+  // FP32 expansion coefficients are expressed in root-width-normalised
+  // coordinates. This prevents physical length powers from separately
+  // underflowing multipoles and overflowing M2L scaling tables before their
+  // product is formed. Moments are divided by scale^3 at the evaluation
+  // boundary, so the resulting field retains its physical value.
+  const Vec3 root_centre = nodes.empty() ? Vec3{} : nodes.front().centre;
+  if (precision_ == StaticPrecision::Float32 && !nodes.empty()) {
+    float_coordinate_scale_ = 2.0 * nodes.front().half_width;
+  }
+  const auto normalise_position = [&](const Vec3 position) {
+    return precision_ == StaticPrecision::Float32
+        ? (position - root_centre) * (1.0 / float_coordinate_scale_)
+        : position;
+  };
+  const auto normalise_size = [&](const CuboidSize size) {
+    return precision_ == StaticPrecision::Float32
+        ? CuboidSize{size.hx / float_coordinate_scale_,
+                     size.hy / float_coordinate_scale_,
+                     size.hz / float_coordinate_scale_}
+        : size;
+  };
+
+  std::vector<Vec3> operator_source_positions;
+  std::vector<Vec3> operator_target_positions;
+  std::vector<CuboidSize> operator_source_sizes;
+  if (precision_ == StaticPrecision::Float32) {
+    operator_source_positions.reserve(tree_.sorted_source_positions().size());
+    for (const Vec3 position : tree_.sorted_source_positions()) {
+      operator_source_positions.push_back(normalise_position(position));
+    }
+    operator_target_positions.reserve(tree_.sorted_target_positions().size());
+    for (const Vec3 position : tree_.sorted_target_positions()) {
+      operator_target_positions.push_back(normalise_position(position));
+    }
+    operator_source_sizes.reserve(sorted_source_sizes_.size());
+    for (const CuboidSize size : sorted_source_sizes_) {
+      operator_source_sizes.push_back(normalise_size(size));
+    }
+  }
+
   auto phase_start = Clock::now();
-  const auto sorted_positions = tree_.sorted_source_positions();
+  const std::span<const Vec3> sorted_positions =
+      precision_ == StaticPrecision::Float32
+          ? std::span<const Vec3>(operator_source_positions)
+          : tree_.sorted_source_positions();
+  const std::span<const Vec3> sorted_targets =
+      precision_ == StaticPrecision::Float32
+          ? std::span<const Vec3>(operator_target_positions)
+          : tree_.sorted_target_positions();
+  const std::span<const CuboidSize> source_sizes =
+      precision_ == StaticPrecision::Float32
+          ? std::span<const CuboidSize>(operator_source_sizes)
+          : std::span<const CuboidSize>(sorted_source_sizes_);
   p2m_plans_.reserve(tree_.occupied_source_leaves().size());
   for (const int leaf_index : tree_.occupied_source_leaves()) {
     const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
@@ -317,15 +438,15 @@ void UniformFmm::build_static_plan() {
         sorted_positions.subspan(leaf.source_begin, leaf.source_count());
     if (use_cuboid_p2m_) {
       const std::span<const CuboidSize> leaf_sizes =
-          sorted_source_sizes_.size() == 1
-              ? std::span<const CuboidSize>(sorted_source_sizes_)
-              : std::span<const CuboidSize>(sorted_source_sizes_).subspan(
+          source_sizes.size() == 1
+              ? source_sizes
+              : source_sizes.subspan(
                     leaf.source_begin, leaf.source_count());
       plan.operator_map = build_static_cuboid_p2m_operator(
-          basis_, leaf.centre, leaf_positions, leaf_sizes);
+          basis_, normalise_position(leaf.centre), leaf_positions, leaf_sizes);
     } else {
       plan.operator_map = build_static_p2m_operator(
-          basis_, leaf.centre, leaf_positions);
+          basis_, normalise_position(leaf.centre), leaf_positions);
     }
     static_plan_statistics_.operator_bytes +=
         plan.operator_map.entries.size() * sizeof(StaticOperatorEntry);
@@ -341,8 +462,11 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.l2l_theoretical_interactions =
       static_plan_statistics_.m2m_theoretical_interactions;
   for (int level = 1; level <= tree_.leaf_level(); ++level) {
-    const double child_half_width =
+    const double physical_child_half_width =
         nodes[static_cast<std::size_t>(level_offset(level))].half_width;
+    const double child_half_width = precision_ == StaticPrecision::Float32
+        ? physical_child_half_width / float_coordinate_scale_
+        : physical_child_half_width;
     for (int child_class = 0; child_class < 8; ++child_class) {
       // Parity of the three child coordinates identifies one of the eight
       // parent-child displacements. Sharing by class avoids storing a copy of
@@ -414,8 +538,11 @@ void UniformFmm::build_static_plan() {
         level_offset(level);
     m2l_plan_.level_target_end[static_cast<std::size_t>(level)] =
         level_offset(level + 1);
-    const double box_width =
+    const double physical_box_width =
         2.0 * nodes[static_cast<std::size_t>(level_offset(level))].half_width;
+    const double box_width = precision_ == StaticPrecision::Float32
+        ? physical_box_width / float_coordinate_scale_
+        : physical_box_width;
     const std::size_t scaling_offset =
         static_cast<std::size_t>(level) * coefficient_count;
     // The matrices below are dimensionless and level independent. These two
@@ -534,14 +661,14 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.m2l_operators = classes.size();
   static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
   phase_start = Clock::now();
-  const auto targets = tree_.sorted_target_positions();
-  l2p_evaluators_.resize(targets.size());
+  l2p_evaluators_.resize(sorted_targets.size());
   for (const int leaf_index : tree_.occupied_target_leaves()) {
     const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
     for (std::size_t target = leaf.target_begin; target < leaf.target_end;
          ++target) {
       l2p_evaluators_[target] =
-          build_static_l2p_evaluator(basis_, leaf.centre, targets[target]);
+          build_static_l2p_evaluator(
+              basis_, normalise_position(leaf.centre), sorted_targets[target]);
       static_plan_statistics_.operator_bytes +=
           4 * static_cast<std::size_t>(basis_.size()) * sizeof(double);
     }
@@ -566,8 +693,8 @@ void UniformFmm::build_static_plan() {
     }
   }
   p2p_operator_ = build_static_p2p_operator(
-      targets, sorted_positions, near_interactions, source_geometry_,
-      sorted_source_sizes_);
+      sorted_targets, sorted_positions, near_interactions, source_geometry_,
+      source_sizes);
   p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
   if (backend_ == ExecutionBackend::CpuStatic) {
     p2p_execution_packing_ = P2PExecutionPacking::ParticleRowSoa;
@@ -583,9 +710,215 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.p2p_tensor_plan.add(elapsed_seconds(phase_start));
   static_plan_statistics_.total.add(elapsed_seconds(total_start));
   ++static_plan_statistics_.construction_count;
+
+  if (precision_ == StaticPrecision::Float32) {
+    quantise_static_plan_to_float();
+  }
+}
+
+void UniformFmm::quantise_static_plan_to_float() {
+  p2m_plans_float_.reserve(p2m_plans_.size());
+  for (const P2MPlan &plan : p2m_plans_) {
+    p2m_plans_float_.push_back(
+        {plan.leaf, quantise_static_operator(plan.operator_map)});
+  }
+
+  m2m_operators_float_.resize(m2m_operators_.size());
+  l2l_operators_float_.resize(l2l_operators_.size());
+  for (std::size_t level = 0; level < m2m_operators_.size(); ++level) {
+    for (int child_class = 0; child_class < 8; ++child_class) {
+      m2m_operators_float_[level][child_class] =
+          quantise_static_operator(m2m_operators_[level][child_class]);
+      l2l_operators_float_[level][child_class] =
+          quantise_static_operator(l2l_operators_[level][child_class]);
+    }
+  }
+
+  l2p_evaluators_float_.reserve(l2p_evaluators_.size());
+  for (const StaticL2PEvaluator &evaluator : l2p_evaluators_) {
+    l2p_evaluators_float_.push_back(
+        quantise_static_l2p_evaluator(evaluator));
+  }
+  p2p_operator_float_ = quantise_static_p2p_operator(p2p_operator_);
+  p2p_compact_plan_float_ =
+      quantise_static_p2p_compact_plan(p2p_compact_plan_);
+  if (fixed_target_source_indices_.has_value()) {
+    p2p_bsr_plan_float_ = quantise_static_p2p_bsr_plan(
+        build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_));
+  }
+  m2l_plan_float_ = quantise_static_m2l_plan(m2l_plan_);
+
+  m2l_groups_float_.reserve(m2l_groups_.size());
+  for (const M2LGroup &group : m2l_groups_) {
+    FloatM2LGroup converted;
+    converted.matrix_id = group.matrix_id;
+    converted.sources = group.sources;
+    converted.targets = group.targets;
+    converted.levels = group.levels;
+    converted.gathered.resize(group.gathered.size());
+    converted.translated.resize(group.translated.size());
+    m2l_groups_float_.push_back(std::move(converted));
+  }
+
+  // Recalculate scalar-dependent storage from the representation that will
+  // remain alive. Integer metadata is unchanged by precision selection.
+  std::size_t operator_bytes = 0;
+  std::size_t m2m_bytes = 0;
+  std::size_t l2l_bytes = 0;
+  for (const FloatP2MPlan &plan : p2m_plans_float_) {
+    operator_bytes +=
+        plan.operator_map.entries.size() * sizeof(FloatStaticOperatorEntry);
+  }
+  for (std::size_t level = 0; level < m2m_operators_float_.size(); ++level) {
+    for (int child_class = 0; child_class < 8; ++child_class) {
+      m2m_bytes += m2m_operators_float_[level][child_class].entries.size() *
+                   sizeof(FloatStaticOperatorEntry);
+      l2l_bytes += l2l_operators_float_[level][child_class].entries.size() *
+                   sizeof(FloatStaticOperatorEntry);
+    }
+  }
+  const std::size_t m2l_bytes =
+      (m2l_plan_float_.matrices.size() +
+       m2l_plan_float_.multipole_scaling.size() +
+       m2l_plan_float_.local_scaling.size()) *
+      sizeof(float);
+  std::size_t l2p_bytes = 0;
+  for (const FloatStaticL2PEvaluator &evaluator : l2p_evaluators_float_) {
+    l2p_bytes += evaluator.potential.size() * sizeof(float);
+    for (const std::vector<float> &field : evaluator.field) {
+      l2p_bytes += field.size() * sizeof(float);
+    }
+  }
+  operator_bytes += m2m_bytes + l2l_bytes + m2l_bytes + l2p_bytes;
+  operator_bytes += p2p_operator_float_.memory_bytes();
+  operator_bytes += p2p_compact_plan_float_.memory().total_bytes();
+
+  static_plan_statistics_.scalar_bytes = sizeof(float);
+  static_plan_statistics_.operator_bytes = operator_bytes;
+  static_plan_statistics_.m2m_operator_bytes = m2m_bytes;
+  static_plan_statistics_.m2l_operator_bytes = m2l_bytes;
+  static_plan_statistics_.l2l_operator_bytes = l2l_bytes;
+  static_plan_statistics_.p2p_value_bytes =
+      p2p_operator_float_.blocks.size() * 6 * sizeof(float);
+  static_plan_statistics_.scratch_bytes = 0;
+  for (const FloatM2LGroup &group : m2l_groups_float_) {
+    static_plan_statistics_.scratch_bytes +=
+        (group.gathered.size() + group.translated.size()) * sizeof(float);
+  }
+
+  // Drop analytical FP64 construction temporaries. An FP32 plan therefore
+  // retains no hidden double-precision operator or expansion representation.
+  p2m_plans_.clear();
+  p2m_plans_.shrink_to_fit();
+  m2m_operators_.clear();
+  m2m_operators_.shrink_to_fit();
+  l2l_operators_.clear();
+  l2l_operators_.shrink_to_fit();
+  l2p_evaluators_.clear();
+  l2p_evaluators_.shrink_to_fit();
+  p2p_operator_ = {};
+  p2p_compact_plan_ = {};
+  m2l_plan_ = {};
+  m2l_groups_.clear();
+  m2l_groups_.shrink_to_fit();
 }
 
 void UniformFmm::build_cuda_full_plan() {
+  if (precision_ == StaticPrecision::Float32) {
+    FloatCudaFullPlanData data;
+    data.coefficient_count = basis_.size();
+    data.node_count = static_cast<int>(tree_.nodes().size());
+    data.source_count =
+        static_cast<int>(tree_.sorted_source_positions().size());
+    data.target_count =
+        static_cast<int>(tree_.sorted_target_positions().size());
+    data.source_permutation.assign(tree_.source_permutation().begin(),
+                                   tree_.source_permutation().end());
+    data.target_permutation.assign(tree_.target_permutation().begin(),
+                                   tree_.target_permutation().end());
+    const int n = basis_.size();
+    const auto nodes = tree_.nodes();
+    for (const FloatP2MPlan &leaf_plan : p2m_plans_float_) {
+      const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_plan.leaf)];
+      for (FloatStaticOperatorEntry entry : leaf_plan.operator_map.entries) {
+        entry.input += static_cast<int>(leaf.source_begin) * 3;
+        entry.output += leaf.index * n;
+        data.p2m.push_back(entry);
+      }
+    }
+    if (tree_.leaf_level() > 0) {
+      data.m2m.entries_per_matrix = static_cast<int>(
+          m2m_operators_float_[1][0].entries.size());
+      data.l2l.entries_per_matrix = static_cast<int>(
+          l2l_operators_float_[1][0].entries.size());
+    }
+    for (int level = 1; level <= tree_.leaf_level(); ++level) {
+      for (int child_class = 0; child_class < 8; ++child_class) {
+        data.m2m.matrices.insert(
+            data.m2m.matrices.end(),
+            m2m_operators_float_[level][child_class].entries.begin(),
+            m2m_operators_float_[level][child_class].entries.end());
+        data.l2l.matrices.insert(
+            data.l2l.matrices.end(),
+            l2l_operators_float_[level][child_class].entries.begin(),
+            l2l_operators_float_[level][child_class].entries.end());
+      }
+    }
+    data.m2m.matrix_count = tree_.leaf_level() * 8;
+    data.l2l.matrix_count = tree_.leaf_level() * 8;
+    for (int level = 1; level <= tree_.leaf_level(); ++level) {
+      const int begin = level_offset(level);
+      const int end = level_offset(level + 1);
+      for (int child_index = begin; child_index < end; ++child_index) {
+        const TreeNode &child = nodes[static_cast<std::size_t>(child_index)];
+        const int child_class =
+            (child.ix & 1) | ((child.iy & 1) << 1) |
+            ((child.iz & 1) << 2);
+        const int matrix_id = (level - 1) * 8 + child_class;
+        if (child.source_count() != 0) {
+          data.m2m.interactions.push_back(
+              {child.index, child.parent, matrix_id, level});
+        }
+        if (child.target_count() != 0) {
+          data.l2l.interactions.push_back(
+              {child.parent, child.index, matrix_id, level});
+        }
+      }
+    }
+    data.m2l = m2l_plan_float_;
+    for (const int leaf_index : tree_.occupied_target_leaves()) {
+      const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+      for (std::size_t target = leaf.target_begin;
+           target < leaf.target_end; ++target) {
+        for (int component = 0; component < 3; ++component) {
+          for (int coefficient = 0; coefficient < n; ++coefficient) {
+            const float value =
+                l2p_evaluators_float_[target].field[component][coefficient];
+            if (value != 0.0F) {
+              data.l2p.push_back(
+                  {static_cast<int>(target) * 3 + component,
+                   leaf.index * n + coefficient, value});
+            }
+          }
+        }
+      }
+    }
+    data.p2p = p2p_operator_float_;
+    if (fixed_target_source_indices_.has_value()) {
+      data.has_fixed_self_indices = true;
+      data.fixed_self_indices = fixed_sorted_self_indices_;
+      data.p2p_bsr = p2p_bsr_plan_float_;
+      data.use_p2p_bsr =
+          data.p2p_bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_;
+    }
+    p2p_execution_packing_ = data.use_p2p_bsr
+        ? P2PExecutionPacking::CudaBsr3
+        : P2PExecutionPacking::CanonicalAos;
+    cuda_full_plan_ = std::make_unique<CudaFullPlanOwner>(
+        std::make_unique<CudaFullPlan>(data));
+    return;
+  }
+
   CudaFullPlanData data;
   data.coefficient_count = basis_.size();
   data.node_count = static_cast<int>(tree_.nodes().size());
@@ -733,6 +1066,19 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
                                std::span<PotentialField> results,
                                const OutputFlags output,
                                std::span<const int> target_source_indices) {
+  if (precision_ == StaticPrecision::Float32) {
+    std::vector<FloatPotentialField> float_results(results.size());
+    evaluate_into_float32(dipole_moments, float_results, output,
+                          target_source_indices);
+    for (std::size_t index = 0; index < results.size(); ++index) {
+      results[index].phi = static_cast<double>(float_results[index].phi);
+      results[index].H = {
+          static_cast<double>(float_results[index].H.x),
+          static_cast<double>(float_results[index].H.y),
+          static_cast<double>(float_results[index].H.z)};
+    }
+    return;
+  }
   detail::ProfileRange evaluation_range{"cdfmm/evaluate"};
   const std::size_t target_count = tree_.sorted_target_positions().size();
   target_source_indices = resolve_self_indices(target_source_indices);
@@ -910,6 +1256,206 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
   accumulate_timings(aggregate_timings_, last_timings_);
 }
 
+std::vector<FloatPotentialField> UniformFmm::evaluate_float32(
+    const std::span<const Vec3> dipole_moments, const OutputFlags output,
+    const std::span<const int> target_source_indices) {
+  if (precision_ != StaticPrecision::Float32) {
+    throw std::logic_error("evaluate_float32 requires an FP32 FMM plan");
+  }
+  std::vector<FloatPotentialField> results(
+      tree_.sorted_target_positions().size());
+  evaluate_into_float32(dipole_moments, results, output,
+                        target_source_indices);
+  return results;
+}
+
+std::vector<PotentialField> UniformFmm::evaluate_float64(
+    const std::span<const Vec3> dipole_moments, const OutputFlags output,
+    const std::span<const int> target_source_indices) {
+  if (precision_ != StaticPrecision::Float64) {
+    throw std::logic_error("evaluate_float64 requires an FP64 FMM plan");
+  }
+  return evaluate(dipole_moments, output, target_source_indices);
+}
+
+void UniformFmm::evaluate_into_float32(
+    const std::span<const Vec3> dipole_moments,
+    const std::span<FloatPotentialField> results, const OutputFlags output,
+    std::span<const int> target_source_indices) {
+  if (precision_ != StaticPrecision::Float32) {
+    throw std::logic_error("evaluate_into_float32 requires an FP32 FMM plan");
+  }
+  const std::size_t target_count = tree_.sorted_target_positions().size();
+  target_source_indices = resolve_self_indices(target_source_indices);
+  if (results.size() != target_count) {
+    throw std::invalid_argument(
+        "UniformFmm::evaluate_into_float32 requires one result per target");
+  }
+  if (!target_source_indices.empty() &&
+      target_source_indices.size() != target_count) {
+    throw std::invalid_argument(
+        "UniformFmm::evaluate identity map has incorrect length");
+  }
+  for (const int source_index : target_source_indices) {
+    if (source_index < -1 ||
+        source_index >= static_cast<int>(dipole_moments.size())) {
+      throw std::invalid_argument(
+          "UniformFmm::evaluate identity map contains an invalid index");
+    }
+  }
+
+  if (backend_ == ExecutionBackend::CudaFull) {
+    if (output != OutputFlags::Field) {
+      throw std::invalid_argument(
+          "CudaFull currently supports field-only evaluation");
+    }
+    last_timings_ = {};
+    const auto evaluation_start = Clock::now();
+    prepare_self_indices(target_source_indices);
+    std::vector<FloatVec3> moments_float(dipole_moments.size());
+    for (std::size_t index = 0; index < dipole_moments.size(); ++index) {
+      const Vec3 value = dipole_moments[index];
+      const double scale = float_coordinate_scale_;
+      moments_float[index] = {
+          static_cast<float>(value.x / scale / scale / scale),
+          static_cast<float>(value.y / scale / scale / scale),
+          static_cast<float>(value.z / scale / scale / scale)};
+    }
+    std::vector<FloatVec3> fields(target_count);
+    cuda_full_plan_->plan->evaluate(moments_float, fields,
+                                    sorted_self_indices_);
+    for (std::size_t target = 0; target < target_count; ++target) {
+      results[target].phi = 0.0F;
+      results[target].H = fields[target];
+    }
+    const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
+    last_timings_.cuda_h2d.add(device.h2d_seconds);
+    last_timings_.p2m.add(device.p2m_seconds);
+    last_timings_.m2m.add(device.m2m_seconds);
+    last_timings_.m2l.add(device.m2l_seconds);
+    last_timings_.m2l_scale.add(device.scale_seconds);
+    last_timings_.m2l_multiply.add(device.multiply_seconds);
+    last_timings_.l2l.add(device.l2l_seconds);
+    last_timings_.l2p.add(device.l2p_seconds);
+    last_timings_.p2p.add(device.p2p_seconds);
+    last_timings_.cuda_p2p_kernel.add(device.p2p_seconds);
+    last_timings_.result_unpermutation.add(device.accumulation_seconds);
+    last_timings_.cuda_kernel.add(device.kernel_seconds);
+    last_timings_.cuda_d2h.add(device.d2h_seconds);
+    last_timings_.total.add(elapsed_seconds(evaluation_start));
+    last_timings_.evaluations = 1;
+    accumulate_timings(aggregate_timings_, last_timings_);
+    return;
+  }
+
+  last_timings_ = {};
+  const auto evaluation_start = Clock::now();
+  prepare_moments_float(dipole_moments);
+  prepare_self_indices(target_source_indices);
+  const bool use_cuda_p2p =
+      execution_plan().p2p == StaticOperatorExecutor::Cuda &&
+      has_flag(output, OutputFlags::Field) && cuda_p2p_plan_;
+  PendingCudaP2PGuard p2p_guard(use_cuda_p2p ? cuda_p2p_plan_->plan.get()
+                                             : nullptr);
+  if (use_cuda_p2p) {
+    cuda_p2p_plan_->plan->begin_evaluate(sorted_dipole_moments_float_,
+                                         sorted_self_indices_);
+    p2p_guard.arm();
+  }
+  upward_pass_prepared_float();
+  downward_pass_float();
+
+  const auto nodes = tree_.nodes();
+  const auto target_permutation = tree_.target_permutation();
+  const auto occupied_leaves = tree_.occupied_target_leaves();
+
+  auto phase_start = Clock::now();
+#pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
+  for (std::ptrdiff_t occupied_index = 0;
+       occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
+       ++occupied_index) {
+    const int leaf_index =
+        occupied_leaves[static_cast<std::size_t>(occupied_index)];
+    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+    for (std::size_t target_index = leaf.target_begin;
+         target_index < leaf.target_end; ++target_index) {
+      sorted_results_float_[target_index] = apply_static_l2p_evaluator(
+          l2p_evaluators_float_[target_index],
+          local_float_for_node(leaf_index), output);
+    }
+  }
+  last_timings_.l2p.add(elapsed_seconds(phase_start));
+
+  if (has_flag(output, OutputFlags::Field)) {
+    phase_start = Clock::now();
+    std::fill(near_fields_float_.begin(), near_fields_float_.end(),
+              FloatVec3{});
+    if (use_cuda_p2p) {
+      cuda_p2p_plan_->plan->finish_evaluate(near_fields_float_);
+      p2p_guard.release();
+      const CudaEvaluationTimings &device = cuda_p2p_plan_->plan->timings();
+      last_timings_.cuda_h2d.add(device.h2d_seconds);
+      last_timings_.cuda_kernel.add(device.kernel_seconds);
+      last_timings_.cuda_d2h.add(device.d2h_seconds);
+      last_timings_.cuda_p2p_h2d.add(device.h2d_seconds);
+      last_timings_.cuda_p2p_kernel.add(device.kernel_seconds);
+      last_timings_.cuda_p2p_d2h.add(device.d2h_seconds);
+    } else {
+      apply_static_p2p_compact_plan(
+          p2p_compact_plan_float_, sorted_dipole_moments_float_,
+          near_fields_float_, sorted_self_indices_);
+    }
+    for (std::size_t target = 0; target < target_count; ++target) {
+      sorted_results_float_[target].H += near_fields_float_[target];
+    }
+    last_timings_.p2p.add(elapsed_seconds(phase_start));
+  }
+
+  if (has_flag(output, OutputFlags::Potential)) {
+    const FloatStaticP2PCompactPlan &plan = p2p_compact_plan_float_;
+#pragma omp parallel for schedule(static) if (target_count >= 64)
+    for (std::ptrdiff_t target = 0;
+         target < static_cast<std::ptrdiff_t>(target_count); ++target) {
+      float potential = 0.0F;
+      const int self = sorted_self_indices_[static_cast<std::size_t>(target)];
+      const int begin = plan.row_offsets[static_cast<std::size_t>(target)];
+      const int end = plan.row_offsets[static_cast<std::size_t>(target) + 1];
+      for (int entry = begin; entry < end; ++entry) {
+        const std::size_t index = static_cast<std::size_t>(entry);
+        const int source = plan.source_indices[index];
+        if (source == self) {
+          continue;
+        }
+        const FloatVec3 moment =
+            sorted_dipole_moments_float_[static_cast<std::size_t>(source)];
+        potential += plan.potential[0][index] * moment.x +
+            plan.potential[1][index] * moment.y +
+            plan.potential[2][index] * moment.z;
+      }
+      sorted_results_float_[static_cast<std::size_t>(target)].phi += potential;
+    }
+  }
+
+  phase_start = Clock::now();
+#pragma omp parallel for schedule(static) if (target_count >= 256)
+  for (std::ptrdiff_t sorted_index = 0;
+       sorted_index < static_cast<std::ptrdiff_t>(target_count);
+       ++sorted_index) {
+    const int original_index =
+        target_permutation[static_cast<std::size_t>(sorted_index)];
+    results[static_cast<std::size_t>(original_index)] =
+        sorted_results_float_[static_cast<std::size_t>(sorted_index)];
+    // The normalised-coordinate potential differs by one power of length;
+    // the field is invariant after moment scaling by root_width^-3.
+    results[static_cast<std::size_t>(original_index)].phi *=
+        static_cast<float>(float_coordinate_scale_);
+  }
+  last_timings_.result_unpermutation.add(elapsed_seconds(phase_start));
+  last_timings_.total.add(elapsed_seconds(evaluation_start));
+  last_timings_.evaluations = 1;
+  accumulate_timings(aggregate_timings_, last_timings_);
+}
+
 //------------------------------------------------------------------------------
 // Public inspection
 //------------------------------------------------------------------------------
@@ -921,6 +1467,7 @@ StaticMatrixBackend UniformFmm::static_matrix_backend() const {
   return static_matrix_backend_;
 }
 ExecutionBackend UniformFmm::backend() const { return backend_; }
+StaticPrecision UniformFmm::precision() const noexcept { return precision_; }
 StaticExecutionPlan UniformFmm::execution_plan() const noexcept {
   if (backend_ == ExecutionBackend::CpuReference) {
     return {
@@ -993,7 +1540,12 @@ std::span<const double> UniformFmm::multipole(const int node_index) const {
       static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
     throw std::out_of_range("multipole node index is out of range");
   }
-  return multipole_for_node(node_index);
+  if (precision_ == StaticPrecision::Float64) {
+    return multipole_for_node(node_index);
+  }
+  const auto values = multipole_float_for_node(node_index);
+  inspection_widening_buffer_.assign(values.begin(), values.end());
+  return inspection_widening_buffer_;
 }
 
 std::span<const double> UniformFmm::local(const int node_index) const {
@@ -1001,11 +1553,63 @@ std::span<const double> UniformFmm::local(const int node_index) const {
       static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
     throw std::out_of_range("local node index is out of range");
   }
-  return local_for_node(node_index);
+  if (precision_ == StaticPrecision::Float64) {
+    return local_for_node(node_index);
+  }
+  const auto values = local_float_for_node(node_index);
+  inspection_widening_buffer_.assign(values.begin(), values.end());
+  return inspection_widening_buffer_;
 }
 
 std::span<const double> UniformFmm::root_multipole() const {
-  return multipole_for_node(0);
+  return multipole(0);
+}
+
+std::span<const float> UniformFmm::multipole_float32(
+    const int node_index) const {
+  if (precision_ != StaticPrecision::Float32) {
+    throw std::logic_error("multipole_float32 requires an FP32 FMM plan");
+  }
+  if (node_index < 0 ||
+      static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
+    throw std::out_of_range("multipole node index is out of range");
+  }
+  return multipole_float_for_node(node_index);
+}
+
+std::span<const float> UniformFmm::local_float32(const int node_index) const {
+  if (precision_ != StaticPrecision::Float32) {
+    throw std::logic_error("local_float32 requires an FP32 FMM plan");
+  }
+  if (node_index < 0 ||
+      static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
+    throw std::out_of_range("local node index is out of range");
+  }
+  return local_float_for_node(node_index);
+}
+
+std::span<const float> UniformFmm::root_multipole_float32() const {
+  return multipole_float32(0);
+}
+
+std::span<const double> UniformFmm::multipole_float64(
+    const int node_index) const {
+  if (precision_ != StaticPrecision::Float64) {
+    throw std::logic_error("multipole_float64 requires an FP64 FMM plan");
+  }
+  return multipole(node_index);
+}
+
+std::span<const double> UniformFmm::local_float64(
+    const int node_index) const {
+  if (precision_ != StaticPrecision::Float64) {
+    throw std::logic_error("local_float64 requires an FP64 FMM plan");
+  }
+  return local(node_index);
+}
+
+std::span<const double> UniformFmm::root_multipole_float64() const {
+  return multipole_float64(0);
 }
 
 std::span<double> UniformFmm::multipole_for_node(const int node_index) noexcept {
@@ -1028,6 +1632,32 @@ std::span<const double> UniformFmm::local_for_node(
     const int node_index) const noexcept {
   const std::size_t n = static_cast<std::size_t>(basis_.size());
   return {locals_.data() + static_cast<std::size_t>(node_index) * n, n};
+}
+
+std::span<float> UniformFmm::multipole_float_for_node(
+    const int node_index) noexcept {
+  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  return {multipoles_float_.data() + static_cast<std::size_t>(node_index) * n,
+          n};
+}
+
+std::span<const float> UniformFmm::multipole_float_for_node(
+    const int node_index) const noexcept {
+  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  return {multipoles_float_.data() + static_cast<std::size_t>(node_index) * n,
+          n};
+}
+
+std::span<float> UniformFmm::local_float_for_node(
+    const int node_index) noexcept {
+  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  return {locals_float_.data() + static_cast<std::size_t>(node_index) * n, n};
+}
+
+std::span<const float> UniformFmm::local_float_for_node(
+    const int node_index) const noexcept {
+  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  return {locals_float_.data() + static_cast<std::size_t>(node_index) * n, n};
 }
 
 const EvaluationTimings &UniformFmm::last_timings() const {

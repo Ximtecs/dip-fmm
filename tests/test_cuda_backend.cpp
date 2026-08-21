@@ -75,6 +75,7 @@ TEST_CASE("full CUDA FMM is device resident across evaluations", "[cuda][manual]
     std::vector<int> identities(positions.size());
     std::iota(identities.begin(), identities.end(), 0);
     UniformFmmOptions cpu_options;
+    cpu_options.precision = StaticPrecision::Float64;
     cpu_options.expansion_order = 4;
     cpu_options.tree.max_level = 3;
     cpu_options.tree.root_centre = Vec3{};
@@ -198,7 +199,7 @@ TEST_CASE("CUDA dense cuboid direct plan agrees with portable CPU",
     const std::array<CuboidSize, 1> cube{{{0.5, 0.5, 0.5}}};
     const DenseDirectPlan cpu(
         positions, positions, SourceGeometry::UniformCuboid,
-        TargetGeometry::Point, cube);
+        TargetGeometry::Point, cube, {}, {}, StaticPrecision::Float64);
     CudaDenseDirectPlan cuda(
         positions, positions, SourceGeometry::UniformCuboid,
         TargetGeometry::Point, cube);
@@ -340,6 +341,7 @@ TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
     std::iota(source_identities.begin(), source_identities.end(), 0);
 
     UniformFmmOptions cpu_options;
+    cpu_options.precision = StaticPrecision::Float64;
     cpu_options.expansion_order = 3;
     cpu_options.tree.max_level = 2;
     cpu_options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
@@ -457,6 +459,7 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
         }
 
         UniformFmmOptions options;
+        options.precision = StaticPrecision::Float64;
         options.expansion_order = scenario.order;
         options.tree.max_level = scenario.depth;
         options.tree.root_centre = Vec3{};
@@ -528,24 +531,29 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
         const std::size_t scaling_bytes =
             2 * static_cast<std::size_t>(scenario.depth + 1) *
             partial.basis().size() * sizeof(double);
+        // The selected CUDA BSR packing expands each symmetric six-value
+        // tensor to a full 3 x 3 block and stores source indices separately.
+        // Derive the upload size from the reported packing categories rather
+        // than assuming the canonical StaticDipoleBlock representation.
         const std::size_t p2p_static_bytes =
-            partial_statistics.p2p_interaction_count *
-                sizeof(StaticDipoleBlock) +
-            (targets.size() + 1) * sizeof(int);
+            partial_statistics.p2p_tensor_bytes +
+            partial_statistics.p2p_index_bytes +
+            partial_statistics.p2p_row_metadata_bytes +
+            partial_statistics.p2p_leaf_metadata_bytes +
+            partial_statistics.p2p_identity_bytes;
         const std::size_t canonical_m2l_bytes =
             partial_statistics.m2l_matrix_bytes +
             partial_statistics.m2l_interaction_metadata_bytes + scaling_bytes;
         REQUIRE(partial_statistics.setup_h2d_bytes ==
                 canonical_m2l_bytes + p2p_static_bytes);
         REQUIRE(partial_statistics.evaluation_h2d_bytes ==
-                coefficient_bytes + moments.size() * sizeof(Vec3) +
-                    identities.size() * sizeof(int));
+                coefficient_bytes + moments.size() * sizeof(Vec3));
         REQUIRE(partial_statistics.evaluation_d2h_bytes ==
                 coefficient_bytes + targets.size() * sizeof(Vec3));
         REQUIRE(partial_statistics.persistent_device_bytes ==
                 partial_statistics.setup_h2d_bytes + 2 * coefficient_bytes +
                     sources.size() * sizeof(Vec3) +
-                    targets.size() * (sizeof(Vec3) + sizeof(int)) +
+                    targets.size() * sizeof(Vec3) +
                     partial_statistics.m2l_scratch_bytes);
         REQUIRE(full_statistics.persistent_device_bytes ==
                 full_statistics.setup_h2d_bytes + 2 * coefficient_bytes +
@@ -610,6 +618,7 @@ TEST_CASE("CUDA M2L/P2P accepts empty geometry", "[cuda][manual]")
     }
 
     UniformFmmOptions options;
+    options.precision = StaticPrecision::Float64;
     options.backend = ExecutionBackend::CudaM2LP2P;
     UniformFmm fmm(std::vector<Vec3>{}, std::vector<Vec3>{}, options);
     const auto result = fmm.evaluate({}, OutputFlags::Field);

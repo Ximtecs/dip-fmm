@@ -43,7 +43,9 @@ TEST_CASE("dense direct stores six rectangular matrices and reuses them")
     const std::array<Vec3, 2> sources{{{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}}};
     const std::array<Vec3, 3> targets{{{0.0, 0.0, 2.0}, {0.0, 1.0, 2.0},
                                       {2.0, 1.0, 3.0}}};
-    const DenseDirectPlan plan(sources, targets);
+    const DenseDirectPlan plan(
+        sources, targets, SourceGeometry::PointDipole, TargetGeometry::Point,
+        {}, {}, {}, StaticPrecision::Float64);
     REQUIRE(plan.tensor_component_count() == 6);
     REQUIRE(plan.tensor_memory_bytes() == 6 * 2 * 3 * sizeof(double));
     for (const auto& matrix : plan.matrices()) {
@@ -76,7 +78,9 @@ TEST_CASE("dense direct FP32 storage halves tensor memory")
                                        {2.0, 1.0, 3.0}}};
     const std::array<Vec3, 2> moments{{{1.0, 2.0, 3.0},
                                        {-2.0, 1.0, 0.5}}};
-    const DenseDirectPlan fp64(sources, targets);
+    const DenseDirectPlan fp64(
+        sources, targets, SourceGeometry::PointDipole, TargetGeometry::Point,
+        {}, {}, {}, StaticPrecision::Float64);
     const DenseDirectPlan fp32(
         sources, targets, SourceGeometry::PointDipole, TargetGeometry::Point,
         {}, {}, {}, StaticPrecision::Float32);

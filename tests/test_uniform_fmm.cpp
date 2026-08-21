@@ -25,6 +25,7 @@ TEST_CASE("automatic FMM execution resolves to a truthful CPU backend")
     const std::vector<Vec3> positions{{-0.25, 0.0, 0.0}, {0.25, 0.0, 0.0}};
     UniformFmm fmm(positions);
     REQUIRE(fmm.backend() == ExecutionBackend::CpuStatic);
+    REQUIRE(fmm.precision() == StaticPrecision::Float32);
     REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::ParticleRowSoa);
 }
 
@@ -35,6 +36,7 @@ TEST_CASE("cuboid FMM includes finite centre self field", "[uniform_fmm][cuboid]
     const double volume = cube.volume();
     const std::vector<Vec3> moments{{volume, -2.0 * volume, 0.5 * volume}};
     UniformFmmOptions options;
+    options.precision = StaticPrecision::Float64;
     options.expansion_order = 5;
     options.tree.max_level = 0;
     options.source_geometry = SourceGeometry::UniformCuboid;
@@ -186,6 +188,7 @@ TEST_CASE("Uniform upward root equals direct P2M at several orders",
           "[uniform_fmm]") {
   for (const int order : {1, 2, 4, 6}) {
     UniformFmmOptions options;
+    options.precision = StaticPrecision::Float64;
     options.expansion_order = order;
     options.tree.max_level = 3;
     options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
@@ -202,6 +205,7 @@ TEST_CASE("Uniform upward root equals direct P2M at several orders",
 
 TEST_CASE("Depth-zero upward pass is direct leaf P2M", "[uniform_fmm]") {
   UniformFmmOptions options;
+  options.precision = StaticPrecision::Float64;
   options.expansion_order = 5;
   options.tree.max_level = 0;
   UniformFmm fmm(distributed_positions, options);
@@ -219,6 +223,7 @@ TEST_CASE("One populated leaf translates through multiple levels",
   const std::vector<Vec3> moments{
       {0.4, -0.2, 0.7}, {-0.5, 0.9, 0.1}, {0.3, 0.2, -0.6}};
   UniformFmmOptions options;
+  options.precision = StaticPrecision::Float64;
   options.expansion_order = 5;
   options.tree.max_level = 3;
   options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
@@ -240,6 +245,7 @@ TEST_CASE("One populated leaf translates through multiple levels",
 TEST_CASE("Every populated node agrees with direct subtree P2M",
           "[uniform_fmm]") {
   UniformFmmOptions options;
+  options.precision = StaticPrecision::Float64;
   options.expansion_order = 4;
   options.tree.max_level = 3;
   options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
@@ -287,6 +293,7 @@ TEST_CASE("Upward pass is independent of source input ordering",
   }
 
   UniformFmmOptions options;
+  options.precision = StaticPrecision::Float64;
   options.expansion_order = 4;
   options.tree.max_level = 2;
   options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
@@ -303,6 +310,7 @@ TEST_CASE("Upward pass is independent of source input ordering",
 TEST_CASE("Repeated upward passes replace all magnetic state",
           "[uniform_fmm]") {
   UniformFmmOptions options;
+  options.precision = StaticPrecision::Float64;
   options.expansion_order = 4;
   options.tree.max_level = 2;
   UniformFmm fmm(distributed_positions, options);
@@ -341,6 +349,7 @@ TEST_CASE("Uniform upward pass validates public input", "[uniform_fmm]") {
 TEST_CASE("Hierarchical root and direct root give the same distant field",
           "[uniform_fmm]") {
   UniformFmmOptions options;
+  options.precision = StaticPrecision::Float64;
   options.expansion_order = 6;
   options.tree.max_level = 3;
   options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
@@ -421,6 +430,7 @@ TEST_CASE("Depth-zero complete evaluation is direct in every output mode",
           "[uniform_fmm]") {
   const std::vector<Vec3> targets{{0.12, -0.27, 0.34}, {-0.45, 0.16, -0.08}};
   UniformFmmOptions options;
+  options.precision = StaticPrecision::Float64;
   options.expansion_order = 3;
   options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 0;

@@ -321,6 +321,8 @@ DenseDirectPlan::DenseDirectPlan(
 {
     if (static_precision_ == StaticPrecision::Float32) {
         matrices_.emplace<FloatMatrices>();
+    } else {
+        matrices_.emplace<DoubleMatrices>();
     }
     if ((!source_sizes.empty() && source_sizes.size() != 1 &&
          source_sizes.size() != ns_) ||

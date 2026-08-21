@@ -53,32 +53,35 @@ void check_cublas(const cublasStatus_t status, const char* operation)
   }
 }
 
-__global__ void permute_moments_kernel(const Vec3 *input,
+template <typename Vector>
+__global__ void permute_moments_kernel(const Vector *input,
                                        const int *permutation, const int count,
-                                       Vec3 *sorted) {
+                                       Vector *sorted) {
   const int index = blockIdx.x * blockDim.x + threadIdx.x;
   if (index < count) {
     sorted[index] = input[permutation[index]];
     }
 }
 
-__global__ void apply_entries_kernel(const StaticOperatorEntry *entries,
+template <typename Entry, typename Scalar>
+__global__ void apply_entries_kernel(const Entry *entries,
                                      const std::size_t count,
-                                     const double *input, double *output) {
+                                     const Scalar *input, Scalar *output) {
   const std::size_t index = blockIdx.x * blockDim.x + threadIdx.x;
   if (index < count) {
-    const StaticOperatorEntry entry = entries[index];
+    const Entry entry = entries[index];
         atomicAdd(output + entry.output, entry.value * input[entry.input]);
   }
 }
 
+template <typename Entry, typename Scalar>
 __global__ void
-apply_shared_translation_kernel(const StaticOperatorEntry *matrices,
+apply_shared_translation_kernel(const Entry *matrices,
                                 const CudaTranslationInteraction *interactions,
                                 const std::size_t interaction_count,
                                 const int entries_per_matrix,
                                 const int coefficient_count, const int level,
-                                const double *input, double *output) {
+                                const Scalar *input, Scalar *output) {
   const std::size_t item = blockIdx.x * blockDim.x + threadIdx.x;
   const std::size_t item_count = interaction_count * entries_per_matrix;
   if (item >= item_count) {
@@ -91,7 +94,7 @@ apply_shared_translation_kernel(const StaticOperatorEntry *matrices,
     return;
   }
   const int matrix_entry = static_cast<int>(item % entries_per_matrix);
-  const StaticOperatorEntry entry =
+  const Entry entry =
       matrices[static_cast<std::size_t>(interaction.matrix_id) *
                    entries_per_matrix +
                matrix_entry];
@@ -113,10 +116,11 @@ struct CudaM2LActiveRow {
   int interaction_end{0};
 };
 
+template <typename Scalar>
 __global__ void scale_m2l_multipoles_kernel(
-    const double *multipoles, const int *node_levels,
-    const double *multipole_scaling, const int coefficient_count,
-    const std::size_t value_count, double *scaled_multipoles) {
+    const Scalar *multipoles, const int *node_levels,
+    const Scalar *multipole_scaling, const int coefficient_count,
+    const std::size_t value_count, Scalar *scaled_multipoles) {
   const std::size_t value_index =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (value_index >= value_count) {
@@ -135,11 +139,12 @@ __global__ void scale_m2l_multipoles_kernel(
                 multipoles[value_index];
 }
 
+template <typename Scalar>
 __global__ void apply_scaled_m2l_rows_kernel(
-    const double *matrices, const CudaM2LActiveRow *active_rows,
-    const int *sources, const int *matrix_ids, const double *local_scaling,
+    const Scalar *matrices, const CudaM2LActiveRow *active_rows,
+    const int *sources, const int *matrix_ids, const Scalar *local_scaling,
     const int active_row_count, const int coefficient_count,
-    const double *scaled_multipoles, double *locals) {
+    const Scalar *scaled_multipoles, Scalar *locals) {
   const std::size_t output =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::size_t output_count =
@@ -154,7 +159,7 @@ __global__ void apply_scaled_m2l_rows_kernel(
   const CudaM2LActiveRow row = active_rows[active_row_index];
   const std::size_t coefficient_stride =
       static_cast<std::size_t>(coefficient_count);
-  double value = 0.0;
+  Scalar value = Scalar{0};
 
   // Threads own distinct (target, beta) outputs. This makes accumulation
   // deterministic and needs no atomics even when transfer classes repeat.
@@ -183,12 +188,13 @@ __global__ void apply_scaled_m2l_rows_kernel(
       value;
 }
 
+template <typename Scalar>
 __global__ void apply_unscaled_m2l_rows_kernel(
-    const double *matrices, const CudaM2LActiveRow *active_rows,
+    const Scalar *matrices, const CudaM2LActiveRow *active_rows,
     const int *sources, const int *matrix_ids,
-    const double *multipole_scaling, const double *local_scaling,
+    const Scalar *multipole_scaling, const Scalar *local_scaling,
     const int active_row_count, const int coefficient_count,
-    const double *multipoles, double *locals) {
+    const Scalar *multipoles, Scalar *locals) {
   const std::size_t output =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::size_t output_count =
@@ -205,7 +211,7 @@ __global__ void apply_unscaled_m2l_rows_kernel(
       static_cast<std::size_t>(coefficient_count);
   const std::size_t scale_base =
       static_cast<std::size_t>(row.level) * coefficient_stride;
-  double value = 0.0;
+  Scalar value = Scalar{0};
 
   for (int interaction = row.interaction_begin;
        interaction < row.interaction_end; ++interaction) {
@@ -236,9 +242,10 @@ __global__ void apply_unscaled_m2l_rows_kernel(
  * far-field stream. Immutable mathematical data and derived execution metadata
  * are uploaded once and no evaluation performs allocation or synchronisation.
  */
+template <typename Scalar, typename Plan>
 class CudaM2LExecutionPlan {
 public:
-  CudaM2LExecutionPlan(const StaticM2LPlan &data, cudaStream_t stream) {
+  CudaM2LExecutionPlan(const Plan &data, cudaStream_t stream) {
     initialise(data, stream);
   }
 
@@ -256,7 +263,7 @@ public:
   CudaM2LExecutionPlan(const CudaM2LExecutionPlan &) = delete;
   CudaM2LExecutionPlan &operator=(const CudaM2LExecutionPlan &) = delete;
 
-  void enqueue(const double *multipoles, double *locals, cudaStream_t stream,
+  void enqueue(const Scalar *multipoles, Scalar *locals, cudaStream_t stream,
                cudaEvent_t scale_complete) const {
     const std::size_t coefficient_values =
         static_cast<std::size_t>(node_count_) * coefficient_count_;
@@ -324,7 +331,7 @@ private:
     }
   }
 
-  void initialise(const StaticM2LPlan &data, cudaStream_t stream) {
+  void initialise(const Plan &data, cudaStream_t stream) {
     if (data.coefficient_count < 0 || data.matrix_count < 0 ||
         data.level_count < 0 || data.target_row_offsets.empty()) {
       throw std::invalid_argument("canonical M2L dimensions are invalid");
@@ -420,7 +427,7 @@ private:
     // remains safe for very large geometries.
     const std::size_t scratch_bytes =
         static_cast<std::size_t>(node_count_) * coefficient_count_ *
-        sizeof(double);
+        sizeof(Scalar);
     std::size_t free_bytes = 0;
     std::size_t total_bytes = 0;
     check_cuda(cudaMemGetInfo(&free_bytes, &total_bytes),
@@ -440,7 +447,7 @@ private:
     int suggested_block_size = 0;
     check_cuda(cudaOccupancyMaxPotentialBlockSize(
                    &minimum_grid_size, &suggested_block_size,
-                   apply_scaled_m2l_rows_kernel, 0, 0),
+                   apply_scaled_m2l_rows_kernel<Scalar>, 0, 0),
                "select M2L launch configuration");
     if (suggested_block_size <= 64) {
       threads_per_block_ = 64;
@@ -451,7 +458,8 @@ private:
     }
 
     statistics_.m2l_unique_matrix_count = data.matrix_count;
-    statistics_.m2l_matrix_bytes = data.matrices.size() * sizeof(double);
+    statistics_.scalar_bytes = sizeof(Scalar);
+    statistics_.m2l_matrix_bytes = data.matrices.size() * sizeof(Scalar);
     statistics_.m2l_interaction_count = data.source_nodes.size();
     statistics_.m2l_active_row_count = active_rows.size();
     statistics_.m2l_interaction_metadata_bytes =
@@ -466,7 +474,7 @@ private:
         statistics_.m2l_matrix_bytes +
         statistics_.m2l_interaction_metadata_bytes +
         (data.multipole_scaling.size() + data.local_scaling.size()) *
-            sizeof(double);
+            sizeof(Scalar);
     statistics_.persistent_device_bytes =
         statistics_.setup_h2d_bytes + statistics_.m2l_scratch_bytes;
     statistics_.plan_generation_count = 1;
@@ -475,14 +483,14 @@ private:
     statistics_.geometry_upload_count = 1;
   }
 
-  double *matrices_{nullptr};
+  Scalar *matrices_{nullptr};
   CudaM2LActiveRow *active_rows_{nullptr};
   int *sources_{nullptr};
   int *matrix_ids_{nullptr};
   int *node_levels_{nullptr};
-  double *multipole_scaling_{nullptr};
-  double *local_scaling_{nullptr};
-  double *scaled_multipoles_{nullptr};
+  Scalar *multipole_scaling_{nullptr};
+  Scalar *local_scaling_{nullptr};
+  Scalar *scaled_multipoles_{nullptr};
   int node_count_{0};
   int active_row_count_{0};
   int coefficient_count_{0};
@@ -492,13 +500,14 @@ private:
 
 constexpr int static_operator_threads = 256;
 
-__global__ void combine_order_kernel(const Vec3 *far_fields,
-                                     const Vec3 *near_fields,
+template <typename Vector>
+__global__ void combine_order_kernel(const Vector *far_fields,
+                                     const Vector *near_fields,
                                      const int *target_permutation,
-                                     const int count, Vec3 *output) {
+                                     const int count, Vector *output) {
   const int sorted = blockIdx.x * blockDim.x + threadIdx.x;
   if (sorted < count) {
-    Vec3 value = far_fields[sorted];
+    Vector value = far_fields[sorted];
         value.x += near_fields[sorted].x;
         value.y += near_fields[sorted].y;
         value.z += near_fields[sorted].z;
@@ -685,7 +694,8 @@ CudaDenseDirectPlan::CudaDenseDirectPlan(
     // implementation, then retain only its device copy after construction.
     const DenseDirectPlan host_plan(
         source_positions, target_positions, source_geometry, target_geometry,
-        source_sizes, target_sizes, target_source_indices);
+        source_sizes, target_sizes, target_source_indices,
+        StaticPrecision::Float64);
 
     check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
                "create CUDA dense direct stream");
@@ -1088,11 +1098,17 @@ std::vector<PotentialField> cuda_direct_p2p_reference(
 //------------------------------------------------------------------------------
 
 struct CudaM2LPlan::Implementation {
+  bool fp32{false};
   int coefficient_count{0};
   int node_count{0};
   std::vector<double> host_multipoles{};
   std::vector<double> host_locals{};
-  CudaM2LExecutionPlan *executor{nullptr};
+  CudaM2LExecutionPlan<double, StaticM2LPlan> *executor{nullptr};
+  std::vector<float> host_multipoles_float{};
+  std::vector<float> host_locals_float{};
+  CudaM2LExecutionPlan<float, FloatStaticM2LPlan> *executor_float{nullptr};
+  float *multipoles_float{nullptr};
+  float *locals_float{nullptr};
   double* multipoles{nullptr};
   double* locals{nullptr};
   cudaStream_t stream{nullptr};
@@ -1104,6 +1120,43 @@ struct CudaM2LPlan::Implementation {
   CudaPlanStatistics statistics{};
   CudaEvaluationTimings timings{};
 };
+
+CudaM2LPlan::CudaM2LPlan(const FloatStaticM2LPlan &data)
+    : implementation_(new Implementation{}) {
+  if (!cuda_runtime_available()) {
+    delete implementation_;
+    implementation_ = nullptr;
+    throw std::runtime_error("CudaM2L requires an available CUDA device");
+  }
+  auto &plan = *implementation_;
+  plan.fp32 = true;
+  plan.coefficient_count = data.coefficient_count;
+  plan.node_count = static_cast<int>(data.target_row_offsets.size()) - 1;
+  const std::size_t coefficient_values =
+      static_cast<std::size_t>(plan.node_count) * plan.coefficient_count;
+  plan.host_multipoles_float.resize(coefficient_values);
+  plan.host_locals_float.resize(coefficient_values);
+  check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
+             "create canonical FP32 M2L stream");
+  check_cuda(cudaEventCreate(&plan.start), "create M2L event");
+  check_cuda(cudaEventCreate(&plan.h2d), "create M2L event");
+  check_cuda(cudaEventCreate(&plan.scale), "create M2L event");
+  check_cuda(cudaEventCreate(&plan.kernel), "create M2L event");
+  check_cuda(cudaEventCreate(&plan.d2h), "create M2L event");
+  const auto allocate = [](auto **pointer, const std::size_t bytes) {
+    check_cuda(cudaMalloc(reinterpret_cast<void **>(pointer),
+                          std::max(bytes, std::size_t{1})),
+               "allocate FP32 M2L data");
+  };
+  allocate(&plan.multipoles_float, coefficient_values * sizeof(float));
+  allocate(&plan.locals_float, coefficient_values * sizeof(float));
+  plan.executor_float =
+      new CudaM2LExecutionPlan<float, FloatStaticM2LPlan>(data, plan.stream);
+  check_cuda(cudaStreamSynchronize(plan.stream), "finish FP32 M2L upload");
+  plan.statistics = plan.executor_float->statistics();
+  plan.statistics.persistent_device_bytes +=
+      2 * coefficient_values * sizeof(float);
+}
 
 CudaM2LPlan::CudaM2LPlan(const StaticM2LPlan& data)
     : implementation_(new Implementation{}) {
@@ -1132,7 +1185,8 @@ CudaM2LPlan::CudaM2LPlan(const StaticM2LPlan& data)
   };
   allocate(&plan.multipoles, coefficient_values * sizeof(double));
   allocate(&plan.locals, coefficient_values * sizeof(double));
-  plan.executor = new CudaM2LExecutionPlan(data, plan.stream);
+  plan.executor =
+      new CudaM2LExecutionPlan<double, StaticM2LPlan>(data, plan.stream);
   check_cuda(cudaStreamSynchronize(plan.stream), "finish M2L plan upload");
   plan.statistics = plan.executor->statistics();
   plan.statistics.persistent_device_bytes +=
@@ -1143,11 +1197,76 @@ CudaM2LPlan::~CudaM2LPlan() {
   if (!implementation_) return;
   auto& plan = *implementation_;
   delete plan.executor;
+  delete plan.executor_float;
   cudaFree(plan.multipoles); cudaFree(plan.locals);
+  cudaFree(plan.multipoles_float);
+  cudaFree(plan.locals_float);
   cudaEventDestroy(plan.start); cudaEventDestroy(plan.h2d);
   cudaEventDestroy(plan.scale);
   cudaEventDestroy(plan.kernel); cudaEventDestroy(plan.d2h);
   cudaStreamDestroy(plan.stream); delete implementation_;
+}
+
+void CudaM2LPlan::evaluate(const std::span<const float> multipoles,
+                           const std::span<float> locals) {
+  auto &plan = *implementation_;
+  if (!plan.fp32 || multipoles.size() != plan.host_multipoles_float.size() ||
+      locals.size() != plan.host_locals_float.size()) {
+    throw std::invalid_argument("CUDA FP32 M2L coefficient dimensions differ");
+  }
+  std::copy(multipoles.begin(), multipoles.end(),
+            plan.host_multipoles_float.begin());
+  check_cuda(cudaEventRecord(plan.start, plan.stream), "record M2L start");
+  if (!plan.host_multipoles_float.empty()) {
+    check_cuda(cudaMemcpyAsync(
+                   plan.multipoles_float, plan.host_multipoles_float.data(),
+                   plan.host_multipoles_float.size() * sizeof(float),
+                   cudaMemcpyHostToDevice, plan.stream),
+               "upload FP32 M2L multipoles");
+  }
+  check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record M2L H2D");
+  if (!plan.host_locals_float.empty()) {
+    check_cuda(cudaMemsetAsync(
+                   plan.locals_float, 0,
+                   plan.host_locals_float.size() * sizeof(float), plan.stream),
+               "clear FP32 M2L locals");
+  }
+  plan.executor_float->enqueue(plan.multipoles_float, plan.locals_float,
+                               plan.stream, plan.scale);
+  check_cuda(cudaEventRecord(plan.kernel, plan.stream), "record M2L kernel");
+  if (!plan.host_locals_float.empty()) {
+    check_cuda(cudaMemcpyAsync(
+                   plan.host_locals_float.data(), plan.locals_float,
+                   plan.host_locals_float.size() * sizeof(float),
+                   cudaMemcpyDeviceToHost, plan.stream),
+               "download FP32 M2L locals");
+  }
+  check_cuda(cudaEventRecord(plan.d2h, plan.stream), "record M2L D2H");
+  check_cuda(cudaEventSynchronize(plan.d2h), "wait for FP32 M2L");
+  std::copy(plan.host_locals_float.begin(), plan.host_locals_float.end(),
+            locals.begin());
+  const auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
+    float milliseconds = 0.0F;
+    check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
+               "time FP32 M2L");
+    return static_cast<double>(milliseconds) * 1.0e-3;
+  };
+  plan.timings = {};
+  plan.timings.h2d_seconds = elapsed(plan.start, plan.h2d);
+  plan.timings.scale_seconds = elapsed(plan.h2d, plan.scale);
+  plan.timings.multiply_seconds = elapsed(plan.scale, plan.kernel);
+  plan.timings.kernel_seconds =
+      plan.timings.scale_seconds + plan.timings.multiply_seconds;
+  plan.timings.m2l_seconds = plan.timings.kernel_seconds;
+  plan.timings.d2h_seconds = elapsed(plan.kernel, plan.d2h);
+  plan.timings.total_seconds = plan.timings.h2d_seconds +
+      plan.timings.kernel_seconds + plan.timings.d2h_seconds;
+  plan.statistics.evaluation_h2d_bytes =
+      plan.host_multipoles_float.size() * sizeof(float);
+  plan.statistics.evaluation_d2h_bytes =
+      plan.host_locals_float.size() * sizeof(float);
+  ++plan.statistics.evaluation_h2d_calls;
+  ++plan.statistics.evaluation_d2h_calls;
 }
 
 void CudaM2LPlan::evaluate(const std::span<const double> multipoles,
@@ -1212,42 +1331,43 @@ const CudaEvaluationTimings& CudaM2LPlan::timings() const noexcept {
 
 namespace {
 
+template <typename Block, typename Vector>
 __global__ void static_p2p_kernel(const int target_count,
                                   const int *row_offsets,
-                                  const StaticDipoleBlock *blocks,
-                                  const Vec3 *moments, const int *self_indices,
-                                  Vec3 *fields) {
+                                  const Block *blocks,
+                                  const Vector *moments,
+                                  const int *self_indices,
+                                  Vector *fields) {
   const int target = blockIdx.x * blockDim.x + threadIdx.x;
   if (target >= target_count) {
     return;
   }
-  Vec3 field;
-  field.x = 0.0;
-  field.y = 0.0;
-  field.z = 0.0;
+  Vector field{};
   const int self = self_indices[target];
   for (int entry = row_offsets[target]; entry < row_offsets[target + 1];
        ++entry) {
-    const StaticDipoleBlock tensor = blocks[entry];
+    const Block tensor = blocks[entry];
     if (tensor.source == self) {
       continue;
     }
-    const Vec3 moment = moments[tensor.source];
+    const Vector moment = moments[tensor.source];
     accumulate_static_dipole_block(tensor, moment, field);
   }
   fields[target] = field;
 }
 
+template <typename Block>
 struct CudaP2PDeviceView {
   int target_count{0};
   int *row_offsets{nullptr};
-  StaticDipoleBlock *blocks{nullptr};
+  Block *blocks{nullptr};
 };
 
-void launch_static_p2p(const CudaP2PDeviceView &plan,
-                       const Vec3 *moments,
+template <typename Block, typename Vector>
+void launch_static_p2p(const CudaP2PDeviceView<Block> &plan,
+                       const Vector *moments,
                        const int *self_indices,
-                       Vec3 *fields,
+                       Vector *fields,
                        cudaStream_t stream) {
   if (plan.target_count == 0) {
     return;
@@ -1261,22 +1381,23 @@ void launch_static_p2p(const CudaP2PDeviceView &plan,
   check_cuda(cudaGetLastError(), "launch canonical static P2P kernel");
 }
 
+template <typename Scalar, typename Vector>
 __global__ void compact_p2p_kernel(
     const int target_count,
     const int* row_offsets,
     const int* source_indices,
-    const double* tensors,
+    const Scalar* tensors,
     const std::size_t interaction_count,
-    const Vec3* moments,
+    const Vector* moments,
     const int* self_indices,
-    Vec3* fields)
+    Vector* fields)
 {
   const int target = blockIdx.x * blockDim.x + threadIdx.x;
   if (target >= target_count) {
     return;
   }
 
-  Vec3 field{};
+  Vector field{};
   const int self = self_indices[target];
   for (int entry = row_offsets[target]; entry < row_offsets[target + 1];
        ++entry) {
@@ -1285,13 +1406,13 @@ __global__ void compact_p2p_kernel(
       continue;
     }
     const std::size_t index = static_cast<std::size_t>(entry);
-    const Vec3 moment = moments[source];
-    const double xx = tensors[index];
-    const double xy = tensors[interaction_count + index];
-    const double xz = tensors[2 * interaction_count + index];
-    const double yy = tensors[3 * interaction_count + index];
-    const double yz = tensors[4 * interaction_count + index];
-    const double zz = tensors[5 * interaction_count + index];
+    const Vector moment = moments[source];
+    const Scalar xx = tensors[index];
+    const Scalar xy = tensors[interaction_count + index];
+    const Scalar xz = tensors[2 * interaction_count + index];
+    const Scalar yy = tensors[3 * interaction_count + index];
+    const Scalar yz = tensors[4 * interaction_count + index];
+    const Scalar zz = tensors[5 * interaction_count + index];
     field.x += xx * moment.x + xy * moment.y + xz * moment.z;
     field.y += xy * moment.x + yy * moment.y + yz * moment.z;
     field.z += xz * moment.x + yz * moment.y + zz * moment.z;
@@ -1299,19 +1420,21 @@ __global__ void compact_p2p_kernel(
   fields[target] = field;
 }
 
+template <typename Scalar>
 struct CudaCompactP2PDeviceView {
   int target_count{0};
   std::size_t interaction_count{0};
   int* row_offsets{nullptr};
   int* source_indices{nullptr};
-  double* tensors{nullptr};
+  Scalar* tensors{nullptr};
 };
 
+template <typename Scalar, typename Vector>
 void launch_compact_p2p(
-    const CudaCompactP2PDeviceView& plan,
-    const Vec3* moments,
+    const CudaCompactP2PDeviceView<Scalar>& plan,
+    const Vector* moments,
     const int* self_indices,
-    Vec3* fields,
+    Vector* fields,
     cudaStream_t stream)
 {
   if (plan.target_count == 0) {
@@ -1328,18 +1451,20 @@ void launch_compact_p2p(
 
 constexpr int p2p_source_batch_size = 128;
 
+template <typename Scalar, typename Vector>
 __global__ void leaf_p2p_kernel(
     const int* target_begins,
     const int* target_counts,
     const int* leaf_row_offsets,
     const StaticP2PLeafBlock* leaf_blocks,
-    const double* tensors,
+    const Scalar* tensors,
     const std::size_t interaction_count,
-    const Vec3* moments,
+    const Vector* moments,
     const int* self_indices,
-    Vec3* fields)
+    Vector* fields)
 {
-  extern __shared__ Vec3 shared_moments[];
+  extern __shared__ unsigned char shared_storage[];
+  Vector *shared_moments = reinterpret_cast<Vector *>(shared_storage);
   const int target_leaf = blockIdx.x;
   const int target_begin = target_begins[target_leaf];
   const int target_count = target_counts[target_leaf];
@@ -1352,7 +1477,7 @@ __global__ void leaf_p2p_kernel(
     const bool active = local_target < target_count;
     const int target = target_begin + local_target;
     const int self = active ? self_indices[target] : -1;
-    Vec3 field{};
+    Vector field{};
 
     for (int block_index = leaf_row_offsets[target_leaf];
          block_index < leaf_row_offsets[target_leaf + 1]; ++block_index) {
@@ -1382,13 +1507,13 @@ __global__ void leaf_p2p_kernel(
             const std::size_t index = leaf_block.tensor_offset +
                 static_cast<std::size_t>(local_source) * target_count +
                 local_target;
-            const Vec3 moment = shared_moments[batch_source];
-            const double xx = tensors[index];
-            const double xy = tensors[interaction_count + index];
-            const double xz = tensors[2 * interaction_count + index];
-            const double yy = tensors[3 * interaction_count + index];
-            const double yz = tensors[4 * interaction_count + index];
-            const double zz = tensors[5 * interaction_count + index];
+            const Vector moment = shared_moments[batch_source];
+            const Scalar xx = tensors[index];
+            const Scalar xy = tensors[interaction_count + index];
+            const Scalar xz = tensors[2 * interaction_count + index];
+            const Scalar yy = tensors[3 * interaction_count + index];
+            const Scalar yz = tensors[4 * interaction_count + index];
+            const Scalar zz = tensors[5 * interaction_count + index];
             field.x += xx * moment.x + xy * moment.y + xz * moment.z;
             field.y += xy * moment.x + yy * moment.y + yz * moment.z;
             field.z += xz * moment.x + yz * moment.y + zz * moment.z;
@@ -1403,6 +1528,7 @@ __global__ void leaf_p2p_kernel(
   }
 }
 
+template <typename Scalar>
 struct CudaLeafP2PDeviceView {
   int target_count{0};
   int target_leaf_count{0};
@@ -1412,14 +1538,15 @@ struct CudaLeafP2PDeviceView {
   int* target_counts{nullptr};
   int* leaf_row_offsets{nullptr};
   StaticP2PLeafBlock* leaf_blocks{nullptr};
-  double* tensors{nullptr};
+  Scalar* tensors{nullptr};
 };
 
+template <typename Scalar, typename Vector>
 void launch_leaf_p2p(
-    const CudaLeafP2PDeviceView& plan,
-    const Vec3* moments,
+    const CudaLeafP2PDeviceView<Scalar>& plan,
+    const Vector* moments,
     const int* self_indices,
-    Vec3* fields,
+    Vector* fields,
     cudaStream_t stream)
 {
   if (plan.target_count == 0) {
@@ -1427,7 +1554,7 @@ void launch_leaf_p2p(
   }
   check_cuda(
       cudaMemsetAsync(
-          fields, 0, static_cast<std::size_t>(plan.target_count) * sizeof(Vec3),
+          fields, 0, static_cast<std::size_t>(plan.target_count) * sizeof(Vector),
           stream),
       "clear leaf P2P fields");
   if (plan.target_leaf_count == 0) {
@@ -1435,26 +1562,27 @@ void launch_leaf_p2p(
   }
   leaf_p2p_kernel<<<
       plan.target_leaf_count, plan.threads_per_block,
-      p2p_source_batch_size * sizeof(Vec3), stream>>>(
+      p2p_source_batch_size * sizeof(Vector), stream>>>(
       plan.target_begins, plan.target_counts, plan.leaf_row_offsets,
       plan.leaf_blocks, plan.tensors, plan.interaction_count, moments,
       self_indices, fields);
   check_cuda(cudaGetLastError(), "launch leaf-block static P2P kernel");
 }
 
+template <typename Scalar>
 struct CudaBsrP2PDeviceView {
   int target_count{0};
   int source_count{0};
   int interaction_count{0};
   int* row_offsets{nullptr};
   int* source_indices{nullptr};
-  double* values{nullptr};
+  Scalar* values{nullptr};
   cusparseHandle_t handle{nullptr};
   cusparseMatDescr_t descriptor{nullptr};
 };
 
 void launch_bsr_p2p(
-    const CudaBsrP2PDeviceView& plan,
+    const CudaBsrP2PDeviceView<double>& plan,
     const Vec3* moments,
     Vec3* fields,
     cudaStream_t stream)
@@ -1486,6 +1614,40 @@ void launch_bsr_p2p(
       "launch cuSPARSE BSR(3) P2P");
 }
 
+void launch_bsr_p2p(
+    const CudaBsrP2PDeviceView<float>& plan,
+    const FloatVec3* moments,
+    FloatVec3* fields,
+    cudaStream_t stream)
+{
+  static_assert(sizeof(FloatVec3) == 3 * sizeof(float));
+  if (plan.target_count == 0) {
+    return;
+  }
+  if (plan.interaction_count == 0) {
+    check_cuda(cudaMemsetAsync(
+                   fields, 0,
+                   static_cast<std::size_t>(plan.target_count) *
+                       sizeof(FloatVec3),
+                   stream),
+               "clear empty FP32 cuSPARSE BSR P2P fields");
+    return;
+  }
+  constexpr float alpha = 1.0F;
+  constexpr float beta = 0.0F;
+  check_cusparse(cusparseSetStream(plan.handle, stream),
+                 "set FP32 cuSPARSE P2P stream");
+  check_cusparse(
+      cusparseSbsrmv(
+          plan.handle, CUSPARSE_DIRECTION_ROW,
+          CUSPARSE_OPERATION_NON_TRANSPOSE, plan.target_count,
+          plan.source_count, plan.interaction_count, &alpha, plan.descriptor,
+          plan.values, plan.row_offsets, plan.source_indices, 3,
+          reinterpret_cast<const float *>(moments), &beta,
+          reinterpret_cast<float *>(fields)),
+      "launch FP32 cuSPARSE BSR(3) P2P");
+}
+
 } // namespace
 
 struct CudaP2PPlan::Implementation {
@@ -1498,17 +1660,26 @@ struct CudaP2PPlan::Implementation {
 
   int source_count{0};
   int target_count{0};
+  bool fp32{false};
   Kind kind{Kind::Canonical};
-  CudaP2PDeviceView canonical{};
-  CudaCompactP2PDeviceView compact{};
-  CudaLeafP2PDeviceView leaf{};
-  CudaBsrP2PDeviceView bsr{};
+  CudaP2PDeviceView<StaticDipoleBlock> canonical{};
+  CudaCompactP2PDeviceView<double> compact{};
+  CudaLeafP2PDeviceView<double> leaf{};
+  CudaBsrP2PDeviceView<double> bsr{};
+  CudaP2PDeviceView<FloatStaticDipoleBlock> canonical_float{};
+  CudaCompactP2PDeviceView<float> compact_float{};
+  CudaLeafP2PDeviceView<float> leaf_float{};
+  CudaBsrP2PDeviceView<float> bsr_float{};
   Vec3* moments{nullptr};
   int* self_indices{nullptr};
   Vec3* fields{nullptr};
   Vec3* pinned_moments{nullptr};
   int* pinned_self_indices{nullptr};
   Vec3* pinned_fields{nullptr};
+  FloatVec3 *moments_float{nullptr};
+  FloatVec3 *fields_float{nullptr};
+  FloatVec3 *pinned_moments_float{nullptr};
+  FloatVec3 *pinned_fields_float{nullptr};
   cudaStream_t stream{};
   cudaEvent_t start{};
   cudaEvent_t h2d{};
@@ -1526,9 +1697,17 @@ CudaP2PPlan::CudaP2PPlan(
     const int target_count,
     const std::span<const int> fixed_self_indices,
     const bool device_self_indices)
+    : CudaP2PPlan(source_count, target_count, fixed_self_indices,
+                  device_self_indices, StaticPrecision::Float64) {}
+
+CudaP2PPlan::CudaP2PPlan(
+    const int source_count, const int target_count,
+    const std::span<const int> fixed_self_indices,
+    const bool device_self_indices, const StaticPrecision precision)
     : implementation_(new Implementation{})
 {
   auto &plan = *implementation_;
+  plan.fp32 = precision == StaticPrecision::Float32;
   plan.source_count = source_count;
   plan.target_count = target_count;
   if (!fixed_self_indices.empty() &&
@@ -1544,33 +1723,64 @@ CudaP2PPlan::CudaP2PPlan(
   check_cuda(cudaEventCreate(&plan.h2d), "create static P2P event");
   check_cuda(cudaEventCreate(&plan.kernel), "create static P2P event");
   check_cuda(cudaEventCreate(&plan.d2h), "create static P2P event");
-  check_cuda(cudaMalloc(&plan.moments,
-                        std::max(source_count * sizeof(Vec3),
-                                 sizeof(Vec3))),
-             "allocate P2P moments");
+  if (plan.fp32) {
+    check_cuda(cudaMalloc(&plan.moments_float,
+                          std::max(source_count * sizeof(FloatVec3),
+                                   sizeof(FloatVec3))),
+               "allocate FP32 P2P moments");
+  } else {
+    check_cuda(cudaMalloc(&plan.moments,
+                          std::max(source_count * sizeof(Vec3), sizeof(Vec3))),
+               "allocate P2P moments");
+  }
   if (device_self_indices) {
     check_cuda(cudaMalloc(&plan.self_indices,
                           std::max(target_count * sizeof(int), sizeof(int))),
                "allocate P2P identities");
   }
-  check_cuda(cudaMalloc(&plan.fields,
-                        std::max(target_count * sizeof(Vec3), sizeof(Vec3))),
-             "allocate P2P fields");
-  check_cuda(cudaMallocHost(&plan.pinned_moments,
-                            std::max(source_count * sizeof(Vec3), sizeof(Vec3))),
-             "allocate pinned P2P moments");
+  if (plan.fp32) {
+    check_cuda(cudaMalloc(&plan.fields_float,
+                          std::max(target_count * sizeof(FloatVec3),
+                                   sizeof(FloatVec3))),
+               "allocate FP32 P2P fields");
+    check_cuda(cudaMallocHost(
+                   &plan.pinned_moments_float,
+                   std::max(source_count * sizeof(FloatVec3),
+                            sizeof(FloatVec3))),
+               "allocate pinned FP32 P2P moments");
+  } else {
+    check_cuda(cudaMalloc(&plan.fields,
+                          std::max(target_count * sizeof(Vec3), sizeof(Vec3))),
+               "allocate P2P fields");
+    check_cuda(cudaMallocHost(
+                   &plan.pinned_moments,
+                   std::max(source_count * sizeof(Vec3), sizeof(Vec3))),
+               "allocate pinned P2P moments");
+  }
   if (device_self_indices && plan.dynamic_self_identities) {
     check_cuda(cudaMallocHost(
                    &plan.pinned_self_indices,
                    std::max(target_count * sizeof(int), sizeof(int))),
                "allocate pinned P2P identities");
   }
-  check_cuda(cudaMallocHost(&plan.pinned_fields,
-                            std::max(target_count * sizeof(Vec3), sizeof(Vec3))),
-             "allocate pinned P2P fields");
+  if (plan.fp32) {
+    check_cuda(cudaMallocHost(
+                   &plan.pinned_fields_float,
+                   std::max(target_count * sizeof(FloatVec3),
+                            sizeof(FloatVec3))),
+               "allocate pinned FP32 P2P fields");
+  } else {
+    check_cuda(cudaMallocHost(
+                   &plan.pinned_fields,
+                   std::max(target_count * sizeof(Vec3), sizeof(Vec3))),
+               "allocate pinned P2P fields");
+  }
 
+  const std::size_t vector_bytes =
+      plan.fp32 ? sizeof(FloatVec3) : sizeof(Vec3);
+  plan.statistics.scalar_bytes = plan.fp32 ? sizeof(float) : sizeof(double);
   plan.statistics.persistent_device_bytes =
-      static_cast<std::size_t>(source_count + target_count) * sizeof(Vec3) +
+      static_cast<std::size_t>(source_count + target_count) * vector_bytes +
       (device_self_indices
            ? static_cast<std::size_t>(target_count) * sizeof(int)
            : 0);
@@ -1668,6 +1878,99 @@ CudaP2PPlan::CudaP2PPlan(
                      compact.tensors[component].size() * sizeof(double),
                      cudaMemcpyHostToDevice),
                  "upload compact P2P tensor component");
+    }
+  }
+  plan.statistics.setup_h2d_bytes += row_bytes + index_bytes + tensor_bytes;
+  plan.statistics.persistent_device_bytes +=
+      row_bytes + index_bytes + tensor_bytes;
+  plan.statistics.p2p_interaction_count = compact.source_indices.size();
+  plan.statistics.p2p_tensor_bytes = tensor_bytes;
+  plan.statistics.p2p_index_bytes = index_bytes;
+  plan.statistics.p2p_row_metadata_bytes = row_bytes;
+  plan.statistics.p2p_threads_per_block = static_operator_threads;
+}
+
+CudaP2PPlan::CudaP2PPlan(
+    const FloatStaticP2POperator &operator_map,
+    const std::span<const int> fixed_self_indices)
+    : CudaP2PPlan(operator_map.source_count, operator_map.target_count,
+                  fixed_self_indices, true, StaticPrecision::Float32) {
+  auto &plan = *implementation_;
+  plan.kind = Implementation::Kind::Canonical;
+  plan.canonical_float.target_count = plan.target_count;
+  const std::size_t row_bytes = operator_map.row_offsets.size() * sizeof(int);
+  const std::size_t block_bytes =
+      operator_map.blocks.size() * sizeof(FloatStaticDipoleBlock);
+  check_cuda(cudaMalloc(&plan.canonical_float.row_offsets,
+                        std::max(row_bytes, sizeof(int))),
+             "allocate FP32 canonical P2P rows");
+  check_cuda(cudaMalloc(&plan.canonical_float.blocks,
+                        std::max(block_bytes, sizeof(FloatStaticDipoleBlock))),
+             "allocate FP32 canonical P2P blocks");
+  if (row_bytes != 0) {
+    check_cuda(cudaMemcpy(plan.canonical_float.row_offsets,
+                          operator_map.row_offsets.data(), row_bytes,
+                          cudaMemcpyHostToDevice),
+               "upload FP32 canonical P2P rows");
+  }
+  if (block_bytes != 0) {
+    check_cuda(cudaMemcpy(plan.canonical_float.blocks,
+                          operator_map.blocks.data(), block_bytes,
+                          cudaMemcpyHostToDevice),
+               "upload FP32 canonical P2P blocks");
+  }
+  plan.statistics.setup_h2d_bytes += row_bytes + block_bytes;
+  plan.statistics.persistent_device_bytes += row_bytes + block_bytes;
+  plan.statistics.p2p_interaction_count = operator_map.blocks.size();
+  plan.statistics.p2p_tensor_bytes =
+      operator_map.blocks.size() * 6 * sizeof(float);
+  plan.statistics.p2p_index_bytes =
+      operator_map.blocks.size() * 2 * sizeof(int);
+  plan.statistics.p2p_row_metadata_bytes = row_bytes;
+  plan.statistics.p2p_threads_per_block = static_operator_threads;
+}
+
+CudaP2PPlan::CudaP2PPlan(
+    const FloatStaticP2PCompactPlan &compact,
+    const std::span<const int> fixed_self_indices)
+    : CudaP2PPlan(compact.source_count, compact.target_count,
+                  fixed_self_indices, true, StaticPrecision::Float32) {
+  auto &plan = *implementation_;
+  plan.kind = Implementation::Kind::Compact;
+  plan.compact_float.target_count = plan.target_count;
+  plan.compact_float.interaction_count = compact.source_indices.size();
+  const std::size_t row_bytes = compact.row_offsets.size() * sizeof(int);
+  const std::size_t index_bytes = compact.source_indices.size() * sizeof(int);
+  const std::size_t tensor_bytes =
+      compact.source_indices.size() * 6 * sizeof(float);
+  check_cuda(cudaMalloc(&plan.compact_float.row_offsets,
+                        std::max(row_bytes, sizeof(int))),
+             "allocate FP32 compact P2P rows");
+  check_cuda(cudaMalloc(&plan.compact_float.source_indices,
+                        std::max(index_bytes, sizeof(int))),
+             "allocate FP32 compact P2P sources");
+  check_cuda(cudaMalloc(&plan.compact_float.tensors,
+                        std::max(tensor_bytes, sizeof(float))),
+             "allocate FP32 compact P2P tensors");
+  if (row_bytes != 0) {
+    check_cuda(cudaMemcpy(plan.compact_float.row_offsets,
+                          compact.row_offsets.data(), row_bytes,
+                          cudaMemcpyHostToDevice),
+               "upload FP32 compact P2P rows");
+  }
+  if (index_bytes != 0) {
+    check_cuda(cudaMemcpy(plan.compact_float.source_indices,
+                          compact.source_indices.data(), index_bytes,
+                          cudaMemcpyHostToDevice),
+               "upload FP32 compact P2P sources");
+    for (std::size_t component = 0; component < 6; ++component) {
+      check_cuda(cudaMemcpy(
+                     plan.compact_float.tensors +
+                         component * compact.source_indices.size(),
+                     compact.tensors[component].data(),
+                     compact.tensors[component].size() * sizeof(float),
+                     cudaMemcpyHostToDevice),
+                 "upload FP32 compact P2P tensor component");
     }
   }
   plan.statistics.setup_h2d_bytes += row_bytes + index_bytes + tensor_bytes;
@@ -1795,6 +2098,117 @@ CudaP2PPlan::CudaP2PPlan(
   plan.statistics.p2p_threads_per_block = plan.leaf.threads_per_block;
 }
 
+CudaP2PPlan::CudaP2PPlan(
+    const FloatStaticP2PLeafPlan &leaf,
+    const std::span<const int> fixed_self_indices)
+    : CudaP2PPlan(leaf.source_count, leaf.target_count, fixed_self_indices,
+                  true, StaticPrecision::Float32) {
+  auto &plan = *implementation_;
+  plan.kind = Implementation::Kind::Leaf;
+  plan.leaf_float.target_count = plan.target_count;
+  plan.leaf_float.target_leaf_count =
+      static_cast<int>(leaf.target_begins.size());
+  plan.leaf_float.interaction_count = leaf.tensors[0].size();
+  int maximum_target_count = 1;
+  for (const int target_count : leaf.target_counts) {
+    maximum_target_count = std::max(maximum_target_count, target_count);
+  }
+  plan.leaf_float.threads_per_block = 32;
+  while (plan.leaf_float.threads_per_block < maximum_target_count &&
+         plan.leaf_float.threads_per_block < 256) {
+    plan.leaf_float.threads_per_block *= 2;
+  }
+
+  const std::size_t target_metadata_bytes =
+      (leaf.target_begins.size() + leaf.target_counts.size()) * sizeof(int);
+  const std::size_t row_bytes = leaf.leaf_row_offsets.size() * sizeof(int);
+  const std::size_t block_bytes =
+      leaf.blocks.size() * sizeof(StaticP2PLeafBlock);
+  const std::size_t tensor_bytes = leaf.tensors[0].size() * 6 * sizeof(float);
+  check_cuda(cudaMalloc(&plan.leaf_float.target_begins,
+                        std::max(leaf.target_begins.size() * sizeof(int),
+                                 sizeof(int))),
+             "allocate FP32 leaf P2P target begins");
+  check_cuda(cudaMalloc(&plan.leaf_float.target_counts,
+                        std::max(leaf.target_counts.size() * sizeof(int),
+                                 sizeof(int))),
+             "allocate FP32 leaf P2P target counts");
+  check_cuda(cudaMalloc(&plan.leaf_float.leaf_row_offsets,
+                        std::max(row_bytes, sizeof(int))),
+             "allocate FP32 leaf P2P rows");
+  check_cuda(cudaMalloc(&plan.leaf_float.leaf_blocks,
+                        std::max(block_bytes, sizeof(StaticP2PLeafBlock))),
+             "allocate FP32 leaf P2P blocks");
+  check_cuda(cudaMalloc(&plan.leaf_float.tensors,
+                        std::max(tensor_bytes, sizeof(float))),
+             "allocate FP32 leaf P2P tensors");
+  const auto upload = [](void *destination, const void *source,
+                         const std::size_t bytes, const char *operation) {
+    if (bytes != 0) {
+      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
+                 operation);
+    }
+  };
+  upload(plan.leaf_float.target_begins, leaf.target_begins.data(),
+         leaf.target_begins.size() * sizeof(int),
+         "upload FP32 leaf P2P target begins");
+  upload(plan.leaf_float.target_counts, leaf.target_counts.data(),
+         leaf.target_counts.size() * sizeof(int),
+         "upload FP32 leaf P2P target counts");
+  upload(plan.leaf_float.leaf_row_offsets, leaf.leaf_row_offsets.data(),
+         row_bytes, "upload FP32 leaf P2P rows");
+  upload(plan.leaf_float.leaf_blocks, leaf.blocks.data(), block_bytes,
+         "upload FP32 leaf P2P blocks");
+
+  std::array<std::vector<float>, 6> transposed;
+  for (auto &component : transposed) {
+    component.resize(leaf.tensors[0].size());
+  }
+  for (std::size_t target_leaf = 0;
+       target_leaf < leaf.target_begins.size(); ++target_leaf) {
+    const int target_count = leaf.target_counts[target_leaf];
+    for (int block_index = leaf.leaf_row_offsets[target_leaf];
+         block_index < leaf.leaf_row_offsets[target_leaf + 1]; ++block_index) {
+      const StaticP2PLeafBlock &block =
+          leaf.blocks[static_cast<std::size_t>(block_index)];
+      for (int local_target = 0; local_target < target_count; ++local_target) {
+        for (int local_source = 0; local_source < block.source_count;
+             ++local_source) {
+          const std::size_t source_index = block.tensor_offset +
+              static_cast<std::size_t>(local_target) * block.source_count +
+              local_source;
+          const std::size_t destination_index = block.tensor_offset +
+              static_cast<std::size_t>(local_source) * target_count +
+              local_target;
+          for (std::size_t component = 0; component < 6; ++component) {
+            transposed[component][destination_index] =
+                leaf.tensors[component][source_index];
+          }
+        }
+      }
+    }
+  }
+  for (std::size_t component = 0; component < 6; ++component) {
+    upload(plan.leaf_float.tensors + component * leaf.tensors[0].size(),
+           transposed[component].data(),
+           transposed[component].size() * sizeof(float),
+           "upload transposed FP32 leaf P2P tensor component");
+  }
+  plan.statistics.setup_h2d_bytes +=
+      target_metadata_bytes + row_bytes + block_bytes + tensor_bytes;
+  plan.statistics.persistent_device_bytes +=
+      target_metadata_bytes + row_bytes + block_bytes + tensor_bytes;
+  plan.statistics.p2p_interaction_count = leaf.tensors[0].size();
+  plan.statistics.p2p_tensor_bytes = tensor_bytes;
+  plan.statistics.p2p_row_metadata_bytes = row_bytes;
+  plan.statistics.p2p_leaf_metadata_bytes =
+      target_metadata_bytes + block_bytes;
+  plan.statistics.p2p_scratch_bytes =
+      p2p_source_batch_size * sizeof(FloatVec3);
+  plan.statistics.p2p_threads_per_block =
+      plan.leaf_float.threads_per_block;
+}
+
 CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan& bsr)
     : CudaP2PPlan(
           bsr.source_count, bsr.target_count, bsr.target_source_indices, false)
@@ -1852,6 +2266,62 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan& bsr)
   plan.statistics.p2p_threads_per_block = 0;
 }
 
+CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PBsrPlan &bsr)
+    : CudaP2PPlan(bsr.source_count, bsr.target_count,
+                  bsr.target_source_indices, false,
+                  StaticPrecision::Float32) {
+  auto &plan = *implementation_;
+  plan.kind = Implementation::Kind::Bsr;
+  plan.dynamic_self_identities = false;
+  plan.bsr_float.target_count = bsr.target_count;
+  plan.bsr_float.source_count = bsr.source_count;
+  plan.bsr_float.interaction_count =
+      static_cast<int>(bsr.source_indices.size());
+  const std::size_t row_bytes = bsr.row_offsets.size() * sizeof(int);
+  const std::size_t index_bytes = bsr.source_indices.size() * sizeof(int);
+  const std::size_t tensor_bytes = bsr.values.size() * sizeof(float);
+  check_cuda(cudaMalloc(&plan.bsr_float.row_offsets,
+                        std::max(row_bytes, sizeof(int))),
+             "allocate FP32 cuSPARSE BSR rows");
+  check_cuda(cudaMalloc(&plan.bsr_float.source_indices,
+                        std::max(index_bytes, sizeof(int))),
+             "allocate FP32 cuSPARSE BSR sources");
+  check_cuda(cudaMalloc(&plan.bsr_float.values,
+                        std::max(tensor_bytes, sizeof(float))),
+             "allocate FP32 cuSPARSE BSR values");
+  const auto upload = [](void *destination, const void *source,
+                         const std::size_t bytes, const char *operation) {
+    if (bytes != 0) {
+      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
+                 operation);
+    }
+  };
+  upload(plan.bsr_float.row_offsets, bsr.row_offsets.data(), row_bytes,
+         "upload FP32 cuSPARSE BSR rows");
+  upload(plan.bsr_float.source_indices, bsr.source_indices.data(), index_bytes,
+         "upload FP32 cuSPARSE BSR sources");
+  upload(plan.bsr_float.values, bsr.values.data(), tensor_bytes,
+         "upload FP32 cuSPARSE BSR values");
+  check_cusparse(cusparseCreate(&plan.bsr_float.handle),
+                 "create FP32 cuSPARSE P2P handle");
+  check_cusparse(cusparseCreateMatDescr(&plan.bsr_float.descriptor),
+                 "create FP32 cuSPARSE P2P descriptor");
+  check_cusparse(cusparseSetMatType(plan.bsr_float.descriptor,
+                                    CUSPARSE_MATRIX_TYPE_GENERAL),
+                 "set FP32 cuSPARSE P2P matrix type");
+  check_cusparse(cusparseSetMatIndexBase(plan.bsr_float.descriptor,
+                                         CUSPARSE_INDEX_BASE_ZERO),
+                 "set FP32 cuSPARSE P2P index base");
+  plan.statistics.setup_h2d_bytes += row_bytes + index_bytes + tensor_bytes;
+  plan.statistics.persistent_device_bytes +=
+      row_bytes + index_bytes + tensor_bytes;
+  plan.statistics.p2p_interaction_count = bsr.source_indices.size();
+  plan.statistics.p2p_tensor_bytes = tensor_bytes;
+  plan.statistics.p2p_index_bytes = index_bytes;
+  plan.statistics.p2p_row_metadata_bytes = row_bytes;
+  plan.statistics.p2p_threads_per_block = 0;
+}
+
 CudaP2PPlan::~CudaP2PPlan() {
   if (implementation_ == nullptr) {
     return;
@@ -1877,12 +2347,35 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaFree(plan.bsr.row_offsets);
   cudaFree(plan.bsr.source_indices);
   cudaFree(plan.bsr.values);
+  cudaFree(plan.canonical_float.row_offsets);
+  cudaFree(plan.canonical_float.blocks);
+  cudaFree(plan.compact_float.row_offsets);
+  cudaFree(plan.compact_float.source_indices);
+  cudaFree(plan.compact_float.tensors);
+  cudaFree(plan.leaf_float.target_begins);
+  cudaFree(plan.leaf_float.target_counts);
+  cudaFree(plan.leaf_float.leaf_row_offsets);
+  cudaFree(plan.leaf_float.leaf_blocks);
+  cudaFree(plan.leaf_float.tensors);
+  if (plan.bsr_float.descriptor != nullptr) {
+    cusparseDestroyMatDescr(plan.bsr_float.descriptor);
+  }
+  if (plan.bsr_float.handle != nullptr) {
+    cusparseDestroy(plan.bsr_float.handle);
+  }
+  cudaFree(plan.bsr_float.row_offsets);
+  cudaFree(plan.bsr_float.source_indices);
+  cudaFree(plan.bsr_float.values);
   cudaFree(plan.moments);
   cudaFree(plan.self_indices);
   cudaFree(plan.fields);
   cudaFreeHost(plan.pinned_moments);
   cudaFreeHost(plan.pinned_self_indices);
   cudaFreeHost(plan.pinned_fields);
+  cudaFree(plan.moments_float);
+  cudaFree(plan.fields_float);
+  cudaFreeHost(plan.pinned_moments_float);
+  cudaFreeHost(plan.pinned_fields_float);
   cudaEventDestroy(plan.start);
   cudaEventDestroy(plan.h2d);
   cudaEventDestroy(plan.kernel);
@@ -1993,6 +2486,113 @@ void CudaP2PPlan::finish_evaluate(const std::span<Vec3> fields) {
   plan.pending = false;
 }
 
+void CudaP2PPlan::begin_evaluate(
+    const std::span<const FloatVec3> moments,
+    const std::span<const int> target_source_indices) {
+  auto &plan = *implementation_;
+  if (!plan.fp32 ||
+      moments.size() != static_cast<std::size_t>(plan.source_count) ||
+      target_source_indices.size() !=
+          static_cast<std::size_t>(plan.target_count)) {
+    throw std::invalid_argument("CUDA FP32 P2P dimensions are inconsistent");
+  }
+  if (!plan.dynamic_self_identities &&
+      !std::equal(target_source_indices.begin(), target_source_indices.end(),
+                  plan.fixed_self_indices.begin(),
+                  plan.fixed_self_indices.end())) {
+    throw std::invalid_argument(
+        "fixed CUDA FP32 P2P identity map changed; rebuild the plan");
+  }
+  if (plan.pending) {
+    throw std::logic_error("CUDA FP32 P2P evaluation is already pending");
+  }
+  std::copy(moments.begin(), moments.end(), plan.pinned_moments_float);
+  if (plan.dynamic_self_identities) {
+    std::copy(target_source_indices.begin(), target_source_indices.end(),
+              plan.pinned_self_indices);
+  }
+  plan.pending = true;
+  try {
+    check_cuda(cudaEventRecord(plan.start, plan.stream), "record FP32 P2P start");
+    check_cuda(cudaMemcpyAsync(plan.moments_float, plan.pinned_moments_float,
+                               moments.size_bytes(), cudaMemcpyHostToDevice,
+                               plan.stream),
+               "upload FP32 P2P moments");
+    if (plan.dynamic_self_identities) {
+      check_cuda(cudaMemcpyAsync(
+                     plan.self_indices, plan.pinned_self_indices,
+                     target_source_indices.size_bytes(),
+                     cudaMemcpyHostToDevice, plan.stream),
+                 "upload FP32 P2P identities");
+    }
+    check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record FP32 P2P upload");
+    switch (plan.kind) {
+    case Implementation::Kind::Canonical:
+      launch_static_p2p(plan.canonical_float, plan.moments_float,
+                        plan.self_indices, plan.fields_float, plan.stream);
+      break;
+    case Implementation::Kind::Compact:
+      launch_compact_p2p(plan.compact_float, plan.moments_float,
+                         plan.self_indices, plan.fields_float, plan.stream);
+      break;
+    case Implementation::Kind::Leaf:
+      launch_leaf_p2p(plan.leaf_float, plan.moments_float, plan.self_indices,
+                      plan.fields_float, plan.stream);
+      break;
+    case Implementation::Kind::Bsr:
+      launch_bsr_p2p(plan.bsr_float, plan.moments_float, plan.fields_float,
+                     plan.stream);
+      break;
+    }
+    check_cuda(cudaEventRecord(plan.kernel, plan.stream),
+               "record FP32 P2P kernel");
+    check_cuda(cudaMemcpyAsync(
+                   plan.pinned_fields_float, plan.fields_float,
+                   static_cast<std::size_t>(plan.target_count) *
+                       sizeof(FloatVec3),
+                   cudaMemcpyDeviceToHost, plan.stream),
+               "download FP32 P2P fields");
+    check_cuda(cudaEventRecord(plan.d2h, plan.stream),
+               "record FP32 P2P download");
+  } catch (...) {
+    cancel_evaluate();
+    throw;
+  }
+  plan.statistics.evaluation_h2d_bytes = moments.size_bytes() +
+      (plan.dynamic_self_identities ? target_source_indices.size_bytes() : 0);
+  plan.statistics.evaluation_d2h_bytes =
+      static_cast<std::size_t>(plan.target_count) * sizeof(FloatVec3);
+  ++plan.statistics.evaluation_h2d_calls;
+  ++plan.statistics.evaluation_d2h_calls;
+}
+
+void CudaP2PPlan::finish_evaluate(const std::span<FloatVec3> fields) {
+  auto &plan = *implementation_;
+  if (!plan.fp32 || !plan.pending) {
+    throw std::logic_error("CUDA FP32 P2P has no pending evaluation");
+  }
+  if (fields.size() != static_cast<std::size_t>(plan.target_count)) {
+    throw std::invalid_argument("CUDA FP32 P2P output size is inconsistent");
+  }
+  check_cuda(cudaEventSynchronize(plan.d2h), "synchronise FP32 P2P");
+  std::copy(plan.pinned_fields_float,
+            plan.pinned_fields_float + fields.size(), fields.begin());
+  const auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
+    float milliseconds = 0.0F;
+    check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
+               "time FP32 P2P phase");
+    return static_cast<double>(milliseconds) * 1.0e-3;
+  };
+  plan.timings = {};
+  plan.timings.h2d_seconds = elapsed(plan.start, plan.h2d);
+  plan.timings.kernel_seconds = elapsed(plan.h2d, plan.kernel);
+  plan.timings.p2p_seconds = plan.timings.kernel_seconds;
+  plan.timings.d2h_seconds = elapsed(plan.kernel, plan.d2h);
+  plan.timings.total_seconds = plan.timings.h2d_seconds +
+      plan.timings.kernel_seconds + plan.timings.d2h_seconds;
+  plan.pending = false;
+}
+
 void CudaP2PPlan::cancel_evaluate() noexcept {
   if (implementation_ == nullptr || !implementation_->pending) {
     return;
@@ -2004,6 +2604,19 @@ void CudaP2PPlan::cancel_evaluate() noexcept {
 void CudaP2PPlan::evaluate(const std::span<const Vec3> moments,
                            const std::span<const int> target_source_indices,
                            const std::span<Vec3> fields) {
+  begin_evaluate(moments, target_source_indices);
+  try {
+    finish_evaluate(fields);
+  } catch (...) {
+    cancel_evaluate();
+    throw;
+  }
+}
+
+void CudaP2PPlan::evaluate(
+    const std::span<const FloatVec3> moments,
+    const std::span<const int> target_source_indices,
+    const std::span<FloatVec3> fields) {
   begin_evaluate(moments, target_source_indices);
   try {
     finish_evaluate(fields);
@@ -2026,6 +2639,7 @@ const CudaEvaluationTimings &CudaP2PPlan::timings() const noexcept {
 //------------------------------------------------------------------------------
 
 struct CudaFullPlan::Implementation {
+    bool fp32{false};
     int coefficient_count{0};
     int node_count{0};
     int source_count{0};
@@ -2033,15 +2647,21 @@ struct CudaFullPlan::Implementation {
     int* source_permutation{nullptr};
     int* target_permutation{nullptr};
     int* self_indices{nullptr};
-  CudaP2PDeviceView p2p{};
-  CudaBsrP2PDeviceView p2p_bsr{};
+    CudaP2PDeviceView<StaticDipoleBlock> p2p{};
+    CudaBsrP2PDeviceView<double> p2p_bsr{};
+    CudaP2PDeviceView<FloatStaticDipoleBlock> p2p_float{};
+    CudaBsrP2PDeviceView<float> p2p_bsr_float{};
   bool use_p2p_bsr{false};
   StaticOperatorEntry *entries{nullptr};
   StaticOperatorEntry *m2m_matrices{nullptr};
   StaticOperatorEntry *l2l_matrices{nullptr};
   CudaTranslationInteraction *m2m_interactions{nullptr};
   CudaTranslationInteraction *l2l_interactions{nullptr};
-  CudaM2LExecutionPlan *m2l{nullptr};
+  CudaM2LExecutionPlan<double, StaticM2LPlan> *m2l{nullptr};
+  FloatStaticOperatorEntry *entries_float{nullptr};
+  FloatStaticOperatorEntry *m2m_matrices_float{nullptr};
+  FloatStaticOperatorEntry *l2l_matrices_float{nullptr};
+  CudaM2LExecutionPlan<float, FloatStaticM2LPlan> *m2l_float{nullptr};
   std::vector<std::size_t> offsets{};
   std::vector<std::size_t> counts{};
   Vec3 *moments{nullptr};
@@ -2053,6 +2673,15 @@ struct CudaFullPlan::Implementation {
     Vec3* final_fields{nullptr};
     Vec3* pinned_moments{nullptr};
     Vec3* pinned_fields{nullptr};
+    FloatVec3 *moments_float{nullptr};
+    FloatVec3 *sorted_moments_float{nullptr};
+    float *multipoles_float{nullptr};
+    float *locals_float{nullptr};
+    FloatVec3 *far_fields_float{nullptr};
+    FloatVec3 *near_fields_float{nullptr};
+    FloatVec3 *final_fields_float{nullptr};
+    FloatVec3 *pinned_moments_float{nullptr};
+    FloatVec3 *pinned_fields_float{nullptr};
     cudaStream_t far_field_stream{};
     cudaStream_t near_field_stream{};
     cudaEvent_t evaluation_start{};
@@ -2246,7 +2875,8 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
              data.fixed_self_indices.size() * sizeof(int));
     }
   }
-  plan.m2l = new CudaM2LExecutionPlan(data.m2l, plan.far_field_stream);
+  plan.m2l = new CudaM2LExecutionPlan<double, StaticM2LPlan>(
+      data.m2l, plan.far_field_stream);
   check_cuda(cudaStreamSynchronize(plan.far_field_stream),
              "finish full FMM setup upload");
   plan.statistics.m2m_unique_matrix_count = data.m2m.matrix_count;
@@ -2304,6 +2934,226 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   plan.statistics.geometry_upload_count = 1;
 }
 
+CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
+    : implementation_(new Implementation{}) {
+  auto &plan = *implementation_;
+  plan.fp32 = true;
+  plan.coefficient_count = data.coefficient_count;
+  plan.node_count = data.node_count;
+  plan.source_count = data.source_count;
+  plan.target_count = data.target_count;
+  plan.use_p2p_bsr = data.use_p2p_bsr;
+  plan.p2p_float.target_count = plan.target_count;
+  plan.p2p_bsr_float.target_count = plan.target_count;
+  plan.p2p_bsr_float.source_count = plan.source_count;
+  plan.p2p_bsr_float.interaction_count =
+      static_cast<int>(data.p2p_bsr.source_indices.size());
+  plan.p2p_block_count = data.use_p2p_bsr
+      ? data.p2p_bsr.source_indices.size()
+      : data.p2p.blocks.size();
+
+  std::vector<FloatStaticOperatorEntry> entries;
+  const auto append_stage = [&](const auto &stage_entries) {
+    plan.offsets.push_back(entries.size());
+    plan.counts.push_back(stage_entries.size());
+    entries.insert(entries.end(), stage_entries.begin(), stage_entries.end());
+    return static_cast<int>(plan.offsets.size() - 1);
+  };
+  plan.p2m_stage = append_stage(data.p2m);
+  plan.l2p_stage = append_stage(data.l2p);
+  plan.leaf_level = data.m2l.level_count - 1;
+  plan.m2m_entries_per_matrix = data.m2m.entries_per_matrix;
+  plan.l2l_entries_per_matrix = data.l2l.entries_per_matrix;
+  plan.m2m_interaction_count = data.m2m.interactions.size();
+  plan.l2l_interaction_count = data.l2l.interactions.size();
+
+  check_cuda(cudaStreamCreateWithFlags(&plan.far_field_stream,
+                                       cudaStreamNonBlocking),
+             "create FP32 full FMM far-field stream");
+  check_cuda(cudaStreamCreateWithFlags(&plan.near_field_stream,
+                                       cudaStreamNonBlocking),
+             "create FP32 full FMM near-field stream");
+  const std::array<cudaEvent_t *, 13> events{
+      &plan.evaluation_start, &plan.moments_ready, &plan.p2m_complete,
+      &plan.m2m_complete, &plan.m2l_scale_complete, &plan.m2l_complete,
+      &plan.l2l_complete, &plan.l2p_complete, &plan.p2p_start,
+      &plan.p2p_complete, &plan.combination_start,
+      &plan.combination_complete, &plan.d2h_complete};
+  for (cudaEvent_t *event : events) {
+    check_cuda(cudaEventCreate(event), "create FP32 full FMM event");
+  }
+  const auto allocate = [](auto **pointer, const std::size_t bytes) {
+    check_cuda(cudaMalloc(reinterpret_cast<void **>(pointer),
+                          std::max(bytes, std::size_t{1})),
+               "allocate FP32 full FMM buffer");
+  };
+  const std::size_t source_bytes =
+      static_cast<std::size_t>(plan.source_count) * sizeof(FloatVec3);
+  const std::size_t target_bytes =
+      static_cast<std::size_t>(plan.target_count) * sizeof(FloatVec3);
+  const std::size_t coefficient_bytes =
+      static_cast<std::size_t>(plan.node_count) * plan.coefficient_count *
+      sizeof(float);
+  allocate(&plan.source_permutation,
+           data.source_permutation.size() * sizeof(int));
+  allocate(&plan.target_permutation,
+           data.target_permutation.size() * sizeof(int));
+  if (!plan.use_p2p_bsr) {
+    allocate(&plan.self_indices,
+             static_cast<std::size_t>(plan.target_count) * sizeof(int));
+    allocate(&plan.p2p_float.row_offsets,
+             data.p2p.row_offsets.size() * sizeof(int));
+    allocate(&plan.p2p_float.blocks,
+             data.p2p.blocks.size() * sizeof(FloatStaticDipoleBlock));
+  } else {
+    allocate(&plan.p2p_bsr_float.row_offsets,
+             data.p2p_bsr.row_offsets.size() * sizeof(int));
+    allocate(&plan.p2p_bsr_float.source_indices,
+             data.p2p_bsr.source_indices.size() * sizeof(int));
+    allocate(&plan.p2p_bsr_float.values,
+             data.p2p_bsr.values.size() * sizeof(float));
+    check_cusparse(cusparseCreate(&plan.p2p_bsr_float.handle),
+                   "create FP32 full FMM cuSPARSE handle");
+    check_cusparse(cusparseCreateMatDescr(&plan.p2p_bsr_float.descriptor),
+                   "create FP32 full FMM cuSPARSE descriptor");
+    check_cusparse(cusparseSetMatType(plan.p2p_bsr_float.descriptor,
+                                      CUSPARSE_MATRIX_TYPE_GENERAL),
+                   "set FP32 full FMM cuSPARSE matrix type");
+    check_cusparse(cusparseSetMatIndexBase(plan.p2p_bsr_float.descriptor,
+                                           CUSPARSE_INDEX_BASE_ZERO),
+                   "set FP32 full FMM cuSPARSE index base");
+  }
+  allocate(&plan.entries_float,
+           entries.size() * sizeof(FloatStaticOperatorEntry));
+  allocate(&plan.m2m_matrices_float,
+           data.m2m.matrices.size() * sizeof(FloatStaticOperatorEntry));
+  allocate(&plan.l2l_matrices_float,
+           data.l2l.matrices.size() * sizeof(FloatStaticOperatorEntry));
+  allocate(&plan.m2m_interactions,
+           data.m2m.interactions.size() * sizeof(CudaTranslationInteraction));
+  allocate(&plan.l2l_interactions,
+           data.l2l.interactions.size() * sizeof(CudaTranslationInteraction));
+  allocate(&plan.moments_float, source_bytes);
+  allocate(&plan.sorted_moments_float, source_bytes);
+  allocate(&plan.multipoles_float, coefficient_bytes);
+  allocate(&plan.locals_float, coefficient_bytes);
+  allocate(&plan.far_fields_float, target_bytes);
+  allocate(&plan.near_fields_float, target_bytes);
+  allocate(&plan.final_fields_float, target_bytes);
+  check_cuda(cudaMallocHost(&plan.pinned_moments_float,
+                            std::max(source_bytes, std::size_t{1})),
+             "allocate pinned FP32 full FMM moments");
+  check_cuda(cudaMallocHost(&plan.pinned_fields_float,
+                            std::max(target_bytes, std::size_t{1})),
+             "allocate pinned FP32 full FMM fields");
+
+  const auto upload = [&](void *destination, const void *source,
+                          const std::size_t bytes) {
+    if (bytes != 0) {
+      check_cuda(cudaMemcpyAsync(destination, source, bytes,
+                                 cudaMemcpyHostToDevice,
+                                 plan.far_field_stream),
+                 "upload FP32 full FMM static data");
+      plan.statistics.setup_h2d_bytes += bytes;
+    }
+  };
+  upload(plan.source_permutation, data.source_permutation.data(),
+         data.source_permutation.size() * sizeof(int));
+  upload(plan.target_permutation, data.target_permutation.data(),
+         data.target_permutation.size() * sizeof(int));
+  if (!plan.use_p2p_bsr) {
+    upload(plan.p2p_float.row_offsets, data.p2p.row_offsets.data(),
+           data.p2p.row_offsets.size() * sizeof(int));
+    upload(plan.p2p_float.blocks, data.p2p.blocks.data(),
+           data.p2p.blocks.size() * sizeof(FloatStaticDipoleBlock));
+  } else {
+    upload(plan.p2p_bsr_float.row_offsets, data.p2p_bsr.row_offsets.data(),
+           data.p2p_bsr.row_offsets.size() * sizeof(int));
+    upload(plan.p2p_bsr_float.source_indices,
+           data.p2p_bsr.source_indices.data(),
+           data.p2p_bsr.source_indices.size() * sizeof(int));
+    upload(plan.p2p_bsr_float.values, data.p2p_bsr.values.data(),
+           data.p2p_bsr.values.size() * sizeof(float));
+  }
+  upload(plan.entries_float, entries.data(),
+         entries.size() * sizeof(FloatStaticOperatorEntry));
+  upload(plan.m2m_matrices_float, data.m2m.matrices.data(),
+         data.m2m.matrices.size() * sizeof(FloatStaticOperatorEntry));
+  upload(plan.l2l_matrices_float, data.l2l.matrices.data(),
+         data.l2l.matrices.size() * sizeof(FloatStaticOperatorEntry));
+  upload(plan.m2m_interactions, data.m2m.interactions.data(),
+         data.m2m.interactions.size() * sizeof(CudaTranslationInteraction));
+  upload(plan.l2l_interactions, data.l2l.interactions.data(),
+         data.l2l.interactions.size() * sizeof(CudaTranslationInteraction));
+  if (data.has_fixed_self_indices) {
+    plan.fixed_self_indices = data.fixed_self_indices;
+    plan.identity_initialised = true;
+    if (!plan.use_p2p_bsr && !data.fixed_self_indices.empty()) {
+      upload(plan.self_indices, data.fixed_self_indices.data(),
+             data.fixed_self_indices.size() * sizeof(int));
+    }
+  }
+  plan.m2l_float =
+      new CudaM2LExecutionPlan<float, FloatStaticM2LPlan>(
+          data.m2l, plan.far_field_stream);
+  check_cuda(cudaStreamSynchronize(plan.far_field_stream),
+             "finish FP32 full FMM setup upload");
+
+  plan.statistics.scalar_bytes = sizeof(float);
+  plan.statistics.m2m_unique_matrix_count = data.m2m.matrix_count;
+  plan.statistics.m2m_matrix_bytes =
+      data.m2m.matrices.size() * sizeof(FloatStaticOperatorEntry);
+  const CudaPlanStatistics &m2l_statistics = plan.m2l_float->statistics();
+  plan.statistics.m2l_unique_matrix_count =
+      m2l_statistics.m2l_unique_matrix_count;
+  plan.statistics.m2l_matrix_bytes = m2l_statistics.m2l_matrix_bytes;
+  plan.statistics.m2l_interaction_metadata_bytes =
+      m2l_statistics.m2l_interaction_metadata_bytes;
+  plan.statistics.m2l_interaction_count =
+      m2l_statistics.m2l_interaction_count;
+  plan.statistics.m2l_active_row_count =
+      m2l_statistics.m2l_active_row_count;
+  plan.statistics.m2l_scratch_bytes = m2l_statistics.m2l_scratch_bytes;
+  plan.statistics.m2l_threads_per_block =
+      m2l_statistics.m2l_threads_per_block;
+  plan.statistics.setup_h2d_bytes += m2l_statistics.setup_h2d_bytes;
+  plan.statistics.l2l_unique_matrix_count = data.l2l.matrix_count;
+  plan.statistics.l2l_matrix_bytes =
+      data.l2l.matrices.size() * sizeof(FloatStaticOperatorEntry);
+  plan.statistics.persistent_device_bytes =
+      plan.statistics.setup_h2d_bytes + 2 * source_bytes + 3 * target_bytes +
+      2 * coefficient_bytes +
+      (plan.use_p2p_bsr || data.has_fixed_self_indices
+           ? 0
+           : static_cast<std::size_t>(plan.target_count) * sizeof(int)) +
+      plan.statistics.m2l_scratch_bytes;
+  plan.statistics.plan_generation_count = 1;
+  plan.statistics.static_upload_count = 1;
+  plan.statistics.static_m2l_upload_count = 1;
+  plan.statistics.static_p2p_upload_count = 1;
+  plan.statistics.p2p_interaction_count = plan.p2p_block_count;
+  if (plan.use_p2p_bsr) {
+    plan.statistics.p2p_tensor_bytes =
+        data.p2p_bsr.values.size() * sizeof(float);
+    plan.statistics.p2p_index_bytes =
+        data.p2p_bsr.source_indices.size() * sizeof(int);
+    plan.statistics.p2p_row_metadata_bytes =
+        data.p2p_bsr.row_offsets.size() * sizeof(int);
+    plan.statistics.p2p_threads_per_block = 0;
+  } else {
+    plan.statistics.p2p_tensor_bytes =
+        data.p2p.blocks.size() * 6 * sizeof(float);
+    plan.statistics.p2p_index_bytes =
+        data.p2p.blocks.size() * 2 * sizeof(int);
+    plan.statistics.p2p_row_metadata_bytes =
+        data.p2p.row_offsets.size() * sizeof(int);
+    plan.statistics.p2p_identity_bytes =
+        static_cast<std::size_t>(plan.target_count) * sizeof(int);
+    plan.statistics.p2p_threads_per_block = static_operator_threads;
+  }
+  plan.statistics.geometry_upload_count = 1;
+}
+
 CudaFullPlan::~CudaFullPlan() {
   if (implementation_ == nullptr) {
     return;
@@ -2323,12 +3173,27 @@ CudaFullPlan::~CudaFullPlan() {
   cudaFree(plan.p2p_bsr.row_offsets);
   cudaFree(plan.p2p_bsr.source_indices);
   cudaFree(plan.p2p_bsr.values);
+  cudaFree(plan.p2p_float.row_offsets);
+  cudaFree(plan.p2p_float.blocks);
+  if (plan.p2p_bsr_float.descriptor != nullptr) {
+    cusparseDestroyMatDescr(plan.p2p_bsr_float.descriptor);
+  }
+  if (plan.p2p_bsr_float.handle != nullptr) {
+    cusparseDestroy(plan.p2p_bsr_float.handle);
+  }
+  cudaFree(plan.p2p_bsr_float.row_offsets);
+  cudaFree(plan.p2p_bsr_float.source_indices);
+  cudaFree(plan.p2p_bsr_float.values);
   cudaFree(plan.entries);
   cudaFree(plan.m2m_matrices);
   cudaFree(plan.l2l_matrices);
   cudaFree(plan.m2m_interactions);
   cudaFree(plan.l2l_interactions);
   delete plan.m2l;
+  cudaFree(plan.entries_float);
+  cudaFree(plan.m2m_matrices_float);
+  cudaFree(plan.l2l_matrices_float);
+  delete plan.m2l_float;
   cudaFree(plan.moments);
   cudaFree(plan.sorted_moments);
   cudaFree(plan.multipoles);
@@ -2338,6 +3203,15 @@ CudaFullPlan::~CudaFullPlan() {
     cudaFree(plan.final_fields);
     cudaFreeHost(plan.pinned_moments);
     cudaFreeHost(plan.pinned_fields);
+    cudaFree(plan.moments_float);
+    cudaFree(plan.sorted_moments_float);
+    cudaFree(plan.multipoles_float);
+    cudaFree(plan.locals_float);
+    cudaFree(plan.far_fields_float);
+    cudaFree(plan.near_fields_float);
+    cudaFree(plan.final_fields_float);
+    cudaFreeHost(plan.pinned_moments_float);
+    cudaFreeHost(plan.pinned_fields_float);
     const std::array<cudaEvent_t, 13> events{
         plan.evaluation_start,
         plan.moments_ready,
@@ -2577,6 +3451,206 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   plan.statistics.evaluation_h2d_bytes = moments.size_bytes();
   plan.statistics.evaluation_d2h_bytes = fields.size_bytes();
     ++plan.statistics.evaluation_h2d_calls;
+  ++plan.statistics.evaluation_d2h_calls;
+}
+
+void CudaFullPlan::evaluate(
+    const std::span<const FloatVec3> moments,
+    const std::span<FloatVec3> fields,
+    const std::span<const int> sorted_self_indices) {
+  auto &plan = *implementation_;
+  if (!plan.fp32 ||
+      moments.size() != static_cast<std::size_t>(plan.source_count) ||
+      fields.size() != static_cast<std::size_t>(plan.target_count) ||
+      sorted_self_indices.size() !=
+          static_cast<std::size_t>(plan.target_count)) {
+    throw std::invalid_argument(
+        "full FP32 CUDA FMM dimensions are inconsistent");
+  }
+  if (!plan.identity_initialised) {
+    plan.fixed_self_indices.assign(sorted_self_indices.begin(),
+                                   sorted_self_indices.end());
+    if (!sorted_self_indices.empty()) {
+      check_cuda(cudaMemcpy(plan.self_indices, sorted_self_indices.data(),
+                            sorted_self_indices.size_bytes(),
+                            cudaMemcpyHostToDevice),
+                 "upload FP32 static self identities");
+      plan.statistics.setup_h2d_bytes += sorted_self_indices.size_bytes();
+    }
+    plan.identity_initialised = true;
+  } else if (!std::equal(sorted_self_indices.begin(),
+                         sorted_self_indices.end(),
+                         plan.fixed_self_indices.begin())) {
+    throw std::invalid_argument(
+        "CudaFull FP32 identity map changed; rebuild the static plan");
+  }
+  std::copy(moments.begin(), moments.end(), plan.pinned_moments_float);
+  constexpr int threads = 256;
+  const auto launch_stage = [&](const int stage, const float *input,
+                                float *output) {
+    const std::size_t count = plan.counts[static_cast<std::size_t>(stage)];
+    if (count != 0) {
+      apply_entries_kernel<<<(count + threads - 1) / threads, threads, 0,
+                             plan.far_field_stream>>>(
+          plan.entries_float + plan.offsets[stage], count, input, output);
+    }
+  };
+
+  check_cuda(cudaEventRecord(plan.evaluation_start, plan.far_field_stream),
+             "record FP32 full FMM start");
+  if (!moments.empty()) {
+    check_cuda(cudaMemcpyAsync(plan.moments_float, plan.pinned_moments_float,
+                               moments.size_bytes(), cudaMemcpyHostToDevice,
+                               plan.far_field_stream),
+               "upload FP32 full FMM moments");
+    permute_moments_kernel<<<
+        (plan.source_count + threads - 1) / threads, threads, 0,
+        plan.far_field_stream>>>(plan.moments_float, plan.source_permutation,
+                                plan.source_count,
+                                plan.sorted_moments_float);
+  }
+  check_cuda(cudaEventRecord(plan.moments_ready, plan.far_field_stream),
+             "record FP32 full FMM moments ready");
+
+  check_cuda(cudaStreamWaitEvent(plan.near_field_stream, plan.moments_ready, 0),
+             "wait for FP32 full FMM moments on P2P stream");
+  check_cuda(cudaEventRecord(plan.p2p_start, plan.near_field_stream),
+             "record FP32 full FMM P2P start");
+  if (plan.use_p2p_bsr) {
+    launch_bsr_p2p(plan.p2p_bsr_float, plan.sorted_moments_float,
+                   plan.near_fields_float, plan.near_field_stream);
+  } else {
+    launch_static_p2p(plan.p2p_float, plan.sorted_moments_float,
+                      plan.self_indices, plan.near_fields_float,
+                      plan.near_field_stream);
+  }
+  check_cuda(cudaEventRecord(plan.p2p_complete, plan.near_field_stream),
+             "record FP32 full FMM P2P completion");
+
+  const std::size_t coefficient_values =
+      static_cast<std::size_t>(plan.node_count) * plan.coefficient_count;
+  check_cuda(cudaMemsetAsync(plan.multipoles_float, 0,
+                             coefficient_values * sizeof(float),
+                             plan.far_field_stream),
+             "clear FP32 full FMM multipoles");
+  launch_stage(plan.p2m_stage,
+               reinterpret_cast<float *>(plan.sorted_moments_float),
+               plan.multipoles_float);
+  check_cuda(cudaEventRecord(plan.p2m_complete, plan.far_field_stream),
+             "record FP32 P2M");
+
+  for (int level = plan.leaf_level; level >= 1; --level) {
+    const std::size_t items =
+        plan.m2m_interaction_count * plan.m2m_entries_per_matrix;
+    if (items != 0) {
+      apply_shared_translation_kernel<<<
+          (items + threads - 1) / threads, threads, 0,
+          plan.far_field_stream>>>(
+          plan.m2m_matrices_float, plan.m2m_interactions,
+          plan.m2m_interaction_count, plan.m2m_entries_per_matrix,
+          plan.coefficient_count, level, plan.multipoles_float,
+          plan.multipoles_float);
+    }
+  }
+  check_cuda(cudaEventRecord(plan.m2m_complete, plan.far_field_stream),
+             "record FP32 M2M");
+
+  check_cuda(cudaMemsetAsync(plan.locals_float, 0,
+                             coefficient_values * sizeof(float),
+                             plan.far_field_stream),
+             "clear FP32 full FMM locals");
+  plan.m2l_float->enqueue(plan.multipoles_float, plan.locals_float,
+                          plan.far_field_stream,
+                          plan.m2l_scale_complete);
+  check_cuda(cudaEventRecord(plan.m2l_complete, plan.far_field_stream),
+             "record FP32 M2L");
+
+  for (int level = 1; level <= plan.leaf_level; ++level) {
+    const std::size_t items =
+        plan.l2l_interaction_count * plan.l2l_entries_per_matrix;
+    if (items != 0) {
+      apply_shared_translation_kernel<<<
+          (items + threads - 1) / threads, threads, 0,
+          plan.far_field_stream>>>(
+          plan.l2l_matrices_float, plan.l2l_interactions,
+          plan.l2l_interaction_count, plan.l2l_entries_per_matrix,
+          plan.coefficient_count, level, plan.locals_float,
+          plan.locals_float);
+    }
+  }
+  check_cuda(cudaEventRecord(plan.l2l_complete, plan.far_field_stream),
+             "record FP32 L2L");
+
+  check_cuda(cudaMemsetAsync(plan.far_fields_float, 0,
+                             static_cast<std::size_t>(plan.target_count) *
+                                 sizeof(FloatVec3),
+                             plan.far_field_stream),
+             "clear FP32 far fields");
+  launch_stage(plan.l2p_stage, plan.locals_float,
+               reinterpret_cast<float *>(plan.far_fields_float));
+  check_cuda(cudaEventRecord(plan.l2p_complete, plan.far_field_stream),
+             "record FP32 L2P");
+
+  check_cuda(cudaStreamWaitEvent(plan.far_field_stream, plan.p2p_complete, 0),
+             "wait for FP32 P2P before combination");
+  check_cuda(cudaEventRecord(plan.combination_start, plan.far_field_stream),
+             "record FP32 combination start");
+  if (plan.target_count != 0) {
+    combine_order_kernel<<<
+        (plan.target_count + threads - 1) / threads, threads, 0,
+        plan.far_field_stream>>>(
+        plan.far_fields_float, plan.near_fields_float,
+        plan.target_permutation, plan.target_count, plan.final_fields_float);
+  }
+  check_cuda(cudaEventRecord(plan.combination_complete, plan.far_field_stream),
+             "record FP32 combination");
+  if (!fields.empty()) {
+    check_cuda(cudaMemcpyAsync(plan.pinned_fields_float,
+                               plan.final_fields_float, fields.size_bytes(),
+                               cudaMemcpyDeviceToHost,
+                               plan.far_field_stream),
+               "download FP32 full FMM fields");
+  }
+  check_cuda(cudaEventRecord(plan.d2h_complete, plan.far_field_stream),
+             "record FP32 field download");
+  check_cuda(cudaEventSynchronize(plan.d2h_complete),
+             "wait for FP32 full FMM evaluation");
+  std::copy(plan.pinned_fields_float,
+            plan.pinned_fields_float + fields.size(), fields.begin());
+
+  const auto elapsed = [](const cudaEvent_t first, const cudaEvent_t second) {
+    float milliseconds = 0.0F;
+    check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
+               "time FP32 full FMM phase");
+    return static_cast<double>(milliseconds) * 1.0e-3;
+  };
+  plan.timings = {};
+  plan.timings.h2d_seconds =
+      elapsed(plan.evaluation_start, plan.moments_ready);
+  plan.timings.p2m_seconds = elapsed(plan.moments_ready, plan.p2m_complete);
+  plan.timings.m2m_seconds = elapsed(plan.p2m_complete, plan.m2m_complete);
+  plan.timings.m2l_seconds = elapsed(plan.m2m_complete, plan.m2l_complete);
+  plan.timings.scale_seconds =
+      elapsed(plan.m2m_complete, plan.m2l_scale_complete);
+  plan.timings.multiply_seconds =
+      elapsed(plan.m2l_scale_complete, plan.m2l_complete);
+  plan.timings.l2l_seconds = elapsed(plan.m2l_complete, plan.l2l_complete);
+  plan.timings.l2p_seconds = elapsed(plan.l2l_complete, plan.l2p_complete);
+  plan.timings.p2p_seconds = elapsed(plan.p2p_start, plan.p2p_complete);
+  plan.timings.accumulation_seconds =
+      elapsed(plan.combination_start, plan.combination_complete);
+  plan.timings.d2h_seconds =
+      elapsed(plan.combination_complete, plan.d2h_complete);
+  plan.timings.kernel_seconds =
+      plan.timings.p2m_seconds + plan.timings.m2m_seconds +
+      plan.timings.m2l_seconds + plan.timings.l2l_seconds +
+      plan.timings.l2p_seconds + plan.timings.p2p_seconds +
+      plan.timings.accumulation_seconds;
+  plan.timings.total_seconds =
+      elapsed(plan.evaluation_start, plan.d2h_complete);
+  plan.statistics.evaluation_h2d_bytes = moments.size_bytes();
+  plan.statistics.evaluation_d2h_bytes = fields.size_bytes();
+  ++plan.statistics.evaluation_h2d_calls;
   ++plan.statistics.evaluation_d2h_calls;
 }
 

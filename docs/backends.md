@@ -10,7 +10,7 @@ operator is applied, not its mathematical definition or traversal order.
 | Backend | P2M | M2M | M2L | L2L | L2P | P2P |
 |---|---|---|---|---|---|---|
 | CPU portable (`CpuStatic`) | CPU | CPU | CPU | CPU | CPU | CPU |
-| CPU oneMKL | CPU | CPU | oneMKL DGEMM on CPU | CPU | CPU | CPU |
+| CPU oneMKL | CPU | CPU | oneMKL SGEMM/DGEMM on CPU | CPU | CPU | CPU |
 | CUDA partial (`CudaPartial`) | CPU | CPU | CUDA | CPU | CPU | CUDA |
 | CUDA full (`CudaFull`) | CUDA | CUDA | CUDA | CUDA | CUDA | CUDA |
 
@@ -20,10 +20,15 @@ independent educational/validation traversal rather than the production
 static path.
 
 The oneMKL option accelerates **M2L only**. Interactions sharing a normalised
-transfer matrix are gathered into columns, multiplied by DGEMM, then scattered
+transfer matrix are gathered into columns, multiplied by SGEMM or DGEMM, then scattered
 to target locals. P2M, M2M, L2L, L2P and P2P remain portable CPU operations.
 The oneMKL executor uses the same matrices and level scaling as the portable
 executor.
+
+Every row supports FP32 and FP64. Backend placement does not change scalar
+precision: an FP32 plan uses four-byte operators, coefficient state, scratch,
+device buffers, and evaluation transfers throughout. Geometry positions remain
+FP64-capable and are converted only where a completed static operator is stored.
 
 ## CUDA partial data flow
 

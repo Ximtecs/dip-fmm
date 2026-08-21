@@ -39,6 +39,18 @@ public:
   /** @brief Builds a persistent cuSPARSE BSR(3) CUDA plan. */
   explicit CudaP2PPlan(const StaticP2PBsrPlan &plan);
 
+  /** @brief Builds the canonical FP32 CUDA baseline. */
+  explicit CudaP2PPlan(const FloatStaticP2POperator &operator_map,
+                       std::span<const int> fixed_self_indices = {});
+  /** @brief Builds the source-only FP32 SoA CUDA plan. */
+  explicit CudaP2PPlan(const FloatStaticP2PCompactPlan &plan,
+                       std::span<const int> fixed_self_indices = {});
+  /** @brief Builds the shared-memory FP32 leaf CUDA plan. */
+  explicit CudaP2PPlan(const FloatStaticP2PLeafPlan &plan,
+                       std::span<const int> fixed_self_indices = {});
+  /** @brief Builds a persistent FP32 cuSPARSE BSR(3) plan. */
+  explicit CudaP2PPlan(const FloatStaticP2PBsrPlan &plan);
+
   ~CudaP2PPlan();
   CudaP2PPlan(const CudaP2PPlan &) = delete;
   CudaP2PPlan &operator=(const CudaP2PPlan &) = delete;
@@ -58,6 +70,13 @@ public:
                 std::span<const int> target_source_indices,
                 std::span<Vec3> fields);
 
+  void begin_evaluate(std::span<const FloatVec3> moments,
+                      std::span<const int> target_source_indices);
+  void finish_evaluate(std::span<FloatVec3> fields);
+  void evaluate(std::span<const FloatVec3> moments,
+                std::span<const int> target_source_indices,
+                std::span<FloatVec3> fields);
+
   /// @brief Returns persistent storage and transfer diagnostics.
   [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
 
@@ -70,6 +89,9 @@ private:
   CudaP2PPlan(int source_count, int target_count,
               std::span<const int> fixed_self_indices,
               bool device_self_indices);
+  CudaP2PPlan(int source_count, int target_count,
+              std::span<const int> fixed_self_indices,
+              bool device_self_indices, StaticPrecision precision);
 
   Implementation *implementation_{nullptr};
 };

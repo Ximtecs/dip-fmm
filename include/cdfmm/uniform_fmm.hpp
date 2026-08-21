@@ -12,6 +12,7 @@
 #include "cdfmm/cuboid.hpp"
 #include "cdfmm/multi_index.hpp"
 #include "cdfmm/output_flags.hpp"
+#include "cdfmm/precision.hpp"
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/uniform_tree.hpp"
 
@@ -95,6 +96,8 @@ struct StaticExecutionPlan {
  * dipole moments are supplied separately for each upward evaluation.
  */
 struct UniformFmmOptions {
+  /// @brief Scalar precision used by operators, state, and execution.
+  StaticPrecision precision{StaticPrecision::Float32};
   /// @brief Maximum total degree of the Cartesian multipole expansion.
   int expansion_order{4};
   /// @brief Complete uniform-tree geometry options.
@@ -246,6 +249,8 @@ public:
   [[nodiscard]] StaticMatrixBackend static_matrix_backend() const;
   /// @brief Returns the resolved backend used by this evaluator.
   [[nodiscard]] ExecutionBackend backend() const;
+  /// @brief Returns the scalar precision selected when constructing the plan.
+  [[nodiscard]] StaticPrecision precision() const noexcept;
   /// @brief Returns the executor selected for every canonical static operator.
   [[nodiscard]] StaticExecutionPlan execution_plan() const noexcept;
   /// @brief Returns the resolved P2P storage packing used for evaluation.
@@ -269,14 +274,54 @@ public:
   /// @brief Returns the root multipole, whose flat node index is zero.
   [[nodiscard]] std::span<const double> root_multipole() const;
 
+  /** @brief Evaluates an FP32 plan without widening its results. */
+  [[nodiscard]] std::vector<FloatPotentialField>
+  evaluate_float32(std::span<const Vec3> dipole_moments,
+                   OutputFlags output = OutputFlags::Field,
+                   std::span<const int> target_source_indices = {});
+
+  /** @brief Evaluates an FP32 plan into caller-owned FP32 storage. */
+  void evaluate_into_float32(
+      std::span<const Vec3> dipole_moments,
+      std::span<FloatPotentialField> results,
+      OutputFlags output = OutputFlags::Field,
+      std::span<const int> target_source_indices = {});
+
+  /** @brief Evaluates an FP64 plan and rejects an FP32 plan. */
+  [[nodiscard]] std::vector<PotentialField>
+  evaluate_float64(std::span<const Vec3> dipole_moments,
+                   OutputFlags output = OutputFlags::Field,
+                   std::span<const int> target_source_indices = {});
+
+  /** @brief Returns FP32 multipoles and rejects an FP64 plan. */
+  [[nodiscard]] std::span<const float> multipole_float32(int node_index) const;
+
+  /** @brief Returns FP32 locals and rejects an FP64 plan. */
+  [[nodiscard]] std::span<const float> local_float32(int node_index) const;
+
+  /** @brief Returns the FP32 root multipole and rejects an FP64 plan. */
+  [[nodiscard]] std::span<const float> root_multipole_float32() const;
+
+  /** @brief Returns FP64 multipoles and rejects an FP32 plan. */
+  [[nodiscard]] std::span<const double> multipole_float64(int node_index) const;
+  /** @brief Returns FP64 locals and rejects an FP32 plan. */
+  [[nodiscard]] std::span<const double> local_float64(int node_index) const;
+  /** @brief Returns the FP64 root multipole and rejects an FP32 plan. */
+  [[nodiscard]] std::span<const double> root_multipole_float64() const;
+
 private:
   class CudaM2LPlanOwner;
   class CudaP2PPlanOwner;
   class CudaFullPlanOwner;
   /** @brief Immutable leaf index and geometry-specific P2M coefficient map. */
   struct P2MPlan {
-      int leaf{0};
+    int leaf{0};
     StaticCoefficientOperator operator_map{};
+  };
+  /** @brief FP32 leaf index and quantised P2M coefficient map. */
+  struct FloatP2MPlan {
+    int leaf{0};
+    FloatStaticCoefficientOperator operator_map{};
   };
   /**
    * @brief oneMKL-only gather/GEMM/scatter packing for one transfer class.
@@ -293,25 +338,46 @@ private:
     std::vector<double> gathered{};
     std::vector<double> translated{};
   };
+  /** @brief FP32 oneMKL gather/GEMM/scatter packing. */
+  struct FloatM2LGroup {
+    int matrix_id{0};
+    std::vector<int> sources{};
+    std::vector<int> targets{};
+    std::vector<int> levels{};
+    std::vector<float> gathered{};
+    std::vector<float> translated{};
+  };
 
   void build_static_plan();
+  void quantise_static_plan_to_float();
   void initialise_source_geometry(const UniformFmmOptions &options);
   void initialise_p2p_policy(const UniformFmmOptions &options);
   void build_cuda_p2p_plan();
   void build_cuda_full_plan();
   void prepare_moments(std::span<const Vec3> dipole_moments);
+  void prepare_moments_float(std::span<const Vec3> dipole_moments);
   void upward_pass_prepared();
+  void upward_pass_prepared_float();
   void prepare_self_indices(std::span<const int> target_source_indices);
   [[nodiscard]] std::span<const int>
   resolve_self_indices(std::span<const int> target_source_indices) const;
   void static_m2l(int level);
+  void static_m2l_float(int level);
   void cuda_m2l();
   void l2l_downward();
+  void downward_pass_float();
   [[nodiscard]] std::span<double> multipole_for_node(int node_index) noexcept;
   [[nodiscard]] std::span<const double> multipole_for_node(
       int node_index) const noexcept;
   [[nodiscard]] std::span<double> local_for_node(int node_index) noexcept;
   [[nodiscard]] std::span<const double> local_for_node(
+      int node_index) const noexcept;
+  [[nodiscard]] std::span<float> multipole_float_for_node(
+      int node_index) noexcept;
+  [[nodiscard]] std::span<const float> multipole_float_for_node(
+      int node_index) const noexcept;
+  [[nodiscard]] std::span<float> local_float_for_node(int node_index) noexcept;
+  [[nodiscard]] std::span<const float> local_float_for_node(
       int node_index) const noexcept;
 
   // Fixed geometry and immutable operator descriptions outlive every call.
@@ -319,6 +385,10 @@ private:
   MultiIndexSet basis_;
   M2LBackend m2l_backend_{M2LBackend::Static};
   StaticMatrixBackend static_matrix_backend_{StaticMatrixBackend::Portable};
+  StaticPrecision precision_{StaticPrecision::Float32};
+  // FP32 operators use root-width-normalised coordinates. This geometric
+  // scale remains double precision, like the source and target positions.
+  double float_coordinate_scale_{1.0};
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
   SourceGeometry source_geometry_{SourceGeometry::PointDipole};
   bool use_cuboid_p2m_{false};
@@ -330,13 +400,24 @@ private:
   std::unique_ptr<CudaP2PPlanOwner> cuda_p2p_plan_{};
   std::unique_ptr<CudaFullPlanOwner> cuda_full_plan_{};
   std::vector<M2LGroup> m2l_groups_{};
+  std::vector<FloatM2LGroup> m2l_groups_float_{};
   std::vector<P2MPlan> p2m_plans_{};
+  std::vector<FloatP2MPlan> p2m_plans_float_{};
   std::vector<std::array<StaticCoefficientOperator, 8>> m2m_operators_{};
   std::vector<std::array<StaticCoefficientOperator, 8>> l2l_operators_{};
   std::vector<StaticL2PEvaluator> l2p_evaluators_{};
   StaticP2POperator p2p_operator_{};
   StaticP2PCompactPlan p2p_compact_plan_{};
   StaticM2LPlan m2l_plan_{};
+  std::vector<std::array<FloatStaticCoefficientOperator, 8>>
+      m2m_operators_float_{};
+  std::vector<std::array<FloatStaticCoefficientOperator, 8>>
+      l2l_operators_float_{};
+  std::vector<FloatStaticL2PEvaluator> l2p_evaluators_float_{};
+  FloatStaticP2POperator p2p_operator_float_{};
+  FloatStaticP2PCompactPlan p2p_compact_plan_float_{};
+  FloatStaticP2PBsrPlan p2p_bsr_plan_float_{};
+  FloatStaticM2LPlan m2l_plan_float_{};
   StaticPlanStatistics static_plan_statistics_{};
   // Mutable coefficient and result storage makes one evaluator non-reentrant.
   // All fixed-width node expansions share one node-major allocation. This
@@ -346,6 +427,13 @@ private:
   std::vector<Vec3> sorted_dipole_moments_{};
   std::vector<PotentialField> sorted_results_{};
   std::vector<Vec3> near_fields_{};
+  std::vector<float> multipoles_float_{};
+  std::vector<float> locals_float_{};
+  std::vector<FloatVec3> sorted_dipole_moments_float_{};
+  std::vector<FloatPotentialField> sorted_results_float_{};
+  std::vector<FloatVec3> near_fields_float_{};
+  // Legacy coefficient inspection widens FP32 state only on demand.
+  mutable std::vector<double> inspection_widening_buffer_{};
   std::vector<int> sorted_self_indices_{};
   std::optional<std::vector<int>> fixed_target_source_indices_{};
   std::vector<int> fixed_sorted_self_indices_{};

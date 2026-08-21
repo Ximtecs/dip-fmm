@@ -102,7 +102,7 @@ public:
         std::span<const CuboidSize> source_sizes = {},
         std::span<const CuboidSize> target_sizes = {},
         std::span<const int> target_source_indices = {},
-        StaticPrecision static_precision = StaticPrecision::Float64
+        StaticPrecision static_precision = StaticPrecision::Float32
     );
 
     /**
@@ -130,7 +130,7 @@ public:
         return static_precision_;
     }
     [[nodiscard]] std::size_t tensor_component_count() const noexcept { return 6; }
-    /** @brief Returns FP64 matrices for compatibility with default plans. */
+    /** @brief Returns matrices for an explicitly selected FP64 plan. */
     [[nodiscard]] const std::array<std::vector<double>, 6>& matrices() const
     {
         return std::get<DoubleMatrices>(matrices_);
@@ -141,8 +141,8 @@ private:
     std::size_t nt_{0};
     using FloatMatrices = std::array<std::vector<float>, 6>;
     using DoubleMatrices = std::array<std::vector<double>, 6>;
-    StaticPrecision static_precision_{StaticPrecision::Float64};
-    std::variant<FloatMatrices, DoubleMatrices> matrices_{DoubleMatrices{}};
+    StaticPrecision static_precision_{StaticPrecision::Float32};
+    std::variant<FloatMatrices, DoubleMatrices> matrices_{FloatMatrices{}};
     // Component staging is retained and reused across repeated evaluations.
     mutable std::array<std::vector<float>, 3> float_moments_{};
     mutable std::array<std::vector<float>, 3> float_fields_{};
