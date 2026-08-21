@@ -105,6 +105,8 @@ struct EvaluationTimings {
 
 /** @brief One-time cost and storage of the immutable static CPU plan. */
 struct StaticPlanStatistics {
+    /// @brief Bytes used by one selected execution scalar.
+    std::size_t scalar_bytes{sizeof(double)};
     /// @brief Maximum number of integer M2L offsets in a uniform 3-D octree.
     static constexpr std::size_t theoretical_maximum_m2l_classes = 316;
     /// @brief Time spent constructing leaf P2M maps.
@@ -128,6 +130,8 @@ struct StaticPlanStatistics {
     std::size_t operator_bytes{0};
     std::size_t interaction_bytes{0};
     std::size_t scratch_bytes{0};
+    /// @brief Mutable expansions, moments, fields, and result storage.
+    std::size_t state_bytes{0};
     /// @brief Shared M2M matrices stored (eight child classes per used level).
     std::size_t m2m_operators{0};
     /// @brief Complete-tree parent-child relations represented by M2M IDs.
@@ -170,12 +174,14 @@ struct StaticPlanStatistics {
 
   /// @brief Returns the approximate total persistent plan storage.
   [[nodiscard]] std::size_t total_bytes() const {
-    return operator_bytes + interaction_bytes + scratch_bytes;
+    return operator_bytes + interaction_bytes + scratch_bytes + state_bytes;
   }
 };
 
 /** @brief Host/device traffic and persistent storage for a CUDA plan. */
 struct CudaPlanStatistics {
+  /// @brief Bytes used by one selected device execution scalar.
+  std::size_t scalar_bytes{sizeof(double)};
   std::size_t m2m_unique_matrix_count{0};
   std::size_t m2m_matrix_bytes{0};
   std::size_t m2l_unique_matrix_count{0};

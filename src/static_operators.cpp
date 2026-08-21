@@ -60,6 +60,48 @@ void apply_static_m2l_plan(
 }
 
 void apply_static_m2l_plan(
+    const FloatStaticM2LPlan& plan,
+    const int level,
+    const std::span<const float> multipoles,
+    const std::span<float> locals)
+{
+    const int n = plan.coefficient_count;
+    const int target_begin =
+        plan.level_target_begin[static_cast<std::size_t>(level)];
+    const int target_end =
+        plan.level_target_end[static_cast<std::size_t>(level)];
+    const float* multipole_scale = plan.multipole_scaling.data() +
+        static_cast<std::size_t>(level) * n;
+    const float* local_scale = plan.local_scaling.data() +
+        static_cast<std::size_t>(level) * n;
+    const std::ptrdiff_t output_count =
+        static_cast<std::ptrdiff_t>(target_end - target_begin) * n;
+#pragma omp parallel for schedule(static) if (output_count >= 256)
+    for (std::ptrdiff_t output = 0; output < output_count; ++output) {
+        const int target = target_begin + static_cast<int>(output / n);
+        const int beta = static_cast<int>(output % n);
+        float value = 0.0F;
+        const int row_begin = plan.target_row_offsets[target];
+        const int row_end = plan.target_row_offsets[target + 1];
+        for (int interaction = row_begin; interaction < row_end;
+             ++interaction) {
+            const int source = plan.source_nodes[interaction];
+            const int matrix_id = plan.matrix_ids[interaction];
+            const float* matrix_column = plan.matrices.data() +
+                static_cast<std::size_t>(matrix_id) * n * n + beta;
+            const float* source_M = multipoles.data() +
+                static_cast<std::size_t>(source) * n;
+            for (int alpha = 0; alpha < n; ++alpha) {
+                value += matrix_column[static_cast<std::size_t>(alpha) * n] *
+                    multipole_scale[alpha] * source_M[alpha];
+            }
+        }
+        locals[static_cast<std::size_t>(target) * n + beta] +=
+            local_scale[beta] * value;
+    }
+}
+
+void apply_static_m2l_plan(
     const StaticM2LPlan& plan,
     const int level,
     const std::span<const std::vector<double>> multipoles,
@@ -335,7 +377,7 @@ std::size_t StaticP2PMemory::total_bytes() const noexcept {
 
 StaticP2PMemory StaticP2PCompactPlan::memory() const noexcept {
   StaticP2PMemory result;
-  result.tensor_bytes = tensors[0].size() * 6 * sizeof(double);
+  result.tensor_bytes = tensors[0].size() * 9 * sizeof(double);
   result.index_bytes = source_indices.size() * sizeof(int);
   result.row_metadata_bytes = row_offsets.size() * sizeof(int);
   return result;
@@ -396,8 +438,9 @@ StaticP2POperator build_static_p2p_operator(
             // it is not a self pair, NaNs deliberately expose the same
             // undefined point-dipole singularity as the reference operator.
             const double undefined = std::numeric_limits<double>::quiet_NaN();
-            result.blocks.push_back({target, source, undefined, undefined,
-                                     undefined, undefined, undefined, undefined});
+            result.blocks.push_back(
+                {target, source, undefined, undefined, undefined, undefined,
+                 undefined, undefined, undefined, undefined, undefined});
             ++result.row_offsets[static_cast<std::size_t>(target) + 1];
             continue;
         }
@@ -408,8 +451,14 @@ StaticP2POperator build_static_p2p_operator(
         const PairTensor tensor = build_pair_tensor(
             target_positions[target], source_positions[source], source_geometry,
             TargetGeometry::Point, source_size);
+        const double radius_squared = dot(r, r);
+        const double potential_scale = radius_squared == 0.0
+            ? 0.0
+            : 1.0 / (4.0 * std::numbers::pi *
+                     radius_squared * std::sqrt(radius_squared));
         result.blocks.push_back({
-            target, source, tensor.xx, tensor.xy, tensor.xz,
+            target, source, potential_scale * r.x, potential_scale * r.y,
+            potential_scale * r.z, tensor.xx, tensor.xy, tensor.xz,
             tensor.yy, tensor.yz, tensor.zz
         });
         ++result.row_offsets[static_cast<std::size_t>(target) + 1];
@@ -427,12 +476,18 @@ build_static_p2p_compact_plan(const StaticP2POperator &operator_map) {
   result.target_count = operator_map.target_count;
   result.row_offsets = operator_map.row_offsets;
   result.source_indices.reserve(operator_map.blocks.size());
+  for (auto &coefficient : result.potential) {
+    coefficient.reserve(operator_map.blocks.size());
+  }
   for (auto &tensor : result.tensors) {
     tensor.reserve(operator_map.blocks.size());
   }
 
   for (const StaticDipoleBlock &block : operator_map.blocks) {
     result.source_indices.push_back(block.source);
+    result.potential[0].push_back(block.px);
+    result.potential[1].push_back(block.py);
+    result.potential[2].push_back(block.pz);
     result.tensors[0].push_back(block.xx);
     result.tensors[1].push_back(block.xy);
     result.tensors[2].push_back(block.xz);
@@ -669,6 +724,135 @@ void apply_static_p2p_compact_plan(
   }
 }
 
+void apply_static_p2p_operator(
+    const FloatStaticP2POperator& operator_map,
+    const std::span<const FloatVec3> dipole_moments,
+    const std::span<FloatVec3> H,
+    const std::span<const int> target_source_indices)
+{
+    if (dipole_moments.size() !=
+            static_cast<std::size_t>(operator_map.source_count) ||
+        H.size() != static_cast<std::size_t>(operator_map.target_count) ||
+        (!target_source_indices.empty() &&
+         target_source_indices.size() != H.size())) {
+        throw std::invalid_argument("static FP32 P2P dimensions are inconsistent");
+    }
+#pragma omp parallel for schedule(static) if(operator_map.target_count >= 64)
+    for (int target = 0; target < operator_map.target_count; ++target) {
+        FloatVec3 field{};
+        const int self = target_source_indices.empty()
+            ? -1 : target_source_indices[static_cast<std::size_t>(target)];
+        for (int entry = operator_map.row_offsets[static_cast<std::size_t>(target)];
+             entry < operator_map.row_offsets[static_cast<std::size_t>(target) + 1];
+             ++entry) {
+            const FloatStaticDipoleBlock& block =
+                operator_map.blocks[static_cast<std::size_t>(entry)];
+            if (block.source == self) {
+                continue;
+            }
+            accumulate_static_dipole_block(
+                block,
+                dipole_moments[static_cast<std::size_t>(block.source)],
+                field);
+        }
+        H[static_cast<std::size_t>(target)] += field;
+    }
+}
+
+void apply_static_p2p_leaf_plan(
+    const FloatStaticP2PLeafPlan& plan,
+    const std::span<const FloatVec3> dipole_moments,
+    const std::span<FloatVec3> H,
+    const std::span<const int> target_source_indices)
+{
+    if (dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
+        H.size() != static_cast<std::size_t>(plan.target_count) ||
+        (!target_source_indices.empty() &&
+         target_source_indices.size() != H.size())) {
+        throw std::invalid_argument("leaf FP32 P2P dimensions are inconsistent");
+    }
+    const int target_leaf_count = static_cast<int>(plan.target_begins.size());
+#pragma omp parallel for schedule(static) if(target_leaf_count >= 8)
+    for (int target_leaf = 0; target_leaf < target_leaf_count; ++target_leaf) {
+        const int target_begin =
+            plan.target_begins[static_cast<std::size_t>(target_leaf)];
+        const int target_count =
+            plan.target_counts[static_cast<std::size_t>(target_leaf)];
+        for (int local_target = 0; local_target < target_count; ++local_target) {
+            const int target = target_begin + local_target;
+            const int self = target_source_indices.empty()
+                ? -1 : target_source_indices[static_cast<std::size_t>(target)];
+            FloatVec3 field{};
+            for (int block_index =
+                     plan.leaf_row_offsets[static_cast<std::size_t>(target_leaf)];
+                 block_index < plan.leaf_row_offsets[
+                     static_cast<std::size_t>(target_leaf) + 1];
+                 ++block_index) {
+                const StaticP2PLeafBlock& block =
+                    plan.blocks[static_cast<std::size_t>(block_index)];
+                const std::size_t tensor_begin = block.tensor_offset +
+                    static_cast<std::size_t>(local_target) * block.source_count;
+                for (int local_source = 0; local_source < block.source_count;
+                     ++local_source) {
+                    const int source = block.source_begin + local_source;
+                    if (source == self) {
+                        continue;
+                    }
+                    const std::size_t index = tensor_begin + local_source;
+                    const FloatVec3 moment =
+                        dipole_moments[static_cast<std::size_t>(source)];
+                    field.x += plan.tensors[0][index] * moment.x +
+                        plan.tensors[1][index] * moment.y +
+                        plan.tensors[2][index] * moment.z;
+                    field.y += plan.tensors[1][index] * moment.x +
+                        plan.tensors[3][index] * moment.y +
+                        plan.tensors[4][index] * moment.z;
+                    field.z += plan.tensors[2][index] * moment.x +
+                        plan.tensors[4][index] * moment.y +
+                        plan.tensors[5][index] * moment.z;
+                }
+            }
+            H[static_cast<std::size_t>(target)] += field;
+        }
+    }
+}
+
+void apply_static_p2p_bsr_plan(
+    const FloatStaticP2PBsrPlan& plan,
+    const std::span<const FloatVec3> dipole_moments,
+    const std::span<FloatVec3> H,
+    const std::span<const int> target_source_indices)
+{
+    if (dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
+        H.size() != static_cast<std::size_t>(plan.target_count) ||
+        (!target_source_indices.empty() &&
+         !std::equal(target_source_indices.begin(), target_source_indices.end(),
+                     plan.target_source_indices.begin(),
+                     plan.target_source_indices.end()))) {
+        throw std::invalid_argument(
+            "FP32 BSR P2P dimensions or identities are inconsistent");
+    }
+#pragma omp parallel for schedule(static) if(plan.target_count >= 64)
+    for (int target = 0; target < plan.target_count; ++target) {
+        FloatVec3 field{};
+        for (int entry = plan.row_offsets[static_cast<std::size_t>(target)];
+             entry < plan.row_offsets[static_cast<std::size_t>(target) + 1];
+             ++entry) {
+            const FloatVec3 moment = dipole_moments[static_cast<std::size_t>(
+                plan.source_indices[static_cast<std::size_t>(entry)])];
+            const float* block =
+                plan.values.data() + static_cast<std::size_t>(entry) * 9;
+            field.x += block[0] * moment.x + block[1] * moment.y +
+                block[2] * moment.z;
+            field.y += block[3] * moment.x + block[4] * moment.y +
+                block[5] * moment.z;
+            field.z += block[6] * moment.x + block[7] * moment.y +
+                block[8] * moment.z;
+        }
+        H[static_cast<std::size_t>(target)] += field;
+    }
+}
+
 void apply_static_p2p_leaf_plan(
     const StaticP2PLeafPlan &plan, const std::span<const Vec3> dipole_moments,
     const std::span<Vec3> H, const std::span<const int> target_source_indices) {
@@ -812,6 +996,243 @@ void apply_static_coefficient_matrix(
             output[beta] += matrix[beta + coefficient_count * alpha] *
                 input[alpha];
         }
+    }
+}
+
+//------------------------------------------------------------------------------
+// FP32 plan conversion and execution
+//------------------------------------------------------------------------------
+
+FloatStaticCoefficientOperator quantise_static_operator(
+    const StaticCoefficientOperator& source)
+{
+    FloatStaticCoefficientOperator result;
+    result.input_size = source.input_size;
+    result.output_size = source.output_size;
+    result.entries.reserve(source.entries.size());
+    for (const StaticOperatorEntry& entry : source.entries) {
+        result.entries.push_back(
+            {entry.output, entry.input, static_cast<float>(entry.value)});
+    }
+    return result;
+}
+
+FloatStaticL2PEvaluator quantise_static_l2p_evaluator(
+    const StaticL2PEvaluator& source)
+{
+    FloatStaticL2PEvaluator result;
+    result.potential.assign(source.potential.begin(), source.potential.end());
+    for (std::size_t component = 0; component < 3; ++component) {
+        result.field[component].assign(source.field[component].begin(),
+                                       source.field[component].end());
+    }
+    return result;
+}
+
+FloatStaticP2POperator quantise_static_p2p_operator(
+    const StaticP2POperator& source)
+{
+    FloatStaticP2POperator result;
+    result.source_count = source.source_count;
+    result.target_count = source.target_count;
+    result.row_offsets = source.row_offsets;
+    result.blocks.reserve(source.blocks.size());
+    for (const StaticDipoleBlock& block : source.blocks) {
+        result.blocks.push_back({
+            block.target, block.source, static_cast<float>(block.px),
+            static_cast<float>(block.py), static_cast<float>(block.pz),
+            static_cast<float>(block.xx),
+            static_cast<float>(block.xy), static_cast<float>(block.xz),
+            static_cast<float>(block.yy), static_cast<float>(block.yz),
+            static_cast<float>(block.zz)});
+    }
+    return result;
+}
+
+FloatStaticP2PCompactPlan quantise_static_p2p_compact_plan(
+    const StaticP2PCompactPlan& source)
+{
+    FloatStaticP2PCompactPlan result;
+    result.source_count = source.source_count;
+    result.target_count = source.target_count;
+    result.row_offsets = source.row_offsets;
+    result.source_indices = source.source_indices;
+    for (std::size_t component = 0; component < 3; ++component) {
+        result.potential[component].assign(
+            source.potential[component].begin(),
+            source.potential[component].end());
+    }
+    for (std::size_t component = 0; component < 6; ++component) {
+        result.tensors[component].assign(source.tensors[component].begin(),
+                                         source.tensors[component].end());
+    }
+    return result;
+}
+
+FloatStaticP2PLeafPlan quantise_static_p2p_leaf_plan(
+    const StaticP2PLeafPlan& source)
+{
+    FloatStaticP2PLeafPlan result;
+    result.source_count = source.source_count;
+    result.target_count = source.target_count;
+    result.target_begins = source.target_begins;
+    result.target_counts = source.target_counts;
+    result.leaf_row_offsets = source.leaf_row_offsets;
+    result.blocks = source.blocks;
+    for (std::size_t component = 0; component < 6; ++component) {
+        result.tensors[component].assign(source.tensors[component].begin(),
+                                         source.tensors[component].end());
+    }
+    result.minimum_occupancy = source.minimum_occupancy;
+    result.maximum_occupancy = source.maximum_occupancy;
+    result.mean_occupancy = source.mean_occupancy;
+    result.unique_occupancies = source.unique_occupancies;
+    result.uniform_occupancy = source.uniform_occupancy;
+    return result;
+}
+
+FloatStaticP2PBsrPlan quantise_static_p2p_bsr_plan(
+    const StaticP2PBsrPlan& source)
+{
+    FloatStaticP2PBsrPlan result;
+    result.source_count = source.source_count;
+    result.target_count = source.target_count;
+    result.row_offsets = source.row_offsets;
+    result.source_indices = source.source_indices;
+    result.values.assign(source.values.begin(), source.values.end());
+    result.target_source_indices = source.target_source_indices;
+    return result;
+}
+
+FloatStaticM2LPlan quantise_static_m2l_plan(const StaticM2LPlan& source)
+{
+    FloatStaticM2LPlan result;
+    result.coefficient_count = source.coefficient_count;
+    result.matrix_count = source.matrix_count;
+    result.level_count = source.level_count;
+    result.matrices.assign(source.matrices.begin(), source.matrices.end());
+    result.multipole_scaling.assign(source.multipole_scaling.begin(),
+                                    source.multipole_scaling.end());
+    result.local_scaling.assign(source.local_scaling.begin(),
+                                source.local_scaling.end());
+    result.target_row_offsets = source.target_row_offsets;
+    result.source_nodes = source.source_nodes;
+    result.matrix_ids = source.matrix_ids;
+    result.interaction_levels = source.interaction_levels;
+    result.level_target_begin = source.level_target_begin;
+    result.level_target_end = source.level_target_end;
+    return result;
+}
+
+std::size_t FloatStaticP2POperator::memory_bytes() const noexcept
+{
+    return row_offsets.size() * sizeof(int) +
+           blocks.size() * sizeof(FloatStaticDipoleBlock);
+}
+
+StaticP2PMemory FloatStaticP2PCompactPlan::memory() const noexcept
+{
+    StaticP2PMemory result;
+    result.tensor_bytes = tensors[0].size() * 9 * sizeof(float);
+    result.index_bytes = source_indices.size() * sizeof(int);
+    result.row_metadata_bytes = row_offsets.size() * sizeof(int);
+    return result;
+}
+
+StaticP2PMemory FloatStaticP2PLeafPlan::memory() const noexcept
+{
+    StaticP2PMemory result;
+    result.tensor_bytes = tensors[0].size() * 6 * sizeof(float);
+    result.row_metadata_bytes = leaf_row_offsets.size() * sizeof(int);
+    result.leaf_metadata_bytes =
+        (target_begins.size() + target_counts.size()) * sizeof(int) +
+        blocks.size() * sizeof(StaticP2PLeafBlock);
+    return result;
+}
+
+StaticP2PMemory FloatStaticP2PBsrPlan::memory() const noexcept
+{
+    StaticP2PMemory result;
+    result.tensor_bytes = values.size() * sizeof(float);
+    result.index_bytes = source_indices.size() * sizeof(int);
+    result.row_metadata_bytes =
+        (row_offsets.size() + target_source_indices.size()) * sizeof(int);
+    return result;
+}
+
+void apply_static_operator(
+    const FloatStaticCoefficientOperator& operator_map,
+    const std::span<const float> input,
+    const std::span<float> output)
+{
+    if (input.size() != static_cast<std::size_t>(operator_map.input_size) ||
+        output.size() != static_cast<std::size_t>(operator_map.output_size)) {
+        throw std::invalid_argument("static FP32 operator dimensions are inconsistent");
+    }
+    for (const FloatStaticOperatorEntry& entry : operator_map.entries) {
+        output[static_cast<std::size_t>(entry.output)] +=
+            entry.value * input[static_cast<std::size_t>(entry.input)];
+    }
+}
+
+FloatPotentialField apply_static_l2p_evaluator(
+    const FloatStaticL2PEvaluator& evaluator,
+    const std::span<const float> L,
+    const OutputFlags output)
+{
+    if (evaluator.potential.size() != L.size()) {
+        throw std::invalid_argument("static FP32 L2P dimensions are inconsistent");
+    }
+    FloatPotentialField result;
+    for (std::size_t index = 0; index < L.size(); ++index) {
+        if (has_flag(output, OutputFlags::Potential)) {
+            result.phi += evaluator.potential[index] * L[index];
+        }
+        if (has_flag(output, OutputFlags::Field)) {
+            result.H.x += evaluator.field[0][index] * L[index];
+            result.H.y += evaluator.field[1][index] * L[index];
+            result.H.z += evaluator.field[2][index] * L[index];
+        }
+    }
+    return result;
+}
+
+void apply_static_p2p_compact_plan(
+    const FloatStaticP2PCompactPlan& plan,
+    const std::span<const FloatVec3> dipole_moments,
+    const std::span<FloatVec3> H,
+    const std::span<const int> target_source_indices)
+{
+    if (dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
+        H.size() != static_cast<std::size_t>(plan.target_count) ||
+        (!target_source_indices.empty() && target_source_indices.size() != H.size())) {
+        throw std::invalid_argument("compact FP32 P2P dimensions are inconsistent");
+    }
+#pragma omp parallel for schedule(static) if(plan.target_count >= 64)
+    for (int target = 0; target < plan.target_count; ++target) {
+        FloatVec3 field{};
+        const int self = target_source_indices.empty()
+            ? -1 : target_source_indices[static_cast<std::size_t>(target)];
+        for (int entry = plan.row_offsets[static_cast<std::size_t>(target)];
+             entry < plan.row_offsets[static_cast<std::size_t>(target) + 1];
+             ++entry) {
+            const std::size_t index = static_cast<std::size_t>(entry);
+            const int source = plan.source_indices[index];
+            if (source == self) {
+                continue;
+            }
+            const FloatVec3 moment = dipole_moments[static_cast<std::size_t>(source)];
+            field.x += plan.tensors[0][index] * moment.x +
+                       plan.tensors[1][index] * moment.y +
+                       plan.tensors[2][index] * moment.z;
+            field.y += plan.tensors[1][index] * moment.x +
+                       plan.tensors[3][index] * moment.y +
+                       plan.tensors[4][index] * moment.z;
+            field.z += plan.tensors[2][index] * moment.x +
+                       plan.tensors[4][index] * moment.y +
+                       plan.tensors[5][index] * moment.z;
+        }
+        H[static_cast<std::size_t>(target)] += field;
     }
 }
 

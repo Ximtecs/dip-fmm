@@ -31,4 +31,10 @@ struct PotentialField {
   /// @brief Magnetic field H = -grad(phi) contribution (optional output).
   Vec3 H{};
 };
+
+/** @brief Single-precision potential and field result for FP32 FMM. */
+struct FloatPotentialField {
+  float phi{0.0F};
+  FloatVec3 H{};
+};
 } // namespace cdfmm

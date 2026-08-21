@@ -7,6 +7,7 @@
 
 #include "cdfmm/operators.hpp"
 #include "cdfmm/cuboid.hpp"
+#include "cdfmm/precision.hpp"
 
 namespace cdfmm {
 
@@ -53,15 +54,18 @@ struct StaticL2PEvaluator {
 };
 
 /**
- * @brief Six independent entries of one fixed dipole interaction tensor.
+ * @brief Fixed potential row and six independent dipole-field tensor entries.
  *
  * The target/source indices use Morton-sorted particle order. Symmetry stores
- * only xx, xy, xz, yy, yz and zz; the block contains immutable mathematical
- * data and no per-evaluation moment or field storage.
+ * only xx, xy, xz, yy, yz and zz. The px, py, and pz row maps a moment to
+ * scalar potential. The block contains no per-evaluation state.
  */
 struct StaticDipoleBlock {
     int target{0};
     int source{0};
+    double px{0.0};
+    double py{0.0};
+    double pz{0.0};
     double xx{0.0};
     double xy{0.0};
     double xz{0.0};
@@ -130,6 +134,8 @@ struct StaticP2PCompactPlan {
   int target_count{0};
   std::vector<int> row_offsets{};
   std::vector<int> source_indices{};
+  /// Coefficients mapping a dipole moment to scalar potential.
+  std::array<std::vector<double>, 3> potential{};
   std::array<std::vector<double>, 6> tensors{};
 
   /// @brief Returns the storage breakdown for this execution packing.
@@ -221,12 +227,161 @@ struct StaticM2LPlan {
     std::vector<int> level_target_end{};
 };
 
+//------------------------------------------------------------------------------
+// FP32 execution representations
+//------------------------------------------------------------------------------
+
+/** @brief FP32 counterpart of one sparse static coefficient entry. */
+struct FloatStaticOperatorEntry {
+    int output{0};
+    int input{0};
+    float value{0.0F};
+};
+
+/** @brief FP32 sparse coefficient operator with no retained FP64 values. */
+struct FloatStaticCoefficientOperator {
+    int input_size{0};
+    int output_size{0};
+    std::vector<FloatStaticOperatorEntry> entries{};
+};
+
+/** @brief FP32 local-evaluation rows. */
+struct FloatStaticL2PEvaluator {
+    std::vector<float> potential{};
+    std::array<std::vector<float>, 3> field{};
+};
+
+/** @brief FP32 symmetric near-field tensor and particle indices. */
+struct FloatStaticDipoleBlock {
+    int target{0};
+    int source{0};
+    float px{0.0F};
+    float py{0.0F};
+    float pz{0.0F};
+    float xx{0.0F};
+    float xy{0.0F};
+    float xz{0.0F};
+    float yy{0.0F};
+    float yz{0.0F};
+    float zz{0.0F};
+};
+
+#if defined(__CUDACC__)
+#define CDFMM_HOST_DEVICE __host__ __device__
+#else
+#define CDFMM_HOST_DEVICE
+#endif
+
+/** @brief Accumulates one FP32 symmetric dipole tensor product. */
+CDFMM_HOST_DEVICE inline void accumulate_static_dipole_block(
+    const FloatStaticDipoleBlock& block,
+    const FloatVec3& moment,
+    FloatVec3& H
+) noexcept {
+    H.x += block.xx * moment.x + block.xy * moment.y + block.xz * moment.z;
+    H.y += block.xy * moment.x + block.yy * moment.y + block.yz * moment.z;
+    H.z += block.xz * moment.x + block.yz * moment.y + block.zz * moment.z;
+}
+
+#undef CDFMM_HOST_DEVICE
+
+/** @brief Canonical FP32 target-row near-field operator. */
+struct FloatStaticP2POperator {
+    int source_count{0};
+    int target_count{0};
+    std::vector<int> row_offsets{};
+    std::vector<FloatStaticDipoleBlock> blocks{};
+
+    [[nodiscard]] std::size_t memory_bytes() const noexcept;
+};
+
+/** @brief FP32 source-only SoA near-field packing. */
+struct FloatStaticP2PCompactPlan {
+    int source_count{0};
+    int target_count{0};
+    std::vector<int> row_offsets{};
+    std::vector<int> source_indices{};
+    std::array<std::vector<float>, 3> potential{};
+    std::array<std::vector<float>, 6> tensors{};
+
+    [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
+/** @brief FP32 compact leaf-grouped near-field packing. */
+struct FloatStaticP2PLeafPlan {
+    int source_count{0};
+    int target_count{0};
+    std::vector<int> target_begins{};
+    std::vector<int> target_counts{};
+    std::vector<int> leaf_row_offsets{};
+    std::vector<StaticP2PLeafBlock> blocks{};
+    std::array<std::vector<float>, 6> tensors{};
+    int minimum_occupancy{0};
+    int maximum_occupancy{0};
+    double mean_occupancy{0.0};
+    int unique_occupancies{0};
+    bool uniform_occupancy{false};
+
+    [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
+/** @brief Full FP32 BSR(3) near-field packing. */
+struct FloatStaticP2PBsrPlan {
+    int source_count{0};
+    int target_count{0};
+    std::vector<int> row_offsets{};
+    std::vector<int> source_indices{};
+    std::vector<float> values{};
+    std::vector<int> target_source_indices{};
+
+    [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
+/** @brief Canonical FP32 static M2L plan. */
+struct FloatStaticM2LPlan {
+    int coefficient_count{0};
+    int matrix_count{0};
+    int level_count{0};
+    std::vector<float> matrices{};
+    std::vector<float> multipole_scaling{};
+    std::vector<float> local_scaling{};
+    std::vector<int> target_row_offsets{};
+    std::vector<int> source_nodes{};
+    std::vector<int> matrix_ids{};
+    std::vector<int> interaction_levels{};
+    std::vector<int> level_target_begin{};
+    std::vector<int> level_target_end{};
+};
+
+[[nodiscard]] FloatStaticCoefficientOperator quantise_static_operator(
+    const StaticCoefficientOperator& source);
+[[nodiscard]] FloatStaticL2PEvaluator quantise_static_l2p_evaluator(
+    const StaticL2PEvaluator& source);
+[[nodiscard]] FloatStaticP2POperator quantise_static_p2p_operator(
+    const StaticP2POperator& source);
+[[nodiscard]] FloatStaticP2PCompactPlan quantise_static_p2p_compact_plan(
+    const StaticP2PCompactPlan& source);
+[[nodiscard]] FloatStaticP2PLeafPlan quantise_static_p2p_leaf_plan(
+    const StaticP2PLeafPlan& source);
+[[nodiscard]] FloatStaticP2PBsrPlan quantise_static_p2p_bsr_plan(
+    const StaticP2PBsrPlan& source);
+[[nodiscard]] FloatStaticM2LPlan quantise_static_m2l_plan(
+    const StaticM2LPlan& source);
+
 /** @brief Applies one level of the canonical target-row M2L plan. */
 void apply_static_m2l_plan(
     const StaticM2LPlan& plan,
     int level,
     std::span<const double> multipoles,
     std::span<double> locals
+);
+
+/** @brief Applies one level of an FP32 canonical target-row M2L plan. */
+void apply_static_m2l_plan(
+    const FloatStaticM2LPlan& plan,
+    int level,
+    std::span<const float> multipoles,
+    std::span<float> locals
 );
 
 /** @brief Compatibility overload for independently allocated node vectors. */
@@ -378,6 +533,46 @@ void apply_static_coefficient_matrix(
     std::span<const double> matrix,
     std::span<const double> input,
     std::span<double> output
+);
+
+void apply_static_operator(
+    const FloatStaticCoefficientOperator& operator_map,
+    std::span<const float> input,
+    std::span<float> output
+);
+
+[[nodiscard]] FloatPotentialField apply_static_l2p_evaluator(
+    const FloatStaticL2PEvaluator& evaluator,
+    std::span<const float> L,
+    OutputFlags output = OutputFlags::Field
+);
+
+void apply_static_p2p_compact_plan(
+    const FloatStaticP2PCompactPlan& plan,
+    std::span<const FloatVec3> dipole_moments,
+    std::span<FloatVec3> H,
+    std::span<const int> target_source_indices = {}
+);
+
+void apply_static_p2p_operator(
+    const FloatStaticP2POperator& operator_map,
+    std::span<const FloatVec3> dipole_moments,
+    std::span<FloatVec3> H,
+    std::span<const int> target_source_indices = {}
+);
+
+void apply_static_p2p_leaf_plan(
+    const FloatStaticP2PLeafPlan& plan,
+    std::span<const FloatVec3> dipole_moments,
+    std::span<FloatVec3> H,
+    std::span<const int> target_source_indices = {}
+);
+
+void apply_static_p2p_bsr_plan(
+    const FloatStaticP2PBsrPlan& plan,
+    std::span<const FloatVec3> dipole_moments,
+    std::span<FloatVec3> H,
+    std::span<const int> target_source_indices = {}
 );
 
 } // namespace cdfmm

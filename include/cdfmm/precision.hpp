@@ -7,7 +7,7 @@ namespace cdfmm {
 // Public types
 //------------------------------------------------------------------------------
 
-/** @brief Selects the scalar type used by immutable geometry-dependent data. */
+/** @brief Selects the scalar type used by FMM operators and execution state. */
 enum class StaticPrecision {
     Float32,
     Float64

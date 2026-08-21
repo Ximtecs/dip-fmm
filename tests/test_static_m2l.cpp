@@ -127,7 +127,7 @@ TEST_CASE("P2P execution packings preserve canonical rows and self identity") {
   }
 
   REQUIRE(compact.memory().tensor_bytes ==
-          interactions.size() * 6 * sizeof(double));
+          interactions.size() * 9 * sizeof(double));
   REQUIRE(compact.memory().index_bytes == interactions.size() * sizeof(int));
   REQUIRE(leaf.memory().tensor_bytes ==
           interactions.size() * 6 * sizeof(double));
@@ -463,6 +463,7 @@ TEST_CASE("static grouped M2L matches the independent reference traversal") {
 
   for (const int order : {2, 3, 4}) {
         UniformFmmOptions static_options;
+        static_options.precision = StaticPrecision::Float64;
         static_options.expansion_order = order;
         static_options.tree.max_level = 3;
         static_options.backend = ExecutionBackend::CpuStatic;
@@ -536,6 +537,7 @@ TEST_CASE("oneMKL and portable static matrices agree when oneMKL is enabled") {
   const std::vector<int> identities{0, 1, 2, 3};
 
   UniformFmmOptions portable_options;
+    portable_options.precision = StaticPrecision::Float64;
     portable_options.expansion_order = 3;
     portable_options.tree.max_level = 2;
     portable_options.backend = ExecutionBackend::CpuStatic;

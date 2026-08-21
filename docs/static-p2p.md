@@ -9,8 +9,8 @@ that leaf. `build_static_p2p_operator` sorts those pairs by `(target, source)`.
 
 `StaticP2POperator` remains the backend-independent mathematical source of
 truth. `row_offsets[target]` identifies a target row. Each
-`StaticDipoleBlock` stores two four-byte particle indices and six eight-byte
-symmetric tensor coefficients, or 56 bytes per interaction. CPU evaluation
+`StaticDipoleBlock` stores two particle indices, three potential-row
+coefficients, and six symmetric field-tensor coefficients. CPU evaluation
 assigns one target row to one OpenMP iteration. CUDA previously used the same
 record with one thread per target. Both avoid atomics. The target index is
 redundant during execution because its row already identifies it.
@@ -26,13 +26,13 @@ The canonical operator can generate three immutable portable packings:
 
 ```text
 StaticP2POperator (canonical AoS)
-    +-- StaticP2PCompactPlan: rows + source indices + six tensor streams
+    +-- StaticP2PCompactPlan: rows + source indices + three potential and six field streams
     +-- StaticP2PLeafPlan: target-leaf rows + source ranges + six streams
     +-- StaticP2PBsrPlan: rows + source indices + full 3 x 3 blocks
 ```
 
-The particle-row packing uses 52 bytes per interaction plus row offsets. The
-leaf packing uses 48 bytes per interaction; particle indices are implied by
+The particle-row packing retains the complete potential/field operator. The
+field-only leaf packing omits particle indices because they are implied by
 each dense target/source leaf rectangle. It supports unequal occupancies and
 empty neighbours. Construction verifies that the rectangles cover every
 canonical entry exactly once, and records minimum, maximum, mean, unique-count,
@@ -61,7 +61,7 @@ arrays are uploaded at construction and remain resident on the device:
   batches up to 128 source moments through shared memory, and keeps one field
   accumulator per target thread in registers;
 - `cuda-cusparse-bsr3` applies the persistent full BSR matrix with
-  `cusparseDbsrmv` and block size three.
+  `cusparseSbsrmv` or `cusparseDbsrmv` and block size three.
 
 The leaf tensor is transposed once during CUDA setup from portable
 target-major order to source-major order within every leaf rectangle. This

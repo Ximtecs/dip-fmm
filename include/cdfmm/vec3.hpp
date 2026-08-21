@@ -37,6 +37,26 @@ struct Vec3 {
   }
 };
 
+/** @brief Single-precision Cartesian vector used by FP32 FMM state. */
+struct FloatVec3 {
+  float x{0.0F};
+  float y{0.0F};
+  float z{0.0F};
+
+  FloatVec3() = default;
+  FloatVec3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
+
+  float &operator[](int i) { return i == 0 ? x : (i == 1 ? y : z); }
+  float operator[](int i) const { return i == 0 ? x : (i == 1 ? y : z); }
+
+  FloatVec3 &operator+=(const FloatVec3 &b) {
+    x += b.x;
+    y += b.y;
+    z += b.z;
+    return *this;
+  }
+};
+
 /// @brief Multiplies every vector component by a scalar.
 inline Vec3 operator*(double s, const Vec3 &v) { return v * s; }
 /// @brief Computes the Cartesian dot product.
