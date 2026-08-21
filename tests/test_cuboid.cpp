@@ -68,6 +68,31 @@ TEST_CASE("dense direct stores six rectangular matrices and reuses them")
     }
 }
 
+TEST_CASE("dense direct FP32 storage halves tensor memory")
+{
+    const std::array<Vec3, 2> sources{{{0.0, 0.0, 0.0},
+                                       {1.0, -0.5, 0.25}}};
+    const std::array<Vec3, 2> targets{{{0.0, 0.0, 2.0},
+                                       {2.0, 1.0, 3.0}}};
+    const std::array<Vec3, 2> moments{{{1.0, 2.0, 3.0},
+                                       {-2.0, 1.0, 0.5}}};
+    const DenseDirectPlan fp64(sources, targets);
+    const DenseDirectPlan fp32(
+        sources, targets, SourceGeometry::PointDipole, TargetGeometry::Point,
+        {}, {}, {}, StaticPrecision::Float32);
+
+    REQUIRE(fp32.static_precision() == StaticPrecision::Float32);
+    REQUIRE(fp32.tensor_memory_bytes() * 2 == fp64.tensor_memory_bytes());
+
+    const auto reference = fp64.evaluate(moments, DenseDirectBackend::Portable);
+    const auto reduced = fp32.evaluate(moments, DenseDirectBackend::Portable);
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+        REQUIRE(reduced[target].x == Catch::Approx(reference[target].x).epsilon(2.0e-6));
+        REQUIRE(reduced[target].y == Catch::Approx(reference[target].y).epsilon(2.0e-6));
+        REQUIRE(reduced[target].z == Catch::Approx(reference[target].z).epsilon(2.0e-6));
+    }
+}
+
 TEST_CASE("cuboid P2M and L2P use volume averaged monomials")
 {
     const MultiIndexSet basis(3);
