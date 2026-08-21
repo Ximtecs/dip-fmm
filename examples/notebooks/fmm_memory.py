@@ -11,8 +11,8 @@ import cdfmm
 
 
 STATIC_ENTRY_BYTES = 16
-P2P_BLOCK_BYTES = 56
-P2P_SOA_INTERACTION_BYTES = 52
+P2P_BLOCK_BYTES = 80
+P2P_SOA_INTERACTION_BYTES = 76
 VEC3_BYTES = 24
 DOUBLE_BYTES = 8
 INT_BYTES = 4
@@ -176,6 +176,12 @@ def estimate_source_point_storage(
         "cached M2L matrices": cached_matrix_bytes + level_scaling_bytes,
         "M2L interaction indices": interaction_index_bytes,
         "L2P rows": 4 * coefficients * particle_count * DOUBLE_BYTES,
+        "multipole and local state": (
+            2 * len(nodes) * coefficients * DOUBLE_BYTES
+        ),
+        "moments, results, near fields, and identities": (
+            particle_count * (VEC3_BYTES + 32 + VEC3_BYTES + INT_BYTES)
+        ),
     }
 
     coefficient_buffer_bytes = 2 * len(nodes) * coefficients * DOUBLE_BYTES

@@ -205,6 +205,36 @@ py::dict potential_fields_to_dict(std::span<const PotentialField> results) {
   return output;
 }
 
+py::dict potential_fields_to_dict(
+    const std::span<const FloatPotentialField> results) {
+  py::dict output;
+  py::array_t<float> potential(results.size());
+  py::array_t<float> field(
+      {static_cast<py::ssize_t>(results.size()), static_cast<py::ssize_t>(3)});
+  auto potential_values = potential.mutable_unchecked<1>();
+  auto field_values = field.mutable_unchecked<2>();
+  for (py::ssize_t i = 0; i < static_cast<py::ssize_t>(results.size()); ++i) {
+    const FloatPotentialField &result = results[static_cast<std::size_t>(i)];
+    potential_values(i) = result.phi;
+    field_values(i, 0) = result.H.x;
+    field_values(i, 1) = result.H.y;
+    field_values(i, 2) = result.H.z;
+  }
+  output["phi"] = potential;
+  output["H"] = field;
+  return output;
+}
+
+py::array_t<float> coefficients_to_array(const std::span<const float> values) {
+  py::array_t<float> array(values.size());
+  auto output = array.mutable_unchecked<1>();
+  for (py::ssize_t index = 0;
+       index < static_cast<py::ssize_t>(values.size()); ++index) {
+    output(index) = values[static_cast<std::size_t>(index)];
+  }
+  return array;
+}
+
 py::array_t<double> points_to_array(std::span<const Vec3> points) {
   py::array_t<double> array(
       {static_cast<py::ssize_t>(points.size()), static_cast<py::ssize_t>(3)});
@@ -553,6 +583,7 @@ PYBIND11_MODULE(cdfmm, module) {
 
     py::class_<UniformFmmOptions>(module, "UniformFmmOptions")
         .def(py::init<>())
+        .def_readwrite("precision", &UniformFmmOptions::precision)
         .def_readwrite("expansion_order", &UniformFmmOptions::expansion_order)
         .def_readwrite("tree", &UniformFmmOptions::tree)
         .def_readwrite("m2l_backend", &UniformFmmOptions::m2l_backend)
@@ -606,8 +637,13 @@ PYBIND11_MODULE(cdfmm, module) {
               if (!target_source_indices.is_none()) {
                 identities = py::cast<std::vector<int>>(target_source_indices);
               }
+              const OutputFlags output_flags = parse_output(output);
+              if (fmm.precision() == StaticPrecision::Float32) {
+                return potential_fields_to_dict(
+                    fmm.evaluate_float32(moments, output_flags, identities));
+              }
               return potential_fields_to_dict(
-                  fmm.evaluate(moments, parse_output(output), identities));
+                  fmm.evaluate(moments, output_flags, identities));
             },
             py::arg("dipole_moments"), py::arg("output") = "field",
             py::arg("target_source_indices") = py::none(),
@@ -619,6 +655,7 @@ PYBIND11_MODULE(cdfmm, module) {
             [](const UniformFmm &fmm) { return fmm.basis().order(); })
         .def_property_readonly("m2l_backend", &UniformFmm::m2l_backend)
         .def_property_readonly("backend", &UniformFmm::backend)
+        .def_property_readonly("precision", &UniformFmm::precision)
         .def_property_readonly("p2p_execution_packing",
                                &UniformFmm::p2p_execution_packing)
         .def_property_readonly(
@@ -626,6 +663,7 @@ PYBIND11_MODULE(cdfmm, module) {
             [](const UniformFmm &fmm) {
               const CudaPlanStatistics &statistics = fmm.cuda_plan_statistics();
               py::dict result;
+              result["scalar_bytes"] = statistics.scalar_bytes;
               result["m2m_unique_matrix_count"] =
                   statistics.m2m_unique_matrix_count;
               result["m2m_matrix_bytes"] = statistics.m2m_matrix_bytes;
@@ -667,11 +705,13 @@ PYBIND11_MODULE(cdfmm, module) {
               const StaticPlanStatistics &statistics =
                   fmm.static_plan_statistics();
               py::dict result;
+              result["scalar_bytes"] = statistics.scalar_bytes;
               result["transfer_classes"] = statistics.transfer_classes;
               result["interactions"] = statistics.interactions;
               result["operator_bytes"] = statistics.operator_bytes;
               result["interaction_bytes"] = statistics.interaction_bytes;
               result["scratch_bytes"] = statistics.scratch_bytes;
+              result["state_bytes"] = statistics.state_bytes;
               result["m2m_operators"] = statistics.m2m_operators;
               result["m2m_theoretical_interactions"] =
                   statistics.m2m_theoretical_interactions;
@@ -698,24 +738,38 @@ PYBIND11_MODULE(cdfmm, module) {
             })
         .def_property_readonly("root_multipole",
                                [](const UniformFmm &fmm) {
+                                 if (fmm.precision() ==
+                                     StaticPrecision::Float32) {
+                                   return py::object(coefficients_to_array(
+                                       fmm.root_multipole_float32()));
+                                 }
                                  const auto coefficients = fmm.root_multipole();
-                                 return coefficients_to_array(CoeffVector(
-                                     coefficients.begin(), coefficients.end()));
+                                 return py::object(coefficients_to_array(
+                                     CoeffVector(coefficients.begin(),
+                                                 coefficients.end())));
                                })
         .def(
             "multipole",
             [](const UniformFmm &fmm, const int node_index) {
+              if (fmm.precision() == StaticPrecision::Float32) {
+                return py::object(
+                    coefficients_to_array(fmm.multipole_float32(node_index)));
+              }
               const auto coefficients = fmm.multipole(node_index);
-              return coefficients_to_array(
-                  CoeffVector(coefficients.begin(), coefficients.end()));
+              return py::object(coefficients_to_array(
+                  CoeffVector(coefficients.begin(), coefficients.end())));
             },
             py::arg("node_index"))
         .def(
             "local",
             [](const UniformFmm &fmm, const int node_index) {
+              if (fmm.precision() == StaticPrecision::Float32) {
+                return py::object(
+                    coefficients_to_array(fmm.local_float32(node_index)));
+              }
               const auto coefficients = fmm.local(node_index);
-              return coefficients_to_array(
-                  CoeffVector(coefficients.begin(), coefficients.end()));
+              return py::object(coefficients_to_array(
+                  CoeffVector(coefficients.begin(), coefficients.end())));
             },
             py::arg("node_index"));
 
@@ -1005,7 +1059,7 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
             py::arg("source_sizes") = std::vector<CuboidSize>{},
             py::arg("target_sizes") = std::vector<CuboidSize>{},
             py::arg("target_source_indices") = std::vector<int>{},
-            py::arg("static_precision") = "float64")
+            py::arg("static_precision") = "float32")
         .def("evaluate", [](const DenseDirectPlan& plan, py::object moments,
                             const DenseDirectBackend backend) {
             const std::vector<Vec3> parsed_moments =

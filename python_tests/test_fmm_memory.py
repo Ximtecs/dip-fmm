@@ -50,9 +50,9 @@ def test_single_particle_storage_has_manual_counts():
     assert estimate.transfer_classes == 0
     assert estimate.m2l_interactions == 0
     assert estimate.p2p_pairs == 1
-    assert estimate.host_static_bytes == 500
-    assert estimate.cuda_partial_bytes == 332
-    assert estimate.cuda_full_bytes == 700
+    assert estimate.host_static_bytes == 776
+    assert estimate.cuda_partial_bytes == 356
+    assert estimate.cuda_full_bytes == 724
 
 
 def test_storage_estimate_detects_far_field_interactions():
@@ -74,6 +74,7 @@ def test_host_storage_estimate_matches_constructed_cpu_static_plan():
     positions = np.random.default_rng(3).uniform(-0.9, 0.9, size=(24, 3))
     estimate = estimate_source_point_storage(positions, order=3, depth=2)
     options = cdfmm.UniformFmmOptions()
+    options.precision = cdfmm.StaticPrecision.FLOAT64
     options.expansion_order = 3
     options.tree.max_level = 2
     options.tree.root_centre = cdfmm.Vec3(0.0, 0.0, 0.0)

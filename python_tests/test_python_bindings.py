@@ -8,8 +8,10 @@ def test_dense_direct_static_precision_and_input_dtypes():
     moments32 = np.array([[1.0, 2.0, 3.0], [-2.0, 1.0, 0.5]], dtype=np.float32)
     moments64 = moments32.astype(np.float64)
 
-    fp32 = cdfmm.DenseDirectPlan(sources32, targets64, static_precision="float32")
-    fp64 = cdfmm.DenseDirectPlan(sources32.astype(np.float64), targets64)
+    fp32 = cdfmm.DenseDirectPlan(sources32, targets64)
+    fp64 = cdfmm.DenseDirectPlan(
+        sources32.astype(np.float64), targets64, static_precision="float64"
+    )
 
     assert fp32.static_precision == cdfmm.StaticPrecision.FLOAT32
     assert fp32.tensor_memory_bytes * 2 == fp64.tensor_memory_bytes
