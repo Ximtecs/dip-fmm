@@ -37,12 +37,11 @@ The C++ suite selects CPU reference/static backends explicitly and compares
 contract. CUDA tests remain excluded from hosted CI.
 
 The partial path performs CPU moment permutation, P2M and M2M; the shared CUDA
-target-row M2L executor; then CPU L2L and L2P. The cached
+target-row M2L executor; then CPU L2L and L2P. Its cached list1 P2P tensor runs
+independently on a second CUDA stream and joins the far-field result once. The
 full path applies every CPU-built static operator on the GPU and keeps
 multipoles, locals, near fields, and far fields resident between phases.
-sparse list-1 P2P tensor runs independently on a second CUDA stream and joins
-the far-field result once. Static M2L and P2P data are uploaded only during
-plan construction.
+Static M2L and P2P data are uploaded only during plan construction.
 
 The CUDA direct convenience evaluator is an O(N^2) validation reference, not
 an FMM backend. It uploads geometry when called and must not be used to claim a
@@ -59,10 +58,11 @@ them.  Unit tests cover multi-index counts and ordering, Taylor-jet algebra,
 Laplace derivatives, output modes, axial and transverse direct dipoles, tree
 topology, sorting, ranges, and interaction lists.
 
-The default exact static M2L backend is checked against the independently
-retained `m2l_add()` traversal. Select that validation path explicitly with
-`UniformFmmOptions::m2l_backend = M2LBackend::Reference`; static-plan matrices,
-interaction maps, and scratch storage are constructed only once.
+Cartesian static M2L is checked against the independently retained `m2l_add()`
+traversal. Select that validation path explicitly with a Cartesian plan and
+`UniformFmmOptions::m2l_backend = M2LBackend::Reference`. Spherical dense M2L
+has focused translation, convergence, full-traversal, precision, and backend
+agreement tests.
 
 Operator accuracy tests compare these paths with direct P2P:
 
@@ -113,8 +113,9 @@ manual and compares the persistent custom six-value block executor with the CPU
 static result when a device is available. Geometry and tensor values are
 uploaded once; evaluation traffic contains moments, identities, and fields.
 
-MagTense's six separate component matrices provide the architectural reference.
-Here a single row structure and one compact block kernel reuse indices across
-all components, use one launch, and load six rather than nine tensor values.
-A generic 3-by-3 BSR form would store nine values and was therefore not retained
-without platform benchmark evidence that compensates for its extra bandwidth.
+The canonical tensor stores six symmetric values with one shared row structure.
+Portable CPU production uses the derived particle-row SoA packing. CUDA can
+derive full BSR(3) blocks when a fixed identity map and memory budget permit;
+otherwise it retains canonical target rows. Leaf-grouped and alternative BSR
+packings remain available for validation and performance studies. See
+[Static P2P execution study](static-p2p.md).

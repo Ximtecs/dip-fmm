@@ -62,9 +62,10 @@ from `$CONDA_PREFIX/lib/cmake/mkl`. If CMake still reports that MKL is missing,
 verify the active environment with
 `test -f "$CONDA_PREFIX/lib/cmake/mkl/MKLConfig.cmake"`.
 
-Static M2L issues one DGEMM per transfer class. It does not place an OpenMP
-region around DGEMM, preventing accidental OpenMP-by-MKL multiplication. Set
-and record `OMP_NUM_THREADS` and `MKL_NUM_THREADS` explicitly when benchmarking.
+Static M2L issues one SGEMM or DGEMM per transfer class according to plan
+precision. It does not place an OpenMP region around the BLAS call, preventing
+accidental OpenMP-by-MKL multiplication. Set and record `OMP_NUM_THREADS` and
+`MKL_NUM_THREADS` explicitly when benchmarking.
 
 For the six-way CPU direct, CUDA direct, portable static-matrix FMM, oneMKL
 static-matrix FMM, partial CUDA FMM, and full CUDA FMM comparison, build the

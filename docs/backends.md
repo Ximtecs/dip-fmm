@@ -1,84 +1,91 @@
 # Execution backends
 
-All production backends consume the same CPU-built static operators and use
-the same uniform-tree interaction lists. Backend selection changes where an
-operator is applied, not its mathematical definition or traversal order.
-`Auto` resolves conservatively to `CpuStatic`.
+All FMM production backends consume one canonical CPU-built static plan.
+Backend selection changes where and how an operator is applied; it does not
+change the tree, interaction partition, operator mathematics, or requested
+precision. `ExecutionBackend::Auto` resolves to `CpuStatic` and never replaces
+an FMM request with an all-to-all direct calculation.
 
 ## Operator placement
 
-| Backend | P2M | M2M | M2L | L2L | L2P | P2P |
-|---|---|---|---|---|---|---|
-| CPU portable (`CpuStatic`) | CPU | CPU | CPU | CPU | CPU | CPU |
-| CPU oneMKL | CPU | CPU | oneMKL SGEMM/DGEMM on CPU | CPU | CPU | CPU |
-| CUDA partial (`CudaPartial`) | CPU | CPU | CUDA | CPU | CPU | CUDA |
-| CUDA full (`CudaFull`) | CUDA | CUDA | CUDA | CUDA | CUDA | CUDA |
+| Public selection | P2M | M2M | M2L | L2L | L2P | P2P | Device residency |
+|---|---|---|---|---|---|---|---|
+| `CpuReference` | CPU reference | CPU reference | CPU reference | CPU reference | CPU reference | CPU direct `list1` | Host |
+| `CpuStatic` + `Portable` | CPU static | CPU static | CPU loops | CPU static | CPU static | CPU SoA tensor | Host |
+| `CpuStatic` + `OneMkl` | CPU static | CPU static | oneMKL SGEMM/DGEMM | CPU static | CPU static | CPU SoA tensor | Host |
+| `CudaPartial` | CPU static | CPU static | CUDA target rows | CPU static | CPU static | CUDA static tensor | Static GPU data; expansion state crosses at the M2L boundary |
+| `CudaFull` | CUDA static | CUDA static | CUDA target rows | CUDA static | CUDA static | CUDA static tensor | Operators and coefficient state remain on device |
+| `DenseDirectPlan` | — | — | — | — | — | CPU dense exact | Host geometry tensors |
+| `CudaDirectPlan` | — | — | — | — | — | CUDA dense exact | Persistent device geometry and scratch |
 
-The CPU portable path applies compact sparse P2M/M2M/L2L/L2P/P2P maps and the
-canonical target-row M2L plan without a BLAS dependency. `CpuReference` is an
-independent educational/validation traversal rather than the production
-static path.
+`Portable` and `OneMkl` in the table are values of `StaticMatrixBackend`.
+oneMKL accelerates M2L only: interactions sharing a normalised transfer matrix
+are gathered into columns, multiplied with SGEMM or DGEMM, and scattered to
+target locals. The other stages retain the portable static executors.
 
-The oneMKL option accelerates **M2L only**. Interactions sharing a normalised
-transfer matrix are gathered into columns, multiplied by SGEMM or DGEMM, then scattered
-to target locals. P2M, M2M, L2L, L2P and P2P remain portable CPU operations.
-The oneMKL executor uses the same matrices and level scaling as the portable
-executor.
+`CpuReference` is the independent Cartesian mathematical traversal used for
+validation and education. `CpuStatic` is the portable production default.
+oneMKL, CUDA partial, and CUDA full are production-capable optional builds and
+also remain explicit benchmark selections. The two direct plans are exact
+$O(N^2)$ references, not FMM backends.
 
-Every row supports FP32 and FP64. Backend placement does not change scalar
-precision: an FP32 plan uses four-byte operators, coefficient state, scratch,
-device buffers, and evaluation transfers throughout. Geometry positions remain
-FP64-capable and are converted only where a completed static operator is stored.
+## Basis and geometry support
 
-Cartesian and real spherical expansions use this same placement table. The
-spherical backend supplies `(p+1)^2` real coefficients and dense static M2L
-matrices to the existing executors; CUDA currently uses its canonical
-target-row kernel, while the CPU oneMKL path uses class-grouped SGEMM/DGEMM.
-`CpuReference` is Cartesian-only because it constructs derivative contractions
-dynamically rather than consuming the reusable spherical operator payload.
+Point-dipole Cartesian and real spherical plans support CPU static, oneMKL,
+CUDA partial, and CUDA full execution in FP32 or FP64. `CpuReference` is
+Cartesian-only because it forms dynamic Cartesian derivative contractions
+instead of consuming the spherical static payload.
+
+`UniformFmm` uniform-cuboid sources require the Cartesian basis and a static
+M2L plan. Targets remain points. The lower-level `DenseDirectPlan` independently
+supports point or uniform-cuboid sources and point or volume-averaged-cuboid
+targets. See [Mathematical formulation](math.md) for that distinction.
+
+CUDA-full is the field-only device-resident FMM path. CPU static and the hybrid
+path retain the supported potential calculation; hybrid potential uses the CPU
+near-field calculation because its cached CUDA P2P tensor stores field rows.
+Unsupported combinations fail explicitly.
 
 ## CUDA partial data flow
 
 ```text
-CPU: sort moments -> P2M -> M2M
-                         |
-                         +-- multipoles -> GPU -> M2L -> raw locals -> CPU
+CPU: moments -> sort -> P2M -> M2M
+                              |
+                              +-> multipoles H2D -> CUDA M2L -> locals D2H
 
-moments -> GPU -> P2P -> near field -> CPU       (independent CUDA stream)
+moments H2D -> CUDA P2P -> near field D2H       (independent stream)
 
 CPU: raw locals -> L2L -> L2P -> far field
-CPU: far field + near field -> user-order result
+CPU: far field + near field -> target unsorting
 ```
 
-Static M2L matrices, interaction metadata, scaling tables, and the sparse P2P
-tensor are uploaded when the evaluator is initialised. During evaluation the
-M2L and P2P transfers and kernels run independently; the host waits for P2P
-only when final assembly needs the near field. Potential output uses the CPU
-reference near-field calculation because the static CUDA P2P tensor is
-field-only.
+Static M2L matrices, interaction metadata, scaling tables, and the selected P2P
+packing are uploaded during plan construction. M2L and P2P may overlap; their
+phase timings therefore are not a sequential sum.
 
 ## CUDA full data flow
 
-Geometry-dependent operators, permutations, interaction metadata, scaling
-tables, and persistent buffers are built on the CPU and uploaded once during
-initialisation. A repeated field evaluation is:
-
 ```text
-moments -> GPU
-    sort -> P2M -> M2M -> M2L -> L2L -> L2P
-              moments -> P2P
-          far field + near field -> unsort
-field -> CPU
+changing moments -> H2D
+    -> sort -> P2M -> M2M -> M2L -> L2L -> L2P
+                    +-------------------------> P2P
+    -> far + near -> unsort -> final field -> D2H
 ```
 
-The full path keeps intermediate multipoles, locals, and fields resident on
-the device. M2M must complete a child level before its parent level consumes
-it, and L2L must complete a parent level before its children consume it; the
-single CUDA stream supplies those dependencies. The explicit self-identity map
-becomes part of this persistent plan on its first use and cannot change without
-rebuilding the evaluator.
+Geometry-dependent operators, permutations, identity metadata, scaling tables,
+and persistent scratch are uploaded once. A repeated evaluation uploads only
+the changing moments and downloads only the final user-ordered field. The
+fixed target/source identity map is part of the plan; changing it requires a
+new evaluator.
 
-CUDA compilation and runtime device availability are separate. Requesting an
-unavailable backend raises an error; it never silently changes the algorithm
-or falls back to direct all-to-all evaluation. `cuda_direct_p2p_reference` is
-a separate $O(N^2)$ validation facility, not an FMM backend.
+## Compatibility names and availability
+
+`CudaM2LP2P` is the canonical enum value behind `CudaPartial`.
+`CudaM2L` and `CudaM2LStaticP2P` are compatibility aliases for that same
+hybrid implementation, not separate backends. `cuda_m2l_available()` is
+likewise retained as an alias for `cuda_m2l_p2p_available()`.
+
+CUDA compilation and runtime device availability are separate. Capability
+queries report both, and requesting an unavailable backend raises an error.
+The standalone CUDA direct reference remains separately named so its
+quadratic algorithm cannot be mistaken for a fallback FMM.
