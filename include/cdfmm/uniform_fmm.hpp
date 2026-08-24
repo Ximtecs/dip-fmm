@@ -20,26 +20,47 @@
 namespace cdfmm {
 
 /** @brief Expansion basis used by the reusable far-field hierarchy. */
-enum class ExpansionBasis { Cartesian, Spherical };
+enum class ExpansionBasis {
+    /// Factorial-normalised total-degree Cartesian Taylor coefficients.
+    Cartesian,
+    /// Minimal real tesseral solid harmonics ordered by degree then m.
+    Spherical
+};
 
-/** @brief Spherical M2L strategy; exponential translation is future work. */
-enum class SphericalM2LBackend { StaticDense };
+/** @brief Implemented M2L strategy for real spherical expansions. */
+enum class SphericalM2LBackend {
+    /// Reusable dense real matrix for each integer displacement class.
+    StaticDense
+};
 
 /** @brief Location and implementation used for a complete FMM evaluation. */
 enum class ExecutionBackend {
+    /// Resolve conservatively to the portable CPU static backend.
     Auto,
+    /// Independent Cartesian CPU traversal for validation.
     CpuReference,
+    /// Canonical static plan executed on the CPU.
     CpuStatic,
+    /// Hybrid CPU hierarchy with CUDA M2L and P2P.
     CudaM2LP2P,
+    /// User-facing alias for the hybrid CUDA backend.
     CudaPartial = CudaM2LP2P,
+    /// Complete field-only device-resident static FMM.
     CudaFull,
+    /// Compatibility alias for the hybrid CUDA backend.
     CudaM2L = CudaM2LP2P,
-  CudaM2LStaticP2P = CudaM2LP2P
+    /// Compatibility alias for the hybrid CUDA backend.
+    CudaM2LStaticP2P = CudaM2LP2P
 };
 
 /** @brief Dense multiplication implementation for cached static M2L matrices.
  */
-enum class StaticMatrixBackend { Portable, OneMkl };
+enum class StaticMatrixBackend {
+    /// Internal typed dense multiplication.
+    Portable,
+    /// Class-grouped oneMKL SGEMM or DGEMM.
+    OneMkl
+};
 
 /** @brief Executor selected for one operator in the shared static traversal. */
 enum class StaticOperatorExecutor { Reference, Portable, OneMkl, Cuda };
@@ -149,7 +170,7 @@ struct UniformFmmOptions {
 using M2LBackend = UniformFmmOptions::M2LBackend;
 
 /**
- * @brief Complete uniform FMM evaluator with reusable static M2L by default.
+ * @brief Complete fixed-geometry FMM with reusable static operators.
  *
  * Construction fixes and Morton-sorts the source geometry. Calling
  * `upward_pass` accepts moments in the original user source order and replaces
@@ -158,9 +179,9 @@ using M2LBackend = UniformFmmOptions::M2LBackend;
  * centre.
  *
  * When target geometry is supplied, `evaluate` completes P2M, M2M, M2L, L2L,
- * L2P, and direct list1 P2P. Results are returned in original user target
- * order. The independently callable passes and node coefficients are exposed
- * for validation and education rather than as an optimised execution plan.
+ * L2P, and exact list1 P2P. Results are returned in original user target
+ * order. Production backends consume one canonical static plan; independently
+ * callable passes and node coefficients remain exposed for validation.
  */
 class UniformFmm {
 public:
@@ -253,9 +274,9 @@ public:
 
   /// @brief Returns the fixed complete uniform-tree geometry.
   [[nodiscard]] const UniformTree &tree() const;
-  /// @brief Returns the Cartesian coefficient basis used by every node.
+  /// @brief Returns Cartesian ordering; throws for a spherical plan.
   [[nodiscard]] const MultiIndexSet &basis() const;
-  /// @brief Returns the real spherical mode basis selected by this plan.
+  /// @brief Returns spherical mode ordering; throws for a Cartesian plan.
   [[nodiscard]] const SphericalHarmonicBasis& spherical_basis() const;
   /// @brief Returns the selected expansion representation.
   [[nodiscard]] ExpansionBasis expansion_basis() const noexcept;

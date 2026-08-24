@@ -18,10 +18,20 @@ namespace cdfmm {
 //------------------------------------------------------------------------------
 
 /** @brief Selects the physical model used for a magnetic source. */
-enum class SourceGeometry { PointDipole, UniformCuboid };
+enum class SourceGeometry {
+    /// Singular point dipole carrying a total magnetic moment.
+    PointDipole,
+    /// Axis-aligned uniformly magnetised cuboid carrying a total moment.
+    UniformCuboid
+};
 
 /** @brief Selects point or volume-averaged field evaluation. */
-enum class TargetGeometry { Point, VolumeAveragedCuboid };
+enum class TargetGeometry {
+    /// Evaluate at one point.
+    Point,
+    /// Return the analytical average over an axis-aligned cuboid.
+    VolumeAveragedCuboid
+};
 
 /** @brief Side lengths of an axis-aligned rectangular cuboid. */
 struct CuboidSize {

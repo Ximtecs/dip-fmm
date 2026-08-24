@@ -127,23 +127,39 @@ struct StaticPlanStatistics {
     PhaseTiming l2p_plan{};
     /// @brief Time spent constructing the compact list1 dipole tensors.
     PhaseTiming p2p_tensor_plan{};
+    /// @brief Time spent identifying unique integer M2L displacement classes.
     PhaseTiming transfer_discovery{};
+    /// @brief Time spent generating retained numerical operator values.
     PhaseTiming operator_construction{};
+    /// @brief Time spent allocating persistent plan and execution buffers.
     PhaseTiming buffer_allocation{};
+    /// @brief Total static-plan construction time.
     PhaseTiming total{};
+    /// @brief Number of retained M2L displacement classes.
     std::size_t transfer_classes{0};
+    /// @brief Number of canonical M2L source-to-target interactions.
     std::size_t interactions{0};
+    /// @brief Bytes occupied by all retained numerical operators.
     std::size_t operator_bytes{0};
+    /// @brief Bytes occupied by fixed source-to-multipole maps.
     std::size_t p2m_operator_bytes{0};
+    /// @brief Bytes occupied by all interaction metadata.
     std::size_t interaction_bytes{0};
+    /// @brief Bytes occupied by reusable host execution scratch.
     std::size_t scratch_bytes{0};
     /// @brief Mutable expansions, moments, fields, and result storage.
     std::size_t state_bytes{0};
+    /// @brief Bytes occupied by persistent multipole coefficient state.
     std::size_t multipole_state_bytes{0};
+    /// @brief Bytes occupied by persistent local coefficient state.
     std::size_t local_state_bytes{0};
+    /// @brief Bytes occupied by moments, fields, and other mutable state.
     std::size_t other_state_bytes{0};
+    /// @brief Bytes occupied by fixed target local-evaluation rows.
     std::size_t l2p_operator_bytes{0};
+    /// @brief Bytes occupied by retained list1 values and metadata.
     std::size_t near_field_operator_bytes{0};
+    /// @brief Bytes occupied by immutable uniform-tree storage.
     std::size_t tree_bytes{0};
     /// @brief Shared M2M matrices stored (eight child classes per used level).
     std::size_t m2m_operators{0};
@@ -152,14 +168,14 @@ struct StaticPlanStatistics {
     /// @brief Bytes occupied by the shared M2M operator table.
     std::size_t m2m_operator_bytes{0};
     /// @brief Dense M2L matrices stored after unused classes are discarded.
-  std::size_t m2l_operators{0};
-  /// @brief Bytes occupied by the dense M2L operator table.
-  std::size_t m2l_operator_bytes{0};
-  /// @brief Bytes occupied by M2L source, target, and level metadata.
-  std::size_t m2l_interaction_bytes{0};
-  /// @brief Shared L2L matrices stored (eight child classes per used level).
-  std::size_t l2l_operators{0};
-  /// @brief Complete-tree parent-child relations represented by L2L IDs.
+    std::size_t m2l_operators{0};
+    /// @brief Bytes occupied by the dense M2L operator table.
+    std::size_t m2l_operator_bytes{0};
+    /// @brief Bytes occupied by M2L source, target, and level metadata.
+    std::size_t m2l_interaction_bytes{0};
+    /// @brief Shared L2L matrices stored (eight child classes per used level).
+    std::size_t l2l_operators{0};
+    /// @brief Complete-tree parent-child relations represented by L2L IDs.
     std::size_t l2l_theoretical_interactions{0};
     /// @brief Bytes occupied by the shared L2L operator table.
     std::size_t l2l_operator_bytes{0};
@@ -170,68 +186,80 @@ struct StaticPlanStatistics {
     /// @brief No accuracy-changing coefficient pruning is performed.
     bool numerically_pruned{false};
     /// @brief No hot-path rotations, reflections, or permutations are used.
-  bool symmetry_compressed{false};
+    bool symmetry_compressed{false};
 
-  /// @brief Returns storage occupied only by translation operator tables.
-  [[nodiscard]] std::size_t translation_operator_bytes() const {
-    return m2m_operator_bytes + m2l_operator_bytes + l2l_operator_bytes;
-  }
-  /// @brief Number of particle pairs represented by the list1 tensor.
+    /// @brief Returns storage occupied only by translation operator tables.
+    [[nodiscard]] std::size_t translation_operator_bytes() const {
+        return m2m_operator_bytes + m2l_operator_bytes + l2l_operator_bytes;
+    }
+    /// @brief Number of particle pairs represented by the list1 tensor.
     std::size_t p2p_interactions{0};
     /// @brief Six-coefficient tensor storage.
     std::size_t p2p_value_bytes{0};
     /// @brief Row and source/target index storage.
     std::size_t p2p_index_bytes{0};
     /// @brief Number of times the immutable plan has been constructed.
-  std::uint64_t construction_count{0};
+    std::uint64_t construction_count{0};
 
-  /// @brief Returns the approximate total persistent plan storage.
-  [[nodiscard]] std::size_t total_bytes() const {
-    return operator_bytes + interaction_bytes + scratch_bytes + state_bytes;
-  }
+    /// @brief Returns retained host storage excluding immutable tree storage.
+    [[nodiscard]] std::size_t total_bytes() const {
+        return operator_bytes + interaction_bytes + scratch_bytes + state_bytes;
+    }
 
-  /// @brief Returns the complete host plan, including immutable tree storage.
-  [[nodiscard]] std::size_t total_persistent_bytes() const {
-    return total_bytes() + tree_bytes;
-  }
+    /// @brief Returns the complete host plan, including immutable tree storage.
+    [[nodiscard]] std::size_t total_persistent_bytes() const {
+        return total_bytes() + tree_bytes;
+    }
 };
 
 /** @brief Host/device traffic and persistent storage for a CUDA plan. */
 struct CudaPlanStatistics {
-  /// @brief Bytes used by one selected device execution scalar.
-  std::size_t scalar_bytes{sizeof(double)};
-  std::size_t m2m_unique_matrix_count{0};
-  std::size_t m2m_matrix_bytes{0};
-  std::size_t m2l_unique_matrix_count{0};
-  std::size_t m2l_matrix_bytes{0};
-  std::size_t m2l_interaction_metadata_bytes{0};
-  /// @brief Number of canonical source-to-target M2L interactions.
-  std::size_t m2l_interaction_count{0};
-  /// @brief Number of non-empty target rows executed by CUDA M2L.
-  std::size_t m2l_active_row_count{0};
-  /// @brief Persistent CUDA M2L evaluation scratch in bytes.
-  std::size_t m2l_scratch_bytes{0};
-  /// @brief Threads used by each CUDA M2L target-row kernel block.
-  int m2l_threads_per_block{0};
-  std::size_t l2l_unique_matrix_count{0};
-  std::size_t l2l_matrix_bytes{0};
-  /// @brief Number of particle pairs in the uploaded P2P packing.
-  std::size_t p2p_interaction_count{0};
-  std::size_t p2p_tensor_bytes{0};
-  std::size_t p2p_index_bytes{0};
-  std::size_t p2p_row_metadata_bytes{0};
-  std::size_t p2p_leaf_metadata_bytes{0};
-  std::size_t p2p_identity_bytes{0};
-  std::size_t p2p_scratch_bytes{0};
-  /// @brief Threads per block for a custom P2P kernel, or zero for cuSPARSE.
-  int p2p_threads_per_block{0};
-  std::size_t setup_h2d_bytes{0};
-  std::size_t evaluation_h2d_bytes{0};
-  std::size_t evaluation_d2h_bytes{0};
+    /// @brief Bytes used by one selected device execution scalar.
+    std::size_t scalar_bytes{sizeof(double)};
+    /// @brief Number and bytes of unique uploaded M2M matrices.
+    std::size_t m2m_unique_matrix_count{0};
+    std::size_t m2m_matrix_bytes{0};
+    /// @brief Number and bytes of unique uploaded M2L matrices.
+    std::size_t m2l_unique_matrix_count{0};
+    std::size_t m2l_matrix_bytes{0};
+    /// @brief Bytes occupied by uploaded M2L interaction metadata.
+    std::size_t m2l_interaction_metadata_bytes{0};
+    /// @brief Number of canonical source-to-target M2L interactions.
+    std::size_t m2l_interaction_count{0};
+    /// @brief Number of non-empty target rows executed by CUDA M2L.
+    std::size_t m2l_active_row_count{0};
+    /// @brief Persistent CUDA M2L evaluation scratch in bytes.
+    std::size_t m2l_scratch_bytes{0};
+    /// @brief Threads used by each CUDA M2L target-row kernel block.
+    int m2l_threads_per_block{0};
+    /// @brief Number and bytes of unique uploaded L2L matrices.
+    std::size_t l2l_unique_matrix_count{0};
+    std::size_t l2l_matrix_bytes{0};
+    /// @brief Number of particle pairs in the uploaded P2P packing.
+    std::size_t p2p_interaction_count{0};
+    /// @brief Bytes occupied by P2P values, indices, and packing metadata.
+    std::size_t p2p_tensor_bytes{0};
+    std::size_t p2p_index_bytes{0};
+    std::size_t p2p_row_metadata_bytes{0};
+    std::size_t p2p_leaf_metadata_bytes{0};
+    /// @brief Bytes occupied by immutable P2P self-identity metadata.
+    std::size_t p2p_identity_bytes{0};
+    /// @brief Bytes occupied by persistent P2P evaluation scratch.
+    std::size_t p2p_scratch_bytes{0};
+    /// @brief Threads per block for a custom P2P kernel, or zero for cuSPARSE.
+    int p2p_threads_per_block{0};
+    /// @brief Immutable setup traffic and per-evaluation dynamic traffic.
+    std::size_t setup_h2d_bytes{0};
+    std::size_t evaluation_h2d_bytes{0};
+    std::size_t evaluation_d2h_bytes{0};
+    /// @brief Dynamic transfer counts accumulated over evaluations.
     std::uint64_t evaluation_h2d_calls{0};
     std::uint64_t evaluation_d2h_calls{0};
+    /// @brief Total persistent device allocation owned by the plan.
     std::size_t persistent_device_bytes{0};
+    /// @brief Number of device plans constructed from this payload.
     std::uint64_t plan_generation_count{0};
+    /// @brief Counts of all static, M2L, and P2P upload operations.
     std::uint64_t static_upload_count{0};
     std::uint64_t static_m2l_upload_count{0};
     std::uint64_t static_p2p_upload_count{0};

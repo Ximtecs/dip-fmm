@@ -312,7 +312,7 @@ py::dict accuracy_candidate_to_dict(const AccuracyCandidate &candidate) {
 
 PYBIND11_MODULE(cdfmm, module) {
   module.doc() =
-      "Cartesian dipole FMM reference operators and uniform-tree geometry";
+      "Fixed-geometry Cartesian and spherical dipole FMM operators";
 
     py::class_<Vec3>(module, "Vec3")
         .def(py::init<double, double, double>())
