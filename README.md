@@ -1,14 +1,17 @@
 # dip-fmm
 
-`dip-fmm` is a C++20 Cartesian-coordinate fast multipole method project
-specialised for point-dipole interactions.  It uses
-`G(r) = 1/(4*pi*|r|)` and treats the magnetic field `H = -grad(phi)` as the
-primary result, with optional scalar potential output.
+`dip-fmm` is a C++20 fast multipole method for repeated magnetic-field
+evaluation on fixed geometry. It supports real spherical-harmonic (default)
+and Cartesian expansions, point dipoles, Cartesian uniform-cuboid sources,
+FP32 and FP64 execution, portable CPU, oneMKL, hybrid CUDA, full CUDA, and
+Python bindings. The implementation uses `G(r) = 1/(4*pi*|r|)` and treats
+`H = -grad(phi)` as the primary result, with optional scalar potential output
+on supported paths.
 
-`UniformFmm` builds an immutable static-geometry operator plan by default.
-Fixed P2M, M2M, M2L, L2L, L2P, and list-1 P2P maps are reused across calls
-where only dipole moments change. The independent reference traversal remains
-selectable with `options.m2l_backend = cdfmm::M2LBackend::Reference`.
+`UniformFmm` constructs the uniform tree and reusable P2M, M2M, M2L, L2L,
+L2P, and exact `list1` P2P operators once. Repeated calls then replace only the
+dipole moments. The independent Cartesian reference traversal remains
+selectable for validation.
 
 ```cpp
 cdfmm::UniformFmm fmm(source_positions, target_positions, options);
@@ -22,10 +25,11 @@ In FP32 mode all static operators, expansion state, arithmetic, scratch, and
 CUDA buffers use FP32, while input positions and moments may still be supplied
 as FP64. Python results and coefficient arrays use the selected NumPy dtype.
 
-Python exposes the same default and `cdfmm.M2LBackend.Reference` fallback.
+Python exposes the same spherical default. Assign `"cartesian"` or
+`"spherical"` to `options.expansion_basis`, or use the corresponding enum.
 
-Execution can be selected with `options.backend`: `CpuReference` or
-`CpuStatic`, `CudaPartial`, or `CudaFull`. `Auto` deliberately selects `CpuStatic`; it can
+Execution can be selected with `options.backend`: `CpuReference`, `CpuStatic`,
+`CudaPartial`, or `CudaFull`. `Auto` deliberately selects `CpuStatic`; it can
 never substitute an O(N^2) direct calculation for an FMM traversal.
 `CudaPartial` (with `CudaM2LP2P` retained as an alias) runs P2M, M2M, L2L, and
 L2P on the CPU, applies cached dense M2L
@@ -37,24 +41,18 @@ positions and the self-identity map on the device across evaluations.
 
 ## Status
 
-The CPU reference operator layer is implemented: P2M, M2M, M2L, L2L, L2P,
-M2P, and direct P2P, together with Taylor-jet Laplace derivatives and validation
-helpers.  The repository also contains a complete, non-adaptive,
-Morton-sorted uniform octree with source/target permutations, hierarchical
-ranges, and `list1`/`list2` interactions. `UniformFmm` connects fixed source
-and target geometry to a complete reference traversal: P2M and upward M2M,
-`list2` M2L, downward L2L, leaf L2P, direct `list1` P2P, and result unsorting.
+The production plan is static and non-adaptive. Both expansion bases support
+point-dipole to point-target FMM on CPU static, oneMKL, CUDA partial, and CUDA
+full backends. Cartesian plans additionally support uniform-cuboid sources to
+point targets. Lower-level direct operators support volume-averaged cuboid
+targets, but `UniformFmm` does not yet provide that target geometry end to end.
 
-The evaluator supports field, potential, or both. Source-point self exclusion
-uses an explicit target-to-source identity index rather than coordinate
-equality, and returned values follow user target order. Adaptive trees and
-MagTense/Fortran integration are not implemented. CUDA also provides the
-truthfully named direct O(N^2) reference. `CudaFull` uploads every CPU-built
-static operator once and executes P2M, M2M, M2L, L2L, L2P and P2P on the GPU.
-Its repeated field-only path uploads only moments and downloads only the final
-user-ordered field. The target/source identity map is fixed by the first call;
-changing it requires rebuilding the plan. See the
-[roadmap](docs/roadmap.md) for the next milestone and later research.
+Self exclusion uses an explicit target-to-source identity map rather than
+coordinate equality. CUDA-full keeps all static operators and coefficient
+state resident and, for repeated field evaluation, transfers only changing
+moments to the device and the final user-ordered field back. Adaptive trees,
+a stable C/Fortran interface, and MagTense integration remain future work. See
+the [roadmap](docs/roadmap.md) for the precise capability boundary.
 
 ## Build and test
 
@@ -88,10 +86,10 @@ result = cdfmm.p2p_dipole_pair(
 print(result)
 ```
 
-The experimental Python interface exposes direct evaluation, every current
-expansion operator, Cartesian coefficient ordering, uniform-tree inspection,
-and complete `UniformFmm.evaluate` calls, with per-node multipole and local
-inspection.
+The experimental Python interface exposes direct evaluation, Cartesian
+reference operators, both `UniformFmm` expansion bases, uniform-tree
+inspection, complete evaluation, plan statistics, and per-node multipole and
+local inspection.
 
 ## Interactive examples
 
@@ -106,12 +104,12 @@ jupyter lab
 ```
 
 VSCode users can open a notebook and select the `Python (cdfmm)` kernel. The
-eleven notebooks progress from exact P2P through P2M, M2M, M2P, M2L, L2L, and
-L2P, then compare complete operator chains and visualise the uniform tree,
-including Morton ordering, leaf occupancy, `list1`, and `list2`.  The final
-notebooks visualise the upward pass and complete downward/near-field
-decomposition. See the
-[notebook catalogue](examples/notebooks/README.md) for the full sequence.
+numbered notebooks progress from exact P2P through individual operators, the
+complete tree traversal, CUDA memory, parameter selection, and a spherical
+CUDA-full comparison with FMM3D. Focused notebooks separately compare
+Cartesian with spherical, FP32 with FP64, and cuboid FMM with direct cuboid
+physics. See the [notebook catalogue](examples/notebooks/README.md) and
+[examples guide](docs/examples.md).
 
 These examples are interactive learning and validation tools, not replacements
 for the automated C++ and Python tests. Matplotlib and Jupyter remain optional
@@ -123,6 +121,7 @@ example dependencies and are not required by the core Python package.
 - [Installation and building](docs/installation.md)
 - [Getting started](docs/getting-started.md)
 - [Mathematical formulation](docs/math.md)
+- [Real spherical-harmonic expansions](docs/spherical-expansions.md)
 - [Static-geometry architecture](docs/static-architecture.md)
 - [Execution backends and data transfers](docs/backends.md)
 - [Uniform tree](docs/uniform-tree.md)

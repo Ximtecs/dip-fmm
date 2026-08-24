@@ -54,6 +54,24 @@ result = cdfmm.p2p_dipole_sum(
 print(result["phi"], result["H"])
 ```
 
-The Python interface also exposes every Cartesian expansion operator,
-`UniformTree` geometry inspection, and the complete `UniformFmm.evaluate`
-reference solve.
+## Python static FMM
+
+`UniformFmmOptions` defaults to real spherical harmonics, FP32, and portable
+CPU static execution:
+
+```python
+options = cdfmm.UniformFmmOptions()
+options.expansion_order = 6
+options.tree.max_level = 3
+options.expansion_basis = "spherical"
+
+plan = cdfmm.UniformFmm(sources, sources, options)
+identity = np.arange(len(sources), dtype=np.int32)
+field = plan.evaluate(moments, output="field", target_source_indices=identity)
+```
+
+The same plan accepts later moment arrays without rebuilding its tree or
+operators. Assign `"cartesian"` to select the independent Cartesian basis.
+The Python interface also exposes Cartesian reference operators, both static
+FMM bases, `UniformTree` inspection, direct plans, timings, and memory
+statistics.
