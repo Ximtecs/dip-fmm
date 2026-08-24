@@ -150,18 +150,17 @@ def test_comparison_notebook_is_valid_json_with_compilable_code_cells():
         for cell in notebook["cells"]
         if cell["cell_type"] == "code"
     ]
-    assert "GPU_ONLY = True" in sources[0]
     assert "PARTICLE_COUNTS = [20_000, 40_000, 60_000]" in sources[0]
-    assert "EXPANSION_ORDERS = [4, 6, 8]" in sources[0]
-    assert "TREE_DEPTHS = [3, 4]" in sources[0]
+    assert "EXPANSION_ORDERS = [4, 6, 8, 10]" in sources[0]
+    assert "TREE_DEPTHS = [3, 4, 5]" in sources[0]
     assert "FMM3D_EPS_VALUES = [1.0e-3, 1.0e-4]" in sources[0]
     assert "VECTOR_BATCH_SIZE is added by this notebook" in sources[0]
     combined = "\n".join(sources)
     assert "ExecutionBackend.CUDA_FULL" in combined
-    assert "ExecutionBackend.CUDA_PARTIAL" in combined
-    assert "StaticMatrixBackend.ONE_MKL" in combined
-    assert "if not GPU_ONLY and not cdfmm.one_mkl_available()" in combined
-    assert "if not GPU_ONLY:" in combined
+    assert "ExpansionBasis.SPHERICAL" in combined
+    assert "ExecutionBackend.CUDA_PARTIAL" not in combined
+    assert "StaticMatrixBackend.ONE_MKL" not in combined
+    assert "GPU_ONLY" not in combined
     assert "is_out_of_memory_error(error)" in combined
     assert "skipped_cases.append" in combined
     assert "median_timed_evaluations" in combined
