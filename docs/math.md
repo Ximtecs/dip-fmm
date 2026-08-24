@@ -3,10 +3,11 @@
 This page is the normative statement of the signs, displacement directions,
 and coefficient normalisation used by the implementation.
 
-The default minimal real basis is specified in
-[Real spherical-harmonic expansions](spherical-expansions.md). The Cartesian
-formulation retained as an explicit compatibility and reference option is
-described below.
+Real spherical harmonics are the default `UniformFmm` basis; the complete
+Cartesian formulation remains an explicit independent option. Both conventions
+are defined here. [Real spherical-harmonic expansions](spherical-expansions.md)
+describes how the spherical operators are constructed and retained by the
+static plan.
 
 ## Kernel, dipole potential, and field
 
@@ -30,14 +31,93 @@ $$H_{ij}=\frac{1}{4\pi}\left[
 The kernel is singular at zero separation.  A source-point evaluation must
 explicitly skip its self-interaction.
 
+## Real spherical-harmonic convention
+
+Let $Y_l^m$ be an orthonormal complex spherical harmonic whose associated
+Legendre function includes the Condon--Shortley phase. For $m>0$, define the
+real tesseral harmonics by
+
+$$Y^R_{l0}=Y_l^0,$$
+
+$$Y^R_{lm}=\sqrt{2}(-1)^m\operatorname{Re}Y_l^m,
+\qquad
+Y^R_{l,-m}=\sqrt{2}(-1)^m\operatorname{Im}Y_l^m.$$
+
+The regular and irregular real solid harmonics are
+
+$$R_{lm}(r)=\sqrt{\frac{4\pi}{2l+1}}r^lY^R_{lm}(\hat r),$$
+
+$$I_{lm}(r)=\sqrt{\frac{4\pi}{2l+1}}
+\frac{Y^R_{lm}(\hat r)}{r^{l+1}}.$$
+
+This convention gives $R_{00}=1$. Degree-one modes in $m=(-1,0,1)$ order are
+$(y,z,x)$. Coefficients are ordered by increasing degree and then
+$m=-l,\ldots,+l$; the zero-based index is $l^2+m+l$, and an order-$p$
+expansion stores $(p+1)^2$ real coefficients.
+
+The corresponding addition theorem is
+
+$$\frac{1}{|x-d|}=\sum_{l=0}^{\infty}\sum_{m=-l}^{l}
+R_{lm}(d)I_{lm}(x),\qquad |d|<|x|.$$
+
+For source centre $c_s$ and $d_j=x_j-c_s$, point-dipole P2M stores
+
+$$M_{lm}(c_s)=\frac{1}{4\pi}\sum_j
+m_j\mathbin{\cdot}\nabla R_{lm}(d_j).$$
+
+The multipole potential is
+
+$$\phi(x)=\sum_{l,m}M_{lm}I_{lm}(x-c_s),
+\qquad H(x)=-\nabla\phi(x).$$
+
+Spherical M2M shifts from child to parent with
+$d=c_{\mathrm{parent}}-c_{\mathrm{child}}$. M2L uses
+$R=c_{\mathrm{target}}-c_{\mathrm{source}}$ and maps source $M_{lm}$ values to
+target local coefficients. L2L shifts from parent to child with
+$d=c_{\mathrm{child}}-c_{\mathrm{parent}}$. These operators are defined by
+preserving the represented potential under the stated centre changes; their
+completed real matrices are constructed once for the static plan.
+
+A spherical local expansion is
+
+$$\phi(x)=\sum_{l,m}L_{lm}R_{lm}(x-c_t),
+\qquad H(x)=-\sum_{l,m}L_{lm}\nabla R_{lm}(x-c_t).$$
+
+Thus L2P uses analytic regular-harmonic values and gradients and the same
+$H=-\nabla\phi$ sign as direct evaluation. No field samples or numerical
+differentiation are used to construct these rows.
+
+For same-level M2L, write the physical separation as $R=h_\ell t$, where
+$h_\ell$ is the box width and $t$ is an integer displacement class. A matrix
+entry mapping source degree $l$ to target degree $\lambda$ scales as
+
+$$T^{(\ell)}_{\lambda\mu,lm}(t)=
+h_\ell^{-(l+\lambda+1)}\widehat T_{\lambda\mu,lm}(t).$$
+
+The implementation therefore retains one dense real matrix $\widehat T(t)$
+per used displacement class and applies degree-dependent multipole and local
+scalings for each level. `SphericalM2LBackend::StaticDense` names this
+implemented strategy.
+
+## Normalisation terminology
+
+Four distinct ideas appear in this documentation:
+
+1. Cartesian Taylor monomials use the factorial factor $r^\alpha/\alpha!$.
+2. The real spherical basis uses the orthonormal-harmonic and
+   $\sqrt{4\pi/(2l+1)}$ solid-harmonic factors above.
+3. Cartesian and spherical M2L plans factor degree-dependent powers of box
+   width out of each physical-level matrix so displacement classes are reused.
+4. FP32 FMM plans additionally scale physical coordinates by the root-box
+   width internally for numerical range. This is automatic, not an optional
+   public coordinate transform; see [Numerical precision](precision.md).
+
 ## Finite cuboid geometry
 
 An axis-aligned uniformly magnetised cuboid has side lengths
 $h=(h_x,h_y,h_z)$ and volume $V=h_xh_yh_z$. Runtime data always remains the
 **total magnetic moment** $m=VM$; geometry plans absorb source-volume
 normalisation, so every direct evaluation has the common form $H=Km$.
-Sources and targets are selected independently as point dipoles or uniform
-cuboids, and points or volume-averaged cuboids, respectively.
 
 For $\beta\in\mathbb N_0^3$, define the factorial-normalised cuboid average
 
@@ -48,10 +128,15 @@ Its exact finite sum contains only component-wise even $\gamma\le\beta$:
 $$J_\beta=\sum_\gamma\frac{d^{\beta-\gamma}}{(\beta-\gamma)!}
 \prod_q\frac{h_q^{\gamma_q}}{2^{\gamma_q}(\gamma_q+1)!}.$$
 
-Cuboid P2M replaces each point monomial in the P2M equation by
+At the lower operator and dense-direct layers, source and target geometries are
+selected independently. Cuboid P2M replaces each point monomial in the P2M equation by
 $J_{\alpha-e_k}$. Volume-averaged L2P similarly replaces its potential row by
 $J_\beta$ and field row by $-J_{\beta-e_k}$. M2M, M2L and L2L are unchanged
 because translations act on the resulting Cartesian expansion coefficients.
+
+End-to-end `UniformFmm` currently implements Cartesian uniform-cuboid sources
+to point targets. Volume-averaged cuboid targets are available in lower-level
+analytical and dense-direct APIs, but not as a `UniformFmm` target option.
 
 Direct geometry stores exactly the six symmetric Cartesian components
 $K_{xx},K_{xy},K_{xz},K_{yy},K_{yz},K_{zz}$, each an $N_t\times N_s$ matrix.
@@ -272,7 +357,7 @@ coordinates as identity. For fixed geometry the field is the reusable tensor
 map $H_{\mathrm{near}}=D_{\mathrm{near}}m$ below; potential retains the direct
 scalar calculation.
 
-# Static near-field tensor
+## Static near-field tensor
 
 For fixed geometry, each list1 pair can be written as
 
@@ -292,7 +377,7 @@ The compact tensor accelerates field output. Potential-only work, and the
 potential part of combined output, deliberately continues to use the
 independent list1 reference calculation.
 
-# Stage-level static linear forms
+## Stage-level static linear forms
 
 Fixed geometry also permits the hierarchical forms `M_leaf = P m`,
 `M_parent = A_level M_child`, `L_raw = T M`,
