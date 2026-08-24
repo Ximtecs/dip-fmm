@@ -74,6 +74,7 @@ def test_host_storage_estimate_matches_constructed_cpu_static_plan():
     positions = np.random.default_rng(3).uniform(-0.9, 0.9, size=(24, 3))
     estimate = estimate_source_point_storage(positions, order=3, depth=2)
     options = cdfmm.UniformFmmOptions()
+    options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
     options.precision = cdfmm.StaticPrecision.FLOAT64
     options.expansion_order = 3
     options.tree.max_level = 2

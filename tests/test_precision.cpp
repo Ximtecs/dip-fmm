@@ -49,6 +49,7 @@ double relative_field_error(
 
 TEST_CASE("FP32 static operators quantise storage and arithmetic") {
   REQUIRE(UniformFmmOptions{}.precision == StaticPrecision::Float32);
+  REQUIRE(UniformFmmOptions{}.expansion_basis == ExpansionBasis::Spherical);
 
   const MultiIndexSet basis(4);
   const std::vector<Vec3> positions{
@@ -218,6 +219,7 @@ TEST_CASE("FMM precision controls state output and convergence") {
                   {2, 2}, {4, 3}, {6, 4}};
     for (const auto [order, depth] : configurations) {
         UniformFmmOptions fp64_options;
+        fp64_options.expansion_basis = ExpansionBasis::Cartesian;
         fp64_options.expansion_order = order;
         fp64_options.tree.max_level = depth;
         fp64_options.backend = backend;
@@ -249,6 +251,7 @@ TEST_CASE("FMM precision controls state output and convergence") {
 
 TEST_CASE("FP32 FMM accepts empty geometry and replaces repeated state") {
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.precision = StaticPrecision::Float32;
   UniformFmm empty({}, {}, options);
   REQUIRE(empty.evaluate_float32({}).empty());
@@ -305,6 +308,7 @@ TEST_CASE("FP32 FMM normalises nanometre-scale expansion state") {
   std::iota(identities.begin(), identities.end(), 0);
 
   UniformFmmOptions options64;
+  options64.expansion_basis = ExpansionBasis::Cartesian;
   options64.expansion_order = 4;
   options64.tree.max_level = 4;
   options64.backend = ExecutionBackend::CpuStatic;
@@ -345,6 +349,7 @@ TEST_CASE("CUDA partial and full execute FP32 and FP64 plans") {
   for (const ExecutionBackend backend :
        {ExecutionBackend::CudaPartial, ExecutionBackend::CudaFull}) {
     UniformFmmOptions fp64_options;
+    fp64_options.expansion_basis = ExpansionBasis::Cartesian;
     fp64_options.expansion_order = 4;
     fp64_options.tree.max_level = 2;
     fp64_options.backend = backend;

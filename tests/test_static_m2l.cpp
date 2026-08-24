@@ -463,6 +463,7 @@ TEST_CASE("static grouped M2L matches the independent reference traversal") {
 
   for (const int order : {2, 3, 4}) {
         UniformFmmOptions static_options;
+        static_options.expansion_basis = ExpansionBasis::Cartesian;
         static_options.precision = StaticPrecision::Float64;
         static_options.expansion_order = order;
         static_options.tree.max_level = 3;
@@ -537,6 +538,7 @@ TEST_CASE("oneMKL and portable static matrices agree when oneMKL is enabled") {
   const std::vector<int> identities{0, 1, 2, 3};
 
   UniformFmmOptions portable_options;
+    portable_options.expansion_basis = ExpansionBasis::Cartesian;
     portable_options.precision = StaticPrecision::Float64;
     portable_options.expansion_order = 3;
     portable_options.tree.max_level = 2;

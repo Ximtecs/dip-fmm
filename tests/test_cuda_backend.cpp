@@ -30,6 +30,7 @@ TEST_CASE("production backends dispatch canonical operators per stage", "[cuda]"
     const std::vector<Vec3> positions{{-0.25, 0.0, 0.0},
                                       {0.25, 0.0, 0.0}};
     UniformFmmOptions options;
+    options.expansion_basis = ExpansionBasis::Cartesian;
     options.tree.max_level = 1;
     options.backend = ExecutionBackend::CpuStatic;
     UniformFmm cpu(positions, positions, options);
@@ -75,6 +76,7 @@ TEST_CASE("full CUDA FMM is device resident across evaluations", "[cuda][manual]
     std::vector<int> identities(positions.size());
     std::iota(identities.begin(), identities.end(), 0);
     UniformFmmOptions cpu_options;
+    cpu_options.expansion_basis = ExpansionBasis::Cartesian;
     cpu_options.precision = StaticPrecision::Float64;
     cpu_options.expansion_order = 4;
     cpu_options.tree.max_level = 3;
@@ -341,6 +343,7 @@ TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
     std::iota(source_identities.begin(), source_identities.end(), 0);
 
     UniformFmmOptions cpu_options;
+    cpu_options.expansion_basis = ExpansionBasis::Cartesian;
     cpu_options.precision = StaticPrecision::Float64;
     cpu_options.expansion_order = 3;
     cpu_options.tree.max_level = 2;
@@ -459,6 +462,7 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
         }
 
         UniformFmmOptions options;
+        options.expansion_basis = ExpansionBasis::Cartesian;
         options.precision = StaticPrecision::Float64;
         options.expansion_order = scenario.order;
         options.tree.max_level = scenario.depth;
@@ -598,6 +602,7 @@ TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
       {-0.5, 0.0, 0.0}, {0.25, 0.1, -0.2}, {0.4, -0.3, 0.2}};
   const std::vector<int> identities{0, 1, 2};
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.backend = ExecutionBackend::CudaPartial;
   options.tree.max_level = 0;
   options.fixed_target_source_indices = identities;
@@ -618,6 +623,7 @@ TEST_CASE("CUDA M2L/P2P accepts empty geometry", "[cuda][manual]")
     }
 
     UniformFmmOptions options;
+    options.expansion_basis = ExpansionBasis::Cartesian;
     options.precision = StaticPrecision::Float64;
     options.backend = ExecutionBackend::CudaM2LP2P;
     UniformFmm fmm(std::vector<Vec3>{}, std::vector<Vec3>{}, options);
@@ -635,6 +641,7 @@ TEST_CASE("full CUDA accepts empty geometry", "[cuda][manual]")
     }
 
     UniformFmmOptions options;
+    options.expansion_basis = ExpansionBasis::Cartesian;
     options.backend = ExecutionBackend::CudaFull;
     UniformFmm fmm(std::vector<Vec3>{}, std::vector<Vec3>{}, options);
     const auto result = fmm.evaluate({}, OutputFlags::Field);

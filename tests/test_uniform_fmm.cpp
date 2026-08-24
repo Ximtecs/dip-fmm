@@ -36,6 +36,7 @@ TEST_CASE("cuboid FMM includes finite centre self field", "[uniform_fmm][cuboid]
     const double volume = cube.volume();
     const std::vector<Vec3> moments{{volume, -2.0 * volume, 0.5 * volume}};
     UniformFmmOptions options;
+    options.expansion_basis = ExpansionBasis::Cartesian;
     options.precision = StaticPrecision::Float64;
     options.expansion_order = 5;
     options.tree.max_level = 0;
@@ -84,6 +85,7 @@ TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
     const auto error_at_order = [&](const int order,
                                     const bool use_cuboid_p2m) {
         UniformFmmOptions options;
+        options.expansion_basis = ExpansionBasis::Cartesian;
         options.expansion_order = order;
         options.tree.max_level = 2;
         options.tree.root_centre = {0.2, 0.2, 0.2};
@@ -133,6 +135,7 @@ TEST_CASE("fixed P2P identities are optional and immutable",
   const std::vector<int> identities{0, 1, 2};
 
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.tree.max_level = 0;
   options.fixed_target_source_indices = identities;
   UniformFmm fmm(positions, positions, options);
@@ -188,6 +191,7 @@ TEST_CASE("Uniform upward root equals direct P2M at several orders",
           "[uniform_fmm]") {
   for (const int order : {1, 2, 4, 6}) {
     UniformFmmOptions options;
+    options.expansion_basis = ExpansionBasis::Cartesian;
     options.precision = StaticPrecision::Float64;
     options.expansion_order = order;
     options.tree.max_level = 3;
@@ -205,6 +209,7 @@ TEST_CASE("Uniform upward root equals direct P2M at several orders",
 
 TEST_CASE("Depth-zero upward pass is direct leaf P2M", "[uniform_fmm]") {
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.precision = StaticPrecision::Float64;
   options.expansion_order = 5;
   options.tree.max_level = 0;
@@ -223,6 +228,7 @@ TEST_CASE("One populated leaf translates through multiple levels",
   const std::vector<Vec3> moments{
       {0.4, -0.2, 0.7}, {-0.5, 0.9, 0.1}, {0.3, 0.2, -0.6}};
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.precision = StaticPrecision::Float64;
   options.expansion_order = 5;
   options.tree.max_level = 3;
@@ -245,6 +251,7 @@ TEST_CASE("One populated leaf translates through multiple levels",
 TEST_CASE("Every populated node agrees with direct subtree P2M",
           "[uniform_fmm]") {
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.precision = StaticPrecision::Float64;
   options.expansion_order = 4;
   options.tree.max_level = 3;
@@ -293,6 +300,7 @@ TEST_CASE("Upward pass is independent of source input ordering",
   }
 
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.precision = StaticPrecision::Float64;
   options.expansion_order = 4;
   options.tree.max_level = 2;
@@ -310,6 +318,7 @@ TEST_CASE("Upward pass is independent of source input ordering",
 TEST_CASE("Repeated upward passes replace all magnetic state",
           "[uniform_fmm]") {
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.precision = StaticPrecision::Float64;
   options.expansion_order = 4;
   options.tree.max_level = 2;
@@ -349,6 +358,7 @@ TEST_CASE("Uniform upward pass validates public input", "[uniform_fmm]") {
 TEST_CASE("Hierarchical root and direct root give the same distant field",
           "[uniform_fmm]") {
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.precision = StaticPrecision::Float64;
   options.expansion_order = 6;
   options.tree.max_level = 3;
@@ -406,6 +416,7 @@ TEST_CASE("Complete uniform FMM converges towards direct P2P",
   double previous_rms = 1.0;
   for (const int order : {2, 3, 4}) {
     UniformFmmOptions options;
+    options.expansion_basis = ExpansionBasis::Cartesian;
     options.expansion_order = order;
     options.backend = ExecutionBackend::CpuStatic;
     options.tree.max_level = 2;
@@ -430,6 +441,7 @@ TEST_CASE("Depth-zero complete evaluation is direct in every output mode",
           "[uniform_fmm]") {
   const std::vector<Vec3> targets{{0.12, -0.27, 0.34}, {-0.45, 0.16, -0.08}};
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.precision = StaticPrecision::Float64;
   options.expansion_order = 3;
   options.backend = ExecutionBackend::CpuStatic;
@@ -457,6 +469,7 @@ TEST_CASE("Target permutation and repeated evaluation replace downward state",
                             {0.15, -0.31, 0.47},
                             {-0.52, 0.63, -0.44}};
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.expansion_order = 4;
   options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 2;
@@ -492,6 +505,7 @@ TEST_CASE("Explicit source identities exclude only singular self pairs",
   const std::vector<Vec3> moments{
       {0.4, 0.1, -0.2}, {-0.3, 0.7, 0.5}, {0.2, -0.6, 0.8}};
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.expansion_order = 3;
   options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 0;
@@ -521,6 +535,7 @@ TEST_CASE("Explicit source identities exclude only singular self pairs",
 TEST_CASE("OpenMP thread counts preserve complete FMM results",
           "[uniform_fmm][openmp]") {
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.expansion_order = 4;
   options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 3;
@@ -556,6 +571,7 @@ TEST_CASE("OpenMP thread counts preserve complete FMM results",
 
 TEST_CASE("Evaluation timings aggregate and reset", "[uniform_fmm][timing]") {
   UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
   options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 2;
   UniformFmm fmm(distributed_positions, distributed_positions, options);

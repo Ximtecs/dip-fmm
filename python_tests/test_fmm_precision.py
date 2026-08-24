@@ -16,6 +16,7 @@ def geometry(count=40):
 
 def make_options(precision, backend=cdfmm.ExecutionBackend.CPU_STATIC):
     options = cdfmm.UniformFmmOptions()
+    options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
     options.expansion_order = 4
     options.tree.max_level = 3
     options.backend = backend
@@ -25,7 +26,9 @@ def make_options(precision, backend=cdfmm.ExecutionBackend.CPU_STATIC):
 
 def test_default_precision_is_float32():
     positions, moments, identities = geometry()
-    plan = cdfmm.UniformFmm(positions, positions, cdfmm.UniformFmmOptions())
+    options = cdfmm.UniformFmmOptions()
+    assert options.expansion_basis == cdfmm.ExpansionBasis.SPHERICAL
+    plan = cdfmm.UniformFmm(positions, positions, options)
     result = plan.evaluate(moments, target_source_indices=identities)
     assert plan.precision == cdfmm.StaticPrecision.FLOAT32
     assert result["H"].dtype == np.float32

@@ -18,6 +18,7 @@ def test_static_backend_is_default_and_reference_is_selectable():
     sources = np.array([[-0.75, 0.0, 0.0], [0.75, 0.0, 0.0]])
     moments = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     options = cdfmm.UniformFmmOptions()
+    options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
     options.precision = cdfmm.StaticPrecision.FLOAT64
     assert options.static_matrix_backend == cdfmm.StaticMatrixBackend.PORTABLE
     options.backend = cdfmm.ExecutionBackend.CPU_STATIC
@@ -85,6 +86,7 @@ def make_fmm(order=4, level=3):
     tree_options.root_half_width = 1.0
 
     options = cdfmm.UniformFmmOptions()
+    options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
     options.precision = cdfmm.StaticPrecision.FLOAT64
     options.expansion_order = order
     options.tree = tree_options
@@ -121,6 +123,7 @@ def test_upward_pass_resets_state_and_validates_moment_count():
 def test_upward_pass_handles_user_order_without_manual_sorting():
     permutation = np.array([4, 1, 5, 0, 3, 2])
     options = cdfmm.UniformFmmOptions()
+    options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
     options.expansion_order = 4
     options.tree.max_level = 2
     options.tree.root_centre = cdfmm.Vec3(0.0, 0.0, 0.0)
@@ -141,6 +144,7 @@ def test_upward_pass_handles_user_order_without_manual_sorting():
 
 def test_uniform_fmm_rejects_negative_expansion_order():
     options = cdfmm.UniformFmmOptions()
+    options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
     options.expansion_order = -1
     with pytest.raises(ValueError, match="expansion_order must be >= 0"):
         cdfmm.UniformFmm(POSITIONS, options)
@@ -151,6 +155,7 @@ def test_complete_evaluation_shapes_ordering_and_repeated_state():
         [[0.71, 0.66, 0.62], [-0.74, -0.69, -0.57], [0.13, -0.28, 0.45]]
     )
     options = cdfmm.UniformFmmOptions()
+    options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
     options.expansion_order = 4
     options.backend = cdfmm.ExecutionBackend.CPU_STATIC
     options.tree.max_level = 2
@@ -177,6 +182,7 @@ def test_complete_evaluation_shapes_ordering_and_repeated_state():
 
 def test_complete_source_point_evaluation_uses_explicit_identities():
     options = cdfmm.UniformFmmOptions()
+    options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
     options.precision = cdfmm.StaticPrecision.FLOAT64
     options.expansion_order = 3
     options.backend = cdfmm.ExecutionBackend.CPU_STATIC
@@ -198,6 +204,7 @@ def test_complete_source_point_evaluation_uses_explicit_identities():
 def test_fixed_identity_option_is_used_when_evaluate_omits_the_map():
     identities = np.arange(len(POSITIONS), dtype=int)
     options = cdfmm.UniformFmmOptions()
+    options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
     options.backend = cdfmm.ExecutionBackend.CPU_STATIC
     options.tree.max_level = 0
     options.fixed_target_source_indices = identities.tolist()
