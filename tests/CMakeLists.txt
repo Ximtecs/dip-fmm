@@ -15,9 +15,10 @@ add_executable(cdfmm_tests
   test_parameter_selection.cpp
   test_cuboid.cpp
   test_precision.cpp
+  test_spherical_harmonics.cpp
 )
 target_link_libraries(cdfmm_tests PRIVATE cdfmm_core Catch2::Catch2WithMain)
 target_include_directories(cdfmm_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 cdfmm_enable_ipo(cdfmm_tests)
 include(Catch)
-catch_discover_tests(cdfmm_tests)
+catch_discover_tests(cdfmm_tests PROPERTIES SKIP_RETURN_CODE 4)
