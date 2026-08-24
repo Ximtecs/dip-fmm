@@ -99,13 +99,31 @@ private:
 
 UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const UniformFmmOptions &options)
-    : tree_(source_positions, options.tree), basis_(options.expansion_order),
+    : tree_(source_positions, options.tree),
+      basis_(std::max(options.expansion_order, 0)),
+      spherical_basis_(std::max(options.expansion_order, 0)),
+      expansion_basis_(options.expansion_basis),
+      spherical_m2l_backend_(options.spherical_m2l_backend),
       m2l_backend_(options.m2l_backend),
       static_matrix_backend_(options.static_matrix_backend),
       precision_(options.precision) {
   if (options.expansion_order < 0) {
     throw std::invalid_argument(
         "UniformFmmOptions.expansion_order must be >= 0");
+  }
+  if (expansion_basis_ != ExpansionBasis::Cartesian &&
+      expansion_basis_ != ExpansionBasis::Spherical) {
+    throw std::invalid_argument("unsupported expansion basis");
+  }
+  if (expansion_basis_ == ExpansionBasis::Spherical &&
+      (options.backend == ExecutionBackend::CpuReference ||
+       options.m2l_backend == M2LBackend::Reference)) {
+    throw std::invalid_argument(
+        "spherical expansions require a static M2L execution backend");
+  }
+  if (expansion_basis_ == ExpansionBasis::Spherical &&
+      spherical_m2l_backend_ != SphericalM2LBackend::StaticDense) {
+    throw std::invalid_argument("unsupported spherical M2L backend");
   }
   initialise_source_geometry(options);
 
@@ -132,7 +150,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
   }
 
   const std::size_t coefficient_values =
-      tree_.nodes().size() * static_cast<std::size_t>(basis_.size());
+      tree_.nodes().size() * static_cast<std::size_t>(coefficient_count());
   if (precision_ == StaticPrecision::Float32) {
     multipoles_float_.assign(coefficient_values, 0.0F);
     locals_float_.assign(coefficient_values, 0.0F);
@@ -153,16 +171,33 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
     build_static_plan();
   }
   static_plan_statistics_.state_bytes = precision_ == StaticPrecision::Float32
-      ? (multipoles_float_.size() + locals_float_.size()) * sizeof(float) +
-            sorted_dipole_moments_float_.size() * sizeof(FloatVec3) +
-            sorted_results_float_.size() * sizeof(FloatPotentialField) +
-            near_fields_float_.size() * sizeof(FloatVec3) +
-            sorted_self_indices_.size() * sizeof(int)
-      : (multipoles_.size() + locals_.size()) * sizeof(double) +
-            sorted_dipole_moments_.size() * sizeof(Vec3) +
-            sorted_results_.size() * sizeof(PotentialField) +
-            near_fields_.size() * sizeof(Vec3) +
-            sorted_self_indices_.size() * sizeof(int);
+      ? (multipoles_float_.capacity() + locals_float_.capacity()) *
+                sizeof(float) +
+            sorted_dipole_moments_float_.capacity() * sizeof(FloatVec3) +
+            sorted_results_float_.capacity() * sizeof(FloatPotentialField) +
+            near_fields_float_.capacity() * sizeof(FloatVec3)
+      : (multipoles_.capacity() + locals_.capacity()) * sizeof(double) +
+            sorted_dipole_moments_.capacity() * sizeof(Vec3) +
+            sorted_results_.capacity() * sizeof(PotentialField) +
+            near_fields_.capacity() * sizeof(Vec3);
+  static_plan_statistics_.state_bytes +=
+      (sorted_self_indices_.capacity() +
+       fixed_sorted_self_indices_.capacity() +
+       (fixed_target_source_indices_.has_value()
+            ? fixed_target_source_indices_->capacity()
+            : 0)) *
+          sizeof(int) +
+      sorted_source_sizes_.capacity() * sizeof(CuboidSize);
+  const std::size_t coefficient_scalar_bytes =
+      precision_ == StaticPrecision::Float32 ? sizeof(float) : sizeof(double);
+  static_plan_statistics_.multipole_state_bytes =
+      coefficient_values * coefficient_scalar_bytes;
+  static_plan_statistics_.local_state_bytes =
+      coefficient_values * coefficient_scalar_bytes;
+  static_plan_statistics_.other_state_bytes =
+      static_plan_statistics_.state_bytes -
+      static_plan_statistics_.multipole_state_bytes -
+      static_plan_statistics_.local_state_bytes;
   if (backend_ == ExecutionBackend::CudaM2LP2P) {
     if (precision_ == StaticPrecision::Float32) {
       cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
@@ -184,12 +219,29 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const std::vector<Vec3> &target_positions,
                        const UniformFmmOptions &options)
     : tree_(source_positions, target_positions, options.tree),
-      basis_(options.expansion_order),
+      basis_(std::max(options.expansion_order, 0)),
+      spherical_basis_(std::max(options.expansion_order, 0)),
+      expansion_basis_(options.expansion_basis),
+      spherical_m2l_backend_(options.spherical_m2l_backend),
       static_matrix_backend_(options.static_matrix_backend),
       precision_(options.precision) {
   if (options.expansion_order < 0) {
     throw std::invalid_argument(
         "UniformFmmOptions.expansion_order must be >= 0");
+  }
+  if (expansion_basis_ != ExpansionBasis::Cartesian &&
+      expansion_basis_ != ExpansionBasis::Spherical) {
+    throw std::invalid_argument("unsupported expansion basis");
+  }
+  if (expansion_basis_ == ExpansionBasis::Spherical &&
+      (options.backend == ExecutionBackend::CpuReference ||
+       options.m2l_backend == M2LBackend::Reference)) {
+    throw std::invalid_argument(
+        "spherical expansions require a static M2L execution backend");
+  }
+  if (expansion_basis_ == ExpansionBasis::Spherical &&
+      spherical_m2l_backend_ != SphericalM2LBackend::StaticDense) {
+    throw std::invalid_argument("unsupported spherical M2L backend");
   }
   initialise_source_geometry(options);
 
@@ -216,7 +268,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
   }
 
   const std::size_t coefficient_values =
-      tree_.nodes().size() * static_cast<std::size_t>(basis_.size());
+      tree_.nodes().size() * static_cast<std::size_t>(coefficient_count());
   if (precision_ == StaticPrecision::Float32) {
     multipoles_float_.assign(coefficient_values, 0.0F);
     locals_float_.assign(coefficient_values, 0.0F);
@@ -237,16 +289,33 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
     build_static_plan();
   }
   static_plan_statistics_.state_bytes = precision_ == StaticPrecision::Float32
-      ? (multipoles_float_.size() + locals_float_.size()) * sizeof(float) +
-            sorted_dipole_moments_float_.size() * sizeof(FloatVec3) +
-            sorted_results_float_.size() * sizeof(FloatPotentialField) +
-            near_fields_float_.size() * sizeof(FloatVec3) +
-            sorted_self_indices_.size() * sizeof(int)
-      : (multipoles_.size() + locals_.size()) * sizeof(double) +
-            sorted_dipole_moments_.size() * sizeof(Vec3) +
-            sorted_results_.size() * sizeof(PotentialField) +
-            near_fields_.size() * sizeof(Vec3) +
-            sorted_self_indices_.size() * sizeof(int);
+      ? (multipoles_float_.capacity() + locals_float_.capacity()) *
+                sizeof(float) +
+            sorted_dipole_moments_float_.capacity() * sizeof(FloatVec3) +
+            sorted_results_float_.capacity() * sizeof(FloatPotentialField) +
+            near_fields_float_.capacity() * sizeof(FloatVec3)
+      : (multipoles_.capacity() + locals_.capacity()) * sizeof(double) +
+            sorted_dipole_moments_.capacity() * sizeof(Vec3) +
+            sorted_results_.capacity() * sizeof(PotentialField) +
+            near_fields_.capacity() * sizeof(Vec3);
+  static_plan_statistics_.state_bytes +=
+      (sorted_self_indices_.capacity() +
+       fixed_sorted_self_indices_.capacity() +
+       (fixed_target_source_indices_.has_value()
+            ? fixed_target_source_indices_->capacity()
+            : 0)) *
+          sizeof(int) +
+      sorted_source_sizes_.capacity() * sizeof(CuboidSize);
+  const std::size_t coefficient_scalar_bytes =
+      precision_ == StaticPrecision::Float32 ? sizeof(float) : sizeof(double);
+  static_plan_statistics_.multipole_state_bytes =
+      coefficient_values * coefficient_scalar_bytes;
+  static_plan_statistics_.local_state_bytes =
+      coefficient_values * coefficient_scalar_bytes;
+  static_plan_statistics_.other_state_bytes =
+      static_plan_statistics_.state_bytes -
+      static_plan_statistics_.multipole_state_bytes -
+      static_plan_statistics_.local_state_bytes;
   if (backend_ == ExecutionBackend::CudaM2LP2P) {
     if (precision_ == StaticPrecision::Float32) {
       cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
@@ -296,6 +365,11 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
 
 void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
   source_geometry_ = options.source_geometry;
+  if (expansion_basis_ == ExpansionBasis::Spherical &&
+      source_geometry_ == SourceGeometry::UniformCuboid) {
+    throw std::invalid_argument(
+        "UniformCuboid sources are not supported by spherical expansions");
+  }
   use_cuboid_p2m_ =
       source_geometry_ == SourceGeometry::UniformCuboid &&
       options.use_cuboid_p2m;
@@ -372,9 +446,16 @@ void UniformFmm::build_static_plan() {
   // built here depends on dipole moments, so it remains valid for every later
   // evaluate() call; see docs/static-architecture.md.
   const auto total_start = Clock::now();
+  static_plan_statistics_.expansion_order = expansion_order();
+  static_plan_statistics_.coefficient_count =
+      static_cast<std::size_t>(coefficient_count());
+  static_plan_statistics_.spherical =
+      expansion_basis_ == ExpansionBasis::Spherical;
+  static_plan_statistics_.tree_bytes = tree_.memory_statistics().total_bytes();
   const auto nodes = tree_.nodes();
   using Key = std::tuple<int, int, int>;
-  std::map<Key, std::vector<std::pair<int, int>>> classes;
+  using ClassMap = std::map<Key, std::vector<std::pair<int, int>>>;
+  ClassMap classes;
 
   // FP32 expansion coefficients are expressed in root-width-normalised
   // coordinates. This prevents physical length powers from separately
@@ -444,12 +525,17 @@ void UniformFmm::build_static_plan() {
                     leaf.source_begin, leaf.source_count());
       plan.operator_map = build_static_cuboid_p2m_operator(
           basis_, normalise_position(leaf.centre), leaf_positions, leaf_sizes);
+    } else if (expansion_basis_ == ExpansionBasis::Spherical) {
+      plan.operator_map = build_static_p2m_operator(
+          spherical_basis_, normalise_position(leaf.centre), leaf_positions);
     } else {
       plan.operator_map = build_static_p2m_operator(
           basis_, normalise_position(leaf.centre), leaf_positions);
     }
-    static_plan_statistics_.operator_bytes +=
+    const std::size_t bytes =
         plan.operator_map.entries.size() * sizeof(StaticOperatorEntry);
+    static_plan_statistics_.operator_bytes += bytes;
+    static_plan_statistics_.p2m_operator_bytes += bytes;
     p2m_plans_.push_back(std::move(plan));
   }
   static_plan_statistics_.p2m_plan.add(elapsed_seconds(phase_start));
@@ -475,10 +561,17 @@ void UniformFmm::build_static_plan() {
           (child_class & 1) != 0 ? child_half_width : -child_half_width,
           (child_class & 2) != 0 ? child_half_width : -child_half_width,
           (child_class & 4) != 0 ? child_half_width : -child_half_width};
-      m2m_operators_[static_cast<std::size_t>(level)][child_class] =
-          build_static_m2m_operator(basis_, child_offset * -1.0);
-      l2l_operators_[static_cast<std::size_t>(level)][child_class] =
-          build_static_l2l_operator(basis_, child_offset);
+      if (expansion_basis_ == ExpansionBasis::Spherical) {
+        m2m_operators_[static_cast<std::size_t>(level)][child_class] =
+            build_static_m2m_operator(spherical_basis_, child_offset * -1.0);
+        l2l_operators_[static_cast<std::size_t>(level)][child_class] =
+            build_static_l2l_operator(spherical_basis_, child_offset);
+      } else {
+        m2m_operators_[static_cast<std::size_t>(level)][child_class] =
+            build_static_m2m_operator(basis_, child_offset * -1.0);
+        l2l_operators_[static_cast<std::size_t>(level)][child_class] =
+            build_static_l2l_operator(basis_, child_offset);
+      }
       const std::size_t m2m_bytes =
           m2m_operators_[static_cast<std::size_t>(level)][child_class]
               .entries.size() *
@@ -516,7 +609,7 @@ void UniformFmm::build_static_plan() {
   }
   static_plan_statistics_.transfer_discovery.add(elapsed_seconds(phase_start));
 
-  const int coefficient_count = basis_.size();
+  const int coefficient_count = this->coefficient_count();
   m2l_plan_.coefficient_count = coefficient_count;
   m2l_plan_.matrix_count = static_cast<int>(classes.size());
   m2l_plan_.level_count = tree_.leaf_level() + 1;
@@ -531,7 +624,7 @@ void UniformFmm::build_static_plan() {
   m2l_plan_.multipole_scaling.resize(scaling_size);
   m2l_plan_.local_scaling.resize(scaling_size);
   std::vector<double> inverse_width_powers(
-      static_cast<std::size_t>(basis_.order() + 2), 1.0);
+      static_cast<std::size_t>(expansion_order() + 2), 1.0);
 
   for (int level = 0; level <= tree_.leaf_level(); ++level) {
     m2l_plan_.level_target_begin[static_cast<std::size_t>(level)] =
@@ -549,7 +642,7 @@ void UniformFmm::build_static_plan() {
     // degree-dependent factors restore physical box width; see the M2L
     // normalisation section in docs/math.md.
     inverse_width_powers[0] = 1.0;
-    for (int degree = 1; degree <= basis_.order() + 1; ++degree) {
+    for (int degree = 1; degree <= expansion_order() + 1; ++degree) {
       inverse_width_powers[static_cast<std::size_t>(degree)] =
           inverse_width_powers[static_cast<std::size_t>(degree - 1)] /
           box_width;
@@ -557,7 +650,7 @@ void UniformFmm::build_static_plan() {
     // Each coefficient is filled once from its known degree, rather than
     // rescanning the complete basis for every possible degree.
     for (int index = 0; index < coefficient_count; ++index) {
-      const int degree = basis_[index].degree();
+      const int degree = coefficient_degree(index);
       m2l_plan_.multipole_scaling[scaling_offset + index] =
           inverse_width_powers[static_cast<std::size_t>(degree)];
       m2l_plan_.local_scaling[scaling_offset + index] =
@@ -566,18 +659,43 @@ void UniformFmm::build_static_plan() {
   }
 
   phase_start = Clock::now();
+  using ClassEntry = ClassMap::value_type;
+  std::vector<const ClassEntry*> ordered_classes;
+  ordered_classes.reserve(classes.size());
   std::size_t interaction_count = 0;
-  for (const auto &[key, interactions] : classes) {
+  for (const ClassEntry& entry : classes) {
+    ordered_classes.push_back(&entry);
+    interaction_count += entry.second.size();
+  }
+  const std::size_t matrix_values =
+      static_cast<std::size_t>(coefficient_count) * coefficient_count;
+  m2l_plan_.matrices.resize(classes.size() * matrix_values);
+
+  // Displacement classes are independent setup work. Constructing them in
+  // parallel substantially reduces high-order plan initialisation while
+  // preserving the canonical lexicographic matrix-ID ordering.
+  const std::ptrdiff_t class_count =
+      static_cast<std::ptrdiff_t>(ordered_classes.size());
+#pragma omp parallel for schedule(dynamic) if (class_count >= 8)
+  for (std::ptrdiff_t id = 0; id < class_count; ++id) {
+    const auto& [key, interactions] =
+        *ordered_classes[static_cast<std::size_t>(id)];
+    (void)interactions;
     const auto [dx, dy, dz] = key;
     const Vec3 R{static_cast<double>(dx), static_cast<double>(dy),
                  static_cast<double>(dz)};
-    const std::vector<double> matrix = build_static_m2l_matrix(basis_, R);
-    m2l_plan_.matrices.insert(m2l_plan_.matrices.end(), matrix.begin(),
-                              matrix.end());
-    for (const auto [source, target] : interactions) {
+    const std::vector<double> matrix =
+        expansion_basis_ == ExpansionBasis::Spherical
+            ? build_static_m2l_matrix(spherical_basis_, R)
+            : build_static_m2l_matrix(basis_, R);
+    std::copy(matrix.begin(), matrix.end(),
+              m2l_plan_.matrices.begin() + id * matrix_values);
+  }
+
+  for (const ClassEntry* entry : ordered_classes) {
+    for (const auto [source, target] : entry->second) {
       (void)source;
       ++m2l_plan_.target_row_offsets[static_cast<std::size_t>(target) + 1];
-      ++interaction_count;
     }
   }
   std::partial_sum(m2l_plan_.target_row_offsets.begin(),
@@ -591,9 +709,8 @@ void UniformFmm::build_static_plan() {
   m2l_plan_.interaction_levels.resize(interaction_count);
   std::vector<int> row_cursors = m2l_plan_.target_row_offsets;
   int matrix_id = 0;
-  for (const auto &[key, interactions] : classes) {
-    (void)key;
-    for (const auto [source, target] : interactions) {
+  for (const ClassEntry* entry : ordered_classes) {
+    for (const auto [source, target] : entry->second) {
       const int slot = row_cursors[static_cast<std::size_t>(target)]++;
       m2l_plan_.source_nodes[static_cast<std::size_t>(slot)] = source;
       m2l_plan_.matrix_ids[static_cast<std::size_t>(slot)] = matrix_id;
@@ -666,11 +783,16 @@ void UniformFmm::build_static_plan() {
     const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
     for (std::size_t target = leaf.target_begin; target < leaf.target_end;
          ++target) {
-      l2p_evaluators_[target] =
-          build_static_l2p_evaluator(
-              basis_, normalise_position(leaf.centre), sorted_targets[target]);
-      static_plan_statistics_.operator_bytes +=
-          4 * static_cast<std::size_t>(basis_.size()) * sizeof(double);
+      l2p_evaluators_[target] = expansion_basis_ == ExpansionBasis::Spherical
+          ? build_static_l2p_evaluator(
+                spherical_basis_, normalise_position(leaf.centre),
+                sorted_targets[target])
+          : build_static_l2p_evaluator(
+                basis_, normalise_position(leaf.centre), sorted_targets[target]);
+      const std::size_t bytes =
+          4 * static_cast<std::size_t>(coefficient_count) * sizeof(double);
+      static_plan_statistics_.operator_bytes += bytes;
+      static_plan_statistics_.l2p_operator_bytes += bytes;
     }
   }
   static_plan_statistics_.l2p_plan.add(elapsed_seconds(phase_start));
@@ -706,6 +828,8 @@ void UniformFmm::build_static_plan() {
       p2p_compact_plan_.row_offsets.size() * sizeof(int) +
       p2p_compact_plan_.source_indices.size() * sizeof(int);
   static_plan_statistics_.operator_bytes +=
+      p2p_operator_.memory_bytes() + p2p_compact_plan_.memory().total_bytes();
+  static_plan_statistics_.near_field_operator_bytes =
       p2p_operator_.memory_bytes() + p2p_compact_plan_.memory().total_bytes();
   static_plan_statistics_.p2p_tensor_plan.add(elapsed_seconds(phase_start));
   static_plan_statistics_.total.add(elapsed_seconds(total_start));
@@ -763,10 +887,11 @@ void UniformFmm::quantise_static_plan_to_float() {
   // Recalculate scalar-dependent storage from the representation that will
   // remain alive. Integer metadata is unchanged by precision selection.
   std::size_t operator_bytes = 0;
+  std::size_t p2m_bytes = 0;
   std::size_t m2m_bytes = 0;
   std::size_t l2l_bytes = 0;
   for (const FloatP2MPlan &plan : p2m_plans_float_) {
-    operator_bytes +=
+    p2m_bytes +=
         plan.operator_map.entries.size() * sizeof(FloatStaticOperatorEntry);
   }
   for (std::size_t level = 0; level < m2m_operators_float_.size(); ++level) {
@@ -789,15 +914,20 @@ void UniformFmm::quantise_static_plan_to_float() {
       l2p_bytes += field.size() * sizeof(float);
     }
   }
-  operator_bytes += m2m_bytes + l2l_bytes + m2l_bytes + l2p_bytes;
-  operator_bytes += p2p_operator_float_.memory_bytes();
-  operator_bytes += p2p_compact_plan_float_.memory().total_bytes();
+  const std::size_t near_field_bytes =
+      p2p_operator_float_.memory_bytes() +
+      p2p_compact_plan_float_.memory().total_bytes();
+  operator_bytes = p2m_bytes + m2m_bytes + l2l_bytes + m2l_bytes +
+                   l2p_bytes + near_field_bytes;
 
   static_plan_statistics_.scalar_bytes = sizeof(float);
   static_plan_statistics_.operator_bytes = operator_bytes;
+  static_plan_statistics_.p2m_operator_bytes = p2m_bytes;
   static_plan_statistics_.m2m_operator_bytes = m2m_bytes;
   static_plan_statistics_.m2l_operator_bytes = m2l_bytes;
   static_plan_statistics_.l2l_operator_bytes = l2l_bytes;
+  static_plan_statistics_.l2p_operator_bytes = l2p_bytes;
+  static_plan_statistics_.near_field_operator_bytes = near_field_bytes;
   static_plan_statistics_.p2p_value_bytes =
       p2p_operator_float_.blocks.size() * 6 * sizeof(float);
   static_plan_statistics_.scratch_bytes = 0;
@@ -826,7 +956,7 @@ void UniformFmm::quantise_static_plan_to_float() {
 void UniformFmm::build_cuda_full_plan() {
   if (precision_ == StaticPrecision::Float32) {
     FloatCudaFullPlanData data;
-    data.coefficient_count = basis_.size();
+    data.coefficient_count = coefficient_count();
     data.node_count = static_cast<int>(tree_.nodes().size());
     data.source_count =
         static_cast<int>(tree_.sorted_source_positions().size());
@@ -836,7 +966,7 @@ void UniformFmm::build_cuda_full_plan() {
                                    tree_.source_permutation().end());
     data.target_permutation.assign(tree_.target_permutation().begin(),
                                    tree_.target_permutation().end());
-    const int n = basis_.size();
+    const int n = coefficient_count();
     const auto nodes = tree_.nodes();
     for (const FloatP2MPlan &leaf_plan : p2m_plans_float_) {
       const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_plan.leaf)];
@@ -920,7 +1050,7 @@ void UniformFmm::build_cuda_full_plan() {
   }
 
   CudaFullPlanData data;
-  data.coefficient_count = basis_.size();
+  data.coefficient_count = coefficient_count();
   data.node_count = static_cast<int>(tree_.nodes().size());
   data.source_count = static_cast<int>(tree_.sorted_source_positions().size());
   data.target_count = static_cast<int>(tree_.sorted_target_positions().size());
@@ -928,7 +1058,7 @@ void UniformFmm::build_cuda_full_plan() {
                                  tree_.source_permutation().end());
   data.target_permutation.assign(tree_.target_permutation().begin(),
                                  tree_.target_permutation().end());
-  const int n = basis_.size();
+  const int n = coefficient_count();
   const auto nodes = tree_.nodes();
 
   for (const P2MPlan &leaf_plan : p2m_plans_) {
@@ -1461,7 +1591,37 @@ void UniformFmm::evaluate_into_float32(
 //------------------------------------------------------------------------------
 
 const UniformTree &UniformFmm::tree() const { return tree_; }
-const MultiIndexSet &UniformFmm::basis() const { return basis_; }
+const MultiIndexSet &UniformFmm::basis() const {
+  if (expansion_basis_ != ExpansionBasis::Cartesian) {
+    throw std::logic_error(
+        "basis() is only available for Cartesian expansion plans");
+  }
+  return basis_;
+}
+const SphericalHarmonicBasis& UniformFmm::spherical_basis() const {
+  if (expansion_basis_ != ExpansionBasis::Spherical) {
+    throw std::logic_error(
+        "spherical_basis() requires a spherical expansion plan");
+  }
+  return spherical_basis_;
+}
+ExpansionBasis UniformFmm::expansion_basis() const noexcept {
+  return expansion_basis_;
+}
+int UniformFmm::expansion_order() const noexcept { return basis_.order(); }
+int UniformFmm::coefficient_count() const noexcept {
+  return expansion_basis_ == ExpansionBasis::Spherical
+      ? spherical_basis_.size()
+      : basis_.size();
+}
+SphericalM2LBackend UniformFmm::spherical_m2l_backend() const noexcept {
+  return spherical_m2l_backend_;
+}
+int UniformFmm::coefficient_degree(const int coefficient) const {
+  return expansion_basis_ == ExpansionBasis::Spherical
+      ? spherical_basis_[coefficient].l
+      : basis_[coefficient].degree();
+}
 M2LBackend UniformFmm::m2l_backend() const { return m2l_backend_; }
 StaticMatrixBackend UniformFmm::static_matrix_backend() const {
   return static_matrix_backend_;
@@ -1613,50 +1773,50 @@ std::span<const double> UniformFmm::root_multipole_float64() const {
 }
 
 std::span<double> UniformFmm::multipole_for_node(const int node_index) noexcept {
-  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  const std::size_t n = static_cast<std::size_t>(coefficient_count());
   return {multipoles_.data() + static_cast<std::size_t>(node_index) * n, n};
 }
 
 std::span<const double> UniformFmm::multipole_for_node(
     const int node_index) const noexcept {
-  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  const std::size_t n = static_cast<std::size_t>(coefficient_count());
   return {multipoles_.data() + static_cast<std::size_t>(node_index) * n, n};
 }
 
 std::span<double> UniformFmm::local_for_node(const int node_index) noexcept {
-  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  const std::size_t n = static_cast<std::size_t>(coefficient_count());
   return {locals_.data() + static_cast<std::size_t>(node_index) * n, n};
 }
 
 std::span<const double> UniformFmm::local_for_node(
     const int node_index) const noexcept {
-  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  const std::size_t n = static_cast<std::size_t>(coefficient_count());
   return {locals_.data() + static_cast<std::size_t>(node_index) * n, n};
 }
 
 std::span<float> UniformFmm::multipole_float_for_node(
     const int node_index) noexcept {
-  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  const std::size_t n = static_cast<std::size_t>(coefficient_count());
   return {multipoles_float_.data() + static_cast<std::size_t>(node_index) * n,
           n};
 }
 
 std::span<const float> UniformFmm::multipole_float_for_node(
     const int node_index) const noexcept {
-  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  const std::size_t n = static_cast<std::size_t>(coefficient_count());
   return {multipoles_float_.data() + static_cast<std::size_t>(node_index) * n,
           n};
 }
 
 std::span<float> UniformFmm::local_float_for_node(
     const int node_index) noexcept {
-  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  const std::size_t n = static_cast<std::size_t>(coefficient_count());
   return {locals_float_.data() + static_cast<std::size_t>(node_index) * n, n};
 }
 
 std::span<const float> UniformFmm::local_float_for_node(
     const int node_index) const noexcept {
-  const std::size_t n = static_cast<std::size_t>(basis_.size());
+  const std::size_t n = static_cast<std::size_t>(coefficient_count());
   return {locals_float_.data() + static_cast<std::size_t>(node_index) * n, n};
 }
 

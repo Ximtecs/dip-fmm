@@ -105,6 +105,12 @@ struct EvaluationTimings {
 
 /** @brief One-time cost and storage of the immutable static CPU plan. */
 struct StaticPlanStatistics {
+    /// @brief Maximum expansion degree selected by the plan.
+    int expansion_order{0};
+    /// @brief Number of real coefficients stored for each node expansion.
+    std::size_t coefficient_count{0};
+    /// @brief True for the real spherical-harmonic representation.
+    bool spherical{false};
     /// @brief Bytes used by one selected execution scalar.
     std::size_t scalar_bytes{sizeof(double)};
     /// @brief Maximum number of integer M2L offsets in a uniform 3-D octree.
@@ -128,10 +134,17 @@ struct StaticPlanStatistics {
     std::size_t transfer_classes{0};
     std::size_t interactions{0};
     std::size_t operator_bytes{0};
+    std::size_t p2m_operator_bytes{0};
     std::size_t interaction_bytes{0};
     std::size_t scratch_bytes{0};
     /// @brief Mutable expansions, moments, fields, and result storage.
     std::size_t state_bytes{0};
+    std::size_t multipole_state_bytes{0};
+    std::size_t local_state_bytes{0};
+    std::size_t other_state_bytes{0};
+    std::size_t l2p_operator_bytes{0};
+    std::size_t near_field_operator_bytes{0};
+    std::size_t tree_bytes{0};
     /// @brief Shared M2M matrices stored (eight child classes per used level).
     std::size_t m2m_operators{0};
     /// @brief Complete-tree parent-child relations represented by M2M IDs.
@@ -175,6 +188,11 @@ struct StaticPlanStatistics {
   /// @brief Returns the approximate total persistent plan storage.
   [[nodiscard]] std::size_t total_bytes() const {
     return operator_bytes + interaction_bytes + scratch_bytes + state_bytes;
+  }
+
+  /// @brief Returns the complete host plan, including immutable tree storage.
+  [[nodiscard]] std::size_t total_persistent_bytes() const {
+    return total_bytes() + tree_bytes;
   }
 };
 

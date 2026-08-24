@@ -38,6 +38,18 @@ struct UniformTreeOptions {
     std::optional<double> root_half_width{};
 };
 
+/** @brief Retained storage owned by one immutable uniform tree. */
+struct TreeMemoryStatistics {
+    std::size_t node_bytes{0};
+    std::size_t position_bytes{0};
+    std::size_t index_bytes{0};
+    std::size_t interaction_bytes{0};
+
+    [[nodiscard]] std::size_t total_bytes() const noexcept {
+        return node_bytes + position_bytes + index_bytes + interaction_bytes;
+    }
+};
+
 //------------------------------------------------------------------------------
 // Public functions
 //------------------------------------------------------------------------------
@@ -126,6 +138,8 @@ class UniformTree {
     [[nodiscard]] std::span<const int> occupied_target_leaves() const;
     /// @brief Returns the wall-clock breakdown recorded during construction.
     [[nodiscard]] const TreeBuildTimings& build_timings() const;
+    /// @brief Returns retained tree storage, including vector capacities.
+    [[nodiscard]] TreeMemoryStatistics memory_statistics() const noexcept;
     /// @brief Returns the leaf containing a source at a sorted-array index.
     [[nodiscard]] int leaf_index_for_source(std::size_t sorted_source_index) const;
     /// @brief Returns the leaf containing a target at a sorted-array index.

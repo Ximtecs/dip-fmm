@@ -48,7 +48,7 @@ void UniformFmm::static_m2l(const int level) {
     last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
     return;
   }
-  const int n = basis_.size();
+  const int n = coefficient_count();
   const std::ptrdiff_t group_count =
       static_cast<std::ptrdiff_t>(m2l_groups_.size());
   const double *multipole_scale =
@@ -158,7 +158,7 @@ void UniformFmm::static_m2l_float(const int level) {
     return;
   }
 
-  const int n = basis_.size();
+  const int n = coefficient_count();
   const std::ptrdiff_t group_count =
       static_cast<std::ptrdiff_t>(m2l_groups_float_.size());
   const float *multipole_scale = m2l_plan_float_.multipole_scaling.data() +

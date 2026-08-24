@@ -14,9 +14,16 @@
 #include "cdfmm/output_flags.hpp"
 #include "cdfmm/precision.hpp"
 #include "cdfmm/static_operators.hpp"
+#include "cdfmm/spherical_harmonics.hpp"
 #include "cdfmm/uniform_tree.hpp"
 
 namespace cdfmm {
+
+/** @brief Expansion basis used by the reusable far-field hierarchy. */
+enum class ExpansionBasis { Cartesian, Spherical };
+
+/** @brief Spherical M2L strategy; exponential translation is future work. */
+enum class SphericalM2LBackend { StaticDense };
 
 /** @brief Location and implementation used for a complete FMM evaluation. */
 enum class ExecutionBackend {
@@ -98,8 +105,13 @@ struct StaticExecutionPlan {
 struct UniformFmmOptions {
   /// @brief Scalar precision used by operators, state, and execution.
   StaticPrecision precision{StaticPrecision::Float32};
-  /// @brief Maximum total degree of the Cartesian multipole expansion.
+  /// @brief Maximum degree of the selected multipole expansion.
   int expansion_order{4};
+  /// @brief Expansion representation; real spherical harmonics are the default.
+  ExpansionBasis expansion_basis{ExpansionBasis::Spherical};
+  /// @brief Spherical M2L implementation selected at plan construction.
+  SphericalM2LBackend spherical_m2l_backend{
+      SphericalM2LBackend::StaticDense};
   /// @brief Complete uniform-tree geometry options.
   UniformTreeOptions tree{};
   /// @brief M2L execution backend; static grouped execution is the default.
@@ -243,6 +255,16 @@ public:
   [[nodiscard]] const UniformTree &tree() const;
   /// @brief Returns the Cartesian coefficient basis used by every node.
   [[nodiscard]] const MultiIndexSet &basis() const;
+  /// @brief Returns the real spherical mode basis selected by this plan.
+  [[nodiscard]] const SphericalHarmonicBasis& spherical_basis() const;
+  /// @brief Returns the selected expansion representation.
+  [[nodiscard]] ExpansionBasis expansion_basis() const noexcept;
+  /// @brief Returns the maximum expansion degree.
+  [[nodiscard]] int expansion_order() const noexcept;
+  /// @brief Returns the number of stored coefficients per expansion.
+  [[nodiscard]] int coefficient_count() const noexcept;
+  /// @brief Returns the configured spherical M2L strategy.
+  [[nodiscard]] SphericalM2LBackend spherical_m2l_backend() const noexcept;
   /// @brief Returns the selected M2L execution backend.
   [[nodiscard]] M2LBackend m2l_backend() const;
   /// @brief Returns the selected cached static-matrix multiplication backend.
@@ -263,12 +285,13 @@ public:
   /**
    * @brief Returns a read-only multipole for a flat tree-node index.
    *
-   * Coefficients follow `basis()` ordering. Before the first upward pass and
-   * for empty subtrees, every coefficient is zero.
+   * Coefficients follow the selected Cartesian or spherical basis ordering.
+   * Before the first upward pass and for empty subtrees, every coefficient is
+   * zero.
    */
   [[nodiscard]] std::span<const double> multipole(int node_index) const;
 
-  /** @brief Returns a node local expansion in `basis()` ordering. */
+  /** @brief Returns a node local expansion in the selected basis ordering. */
   [[nodiscard]] std::span<const double> local(int node_index) const;
 
   /// @brief Returns the root multipole, whose flat node index is zero.
@@ -354,6 +377,7 @@ private:
   void initialise_p2p_policy(const UniformFmmOptions &options);
   void build_cuda_p2p_plan();
   void build_cuda_full_plan();
+  [[nodiscard]] int coefficient_degree(int coefficient) const;
   void prepare_moments(std::span<const Vec3> dipole_moments);
   void prepare_moments_float(std::span<const Vec3> dipole_moments);
   void upward_pass_prepared();
@@ -383,6 +407,10 @@ private:
   // Fixed geometry and immutable operator descriptions outlive every call.
   UniformTree tree_;
   MultiIndexSet basis_;
+  SphericalHarmonicBasis spherical_basis_;
+  ExpansionBasis expansion_basis_{ExpansionBasis::Spherical};
+  SphericalM2LBackend spherical_m2l_backend_{
+      SphericalM2LBackend::StaticDense};
   M2LBackend m2l_backend_{M2LBackend::Static};
   StaticMatrixBackend static_matrix_backend_{StaticMatrixBackend::Portable};
   StaticPrecision precision_{StaticPrecision::Float32};

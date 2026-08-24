@@ -606,6 +606,28 @@ const TreeBuildTimings& UniformTree::build_timings() const
     return build_timings_;
 }
 
+TreeMemoryStatistics UniformTree::memory_statistics() const noexcept
+{
+    TreeMemoryStatistics result;
+    result.node_bytes = nodes_.capacity() * sizeof(TreeNode);
+    result.position_bytes =
+        (source_positions_sorted_.capacity() +
+         target_positions_sorted_.capacity()) * sizeof(Vec3);
+    result.index_bytes =
+        (source_permutation_.capacity() +
+         source_inverse_permutation_.capacity() +
+         source_leaf_indices_.capacity() + target_permutation_.capacity() +
+         target_inverse_permutation_.capacity() +
+         target_leaf_indices_.capacity() + leaf_indices_.capacity() +
+         occupied_source_leaves_.capacity() +
+         occupied_target_leaves_.capacity()) * sizeof(int);
+    for (const TreeNode& node : nodes_) {
+        result.interaction_bytes +=
+            (node.list1.capacity() + node.list2.capacity()) * sizeof(int);
+    }
+    return result;
+}
+
 int UniformTree::leaf_index_for_source(
     const std::size_t sorted_source_index
 ) const
