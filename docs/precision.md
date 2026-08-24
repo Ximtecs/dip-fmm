@@ -39,6 +39,10 @@ and coefficient methods as explicit widening adapters. The typed
 `evaluate_float32`/`evaluate_float64`, `multipole_float32`/`multipole_float64`,
 and corresponding local/root methods reject a plan with the other precision.
 
+The same rule applies to Cartesian and real spherical expansions. A spherical
+FP32 plan retains only FP32 P2M, M2M, M2L, L2L, L2P, multipole, and local data
+after its FP64 setup calculations have been quantised.
+
 CPU portable uses typed loops; oneMKL uses SGEMM or DGEMM. CUDA partial and
 CUDA full use typed kernels and transfers, and CUDA BSR uses `Sbsrmv` or
 `Dbsrmv`. `scalar_bytes` in host/device statistics identifies the selected

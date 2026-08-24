@@ -33,6 +33,15 @@ python examples/plot_uniform_tree.py
 
 The plot is a geometry inspection aid, not an FMM field evaluation.
 
+## Cartesian and spherical comparison notebook
+
+`examples/simple_notebooks/simple_cartesian_spherical_fmm_compare.ipynb`
+compares both static expansion bases on the same 512-point grid. It records a
+common exact field, coefficient count, error, initialisation, first and median
+repeated evaluation times, per-stage timings, and the detailed persistent
+memory breakdown for orders 1--6, 8, and 10. Both plans use the full,
+device-resident CUDA backend and report retained host and device memory.
+
 ## Interactive operator and tree notebooks
 
 The comprehensive examples under `examples/notebooks/` form a guided sequence

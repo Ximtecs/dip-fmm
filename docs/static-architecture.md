@@ -75,3 +75,8 @@ The word *plan* is reserved here for immutable, precomputed execution
 descriptions reused across evaluations. Mutable coefficient and result arrays
 are scratch/state rather than plans. CUDA plan objects additionally own device
 copies and persistent buffers required to execute a plan.
+
+The far-field coefficient count is basis-dependent: Cartesian plans store
+`(p+1)(p+2)(p+3)/6` coefficients and real spherical plans store `(p+1)^2`.
+Both use the same canonical static operator and interaction representations;
+the near-field plan and tree are independent of this selection.

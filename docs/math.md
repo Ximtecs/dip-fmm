@@ -3,6 +3,11 @@
 This page is the normative statement of the signs, displacement directions,
 and coefficient normalisation used by the implementation.
 
+The default minimal real basis is specified in
+[Real spherical-harmonic expansions](spherical-expansions.md). The Cartesian
+formulation retained as an explicit compatibility and reference option is
+described below.
+
 ## Kernel, dipole potential, and field
 
 The Laplace Green function is

@@ -22,6 +22,7 @@ getting-started
 fmm-overview
 math
 cartesian-expansions
+spherical-expansions
 laplace-derivatives
 uniform-tree
 operators

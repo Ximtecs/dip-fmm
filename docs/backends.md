@@ -30,6 +30,13 @@ precision: an FP32 plan uses four-byte operators, coefficient state, scratch,
 device buffers, and evaluation transfers throughout. Geometry positions remain
 FP64-capable and are converted only where a completed static operator is stored.
 
+Cartesian and real spherical expansions use this same placement table. The
+spherical backend supplies `(p+1)^2` real coefficients and dense static M2L
+matrices to the existing executors; CUDA currently uses its canonical
+target-row kernel, while the CPU oneMKL path uses class-grouped SGEMM/DGEMM.
+`CpuReference` is Cartesian-only because it constructs derivative contractions
+dynamically rather than consuming the reusable spherical operator payload.
+
 ## CUDA partial data flow
 
 ```text
