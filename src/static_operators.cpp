@@ -139,6 +139,130 @@ void apply_static_m2l_plan(
 
 namespace {
 
+double odd_double_factorial(const int l)
+{
+    double result = 1.0;
+    for (int value = 1; value <= 2 * l - 1; value += 2) {
+        result *= static_cast<double>(value);
+    }
+    return result;
+}
+
+struct SphericalCartesianMaps {
+    int cartesian_count{0};
+    int spherical_count{0};
+    std::vector<double> multipole_embedding{};
+    std::vector<double> multipole_projection{};
+    std::vector<double> local_embedding{};
+    std::vector<double> local_projection{};
+};
+
+SphericalCartesianMaps make_spherical_cartesian_maps(
+    const SphericalHarmonicBasis& spherical,
+    const MultiIndexSet& cartesian)
+{
+    SphericalCartesianMaps maps;
+    maps.cartesian_count = cartesian.size();
+    maps.spherical_count = spherical.size();
+    const std::size_t values = static_cast<std::size_t>(cartesian.size()) *
+                               spherical.size();
+    maps.multipole_embedding.assign(values, 0.0);
+    maps.multipole_projection.assign(values, 0.0);
+    maps.local_embedding.assign(values, 0.0);
+    maps.local_projection.assign(values, 0.0);
+    for (int mode = 0; mode < spherical.size(); ++mode) {
+        const int l = spherical[mode].l;
+        const double sign = l % 2 == 0 ? 1.0 : -1.0;
+        const double double_factorial = odd_double_factorial(l);
+        for (const SolidHarmonicTerm& term : spherical.polynomial(mode)) {
+            const int alpha = cartesian.index(term.power);
+            const double alpha_factorial =
+                MultiIndexSet::multi_factorial(term.power);
+            const std::size_t embedding_index =
+                static_cast<std::size_t>(alpha) * spherical.size() + mode;
+            const std::size_t projection_index =
+                static_cast<std::size_t>(mode) * cartesian.size() + alpha;
+            maps.multipole_embedding[embedding_index] =
+                4.0 * std::numbers::pi * sign * term.coefficient /
+                double_factorial;
+            maps.multipole_projection[projection_index] =
+                sign * term.coefficient * alpha_factorial /
+                (4.0 * std::numbers::pi);
+            maps.local_embedding[embedding_index] =
+                alpha_factorial * term.coefficient;
+            maps.local_projection[projection_index] =
+                term.coefficient / double_factorial;
+        }
+    }
+    return maps;
+}
+
+std::vector<double> compose_spherical_translation(
+    const StaticCoefficientOperator& cartesian_operator,
+    const std::span<const double> input_embedding,
+    const std::span<const double> output_projection,
+    const int cartesian_count,
+    const int spherical_count)
+{
+    std::vector<double> intermediate(
+        static_cast<std::size_t>(cartesian_count) * spherical_count, 0.0);
+    for (const StaticOperatorEntry& entry : cartesian_operator.entries) {
+        for (int input_mode = 0; input_mode < spherical_count; ++input_mode) {
+            intermediate[static_cast<std::size_t>(entry.output) *
+                             spherical_count + input_mode] +=
+                entry.value *
+                input_embedding[static_cast<std::size_t>(entry.input) *
+                                    spherical_count + input_mode];
+        }
+    }
+    std::vector<double> result(
+        static_cast<std::size_t>(spherical_count) * spherical_count, 0.0);
+    for (int output_mode = 0; output_mode < spherical_count; ++output_mode) {
+        for (int cartesian = 0; cartesian < cartesian_count; ++cartesian) {
+            const double projection =
+                output_projection[static_cast<std::size_t>(output_mode) *
+                                      cartesian_count + cartesian];
+            if (projection == 0.0) {
+                continue;
+            }
+            for (int input_mode = 0; input_mode < spherical_count;
+                 ++input_mode) {
+                result[static_cast<std::size_t>(output_mode) +
+                       static_cast<std::size_t>(spherical_count) * input_mode] +=
+                    projection *
+                    intermediate[static_cast<std::size_t>(cartesian) *
+                                     spherical_count + input_mode];
+            }
+        }
+    }
+    return result;
+}
+
+StaticCoefficientOperator pack_spherical_translation(
+    const SphericalHarmonicBasis& basis,
+    const std::span<const double> matrix,
+    const bool multipole_translation)
+{
+    StaticCoefficientOperator result;
+    result.input_size = basis.size();
+    result.output_size = basis.size();
+    for (int input = 0; input < basis.size(); ++input) {
+        for (int output = 0; output < basis.size(); ++output) {
+            const bool structurally_valid = multipole_translation
+                ? basis[output].l >= basis[input].l
+                : basis[output].l <= basis[input].l;
+            if (!structurally_valid) {
+                continue;
+            }
+            result.entries.push_back(
+                {output, input,
+                 matrix[static_cast<std::size_t>(output) +
+                        static_cast<std::size_t>(basis.size()) * input]});
+        }
+    }
+    return result;
+}
+
 void validate_operator_dimensions(
     const StaticCoefficientOperator& operator_map,
     const std::span<const double> input,
@@ -183,6 +307,45 @@ std::vector<double> build_static_m2l_matrix(
     return matrix;
 }
 
+std::vector<double> build_static_m2l_matrix(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& R)
+{
+    const MultiIndexSet derivatives_basis(2 * basis.order());
+    const CoeffVector derivatives =
+        laplace_derivatives_raw(derivatives_basis, R);
+    std::vector<double> matrix(
+        static_cast<std::size_t>(basis.size()) * basis.size(), 0.0);
+    for (int input = 0; input < basis.size(); ++input) {
+        const int input_degree = basis[input].l;
+        const double input_factor =
+            4.0 * std::numbers::pi *
+            (input_degree % 2 == 0 ? 1.0 : -1.0) /
+            odd_double_factorial(input_degree);
+        for (int output = 0; output < basis.size(); ++output) {
+            const double factor = input_factor /
+                odd_double_factorial(basis[output].l);
+            double value = 0.0;
+            for (const SolidHarmonicTerm& source_term :
+                 basis.polynomial(input)) {
+                for (const SolidHarmonicTerm& target_term :
+                     basis.polynomial(output)) {
+                    const MultiIndex derivative =
+                        add(source_term.power, target_term.power);
+                    value += source_term.coefficient *
+                             target_term.coefficient *
+                             derivatives[static_cast<std::size_t>(
+                                 derivatives_basis.index(derivative))];
+                }
+            }
+            matrix[static_cast<std::size_t>(output) +
+                   static_cast<std::size_t>(basis.size()) * input] =
+                factor * value;
+        }
+    }
+    return matrix;
+}
+
 StaticCoefficientOperator build_static_p2m_operator(
     const MultiIndexSet& basis,
     const Vec3& centre,
@@ -213,6 +376,33 @@ StaticCoefficientOperator build_static_p2m_operator(
                         dx, shifted[component]
                     )
                 });
+            }
+        }
+    }
+    return result;
+}
+
+StaticCoefficientOperator build_static_p2m_operator(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& centre,
+    const std::span<const Vec3> source_positions)
+{
+    StaticCoefficientOperator result;
+    result.input_size = static_cast<int>(3 * source_positions.size());
+    result.output_size = basis.size();
+    const double green_factor = 1.0 / (4.0 * std::numbers::pi);
+    for (std::size_t source = 0; source < source_positions.size(); ++source) {
+        const SolidHarmonicValues regular = regular_solid_harmonics(
+            basis, source_positions[source] - centre);
+        for (int mode = 0; mode < basis.size(); ++mode) {
+            const Vec3 gradient =
+                regular.gradients[static_cast<std::size_t>(mode)];
+            for (int component = 0; component < 3; ++component) {
+                const double value = green_factor * gradient[component];
+                if (value != 0.0) {
+                    result.entries.push_back(
+                        {mode, static_cast<int>(3 * source) + component, value});
+                }
             }
         }
     }
@@ -275,6 +465,22 @@ StaticCoefficientOperator build_static_m2m_operator(
     return result;
 }
 
+StaticCoefficientOperator build_static_m2m_operator(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& d)
+{
+    const MultiIndexSet cartesian(basis.order());
+    const SphericalCartesianMaps maps =
+        make_spherical_cartesian_maps(basis, cartesian);
+    const StaticCoefficientOperator cartesian_operator =
+        build_static_m2m_operator(cartesian, d);
+    const std::vector<double> matrix = compose_spherical_translation(
+        cartesian_operator, maps.multipole_embedding,
+        maps.multipole_projection, maps.cartesian_count,
+        maps.spherical_count);
+    return pack_spherical_translation(basis, matrix, true);
+}
+
 StaticCoefficientOperator build_static_l2l_operator(
     const MultiIndexSet& basis,
     const Vec3& d)
@@ -295,6 +501,21 @@ StaticCoefficientOperator build_static_l2l_operator(
         }
     }
     return result;
+}
+
+StaticCoefficientOperator build_static_l2l_operator(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& d)
+{
+    const MultiIndexSet cartesian(basis.order());
+    const SphericalCartesianMaps maps =
+        make_spherical_cartesian_maps(basis, cartesian);
+    const StaticCoefficientOperator cartesian_operator =
+        build_static_l2l_operator(cartesian, d);
+    const std::vector<double> matrix = compose_spherical_translation(
+        cartesian_operator, maps.local_embedding, maps.local_projection,
+        maps.cartesian_count, maps.spherical_count);
+    return pack_spherical_translation(basis, matrix, false);
 }
 
 StaticL2PEvaluator build_static_l2p_evaluator(
@@ -330,6 +551,27 @@ StaticL2PEvaluator build_static_l2p_evaluator(
                     dx, {beta.ax, beta.ay, beta.az - 1}
                 );
         }
+    }
+    return result;
+}
+
+StaticL2PEvaluator build_static_l2p_evaluator(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& centre,
+    const Vec3& target)
+{
+    const SolidHarmonicValues regular =
+        regular_solid_harmonics(basis, target - centre);
+    StaticL2PEvaluator result;
+    result.potential = regular.values;
+    for (auto& row : result.field) {
+        row.resize(static_cast<std::size_t>(basis.size()));
+    }
+    for (int mode = 0; mode < basis.size(); ++mode) {
+        const Vec3 gradient = regular.gradients[static_cast<std::size_t>(mode)];
+        result.field[0][static_cast<std::size_t>(mode)] = -gradient.x;
+        result.field[1][static_cast<std::size_t>(mode)] = -gradient.y;
+        result.field[2][static_cast<std::size_t>(mode)] = -gradient.z;
     }
     return result;
 }

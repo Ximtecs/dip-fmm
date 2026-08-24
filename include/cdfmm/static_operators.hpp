@@ -8,6 +8,7 @@
 #include "cdfmm/operators.hpp"
 #include "cdfmm/cuboid.hpp"
 #include "cdfmm/precision.hpp"
+#include "cdfmm/spherical_harmonics.hpp"
 
 namespace cdfmm {
 
@@ -407,9 +408,22 @@ void apply_static_m2l_plan(
     const Vec3& R
 );
 
+/** @brief Builds a dense real spherical M2L matrix for one displacement. */
+[[nodiscard]] std::vector<double> build_static_m2l_matrix(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& R
+);
+
 /** @brief Builds M = P m for fixed source positions and expansion centre. */
 [[nodiscard]] StaticCoefficientOperator build_static_p2m_operator(
     const MultiIndexSet& basis,
+    const Vec3& centre,
+    std::span<const Vec3> source_positions
+);
+
+/** @brief Builds point-dipole P2M directly in the real spherical basis. */
+[[nodiscard]] StaticCoefficientOperator build_static_p2m_operator(
+    const SphericalHarmonicBasis& basis,
     const Vec3& centre,
     std::span<const Vec3> source_positions
 );
@@ -428,15 +442,34 @@ void apply_static_m2l_plan(
     const Vec3& d
 );
 
+/** @brief Builds a real spherical M2M translation operator. */
+[[nodiscard]] StaticCoefficientOperator build_static_m2m_operator(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& d
+);
+
 /** @brief Builds the triangular map L_child += B(d) L_parent. */
 [[nodiscard]] StaticCoefficientOperator build_static_l2l_operator(
     const MultiIndexSet& basis,
     const Vec3& d
 );
 
+/** @brief Builds a real spherical L2L translation operator. */
+[[nodiscard]] StaticCoefficientOperator build_static_l2l_operator(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& d
+);
+
 /** @brief Builds fixed rows mapping a local expansion to phi and H. */
 [[nodiscard]] StaticL2PEvaluator build_static_l2p_evaluator(
     const MultiIndexSet& basis,
+    const Vec3& centre,
+    const Vec3& target
+);
+
+/** @brief Builds point-target rows for a real spherical local expansion. */
+[[nodiscard]] StaticL2PEvaluator build_static_l2p_evaluator(
+    const SphericalHarmonicBasis& basis,
     const Vec3& centre,
     const Vec3& target
 );
