@@ -49,6 +49,7 @@ struct Options {
     bool cuda_status{false};
     bool profile{false};
     std::string backend{"cpu-static-matrix"};
+    std::string expansion_basis{"spherical"};
     std::string output{};
 };
 
@@ -124,6 +125,7 @@ Options parse_options(const int argc, char** argv)
         else if (key == "--seed") options.seed =
             static_cast<unsigned int>(std::stoul(value));
         else if (key == "--backend") options.backend = value;
+        else if (key == "--expansion-basis") options.expansion_basis = value;
         else if (key == "--output") options.output = value;
         else throw std::invalid_argument("Unknown option: " + key);
     }
@@ -136,6 +138,11 @@ Options parse_options(const int argc, char** argv)
         throw std::invalid_argument(
             "The all-to-all benchmark requires equal source and target counts"
         );
+    }
+    if (options.expansion_basis != "cartesian" &&
+        options.expansion_basis != "spherical") {
+        throw std::invalid_argument(
+            "--expansion-basis must be cartesian or spherical");
     }
     return options;
 }
@@ -619,6 +626,9 @@ int main(int argc, char** argv)
 
         UniformFmmOptions fmm_options;
         fmm_options.expansion_order = options.order;
+        fmm_options.expansion_basis = options.expansion_basis == "spherical"
+            ? cdfmm::ExpansionBasis::Spherical
+            : cdfmm::ExpansionBasis::Cartesian;
         fmm_options.tree.max_level = options.depth;
         fmm_options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
         fmm_options.tree.root_half_width = 1.0;
@@ -1040,7 +1050,8 @@ int main(int argc, char** argv)
             output_stream = &output_file;
         }
         std::ostream& out = *output_stream;
-        out << "sources,targets,depth,order,threads,seed,evaluations,samples,"
+        out << "sources,targets,depth,order,expansion_basis,coefficient_count,"
+               "threads,seed,evaluations,samples,"
                "execution_backend,cuda_compiled,cuda_available,cuda_device,"
                "one_mkl_available,"
                "compiler,compiler_version,build_type,openmp_status,openmp_"
@@ -1094,7 +1105,9 @@ int main(int argc, char** argv)
         const int recorded_depth = direct_backend ? 0 : options.depth;
         const int recorded_order = direct_backend ? 0 : options.order;
         out << options.sources << ',' << options.targets << ','
-            << recorded_depth << ',' << recorded_order << ',' << thread_count
+            << recorded_depth << ',' << recorded_order << ','
+            << (direct_backend ? "none" : options.expansion_basis) << ','
+            << (fmm ? fmm->coefficient_count() : 0) << ',' << thread_count
             << ',' << options.seed << ',' << options.evaluations << ','
             << options.samples << ','
             << benchmark_backend_name(selected_backend) << ','
