@@ -11,6 +11,7 @@
 #include "cdfmm/operators.hpp"
 #include "cdfmm/output_flags.hpp"
 #include "cdfmm/precision.hpp"
+#include "cdfmm/spherical_harmonics.hpp"
 #include "cdfmm/parameter_selection.hpp"
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/taylor_jet.hpp"
