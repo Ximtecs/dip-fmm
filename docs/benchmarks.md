@@ -11,6 +11,28 @@ In a CUDA-enabled build, `--cuda` adds canonical CUDA, CUDA SoA, the
 shared-memory leaf kernel, and cuSPARSE BSR(3), with transfers and kernel time
 reported separately.
 
+## Comparison map and measurement rules
+
+Different tools answer different comparison questions:
+
+| Comparison | Current tool |
+|---|---|
+| Direct CPU versus direct CUDA | `benchmark_uniform_fmm` / benchmark driver |
+| Portable CPU, oneMKL, CUDA partial, and CUDA full FMM | benchmark driver profiles |
+| Cartesian versus spherical | `simple_cartesian_spherical_fmm_compare.ipynb` |
+| FP32 versus FP64 | `simple_dense_direct_precision_compare.ipynb` |
+| Static spherical FMM versus FMM3D | `11_fmm3d_comparison.ipynb` |
+| Cartesian cuboid FMM versus exact cuboid direct | `simple_cuboid_fmm_direct_compare.ipynb` |
+| Direct cuboid convention versus MagTense | `simple_cuboid_magtense_compare.ipynb` |
+
+All reported FMM results must keep setup separate from repeated evaluation,
+reuse one fixed geometry for changing moments, warm runtime libraries before
+timing, and report accuracy beside runtime. CUDA timings and crossover points
+are hardware-specific. Cartesian/spherical order, FMM3D tolerance, and
+precision are independent controls and must not be presented as intrinsically
+accuracy-equivalent. Stored notebook output is historical measurement data and
+is not rewritten without rerunning the notebook.
+
 ## Complete reset, build, test, and rough benchmark
 
 Run from the repository root. This resets all build directories but preserves
@@ -130,12 +152,14 @@ python benchmarks/run_benchmarks.py --profile quick --max-threads 4 \
 ```
 
 The static FMM rows retain the uniform tree, Morton permutations, source/target
-ranges, list1/list2 interaction lists, and one dense Cartesian M2L coefficient
-matrix `T(R)` for every occupied
-`(level, dx, dy, dz)` transfer class. They also retain the interaction index
-maps and gather/translated scratch buffers used for grouped multiplication.
+ranges, list1/list2 interaction lists, and one dense basis-specific,
+level-independent M2L coefficient matrix for every used integer displacement
+class. Degree-dependent box-width scaling restores each physical level. They
+also retain interaction index maps and gather/translated scratch buffers used
+for grouped multiplication.
 `cpu-static-matrix` uses the portable nested-loop multiply;
-`cpu-static-matrix-mkl` selects oneMKL DGEMM at runtime from the same binary.
+`cpu-static-matrix-mkl` selects oneMKL SGEMM or DGEMM at runtime from the same
+binary.
 
 The static plan caches sparse P2M maps per occupied source leaf, shared
 triangular M2M and L2L maps, dense M2L matrices per transfer class, fixed L2P
@@ -245,7 +269,9 @@ python benchmarks/run_benchmarks.py --profile rough --max-threads 8 \
 It runs exactly 20 processes: the four FMM backends at 20,000 and 30,000
 particles, depths three and four, and expansion order four (16 runs), plus one
 CPU-direct and one CUDA-direct run at each particle count (four runs). Each
-process records
+FMM row uses the executable's spherical default unless
+`--expansion-basis cartesian` is supplied in a direct executable invocation.
+Each process records
 one warmed timed evaluation with one sample, plus independent 1+1 and 1+10
 construction/evaluation workloads. The profile deliberately omits thread
 scaling, the extra comparison suite, and a full all-target accuracy reference.

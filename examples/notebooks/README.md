@@ -28,9 +28,22 @@ The sequence follows the data flow through the implemented operators:
 | `08_uniform_tree.ipynb` | Morton order, occupancy, boxes, list1, and list2 |
 | `09_uniform_upward_pass.ipynb` | Leaf P2M, hierarchical M2M, and direct-root equivalence |
 | `10_uniform_downward_pass.ipynb` | M2L/L2L routes, list1 near field, and complete-FMM accuracy |
-| `11_fmm3d_comparison.ipynb` | CUDA-full, CUDA-partial, and oneMKL performance versus FMM3D 2.1.0 |
+| `11_fmm3d_comparison.ipynb` | Spherical CUDA-full performance and accuracy versus FMM3D 2.1.0 |
 | `12_cuda_memory_usage.ipynb` | Estimated-versus-measured total and intermediate CPU/CUDA plan storage sweeps |
 | `13_parameter_selection.ipynb` | Empirical depth and order selection for performance and accuracy |
+
+Focused notebooks outside the numbered teaching sequence have separate roles:
+
+| Notebook | Topic |
+|---|---|
+| `../simple_notebooks/simple_cuboid_fmm_direct_compare.ipynb` | Cartesian cuboid-to-point FMM versus exact cuboid direct |
+| `../simple_notebooks/simple_cuboid_magtense_compare.ipynb` | Direct cuboid convention versus MagTense |
+| `../simple_notebooks/simple_dense_direct_precision_compare.ipynb` | FP32 versus FP64 static FMM and backend comparison |
+| `../simple_notebooks/simple_cartesian_spherical_fmm_compare.ipynb` | Cartesian versus spherical FP64 CUDA-full FMM |
+
+Notebook 10 is the basic complete-FMM example. Notebook 11 is the external
+FMM3D comparison; the focused Cartesian/spherical notebook isolates basis
+choice without also changing the external library or tolerance convention.
 
 Select the `Python (cdfmm)` kernel in JupyterLab or VSCode. Important
 parameters are collected near the top of each notebook, and all random
@@ -39,9 +52,9 @@ operators; `example_utils.py` contains only plotting, batched calls, and error
 diagnostics.
 
 The uniform tree provides geometry and interaction lists, while `UniformFmm`
-executes the complete reference traversal in compiled C++. Notebook 10 only
-visualises that state and compares it with compiled direct P2P; it does not
-reimplement traversal logic in Python.
+executes the complete static traversal in compiled C++. Notebook 10 visualises
+that state and compares it with compiled direct P2P; it does not reimplement
+traversal logic in Python.
 
 ## FMM3D comparison setup
 
@@ -62,14 +75,10 @@ jupyter lab examples/notebooks/11_fmm3d_comparison.ipynb
 
 The installer builds the optimised FMM3D 2.1.0 Python wrapper in the active
 `cdfmm` environment and is safe to rerun. Its source checkout is kept below
-the ignored `.external/` directory. The notebook defaults to 10,000 coincident
-sources and targets at order 6 and depth 2. It compares all three cdfmm paths
-with an exact target sample and times 1, 10, 100, and 1,000 changing-moment
-evaluations. Plans are released between backends so CUDA allocations do not
-accumulate.
-
-FMM3D defaults to `eps=1e-3`, for which the pinned v2.1.0 Laplace
-implementation selects spherical expansion order `nterms=12`.
+the ignored `.external/` directory. The main sweep uses 20,000, 40,000, and
+60,000 coincident source/target points; spherical CUDA-full orders 4, 6, and 8;
+depths 3, 4, and 5; and FMM3D tolerances $10^{-3}$ and $10^{-4}$. Each cdfmm
+plan is warmed before timing and uses a fixed self-identity map.
 
 Notebook 12 requires the current compiled `cdfmm` module, including the
 `static_m2l_matrix` inspection binding installed by the `notebooks` preset. It

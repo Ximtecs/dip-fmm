@@ -33,14 +33,24 @@ python examples/plot_uniform_tree.py
 
 The plot is a geometry inspection aid, not an FMM field evaluation.
 
-## Cartesian and spherical comparison notebook
+## Focused comparison notebooks
 
-`examples/simple_notebooks/simple_cartesian_spherical_fmm_compare.ipynb`
-compares both static expansion bases on the same 512-point grid. It records a
-common exact field, coefficient count, error, initialisation, first and median
-repeated evaluation times, per-stage timings, and the detailed persistent
-memory breakdown for orders 1--6, 8, and 10. Both plans use the full,
-device-resident CUDA backend and report retained host and device memory.
+Each focused notebook answers a different question:
+
+| Notebook | Purpose |
+|---|---|
+| `examples/notebooks/10_uniform_downward_pass.ipynb` | Basic complete FMM decomposition and direct-reference accuracy |
+| `examples/simple_notebooks/simple_cuboid_fmm_direct_compare.ipynb` | Cartesian uniform-cuboid-to-point FMM versus exact dense cuboid direct |
+| `examples/simple_notebooks/simple_cuboid_magtense_compare.ipynb` | Direct cuboid field comparison with MagTense conventions |
+| `examples/simple_notebooks/simple_dense_direct_precision_compare.ipynb` | FP32 versus FP64 across available static FMM backends |
+| `examples/simple_notebooks/simple_cartesian_spherical_fmm_compare.ipynb` | Cartesian versus spherical CUDA-full FMM |
+| `examples/notebooks/11_fmm3d_comparison.ipynb` | Spherical CUDA-full FMM versus FMM3D 2.1.0 |
+
+The Cartesian/spherical notebook uses one 512-point grid and a common exact
+field. It records coefficient count, error, initialisation, first and median
+repeated evaluation time, stage timings, and retained host-plus-device memory
+for orders 1--6, 8, and 10. Both plans use FP64 CUDA-full; it is a controlled
+basis comparison, not a claim about every geometry or backend.
 
 ## Interactive operator and tree notebooks
 
@@ -50,12 +60,11 @@ and the uniform Morton-sorted tree. They include mathematical definitions,
 deterministic problem setups, direct-reference comparisons, convergence plots,
 spatial error maps, and optional ipywidgets controls.
 
-The tree notebook draws actual cube boundaries, Morton-coloured sources,
-leaf occupancy, and distinct `list1`/`list2` boxes around a selected node. It
-is followed by an upward-pass notebook that draws populated nodes and
-child-to-parent translation arrows, then compares the hierarchical root with
-direct root P2M coefficient by coefficient. Neither notebook implements M2L,
-a downward pass, near-field traversal, or a complete tree FMM.
+The tree notebook draws actual cube boundaries, Morton-coloured sources, leaf
+occupancy, and distinct `list1`/`list2` boxes around a selected node. The next
+notebooks inspect the upward pass and the complete downward/near-field
+decomposition. They visualise state produced by the compiled implementation;
+they do not reimplement traversal in Python.
 
 Start Jupyter from the repository root after activating the development
 environment:
@@ -68,12 +77,12 @@ jupyter lab
 See `examples/notebooks/README.md` for the ordered list and select
 `Python (cdfmm)` as the kernel.
 
-Notebook 11 compares CUDA-full, CUDA-partial, and oneMKL CPU-static with the
-pinned FMM3D 2.1.0 Laplace dipole implementation on the same deterministic
-source-point problem. It verifies coincident source/target geometry and reports
-sampled exact-reference accuracy together with one-run and persistent
-changing-moment performance. From the repository root, install and launch it
-with:
+Notebook 11 compares the real spherical CUDA-full backend with the pinned
+FMM3D 2.1.0 Laplace dipole implementation. Its main sweep covers 20,000--60,000
+coincident source/target points, cdfmm orders 4, 6, and 8, depths 3--5, and
+FMM3D tolerances $10^{-3}$ and $10^{-4}$. It reports sampled exact-reference
+accuracy and steady-state changing-moment throughput. From the repository root,
+install and launch it with:
 
 ```console
 conda env update -n cdfmm -f environment.yml
@@ -87,9 +96,9 @@ ctest --preset notebooks
 jupyter lab examples/notebooks/11_fmm3d_comparison.ipynb
 ```
 
-This installed Python build contains CUDA-full, CUDA-partial, oneMKL, and the
-static-M2L inspection binding required by notebook 12. Restart an already open
-notebook kernel after rebuilding so it does not retain the previous extension.
+The installed Python build also contains the static-M2L inspection binding
+required by notebook 12. Restart an already open notebook kernel after
+rebuilding so it does not retain the previous extension.
 
 Notebook 12 constructs real CPU-static plans across particle-count, expansion-
 order, and tree-depth sweeps, then compares their total and intermediate
@@ -101,6 +110,6 @@ normalised M2L transfer-class matrices.
 ## Benchmark
 
 `benchmarks/benchmark_p2p.cpp` is a minimal standalone timing of one direct sum
-over 10,000 sources.  Build it with `CDFMM_BUILD_BENCHMARKS=ON`.  It is useful
-as a smoke benchmark, but it is not a statistically rigorous suite; expanded
-kernel and end-to-end coverage is tracked in the [roadmap](roadmap.md).
+over 10,000 sources. Build it with `CDFMM_BUILD_BENCHMARKS=ON`. It is a smoke
+benchmark; use `benchmark_uniform_fmm` and the Python benchmark driver for
+controlled multi-backend setup, accuracy, repeated-runtime, and memory output.
