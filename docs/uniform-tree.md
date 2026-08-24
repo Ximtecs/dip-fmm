@@ -53,9 +53,9 @@ the convention explicit:
 - `source_inverse_permutation[original_index] = sorted_index`;
 - and the analogous two target arrays.
 
-Consequently, later target results in sorted order must use
-`target_permutation` to return to user order.  The tree does not yet perform
-that result permutation itself.
+Consequently, results in sorted order use `target_permutation` to return to
+user order. `UniformTree` exposes the mapping; `UniformFmm` applies it during
+complete evaluation.
 
 `UniformFmm.upward_pass` uses `source_permutation` internally: callers supply
 dipole moments in the same original order as the constructor's source
@@ -83,22 +83,22 @@ These are the classical uniform FMM M2L partners.  The root has an empty
 indices and removes duplicates.
 
 Interaction lists include empty nodes because the complete topology is
-materialised.  A future traversal can skip work by consulting source and
-target counts.  The upward pass skips empty leaf P2M and empty-child M2M, while
-retaining zero coefficient vectors for those nodes.  The current
+materialised. `UniformFmm` skips operator work for irrelevant source or target
+occupancy while retaining zero coefficient vectors for empty subtrees. The current
 `include_empty_nodes` and `cubic_root_box` options
 describe the intended configuration but sparse or non-cubic trees are not yet
 implemented.
 
 ## Upward-pass state
 
-`UniformTree` remains a geometry container.  `UniformFmm` owns one tree, one
-`MultiIndexSet`, and one multipole coefficient vector per flat node.  Geometry
-is built at construction; changing moments calls only `upward_pass` and does
-not reconstruct the tree.  This separation is the reference architecture for
-repeated magnetic states, not the later static-geometry optimisation milestone.
+`UniformTree` remains a geometry container. `UniformFmm` owns one tree, the
+selected Cartesian or spherical basis, the canonical static operators, and one
+multipole and local coefficient region per flat node. Geometry and operators
+are built at construction; changing moments does not reconstruct either.
 
-Node ranges always index the Morton-sorted arrays.  Leaf P2M consumes each
+Node ranges always index the Morton-sorted arrays. Leaf P2M consumes each
 occupied leaf's range, then M2M aggregates from the deepest parent level to the
 root.  Read-only `tree()`, `basis()`, `multipole(node_index)`, and
-`root_multipole()` accessors permit validation without external mutation.
+`root_multipole()` accessors permit validation without external mutation;
+`basis()` is Cartesian-only, while `spherical_basis()` inspects spherical mode
+ordering.

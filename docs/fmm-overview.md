@@ -1,74 +1,76 @@
 # FMM overview
 
-An FMM replaces most particle pairs by hierarchical expansions.  The intended
-uniform-tree evaluation consists of:
-
-1. **Tree construction:** enclose sources and targets in a complete octree,
-   sort them by leaf Morton index, and form interaction lists.
-2. **P2M:** accumulate dipoles in every occupied source leaf into a multipole
-   expansion about that leaf centre.
-3. **M2M upward pass:** translate child multipoles to each parent and add them,
-   proceeding towards the root.
-4. **M2L:** for each target box, translate multipoles from its well-separated
-   `list2` boxes into a local expansion.
-5. **L2L downward pass:** translate each parent's accumulated local expansion
-   to its children.
-6. **L2P:** evaluate the leaf local expansion at each target.
-7. **P2P near field:** directly accumulate sources in each target leaf's
-   touching `list1` boxes, excluding singular self-pairs where applicable.
-8. **Unsorting:** map results from Morton order back to the user's target order.
-
-All seven mathematical operators exist and `UniformFmm` assembles steps 2--8
-as a functional reference traversal. Construction fixes independent source
-and target geometry, while each `evaluate` call accepts a new dipole state in
-user source order. The upward and downward passes remain separately callable,
-and node multipole and local coefficients remain inspectable.
-
-The implemented algorithm is:
+`UniformFmm` is a fixed-geometry evaluator for many magnetic-moment states.
+Its central design rule is to move geometry-dependent work into construction
+whenever practical and retain only typed linear operator application in the
+repeated path.
 
 ```text
-Leaf stage:
-    M_leaf = P2M(particles in leaf)
+fixed source and target geometry
+    -> uniform tree, Morton permutations, list1, and list2
+    -> reusable P2M
+    -> reusable M2M child classes
+    -> reusable M2L transfer classes
+    -> reusable L2L child classes
+    -> reusable L2P rows
+    +  reusable exact list1 P2P tensor
 
-Upward stage:
-    for level = leaf_level - 1 ... 0:
-        for parent at level:
-            for populated child in parent.children:
-                M_parent += M2M(M_child)
-
-Downward stage:
-    clear every local expansion
-    for level = 1 ... leaf_level:
-        for occupied target box at level:
-            L_target += L2L(L_parent)
-            for populated source box in target.list2:
-                L_target += M2L(M_source)
-
-Evaluation stage:
-    for target in each occupied target leaf:
-        value = L2P(L_leaf, target)
-        for source box in leaf.list1:
-            value += P2P(sources in source box, target)
-    unpermute values to user target order
+changing moments
+    -> P2M -> M2M -> M2L -> L2L -> L2P --+
+    +-------------------------> exact P2P --+-> field
 ```
 
-Before the leaf stage, input moments are permuted to the source positions'
-Morton order.  Every node coefficient vector is cleared on each call, so empty
-subtrees stay zero and repeated dipole states cannot contaminate each other.
-For M2M the displacement is `parent centre - child centre`.  Consequently each
-stored node multipole represents the union of all sources below that node,
-expanded about its centre.  In particular, the hierarchical root agrees to
-round-off with direct P2M of all sources about the root centre.
+Construction fixes independent source and target geometry, the complete
+uniform tree, expansion order and basis, scalar precision, execution backend,
+and any immutable self-identity map. An `evaluate` call accepts a new moment
+for every source in original user order. Source moments are Morton-permuted,
+the expansion and result state is cleared, and results are returned in original
+target order. Empty subtrees remain zero, so one state never contaminates the
+next.
 
-M2L uses `target centre - source centre`, and L2L uses `child centre -
-parent centre`. `list2` supplies the far-field partition and leaf `list1`
-supplies the direct near field, so no pair belongs to both paths. Self
-interactions are excluded only through an explicit target-to-source index map;
-equal coordinates are not treated as particle identity. Public results are
-always unpermuted to the original target ordering.
+## Hierarchical evaluation
 
-This is deliberately a readable CPU reference. It does not cache translation
-operators, optimise fixed geometry, use an adaptive tree, or provide CUDA.
+1. **P2M:** each occupied source leaf applies its fixed source-to-multipole map.
+2. **M2M:** child multipoles are shifted and added from the leaves towards the
+   root using one of eight child-offset classes per used level.
+3. **M2L:** every target box accumulates its well-separated `list2` source
+   boxes. Integer displacement classes share level-independent dense matrices;
+   precomputed degree factors account for box width.
+4. **L2L:** parent locals are shifted and added towards the leaves using the
+   corresponding eight child classes.
+5. **L2P:** fixed target rows evaluate leaf locals as potential and/or field.
+6. **P2P:** the exact cached tensor applies every `list1` near interaction.
+7. **Assembly:** far and near contributions are added and unpermuted.
 
-See [Operator reference](operators.md) for each translation and
-[Uniform tree](uniform-tree.md) for the geometric lists.
+The far and near partitions do not overlap. Singular self-pairs are excluded
+only through an explicit target-to-source identity map; equal coordinates do
+not imply particle identity.
+
+## Shared architecture, two expansion bases
+
+Cartesian Taylor and real spherical-harmonic expansions use the same tree,
+interaction plans, static-operator lifecycle, precision model, and execution
+placement. They differ in coefficient ordering, coefficient count, and the
+construction of the five far-field operators. Cartesian order `p` stores
+`(p+1)(p+2)(p+3)/6` coefficients; spherical order `p` stores `(p+1)^2`.
+The exact near-field P2P tensor is basis-independent.
+
+Real spherical harmonics are the default for point sources. Cartesian remains
+a complete independent formulation and is also the implemented basis for
+uniform-cuboid sources. The CPU reference traversal is Cartesian-only; both
+bases use static plans on the production CPU and CUDA backends. See
+[Mathematical formulation](math.md) for conventions and
+[Execution backends](backends.md) for stage placement.
+
+## Geometry and output boundary
+
+`UniformFmm` supports point targets. Point-dipole sources work with Cartesian
+or spherical expansions; axis-aligned uniform-cuboid sources use Cartesian
+expansions and exact cuboid-to-point near fields. Lower-level direct and
+operator APIs additionally expose volume-averaged cuboid targets, but that
+target model is not an end-to-end `UniformFmm` option.
+
+CPU static and reference-capable paths support the applicable field,
+potential, or combined output modes. CUDA-full is the device-resident repeated
+field path. Backend requests are explicit: unavailable or incompatible
+combinations raise an error rather than silently switching algorithms.
