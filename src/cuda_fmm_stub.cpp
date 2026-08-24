@@ -90,10 +90,19 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &) {
   throw std::runtime_error("full CUDA FMM is unavailable in this build");
 }
 
+CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &) {
+  throw std::runtime_error("full CUDA FMM is unavailable in this build");
+}
+
 CudaFullPlan::~CudaFullPlan() = default;
 
 void CudaFullPlan::evaluate(std::span<const Vec3>, std::span<Vec3>,
                             std::span<const int>) {
+  throw std::runtime_error("full CUDA FMM is unavailable in this build");
+}
+
+void CudaFullPlan::evaluate(std::span<const FloatVec3>,
+                            std::span<FloatVec3>, std::span<const int>) {
   throw std::runtime_error("full CUDA FMM is unavailable in this build");
 }
 
@@ -111,9 +120,17 @@ CudaM2LPlan::CudaM2LPlan(const StaticM2LPlan&) {
   throw std::runtime_error("CUDA M2L requested, but CDFMM_ENABLE_CUDA is OFF");
 }
 
+CudaM2LPlan::CudaM2LPlan(const FloatStaticM2LPlan&) {
+  throw std::runtime_error("CUDA M2L requested, but CDFMM_ENABLE_CUDA is OFF");
+}
+
 CudaM2LPlan::~CudaM2LPlan() = default;
 
 void CudaM2LPlan::evaluate(std::span<const double>, std::span<double>) {
+  throw std::runtime_error("CUDA M2L backend is unavailable");
+}
+
+void CudaM2LPlan::evaluate(std::span<const float>, std::span<float>) {
   throw std::runtime_error("CUDA M2L backend is unavailable");
 }
 
@@ -143,7 +160,31 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan &) {
   throw std::runtime_error("CUDA BSR P2P is unavailable in this build");
 }
 
+CudaP2PPlan::CudaP2PPlan(const FloatStaticP2POperator &,
+                         std::span<const int>) {
+  throw std::runtime_error("CUDA static P2P is unavailable in this build");
+}
+
+CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PCompactPlan &,
+                         std::span<const int>) {
+  throw std::runtime_error("CUDA compact P2P is unavailable in this build");
+}
+
+CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PLeafPlan &,
+                         std::span<const int>) {
+  throw std::runtime_error("CUDA leaf P2P is unavailable in this build");
+}
+
+CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PBsrPlan &) {
+  throw std::runtime_error("CUDA BSR P2P is unavailable in this build");
+}
+
 CudaP2PPlan::CudaP2PPlan(int, int, std::span<const int>, bool) {
+  throw std::runtime_error("CUDA static P2P is unavailable in this build");
+}
+
+CudaP2PPlan::CudaP2PPlan(int, int, std::span<const int>, bool,
+                         StaticPrecision) {
   throw std::runtime_error("CUDA static P2P is unavailable in this build");
 }
 
@@ -157,10 +198,24 @@ void CudaP2PPlan::finish_evaluate(std::span<Vec3>) {
   throw std::runtime_error("CUDA static P2P is unavailable in this build");
 }
 
+void CudaP2PPlan::begin_evaluate(std::span<const FloatVec3>,
+                                 std::span<const int>) {
+  throw std::runtime_error("CUDA static P2P is unavailable in this build");
+}
+
+void CudaP2PPlan::finish_evaluate(std::span<FloatVec3>) {
+  throw std::runtime_error("CUDA static P2P is unavailable in this build");
+}
+
 void CudaP2PPlan::cancel_evaluate() noexcept {}
 
 void CudaP2PPlan::evaluate(std::span<const Vec3>, std::span<const int>,
                            std::span<Vec3>) {
+  throw std::runtime_error("CUDA static P2P is unavailable in this build");
+}
+
+void CudaP2PPlan::evaluate(std::span<const FloatVec3>,
+                           std::span<const int>, std::span<FloatVec3>) {
   throw std::runtime_error("CUDA static P2P is unavailable in this build");
 }
 
