@@ -40,6 +40,31 @@ StaticPrecision parse_static_precision(const std::string& value)
         "static_precision must be 'float32' or 'float64'");
 }
 
+py::dict evaluation_timings_to_dict(const EvaluationTimings& timings)
+{
+  py::dict result;
+  const auto add = [&result](const char* name, const PhaseTiming& phase) {
+    result[name] = phase.total_seconds;
+  };
+  add("moment_permutation", timings.moment_permutation);
+  add("multipole_reset", timings.multipole_reset);
+  add("p2m", timings.p2m);
+  add("m2m", timings.m2m);
+  add("local_reset", timings.local_reset);
+  add("m2l", timings.m2l);
+  add("m2l_scale", timings.m2l_scale);
+  add("m2l_gather", timings.m2l_gather);
+  add("m2l_multiply", timings.m2l_multiply);
+  add("m2l_scatter", timings.m2l_scatter);
+  add("l2l", timings.l2l);
+  add("l2p", timings.l2p);
+  add("p2p", timings.p2p);
+  add("result_unpermutation", timings.result_unpermutation);
+  add("total", timings.total);
+  result["evaluations"] = timings.evaluations;
+  return result;
+}
+
 //------------------------------------------------------------------------------
 // Python conversion helpers
 //------------------------------------------------------------------------------
@@ -392,6 +417,16 @@ PYBIND11_MODULE(cdfmm, module) {
         .value("Static", M2LBackend::Static)
         .value("Reference", M2LBackend::Reference);
 
+    py::enum_<ExpansionBasis>(module, "ExpansionBasis")
+        .value("Cartesian", ExpansionBasis::Cartesian)
+        .value("Spherical", ExpansionBasis::Spherical)
+        .value("CARTESIAN", ExpansionBasis::Cartesian)
+        .value("SPHERICAL", ExpansionBasis::Spherical);
+
+    py::enum_<SphericalM2LBackend>(module, "SphericalM2LBackend")
+        .value("StaticDense", SphericalM2LBackend::StaticDense)
+        .value("STATIC_DENSE", SphericalM2LBackend::StaticDense);
+
     py::enum_<StaticMatrixBackend>(module, "StaticMatrixBackend")
         .value("PORTABLE", StaticMatrixBackend::Portable)
         .value("ONE_MKL", StaticMatrixBackend::OneMkl);
@@ -585,6 +620,29 @@ PYBIND11_MODULE(cdfmm, module) {
         .def(py::init<>())
         .def_readwrite("precision", &UniformFmmOptions::precision)
         .def_readwrite("expansion_order", &UniformFmmOptions::expansion_order)
+        .def_property(
+            "expansion_basis",
+            [](const UniformFmmOptions& options) {
+              return options.expansion_basis;
+            },
+            [](UniformFmmOptions& options, py::object value) {
+              if (py::isinstance<py::str>(value)) {
+                const std::string name = py::cast<std::string>(value);
+                if (name == "cartesian") {
+                  options.expansion_basis = ExpansionBasis::Cartesian;
+                  return;
+                }
+                if (name == "spherical") {
+                  options.expansion_basis = ExpansionBasis::Spherical;
+                  return;
+                }
+                throw std::invalid_argument(
+                    "expansion_basis must be 'cartesian' or 'spherical'");
+              }
+              options.expansion_basis = py::cast<ExpansionBasis>(value);
+            })
+        .def_readwrite("spherical_m2l_backend",
+                       &UniformFmmOptions::spherical_m2l_backend)
         .def_readwrite("tree", &UniformFmmOptions::tree)
         .def_readwrite("m2l_backend", &UniformFmmOptions::m2l_backend)
         .def_readwrite("static_matrix_backend",
@@ -652,10 +710,25 @@ PYBIND11_MODULE(cdfmm, module) {
                                py::return_value_policy::reference_internal)
         .def_property_readonly(
             "expansion_order",
-            [](const UniformFmm &fmm) { return fmm.basis().order(); })
+            &UniformFmm::expansion_order)
+        .def_property_readonly("expansion_basis", &UniformFmm::expansion_basis)
+        .def_property_readonly("coefficient_count",
+                               &UniformFmm::coefficient_count)
+        .def_property_readonly("spherical_m2l_backend",
+                               &UniformFmm::spherical_m2l_backend)
         .def_property_readonly("m2l_backend", &UniformFmm::m2l_backend)
         .def_property_readonly("backend", &UniformFmm::backend)
         .def_property_readonly("precision", &UniformFmm::precision)
+        .def_property_readonly(
+            "last_timings",
+            [](const UniformFmm& fmm) {
+              return evaluation_timings_to_dict(fmm.last_timings());
+            })
+        .def_property_readonly(
+            "aggregate_timings",
+            [](const UniformFmm& fmm) {
+              return evaluation_timings_to_dict(fmm.aggregate_timings());
+            })
         .def_property_readonly("p2p_execution_packing",
                                &UniformFmm::p2p_execution_packing)
         .def_property_readonly(
@@ -705,13 +778,21 @@ PYBIND11_MODULE(cdfmm, module) {
               const StaticPlanStatistics &statistics =
                   fmm.static_plan_statistics();
               py::dict result;
+              result["expansion_order"] = statistics.expansion_order;
+              result["coefficient_count"] = statistics.coefficient_count;
+              result["spherical"] = statistics.spherical;
               result["scalar_bytes"] = statistics.scalar_bytes;
               result["transfer_classes"] = statistics.transfer_classes;
               result["interactions"] = statistics.interactions;
               result["operator_bytes"] = statistics.operator_bytes;
+              result["p2m_operator_bytes"] = statistics.p2m_operator_bytes;
               result["interaction_bytes"] = statistics.interaction_bytes;
               result["scratch_bytes"] = statistics.scratch_bytes;
               result["state_bytes"] = statistics.state_bytes;
+              result["multipole_state_bytes"] =
+                  statistics.multipole_state_bytes;
+              result["local_state_bytes"] = statistics.local_state_bytes;
+              result["other_state_bytes"] = statistics.other_state_bytes;
               result["m2m_operators"] = statistics.m2m_operators;
               result["m2m_theoretical_interactions"] =
                   statistics.m2m_theoretical_interactions;
@@ -726,6 +807,12 @@ PYBIND11_MODULE(cdfmm, module) {
               result["l2l_theoretical_interactions"] =
                   statistics.l2l_theoretical_interactions;
               result["l2l_operator_bytes"] = statistics.l2l_operator_bytes;
+              result["l2p_operator_bytes"] = statistics.l2p_operator_bytes;
+              result["near_field_operator_bytes"] =
+                  statistics.near_field_operator_bytes;
+              result["p2p_value_bytes"] = statistics.p2p_value_bytes;
+              result["p2p_index_bytes"] = statistics.p2p_index_bytes;
+              result["tree_bytes"] = statistics.tree_bytes;
               result["translation_operator_bytes"] =
                   statistics.translation_operator_bytes();
               result["dense"] = statistics.dense;
@@ -733,6 +820,8 @@ PYBIND11_MODULE(cdfmm, module) {
               result["numerically_pruned"] = statistics.numerically_pruned;
               result["symmetry_compressed"] = statistics.symmetry_compressed;
               result["total_bytes"] = statistics.total_bytes();
+              result["total_persistent_bytes"] =
+                  statistics.total_persistent_bytes();
               result["setup_seconds"] = statistics.total.total_seconds;
               return result;
             })
@@ -776,7 +865,7 @@ PYBIND11_MODULE(cdfmm, module) {
     module.def("morton_encode", &morton_encode);
     module.def("morton_decode", &morton_decode);
 
-    module.def(
+  module.def(
       "multi_indices",
       [](int order) {
         const MultiIndexSet basis = make_basis(order);
@@ -794,6 +883,22 @@ PYBIND11_MODULE(cdfmm, module) {
       },
       py::arg("order"),
       "Return Cartesian multi-indices through order p in coefficient order.");
+
+  module.def(
+      "spherical_modes",
+      [](const int order) {
+        const SphericalHarmonicBasis basis(order);
+        py::array_t<int> modes({static_cast<py::ssize_t>(basis.size()),
+                                static_cast<py::ssize_t>(2)});
+        auto values = modes.mutable_unchecked<2>();
+        for (int index = 0; index < basis.size(); ++index) {
+          values(index, 0) = basis[index].l;
+          values(index, 1) = basis[index].m;
+        }
+        return modes;
+      },
+      py::arg("order"),
+      "Return real spherical modes (l,m) in coefficient order.");
 
   module.def(
       "p2p_dipole_pair",
