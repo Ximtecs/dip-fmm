@@ -92,8 +92,6 @@ CDFMM_HOST_DEVICE inline void accumulate_static_dipole_block(
     H.z += block.xz * moment.x + block.yz * moment.y + block.zz * moment.z;
 }
 
-#undef CDFMM_HOST_DEVICE
-
 /**
  * @brief Target-row representation of the exact sparse near-field operator.
  *
@@ -266,12 +264,6 @@ struct FloatStaticDipoleBlock {
     float yz{0.0F};
     float zz{0.0F};
 };
-
-#if defined(__CUDACC__)
-#define CDFMM_HOST_DEVICE __host__ __device__
-#else
-#define CDFMM_HOST_DEVICE
-#endif
 
 /** @brief Accumulates one FP32 symmetric dipole tensor product. */
 CDFMM_HOST_DEVICE inline void accumulate_static_dipole_block(
