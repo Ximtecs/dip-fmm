@@ -157,8 +157,6 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
     sorted_dipole_moments_float_.resize(source_positions.size());
     sorted_results_float_.resize(tree_.sorted_target_positions().size());
     near_fields_float_.resize(tree_.sorted_target_positions().size());
-    input_moments_float_.resize(source_positions.size());
-    cuda_fields_float_.resize(tree_.sorted_target_positions().size());
   } else {
     multipoles_.assign(coefficient_values, 0.0);
     locals_.assign(coefficient_values, 0.0);
@@ -177,9 +175,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                 sizeof(float) +
             sorted_dipole_moments_float_.capacity() * sizeof(FloatVec3) +
             sorted_results_float_.capacity() * sizeof(FloatPotentialField) +
-            (near_fields_float_.capacity() +
-             input_moments_float_.capacity() +
-             cuda_fields_float_.capacity()) * sizeof(FloatVec3)
+            near_fields_float_.capacity() * sizeof(FloatVec3)
       : (multipoles_.capacity() + locals_.capacity()) * sizeof(double) +
             sorted_dipole_moments_.capacity() * sizeof(Vec3) +
             sorted_results_.capacity() * sizeof(PotentialField) +
@@ -279,8 +275,6 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
     sorted_dipole_moments_float_.resize(source_positions.size());
     sorted_results_float_.resize(target_positions.size());
     near_fields_float_.resize(target_positions.size());
-    input_moments_float_.resize(source_positions.size());
-    cuda_fields_float_.resize(target_positions.size());
   } else {
     multipoles_.assign(coefficient_values, 0.0);
     locals_.assign(coefficient_values, 0.0);
@@ -299,9 +293,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                 sizeof(float) +
             sorted_dipole_moments_float_.capacity() * sizeof(FloatVec3) +
             sorted_results_float_.capacity() * sizeof(FloatPotentialField) +
-            (near_fields_float_.capacity() +
-             input_moments_float_.capacity() +
-             cuda_fields_float_.capacity()) * sizeof(FloatVec3)
+            near_fields_float_.capacity() * sizeof(FloatVec3)
       : (multipoles_.capacity() + locals_.capacity()) * sizeof(double) +
             sorted_dipole_moments_.capacity() * sizeof(Vec3) +
             sorted_results_.capacity() * sizeof(PotentialField) +
@@ -1419,22 +1411,21 @@ void UniformFmm::evaluate_into_float32(
     const std::span<const Vec3> dipole_moments,
     const std::span<FloatPotentialField> results, const OutputFlags output,
     std::span<const int> target_source_indices) {
-  if (dipole_moments.size() != input_moments_float_.size()) {
-    throw std::invalid_argument(
-        "UniformFmm::evaluate_into_float32 requires one moment per source");
-  }
-  for (std::size_t index = 0; index < dipole_moments.size(); ++index) {
-    input_moments_float_[index] = {
-        static_cast<float>(dipole_moments[index].x),
-        static_cast<float>(dipole_moments[index].y),
-        static_cast<float>(dipole_moments[index].z)};
-  }
-  evaluate_into_float32(std::span<const FloatVec3>(input_moments_float_),
-                        results, output, target_source_indices);
+  evaluate_into_float32_impl(dipole_moments, results, output,
+                             target_source_indices);
 }
 
 void UniformFmm::evaluate_into_float32(
     const std::span<const FloatVec3> dipole_moments,
+    const std::span<FloatPotentialField> results, const OutputFlags output,
+    std::span<const int> target_source_indices) {
+  evaluate_into_float32_impl(dipole_moments, results, output,
+                             target_source_indices);
+}
+
+template <typename Moment>
+void UniformFmm::evaluate_into_float32_impl(
+    const std::span<const Moment> dipole_moments,
     const std::span<FloatPotentialField> results, const OutputFlags output,
     std::span<const int> target_source_indices) {
   if (precision_ != StaticPrecision::Float32) {
@@ -1468,18 +1459,20 @@ void UniformFmm::evaluate_into_float32(
     const auto evaluation_start = Clock::now();
     prepare_self_indices(target_source_indices);
     for (std::size_t index = 0; index < dipole_moments.size(); ++index) {
-      const FloatVec3 value = dipole_moments[index];
-      const float scale = static_cast<float>(float_coordinate_scale_);
-      input_moments_float_[index] = {
-          value.x / scale / scale / scale,
-          value.y / scale / scale / scale,
-          value.z / scale / scale / scale};
+      const Moment value = dipole_moments[index];
+      using Scalar = decltype(value.x);
+      const Scalar scale = static_cast<Scalar>(float_coordinate_scale_);
+      sorted_dipole_moments_float_[index] = {
+          static_cast<float>(value.x / scale / scale / scale),
+          static_cast<float>(value.y / scale / scale / scale),
+          static_cast<float>(value.z / scale / scale / scale)};
     }
-    cuda_full_plan_->plan->evaluate(input_moments_float_, cuda_fields_float_,
+    cuda_full_plan_->plan->evaluate(sorted_dipole_moments_float_,
+                                    near_fields_float_,
                                     sorted_self_indices_);
     for (std::size_t target = 0; target < target_count; ++target) {
       results[target].phi = 0.0F;
-      results[target].H = cuda_fields_float_[target];
+      results[target].H = near_fields_float_[target];
     }
     const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
     last_timings_.cuda_h2d.add(device.h2d_seconds);

@@ -409,6 +409,12 @@ private:
   void prepare_moments(std::span<const Vec3> dipole_moments);
   void prepare_moments_float(std::span<const Vec3> dipole_moments);
   void prepare_moments_float(std::span<const FloatVec3> dipole_moments);
+  template <typename Moment>
+  void evaluate_into_float32_impl(
+      std::span<const Moment> dipole_moments,
+      std::span<FloatPotentialField> results,
+      OutputFlags output,
+      std::span<const int> target_source_indices);
   void upward_pass_prepared();
   void upward_pass_prepared_float();
   void prepare_self_indices(std::span<const int> target_source_indices);
@@ -489,9 +495,6 @@ private:
   std::vector<FloatVec3> sorted_dipole_moments_float_{};
   std::vector<FloatPotentialField> sorted_results_float_{};
   std::vector<FloatVec3> near_fields_float_{};
-  // Native FP32 compatibility input and CUDA output staging are persistent.
-  std::vector<FloatVec3> input_moments_float_{};
-  std::vector<FloatVec3> cuda_fields_float_{};
   // Legacy coefficient inspection widens FP32 state only on demand.
   mutable std::vector<double> inspection_widening_buffer_{};
   std::vector<int> sorted_self_indices_{};
