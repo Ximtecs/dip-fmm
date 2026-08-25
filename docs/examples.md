@@ -41,16 +41,20 @@ Each focused notebook answers a different question:
 |---|---|
 | `examples/notebooks/10_uniform_downward_pass.ipynb` | Basic complete FMM decomposition and direct-reference accuracy |
 | `examples/simple_notebooks/simple_cuboid_fmm_direct_compare.ipynb` | Cartesian uniform-cuboid-to-point FMM versus exact dense cuboid direct |
+| `examples/simple_notebooks/simple_cuboid_p2m_l2p_direct_compare.ipynb` | Spherical point/cuboid P2M and L2P comparison with fixed exact cuboid P2P |
 | `examples/simple_notebooks/simple_cuboid_magtense_compare.ipynb` | Direct cuboid field comparison with MagTense conventions |
 | `examples/simple_notebooks/simple_dense_direct_precision_compare.ipynb` | FP32 versus FP64 across available static FMM backends |
-| `examples/simple_notebooks/simple_cartesian_spherical_fmm_compare.ipynb` | Cartesian versus spherical CUDA-full FMM |
+| `examples/simple_notebooks/simple_cartesian_spherical_fmm_compare.ipynb` | Cartesian versus spherical finite-cuboid CUDA-full FMM |
 | `examples/notebooks/11_fmm3d_comparison.ipynb` | Spherical CUDA-full FMM versus FMM3D 2.1.0 |
 
-The Cartesian/spherical notebook uses one 512-point grid and a common exact
-field. It records coefficient count, error, initialisation, first and median
-repeated evaluation time, stage timings, and retained host-plus-device memory
-for orders 1--6, 8, and 10. Both plans use FP64 CUDA-full; it is a controlled
-basis comparison, not a claim about every geometry or backend.
+The Cartesian/spherical notebook uses one 512-cuboid grid, volume-averaged
+cuboid targets, and a common exact cuboid-to-cuboid field. It records
+coefficient count, error, initialisation, first and median repeated evaluation
+time, stage timings, and retained host-plus-device memory for orders 1--6, 8,
+and 10 in the original point comparison and orders 1--6 in the current finite-
+cuboid comparison. Both plans use FP64 CUDA-full; it is a controlled basis
+comparison, not a claim about every geometry or backend. The measured findings
+and their limitations are recorded in [Performance benchmarks](benchmarks.md).
 
 ## Interactive operator and tree notebooks
 

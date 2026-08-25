@@ -50,6 +50,17 @@ basis-independent and use the same canonical builder as Cartesian and dense
 direct plans. The independent dynamic CPU reference traversal remains
 Cartesian-only.
 
+For controlled finite-cell comparisons, `use_cuboid_p2m=false` substitutes
+point-dipole P2M and `use_cuboid_l2p=false` substitutes point-evaluation L2P.
+Source and target geometry remain unchanged, so exact cuboid P2P physics is
+identical across the comparison cases.
+
+The comparison flags also provide a useful hybrid execution model. With
+uniform-cuboid sources, volume-averaged cuboid targets, and both flags false,
+list1 uses exact cuboid-to-cuboid tensors while the far field uses point P2M
+and centre-sampled L2P. Evaluation input remains total dipole moment rather
+than magnetisation; no volume scaling is performed implicitly.
+
 `SphericalM2LBackend::StaticDense` is the implemented M2L strategy. FMM3D
 v2.1.0 is used only as an external validation and performance comparison.
 FMM3D's exponential/plane-wave representation is a possible later optimisation,

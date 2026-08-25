@@ -64,11 +64,11 @@ bases use static plans on the production CPU and CUDA backends. See
 
 ## Geometry and output boundary
 
-`UniformFmm` supports point targets. Point-dipole sources work with Cartesian
-or spherical expansions; axis-aligned uniform-cuboid sources use Cartesian
-expansions and exact cuboid-to-point near fields. Lower-level direct and
-operator APIs additionally expose volume-averaged cuboid targets, but that
-target model is not an end-to-end `UniformFmm` option.
+`UniformFmm` supports point-dipole or axis-aligned uniform-cuboid sources and
+point or analytically volume-averaged cuboid targets with Cartesian or
+spherical expansions. Exact near-field tensors follow the selected physical
+geometries. Comparison flags can independently substitute point P2M or point
+L2P while retaining the geometry-selected P2P tensor.
 
 CPU static and reference-capable paths support the applicable field,
 potential, or combined output modes. CUDA-full is the device-resident repeated

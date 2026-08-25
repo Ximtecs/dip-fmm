@@ -52,6 +52,14 @@ def test_spherical_accepts_cuboids_and_rejects_reference_execution():
     result = plan.evaluate(np.array([[0.0, 0.0, 1.0]]))
     np.testing.assert_allclose(result["H"], [[0.0, 0.0, -1.0 / 3.0]])
 
+    # Point L2P comparison mode must retain the exact cuboid self P2P field.
+    options.use_cuboid_l2p = False
+    point_l2p_plan = cdfmm.UniformFmm(positions, positions, options)
+    point_l2p_result = point_l2p_plan.evaluate(np.array([[0.0, 0.0, 1.0]]))
+    np.testing.assert_allclose(
+        point_l2p_result["H"], [[0.0, 0.0, -1.0 / 3.0]]
+    )
+
     options.source_geometry = cdfmm.SourceGeometry.POINT_DIPOLE
     options.source_sizes = []
     options.target_geometry = cdfmm.TargetGeometry.POINT
@@ -79,7 +87,35 @@ def test_cartesian_spherical_comparison_notebook_is_valid_and_compilable():
         compile(source, f"{notebook_path.name}:cell-{index}", "exec")
 
     combined = "\n".join(sources)
-    assert "ORDERS = [1, 2, 3, 4, 5, 6, 8, 10]" in combined
+    assert "ORDERS = [1, 2, 3, 4, 5, 6]" in combined
     assert "REPETITIONS = 7" in combined
     assert "ExpansionBasis.SPHERICAL" in combined
-    assert "direct_p2p_reference" in combined
+    assert "DenseDirectPlan" in combined
+    assert "SourceGeometry.UNIFORM_CUBOID" in combined
+    assert "TargetGeometry.VOLUME_AVERAGED_CUBOID" in combined
+
+
+def test_spherical_cuboid_p2m_l2p_notebook_is_valid_and_compilable():
+    notebook_path = (
+        Path(__file__).parents[1]
+        / "examples"
+        / "simple_notebooks"
+        / "simple_cuboid_p2m_l2p_direct_compare.ipynb"
+    )
+    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+    assert notebook["nbformat"] == 4
+    sources = [
+        "".join(cell.get("source", []))
+        for cell in notebook["cells"]
+        if cell["cell_type"] == "code"
+    ]
+    for index, source in enumerate(sources):
+        compile(source, f"{notebook_path.name}:cell-{index}", "exec")
+
+    combined = "\n".join(sources)
+    assert "ExpansionBasis.SPHERICAL" in combined
+    assert "SourceGeometry.UNIFORM_CUBOID" in combined
+    assert "TargetGeometry.VOLUME_AVERAGED_CUBOID" in combined
+    assert "options.use_cuboid_p2m" in combined
+    assert "options.use_cuboid_l2p" in combined
+    assert "ORDERS = [4, 6]" in combined

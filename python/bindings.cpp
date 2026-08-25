@@ -653,6 +653,7 @@ PYBIND11_MODULE(cdfmm, module) {
         .def_readwrite("target_geometry", &UniformFmmOptions::target_geometry)
         .def_readwrite("target_sizes", &UniformFmmOptions::target_sizes)
         .def_readwrite("use_cuboid_p2m", &UniformFmmOptions::use_cuboid_p2m)
+        .def_readwrite("use_cuboid_l2p", &UniformFmmOptions::use_cuboid_l2p)
         .def_readwrite("fixed_target_source_indices",
                        &UniformFmmOptions::fixed_target_source_indices)
         .def_readwrite("cuda_p2p_bsr_max_bytes",

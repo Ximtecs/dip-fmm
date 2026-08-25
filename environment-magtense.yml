@@ -27,5 +27,6 @@ dependencies:
 
   # Run the interactive comparison notebook.
   - matplotlib
+  - pandas
   - jupyterlab
   - ipykernel

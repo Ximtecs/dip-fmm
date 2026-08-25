@@ -405,6 +405,9 @@ void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
 
 void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
   target_geometry_ = options.target_geometry;
+  use_cuboid_l2p_ =
+      target_geometry_ == TargetGeometry::VolumeAveragedCuboid &&
+      options.use_cuboid_l2p;
   const std::size_t count = tree_.sorted_target_positions().size();
   if (target_geometry_ == TargetGeometry::Point) {
     if (!options.target_sizes.empty()) {
@@ -829,7 +832,7 @@ void UniformFmm::build_static_plan() {
          ++target) {
       l2p_evaluators_[target] =
           expansion_basis_ == ExpansionBasis::Spherical
-              ? target_geometry_ == TargetGeometry::VolumeAveragedCuboid
+              ? use_cuboid_l2p_
                     ? build_static_cuboid_l2p_evaluator(
                           spherical_basis_, normalise_position(leaf.centre),
                           sorted_targets[target],
@@ -837,7 +840,7 @@ void UniformFmm::build_static_plan() {
                     : build_static_l2p_evaluator(
                           spherical_basis_, normalise_position(leaf.centre),
                           sorted_targets[target])
-          : target_geometry_ == TargetGeometry::VolumeAveragedCuboid
+          : use_cuboid_l2p_
               ? build_static_cuboid_l2p_evaluator(
                     basis_, normalise_position(leaf.centre),
                     sorted_targets[target],

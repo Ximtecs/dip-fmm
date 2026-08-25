@@ -19,10 +19,11 @@ Different tools answer different comparison questions:
 |---|---|
 | Direct CPU versus direct CUDA | `benchmark_uniform_fmm` / benchmark driver |
 | Portable CPU, oneMKL, CUDA partial, and CUDA full FMM | benchmark driver profiles |
-| Cartesian versus spherical | `simple_cartesian_spherical_fmm_compare.ipynb` |
+| Cartesian versus spherical finite cuboids | `simple_cartesian_spherical_fmm_compare.ipynb` |
 | FP32 versus FP64 | `simple_dense_direct_precision_compare.ipynb` |
 | Static spherical FMM versus FMM3D | `11_fmm3d_comparison.ipynb` |
 | Cartesian cuboid FMM versus exact cuboid direct | `simple_cuboid_fmm_direct_compare.ipynb` |
+| Spherical cuboid P2M and L2P isolation | `simple_cuboid_p2m_l2p_direct_compare.ipynb` |
 | Direct cuboid convention versus MagTense | `simple_cuboid_magtense_compare.ipynb` |
 
 All reported FMM results must keep setup separate from repeated evaluation,
@@ -32,6 +33,67 @@ are hardware-specific. Cartesian/spherical order, FMM3D tolerance, and
 precision are independent controls and must not be presented as intrinsically
 accuracy-equivalent. Stored notebook output is historical measurement data and
 is not rewritten without rerunning the notebook.
+
+## Focused notebook results
+
+The controlled Cartesian/spherical comparisons found the same relative L2
+accuracy, to displayed numerical precision, for both bases at every tested
+order. This held for the original point-source/point-target comparison at
+orders 1--6, 8, and 10 and for the uniform-cube/volume-averaged-cube comparison
+over orders 1--6. The result validates the algebraic equivalence of the two
+bases for these geometries; it does not imply equal coefficient count, setup
+cost, memory, or evaluation time.
+
+On the 512-cube FP64 CUDA-full case at order 6, Cartesian and spherical setup
+took 9.44 s and 10.09 s, respectively, while repeated evaluation took 1.50 ms
+and 0.87 ms. Spherical retained 49 coefficients instead of Cartesian's 84 and
+used about 20.2 MiB instead of 45.7 MiB in total retained host-plus-device
+state. These timings were measured on an NVIDIA GeForce RTX 5090 with eight
+setup threads and are hardware-specific. They also show that finite-cuboid
+operator construction, rather than repeated GPU evaluation, dominated this
+small comparison.
+
+The independent P2M/L2P comparison used a 15x15x15 lattice of 10 nm cubes at
+30 nm spacing, FP64 spherical CUDA-full execution, orders 4 and 6, and tree
+depths 2--5. Exact cuboid-to-cuboid P2P was fixed in all four cases. At order 4,
+point and cuboid P2M/L2P produced identical errors. At order 6, enabling either
+cuboid far-field endpoint gave no accuracy gain and slightly increased the
+measured error. At depth 5 the relative L2 results were:
+
+| Far-field P2M / L2P | Relative L2 error |
+|---|---:|
+| point / point | 1.3448e-3 |
+| cuboid / point | 1.4135e-3 |
+| point / cuboid | 1.3946e-3 |
+| cuboid / cuboid | 1.4675e-3 |
+
+This is an observation about the tested low orders, not evidence that the
+finite-cuboid operators are generally less accurate. For a centred cube, the
+degree-three shape correction is proportional to the Laplacian and vanishes
+outside the source. The first physical shape correction is degree five and
+scales as `O((h/R)^4)`. Order 4 therefore cannot distinguish the cases, while
+order 6 includes only the first small correction. Point-geometry error can
+also partially cancel FMM truncation error, so adding a physical shape
+correction need not improve the total error monotonically at fixed order.
+Non-cubic cells, higher orders, and different size-to-separation ratios remain
+separate comparisons.
+
+The same run measured construction of its 3,375-by-3,375 exact dense
+cuboid-to-cuboid reference at 239.00 s and one portable evaluation at 59.7 ms.
+Construction forms 11,390,625 exact finite-volume pair tensors, or about
+21 microseconds per pair, and retains six FP64 component matrices totalling
+about 521 MiB. The current generic constructor neither parallelises this loop
+nor reuses repeated lattice displacements. This regular lattice has only
+29^3 = 24,389 distinct displacements, so displacement caching or a specialised
+convolution plan is the principal prospective optimisation. The fast repeated
+evaluation reflects reuse of the already constructed matrices.
+
+Setting both `use_cuboid_p2m=false` and `use_cuboid_l2p=false` provides the
+tested hybrid model: list1 P2P remains exact cuboid-to-cuboid, while far-field
+P2M treats each supplied total moment as a point dipole at its cuboid centre
+and L2P samples the local expansion at the target centre. Source and target
+sizes select near-field physics; callers must still convert magnetisation to
+total dipole moment before evaluation.
 
 ## Complete reset, build, test, and rough benchmark
 

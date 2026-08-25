@@ -37,9 +37,10 @@ Focused notebooks outside the numbered teaching sequence have separate roles:
 | Notebook | Topic |
 |---|---|
 | `../simple_notebooks/simple_cuboid_fmm_direct_compare.ipynb` | Cartesian cuboid-to-point FMM versus exact cuboid direct |
+| `../simple_notebooks/simple_cuboid_p2m_l2p_direct_compare.ipynb` | Spherical point/cuboid P2M and L2P with fixed exact cuboid P2P |
 | `../simple_notebooks/simple_cuboid_magtense_compare.ipynb` | Direct cuboid convention versus MagTense |
 | `../simple_notebooks/simple_dense_direct_precision_compare.ipynb` | FP32 versus FP64 static FMM and backend comparison |
-| `../simple_notebooks/simple_cartesian_spherical_fmm_compare.ipynb` | Cartesian versus spherical FP64 CUDA-full FMM |
+| `../simple_notebooks/simple_cartesian_spherical_fmm_compare.ipynb` | Cartesian versus spherical finite-cuboid FP64 CUDA-full FMM |
 
 Notebook 10 is the basic complete-FMM example. Notebook 11 is the external
 FMM3D comparison; the focused Cartesian/spherical notebook isolates basis

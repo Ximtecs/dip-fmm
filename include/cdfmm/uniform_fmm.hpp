@@ -153,11 +153,20 @@ struct UniformFmmOptions {
    * @brief Uses finite cuboid moments in P2M for uniform-cuboid sources.
    *
    * When false, P2M uses the ordinary point-dipole operator while P2P still
-   * uses the exact cuboid-to-point tensor. This comparison mode isolates the
-   * accuracy contribution from finite-source P2M moments. It has no effect for
-   * point-dipole sources.
+   * uses the exact tensor selected by the source and target geometries. This
+   * comparison mode isolates the accuracy contribution from finite-source P2M
+   * moments. It has no effect for point-dipole sources.
    */
   bool use_cuboid_p2m{true};
+  /**
+   * @brief Uses volume-averaged L2P rows for cuboid targets.
+   *
+   * When false, L2P evaluates the far-field local expansion at the target
+   * centre while P2P still uses the exact cuboid-to-cuboid tensor. This
+   * comparison mode isolates the accuracy contribution from target-volume
+   * averaging in L2P. It has no effect for point targets.
+   */
+  bool use_cuboid_l2p{true};
   /**
    * @brief Optional immutable target-to-source self-identity map.
    *
@@ -461,6 +470,7 @@ private:
   SourceGeometry source_geometry_{SourceGeometry::PointDipole};
   TargetGeometry target_geometry_{TargetGeometry::Point};
   bool use_cuboid_p2m_{false};
+  bool use_cuboid_l2p_{false};
   std::vector<CuboidSize> sorted_source_sizes_{};
   std::vector<CuboidSize> sorted_target_sizes_{};
   P2PExecutionPacking p2p_execution_packing_{P2PExecutionPacking::Reference};
