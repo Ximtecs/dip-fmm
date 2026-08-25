@@ -2,11 +2,11 @@
 
 `dip-fmm` is a C++20 fast multipole method for repeated magnetic-field
 evaluation on fixed geometry. It supports real spherical-harmonic (default)
-and Cartesian expansions, point dipoles, Cartesian uniform-cuboid sources,
-FP32 and FP64 execution, portable CPU, oneMKL, hybrid CUDA, full CUDA, and
-Python bindings. The implementation uses `G(r) = 1/(4*pi*|r|)` and treats
-`H = -grad(phi)` as the primary result, with optional scalar potential output
-on supported paths.
+and Cartesian expansions, point dipoles, uniform-cuboid sources and targets,
+free-space or fully periodic cubic cells, FP32 and FP64 execution, portable
+CPU, oneMKL, hybrid CUDA, full CUDA, and Python bindings. The implementation
+uses `G(r) = 1/(4*pi*|r|)` and treats `H = -grad(phi)` as the primary result,
+with optional scalar potential output on supported paths.
 
 `UniformFmm` constructs the uniform tree and reusable P2M, M2M, M2L, L2L,
 L2P, and exact `list1` P2P operators once. Repeated calls then replace only the
@@ -43,16 +43,19 @@ positions and the self-identity map on the device across evaluations.
 
 The production plan is static and non-adaptive. Both expansion bases support
 point-dipole to point-target FMM on CPU static, oneMKL, CUDA partial, and CUDA
-full backends. Cartesian plans additionally support uniform-cuboid sources to
-point targets. Lower-level direct operators support volume-averaged cuboid
-targets, but `UniformFmm` does not yet provide that target geometry end to end.
+full backends. Both also support uniform-cuboid sources and analytically
+volume-averaged cuboid targets. Fully periodic evaluation requires an explicit
+cubic cell and currently implements the zero-`k=0` convention on static CPU
+and CUDA plans.
 
 Self exclusion uses an explicit target-to-source identity map rather than
 coordinate equality. CUDA-full keeps all static operators and coefficient
 state resident and, for repeated field evaluation, transfers only changing
 moments to the device and the final user-ordered field back. Adaptive trees,
-a stable C/Fortran interface, and MagTense integration remain future work. See
-the [roadmap](docs/roadmap.md) for the precise capability boundary.
+partial/rectangular periodicity, a stable C/Fortran interface, and MagTense
+integration remain future work. See the [periodic-boundary
+documentation](docs/periodic-boundaries.md) and [roadmap](docs/roadmap.md) for
+the precise capability boundary.
 
 ## Build and test
 

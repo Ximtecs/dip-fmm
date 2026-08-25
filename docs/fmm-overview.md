@@ -55,10 +55,11 @@ construction of the five far-field operators. Cartesian order `p` stores
 `(p+1)(p+2)(p+3)/6` coefficients; spherical order `p` stores `(p+1)^2`.
 The exact near-field P2P tensor is basis-independent.
 
-Real spherical harmonics are the default for point sources. Cartesian remains
-a complete independent formulation and is also the implemented basis for
-uniform-cuboid sources. The CPU reference traversal is Cartesian-only; both
-bases use static plans on the production CPU and CUDA backends. See
+Real spherical harmonics are the default. Cartesian remains a complete
+independent formulation. Both bases support point and uniform-cuboid source
+and target geometries on static plans. The CPU reference traversal is
+Cartesian-only; both bases use static plans on the production CPU and CUDA
+backends. See
 [Mathematical formulation](math.md) for conventions and
 [Execution backends](backends.md) for stage placement.
 

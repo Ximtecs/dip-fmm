@@ -70,10 +70,13 @@ child end describe its complete subtree range.
 
 ## Interaction lists
 
-`list1` is the clipped same-level $3\times3\times3$ neighbourhood, including
-the node itself.  It represents boxes whose particles are too close for M2L
-and must ultimately interact through direct P2P.  Interior boxes have 27
-entries; physical boundary boxes have fewer because the tree is not periodic.
+For a free-space plan, `list1` is the clipped same-level
+$3\times3\times3$ neighbourhood, including the node itself. It represents
+boxes whose particles are too close for M2L and must ultimately interact
+through direct P2P. Interior boxes have 27 entries and physical boundary boxes
+have fewer. Periodic plans derive image-aware wrapped lists without changing
+this central-tree topology; see [Fully periodic boundary
+conditions](periodic-boundaries.md).
 
 For a non-root node, `list2` starts with every child of every box in the
 parent's `list1`, then removes the node's own `list1`.  Its entries are

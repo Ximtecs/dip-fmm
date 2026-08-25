@@ -36,10 +36,16 @@ CUDA partial, and CUDA full execution in FP32 or FP64. `CpuReference` is
 Cartesian-only because it forms dynamic Cartesian derivative contractions
 instead of consuming the spherical static payload.
 
-`UniformFmm` uniform-cuboid sources require the Cartesian basis and a static
-M2L plan. Targets remain points. The lower-level `DenseDirectPlan` independently
-supports point or uniform-cuboid sources and point or volume-averaged-cuboid
-targets. See [Mathematical formulation](math.md) for that distinction.
+`UniformFmm` supports point or uniform-cuboid sources and point or
+volume-averaged-cuboid targets with either expansion basis on static plans.
+Exact P2P follows the selected physical geometry, while the comparison flags
+can substitute point P2M or point L2P. `DenseDirectPlan` provides the matching
+exact geometries as an independent reference.
+
+Fully periodic cubic zero-`k=0` plans use the same static CPU and CUDA
+placements. The CPU-reference backend is unavailable because it does not
+consume image-aware list1/list2 plans or the Ewald root periodiser. See [Fully
+periodic boundary conditions](periodic-boundaries.md).
 
 CUDA-full is the field-only device-resident FMM path. CPU static and the hybrid
 path retain the supported potential calculation; hybrid potential uses the CPU

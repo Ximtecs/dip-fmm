@@ -2,10 +2,10 @@
 
 ## Purpose
 
-`dip-fmm` implements the free-space Laplace FMM specialised to magnetic dipole
-fields on fixed geometry. Expensive geometry and operator construction is
-amortised across changing dipole-moment states. The magnetic field
-$H=-\nabla\phi$ is the primary result; scalar potential is optional on
+`dip-fmm` implements a Laplace FMM specialised to magnetic dipole fields on
+fixed free-space or fully periodic geometry. Expensive geometry and operator
+construction is amortised across changing dipole-moment states. The magnetic
+field $H=-\nabla\phi$ is the primary result; scalar potential is optional on
 supported execution paths.
 
 ## Current capabilities
@@ -20,21 +20,20 @@ supported execution paths.
   device-resident CUDA FMM;
 - exact direct CPU and CUDA references plus retained reference/alternative
   operator packings for validation and benchmarking;
-- point-dipole sources in both bases and Cartesian uniform-cuboid sources to
-  point targets;
-- lower-level direct point/cuboid source and point/volume-averaged-cuboid target
-  tensors; and
+- point-dipole and uniform-cuboid sources, plus point and
+  volume-averaged-cuboid targets, in both bases;
+- free-space and fully periodic cubic zero-`k=0` evaluation; and
 - C++ tests, Python bindings, benchmarks, notebooks, and plan/timing/memory
   inspection.
 
 ## Capability boundary
 
-The tree is complete and uniform rather than adaptive. Spherical
-`UniformFmm` plans support point sources only. Cartesian `UniformFmm` supports
-uniform-cuboid sources but still evaluates point targets; lower-level
-volume-averaged target support is not yet wired through the complete FMM.
-CUDA-full is the repeated field path. A stable C ABI, Fortran wrapper, MagTense
-integration, and periodic magnetostatics are not implemented.
+The tree is complete and uniform rather than adaptive. CUDA-full is the
+repeated field path. Fully three-dimensional periodic
+magnetostatics is available for explicit cubic cells with the zero-`k=0`
+convention on static CPU and CUDA plans. Partial periodicity and rectangular
+periodic cells are not implemented. A stable C ABI, Fortran wrapper, and
+MagTense integration are not implemented.
 
 ## Architecture
 

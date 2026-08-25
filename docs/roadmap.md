@@ -127,8 +127,9 @@ integration API.
   bottleneck and end-to-end measurements justify the added complexity.
 - Consider versioned disk caches for problem-independent translation operators
   if setup measurements show worthwhile reuse across processes.
-- Define and validate true periodic magnetostatics, including the lattice-sum
-  convention and magnetic boundary condition, before adding a periodic API.
+- Extend the validated fully periodic cubic zero-`k=0` solver only when a
+  concrete use case requires partial periodicity, rectangular cells, or a
+  different macroscopic lattice-sum convention.
 - Expand Linux/Windows CI, packaging, wheels, release automation, and clean
   installation validation.
 

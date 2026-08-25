@@ -6,8 +6,9 @@ static operators, FP32/FP64 execution, and optional CPU, oneMKL, and CUDA
 backends. The magnetic field $H$ is its primary output; scalar potential is
 optional on supported paths.
 
-Point dipoles are supported by both bases. Cartesian plans also support
-uniform-cuboid sources to point targets. The tree is complete and non-adaptive.
+Point dipoles and uniform-cuboid sources/targets are supported by both bases.
+The tree is complete and non-adaptive. Fully periodic cubic cells use the
+explicit zero-`k=0` convention.
 
 ```{toctree}
 :maxdepth: 2
@@ -20,6 +21,7 @@ installation
 fortran-interface
 precision
 getting-started
+periodic-boundaries
 fmm-overview
 math
 cartesian-expansions
