@@ -1,5 +1,9 @@
 # Roadmap
 
+ABI version 1 provides the persistent C/Fortran plan boundary for a future
+MagTense adapter. Full cuboid-source to volume-averaged-cuboid-target FMM
+evaluation remains necessary for final cell-averaged demag equivalence.
+
 This roadmap records the present capability boundary and the next meaningful
 development stages. Mathematical details, execution layouts, and historical
 benchmark investigations live in the dedicated documentation pages rather

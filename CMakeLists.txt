@@ -9,6 +9,8 @@ option(CDFMM_BUILD_TESTS "Build C++ tests" ON)
 option(CDFMM_BUILD_EXAMPLES "Build examples" ON)
 option(CDFMM_BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(CDFMM_BUILD_PYTHON "Build Python bindings" ON)
+option(CDFMM_BUILD_FORTRAN_INTERFACE
+       "Build the ISO_C_BINDING module, smoke test, and Fortran example" OFF)
 option(CDFMM_INSTALL_PYTHON_TO_ENV
        "Install Python bindings into the configured interpreter environment" OFF)
 option(CDFMM_ENABLE_OPENMP "Enable internally parallel CPU execution" ON)
@@ -135,6 +137,16 @@ endfunction()
 
 cdfmm_enable_ipo(cdfmm_core)
 
+# The shared integration boundary contains only plain C symbols.  Its C++
+# implementation and all backend resources remain private behind an opaque plan.
+add_library(cdfmm_c SHARED src/c_api.cpp)
+target_link_libraries(cdfmm_c PRIVATE cdfmm_core)
+target_include_directories(cdfmm_c PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_definitions(cdfmm_c PRIVATE CDFMM_C_EXPORTS=1)
+cdfmm_enable_ipo(cdfmm_c)
+
 if(CDFMM_BUILD_TESTS)
   include(FetchContent)
   FetchContent_Declare(
@@ -145,6 +157,25 @@ if(CDFMM_BUILD_TESTS)
   FetchContent_MakeAvailable(Catch2)
   enable_testing()
   add_subdirectory(tests)
+endif()
+
+if(CDFMM_BUILD_FORTRAN_INTERFACE)
+  enable_language(Fortran)
+  enable_testing()
+  add_library(cdfmm_fortran STATIC fortran/cdfmm_fortran.f90)
+  target_link_libraries(cdfmm_fortran PUBLIC cdfmm_c)
+  set_target_properties(cdfmm_fortran PROPERTIES
+    Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fortran-modules")
+  target_include_directories(cdfmm_fortran INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/fortran-modules>)
+
+  add_executable(cdfmm_fortran_smoke tests/test_fortran_api.f90)
+  target_link_libraries(cdfmm_fortran_smoke PRIVATE cdfmm_fortran)
+  add_test(NAME cdfmm_fortran_smoke COMMAND cdfmm_fortran_smoke)
+
+  add_executable(magtense_style_demag
+    examples/fortran/magtense_style_demag.f90)
+  target_link_libraries(magtense_style_demag PRIVATE cdfmm_fortran)
 endif()
 
 if(CDFMM_BUILD_EXAMPLES)
@@ -180,6 +211,15 @@ if(CDFMM_BUILD_PYTHON)
   endif()
   install(TARGETS cdfmm LIBRARY DESTINATION "${CDFMM_PYTHON_INSTALL_DIR}")
 endif()
+
+include(GNUInstallDirs)
+install(TARGETS cdfmm_c
+  LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(FILES include/cdfmm/c_api.h
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cdfmm)
+install(FILES fortran/cdfmm_fortran.f90 DESTINATION ${CMAKE_INSTALL_DATADIR}/cdfmm/fortran)
 
 message(STATUS "CDFMM optimisation configuration")
 message(STATUS "  Build type:          ${CMAKE_BUILD_TYPE}")

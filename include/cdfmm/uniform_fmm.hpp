@@ -331,6 +331,13 @@ public:
       OutputFlags output = OutputFlags::Field,
       std::span<const int> target_source_indices = {});
 
+  /** @brief Evaluates native FP32 moments without a double-precision round trip. */
+  void evaluate_into_float32(
+      std::span<const FloatVec3> dipole_moments,
+      std::span<FloatPotentialField> results,
+      OutputFlags output = OutputFlags::Field,
+      std::span<const int> target_source_indices = {});
+
   /** @brief Evaluates an FP64 plan and rejects an FP32 plan. */
   [[nodiscard]] std::vector<PotentialField>
   evaluate_float64(std::span<const Vec3> dipole_moments,
@@ -401,6 +408,13 @@ private:
   [[nodiscard]] int coefficient_degree(int coefficient) const;
   void prepare_moments(std::span<const Vec3> dipole_moments);
   void prepare_moments_float(std::span<const Vec3> dipole_moments);
+  void prepare_moments_float(std::span<const FloatVec3> dipole_moments);
+  template <typename Moment>
+  void evaluate_into_float32_impl(
+      std::span<const Moment> dipole_moments,
+      std::span<FloatPotentialField> results,
+      OutputFlags output,
+      std::span<const int> target_source_indices);
   void upward_pass_prepared();
   void upward_pass_prepared_float();
   void prepare_self_indices(std::span<const int> target_source_indices);

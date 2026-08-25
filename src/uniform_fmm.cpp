@@ -1237,13 +1237,12 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     last_timings_ = {};
     const auto evaluation_start = Clock::now();
     prepare_self_indices(target_source_indices);
-    std::vector<Vec3> fields(target_count);
     detail::ProfileRange device_range{"cdfmm/cuda_full"};
-    cuda_full_plan_->plan->evaluate(dipole_moments, fields,
+    cuda_full_plan_->plan->evaluate(dipole_moments, near_fields_,
                                     sorted_self_indices_);
     for (std::size_t target = 0; target < target_count; ++target) {
       results[target].phi = 0.0;
-      results[target].H = fields[target];
+      results[target].H = near_fields_[target];
     }
     const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
     last_timings_.cuda_h2d.add(device.h2d_seconds);
@@ -1412,6 +1411,23 @@ void UniformFmm::evaluate_into_float32(
     const std::span<const Vec3> dipole_moments,
     const std::span<FloatPotentialField> results, const OutputFlags output,
     std::span<const int> target_source_indices) {
+  evaluate_into_float32_impl(dipole_moments, results, output,
+                             target_source_indices);
+}
+
+void UniformFmm::evaluate_into_float32(
+    const std::span<const FloatVec3> dipole_moments,
+    const std::span<FloatPotentialField> results, const OutputFlags output,
+    std::span<const int> target_source_indices) {
+  evaluate_into_float32_impl(dipole_moments, results, output,
+                             target_source_indices);
+}
+
+template <typename Moment>
+void UniformFmm::evaluate_into_float32_impl(
+    const std::span<const Moment> dipole_moments,
+    const std::span<FloatPotentialField> results, const OutputFlags output,
+    std::span<const int> target_source_indices) {
   if (precision_ != StaticPrecision::Float32) {
     throw std::logic_error("evaluate_into_float32 requires an FP32 FMM plan");
   }
@@ -1442,21 +1458,21 @@ void UniformFmm::evaluate_into_float32(
     last_timings_ = {};
     const auto evaluation_start = Clock::now();
     prepare_self_indices(target_source_indices);
-    std::vector<FloatVec3> moments_float(dipole_moments.size());
     for (std::size_t index = 0; index < dipole_moments.size(); ++index) {
-      const Vec3 value = dipole_moments[index];
-      const double scale = float_coordinate_scale_;
-      moments_float[index] = {
+      const Moment value = dipole_moments[index];
+      using Scalar = decltype(value.x);
+      const Scalar scale = static_cast<Scalar>(float_coordinate_scale_);
+      sorted_dipole_moments_float_[index] = {
           static_cast<float>(value.x / scale / scale / scale),
           static_cast<float>(value.y / scale / scale / scale),
           static_cast<float>(value.z / scale / scale / scale)};
     }
-    std::vector<FloatVec3> fields(target_count);
-    cuda_full_plan_->plan->evaluate(moments_float, fields,
+    cuda_full_plan_->plan->evaluate(sorted_dipole_moments_float_,
+                                    near_fields_float_,
                                     sorted_self_indices_);
     for (std::size_t target = 0; target < target_count; ++target) {
       results[target].phi = 0.0F;
-      results[target].H = fields[target];
+      results[target].H = near_fields_float_[target];
     }
     const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
     last_timings_.cuda_h2d.add(device.h2d_seconds);
