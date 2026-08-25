@@ -128,7 +128,8 @@ TEST_CASE("P2P execution packings preserve canonical rows and self identity") {
 
   REQUIRE(compact.memory().tensor_bytes ==
           interactions.size() * 9 * sizeof(double));
-  REQUIRE(compact.memory().index_bytes == interactions.size() * sizeof(int));
+  REQUIRE(compact.memory().index_bytes ==
+          interactions.size() * (sizeof(int) + sizeof(unsigned char)));
   REQUIRE(leaf.memory().tensor_bytes ==
           interactions.size() * 6 * sizeof(double));
   REQUIRE(leaf.memory().index_bytes == 0);

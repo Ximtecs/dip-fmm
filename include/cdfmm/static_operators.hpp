@@ -7,6 +7,7 @@
 
 #include "cdfmm/operators.hpp"
 #include "cdfmm/cuboid.hpp"
+#include "cdfmm/periodic.hpp"
 #include "cdfmm/precision.hpp"
 #include "cdfmm/spherical_harmonics.hpp"
 
@@ -73,6 +74,8 @@ struct StaticDipoleBlock {
     double yy{0.0};
     double yz{0.0};
     double zz{0.0};
+    /// Non-zero only for the central image eligible for identity exclusion.
+    int skip_for_identity{1};
 };
 
 #if defined(__CUDACC__)
@@ -133,6 +136,8 @@ struct StaticP2PCompactPlan {
   int target_count{0};
   std::vector<int> row_offsets{};
   std::vector<int> source_indices{};
+  /// Central-image marker controlling target/source identity exclusion.
+  std::vector<unsigned char> skip_for_identity{};
   /// Coefficients mapping a dipole moment to scalar potential.
   std::array<std::vector<double>, 3> potential{};
   std::array<std::vector<double>, 6> tensors{};
@@ -263,6 +268,7 @@ struct FloatStaticDipoleBlock {
     float yy{0.0F};
     float yz{0.0F};
     float zz{0.0F};
+    int skip_for_identity{1};
 };
 
 /** @brief Accumulates one FP32 symmetric dipole tensor product. */
@@ -294,10 +300,20 @@ struct FloatStaticP2PCompactPlan {
     int target_count{0};
     std::vector<int> row_offsets{};
     std::vector<int> source_indices{};
+    std::vector<unsigned char> skip_for_identity{};
     std::array<std::vector<float>, 3> potential{};
     std::array<std::vector<float>, 6> tensors{};
 
     [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
+/** @brief One exact near-field pair with a periodically shifted source. */
+struct StaticP2PInteraction {
+    int target{0};
+    int source{0};
+    Vec3 source_shift{};
+    /// True only for the zero-shift image eligible for identity exclusion.
+    bool skip_for_identity{true};
 };
 
 /** @brief FP32 compact leaf-grouped near-field packing. */
@@ -515,6 +531,29 @@ void apply_static_m2l_plan(
     std::span<const CuboidSize> source_sizes = {},
     TargetGeometry target_geometry = TargetGeometry::Point,
     std::span<const CuboidSize> target_sizes = {}
+);
+
+/** @brief Builds exact P2P rows from image-aware periodic interactions. */
+[[nodiscard]] StaticP2POperator build_static_p2p_operator(
+    std::span<const Vec3> target_positions,
+    std::span<const Vec3> source_positions,
+    std::span<const StaticP2PInteraction> interactions,
+    SourceGeometry source_geometry = SourceGeometry::PointDipole,
+    std::span<const CuboidSize> source_sizes = {},
+    TargetGeometry target_geometry = TargetGeometry::Point,
+    std::span<const CuboidSize> target_sizes = {}
+);
+
+/** @brief Builds the normalised Cartesian zero-k0 root periodiser matrix. */
+[[nodiscard]] std::vector<double> build_static_periodic_m2l_matrix(
+    const MultiIndexSet& basis,
+    const PeriodicCellOptions& options
+);
+
+/** @brief Builds the normalised spherical zero-k0 root periodiser matrix. */
+[[nodiscard]] std::vector<double> build_static_periodic_m2l_matrix(
+    const SphericalHarmonicBasis& basis,
+    const PeriodicCellOptions& options
 );
 
 /** @brief Packs canonical particle rows into six contiguous tensor streams. */

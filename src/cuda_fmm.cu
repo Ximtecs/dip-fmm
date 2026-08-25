@@ -1347,7 +1347,7 @@ __global__ void static_p2p_kernel(const int target_count,
   for (int entry = row_offsets[target]; entry < row_offsets[target + 1];
        ++entry) {
     const Block tensor = blocks[entry];
-    if (tensor.source == self) {
+    if (tensor.skip_for_identity != 0 && tensor.source == self) {
       continue;
     }
     const Vector moment = moments[tensor.source];
@@ -1834,7 +1834,7 @@ CudaP2PPlan::CudaP2PPlan(
   plan.statistics.p2p_tensor_bytes =
       operator_map.blocks.size() * 6 * sizeof(double);
   plan.statistics.p2p_index_bytes =
-      operator_map.blocks.size() * 2 * sizeof(int);
+      operator_map.blocks.size() * 3 * sizeof(int);
   plan.statistics.p2p_row_metadata_bytes = row_bytes;
   plan.statistics.p2p_threads_per_block = static_operator_threads;
 }
@@ -1925,7 +1925,7 @@ CudaP2PPlan::CudaP2PPlan(
   plan.statistics.p2p_tensor_bytes =
       operator_map.blocks.size() * 6 * sizeof(float);
   plan.statistics.p2p_index_bytes =
-      operator_map.blocks.size() * 2 * sizeof(int);
+      operator_map.blocks.size() * 3 * sizeof(int);
   plan.statistics.p2p_row_metadata_bytes = row_bytes;
   plan.statistics.p2p_threads_per_block = static_operator_threads;
 }
@@ -2924,7 +2924,7 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
     plan.statistics.p2p_tensor_bytes =
         data.p2p.blocks.size() * 6 * sizeof(double);
     plan.statistics.p2p_index_bytes =
-        data.p2p.blocks.size() * 2 * sizeof(int);
+        data.p2p.blocks.size() * 3 * sizeof(int);
     plan.statistics.p2p_row_metadata_bytes =
         data.p2p.row_offsets.size() * sizeof(int);
     plan.statistics.p2p_identity_bytes =
@@ -3144,7 +3144,7 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
     plan.statistics.p2p_tensor_bytes =
         data.p2p.blocks.size() * 6 * sizeof(float);
     plan.statistics.p2p_index_bytes =
-        data.p2p.blocks.size() * 2 * sizeof(int);
+        data.p2p.blocks.size() * 3 * sizeof(int);
     plan.statistics.p2p_row_metadata_bytes =
         data.p2p.row_offsets.size() * sizeof(int);
     plan.statistics.p2p_identity_bytes =

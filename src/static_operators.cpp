@@ -8,6 +8,7 @@
 #include <numbers>
 #include <set>
 #include <stdexcept>
+#include <tuple>
 
 #include "cdfmm/laplace_derivatives.hpp"
 
@@ -309,6 +310,75 @@ std::vector<double> build_static_m2l_matrix(const SphericalHarmonicBasis &basis,
             }
             matrix[static_cast<std::size_t>(output) +
              static_cast<std::size_t>(basis.size()) * input] = factor * value;
+        }
+    }
+    return matrix;
+}
+
+std::vector<double> build_static_periodic_m2l_matrix(
+    const MultiIndexSet& basis,
+    const PeriodicCellOptions& options)
+{
+    PeriodicCellOptions normalised = options;
+    normalised.centre = {};
+    normalised.lengths = {1.0, 1.0, 1.0};
+    const MultiIndexSet derivative_basis(2 * basis.order());
+    const std::vector<double> derivatives =
+        periodic_laplace_derivatives_raw(derivative_basis, normalised);
+    const int coefficient_count = basis.size();
+    std::vector<double> matrix(
+        static_cast<std::size_t>(coefficient_count) * coefficient_count, 0.0);
+    for (int alpha_index = 0; alpha_index < coefficient_count;
+         ++alpha_index) {
+        for (int beta_index = 0; beta_index < coefficient_count;
+             ++beta_index) {
+            const MultiIndex gamma =
+                add(basis[alpha_index], basis[beta_index]);
+            matrix[static_cast<std::size_t>(beta_index) +
+                   static_cast<std::size_t>(coefficient_count) * alpha_index] =
+                derivatives[static_cast<std::size_t>(
+                    derivative_basis.index(gamma))];
+        }
+    }
+    return matrix;
+}
+
+std::vector<double> build_static_periodic_m2l_matrix(
+    const SphericalHarmonicBasis& basis,
+    const PeriodicCellOptions& options)
+{
+    PeriodicCellOptions normalised = options;
+    normalised.centre = {};
+    normalised.lengths = {1.0, 1.0, 1.0};
+    const MultiIndexSet derivative_basis(2 * basis.order());
+    const std::vector<double> derivatives =
+        periodic_laplace_derivatives_raw(derivative_basis, normalised);
+    std::vector<double> matrix(
+        static_cast<std::size_t>(basis.size()) * basis.size(), 0.0);
+    for (int input = 0; input < basis.size(); ++input) {
+        const int input_degree = basis[input].l;
+        const double input_factor =
+            4.0 * std::numbers::pi *
+            (input_degree % 2 == 0 ? 1.0 : -1.0) /
+            odd_double_factorial(input_degree);
+        for (int output = 0; output < basis.size(); ++output) {
+            const double factor =
+                input_factor / odd_double_factorial(basis[output].l);
+            double value = 0.0;
+            for (const SolidHarmonicTerm& source_term :
+                 basis.polynomial(input)) {
+                for (const SolidHarmonicTerm& target_term :
+                     basis.polynomial(output)) {
+                    const MultiIndex derivative =
+                        add(source_term.power, target_term.power);
+                    value += source_term.coefficient * target_term.coefficient *
+                        derivatives[static_cast<std::size_t>(
+                            derivative_basis.index(derivative))];
+                }
+            }
+            matrix[static_cast<std::size_t>(output) +
+                   static_cast<std::size_t>(basis.size()) * input] =
+                factor * value;
         }
     }
     return matrix;
@@ -663,7 +733,8 @@ std::size_t StaticP2PMemory::total_bytes() const noexcept {
 StaticP2PMemory StaticP2PCompactPlan::memory() const noexcept {
   StaticP2PMemory result;
   result.tensor_bytes = tensors[0].size() * 9 * sizeof(double);
-  result.index_bytes = source_indices.size() * sizeof(int);
+  result.index_bytes = source_indices.size() * sizeof(int) +
+      skip_for_identity.size() * sizeof(unsigned char);
   result.row_metadata_bytes = row_offsets.size() * sizeof(int);
   return result;
 }
@@ -694,46 +765,77 @@ StaticP2POperator build_static_p2p_operator(
     const SourceGeometry source_geometry,
     const std::span<const CuboidSize> source_sizes,
     const TargetGeometry target_geometry,
-    const std::span<const CuboidSize> target_sizes) {
+    const std::span<const CuboidSize> target_sizes)
+{
+    std::vector<StaticP2PInteraction> image_interactions;
+    image_interactions.reserve(interactions.size());
+    for (const std::array<int, 2> pair : interactions) {
+        image_interactions.push_back({pair[0], pair[1], {}, true});
+    }
+    return build_static_p2p_operator(
+        target_positions, source_positions, image_interactions,
+        source_geometry, source_sizes, target_geometry, target_sizes);
+}
+
+StaticP2POperator build_static_p2p_operator(
+    const std::span<const Vec3> target_positions,
+    const std::span<const Vec3> source_positions,
+    const std::span<const StaticP2PInteraction> interactions,
+    const SourceGeometry source_geometry,
+    const std::span<const CuboidSize> source_sizes,
+    const TargetGeometry target_geometry,
+    const std::span<const CuboidSize> target_sizes)
+{
     if (source_geometry == SourceGeometry::UniformCuboid &&
         source_sizes.size() != 1 &&
         source_sizes.size() != source_positions.size()) {
         throw std::invalid_argument(
             "static cuboid P2P sizes must be common or per source");
     }
-  if (target_geometry == TargetGeometry::VolumeAveragedCuboid &&
-      target_sizes.size() != 1 &&
-      target_sizes.size() != target_positions.size()) {
-    throw std::invalid_argument(
-        "static cuboid P2P target sizes must be common or per target");
-  }
+    if (target_geometry == TargetGeometry::VolumeAveragedCuboid &&
+        target_sizes.size() != 1 &&
+        target_sizes.size() != target_positions.size()) {
+        throw std::invalid_argument(
+            "static cuboid P2P target sizes must be common or per target");
+    }
     StaticP2POperator result;
     result.source_count = static_cast<int>(source_positions.size());
     result.target_count = static_cast<int>(target_positions.size());
     result.row_offsets.assign(target_positions.size() + 1, 0);
 
-  std::vector<std::array<int, 2>> sorted(interactions.begin(),
-                                         interactions.end());
-    std::sort(sorted.begin(), sorted.end());
+    std::vector<StaticP2PInteraction> sorted(
+        interactions.begin(), interactions.end());
+    std::sort(sorted.begin(), sorted.end(), [](const auto& left,
+                                                const auto& right) {
+        return std::tie(left.target, left.source, left.source_shift.x,
+                        left.source_shift.y, left.source_shift.z) <
+            std::tie(right.target, right.source, right.source_shift.x,
+                     right.source_shift.y, right.source_shift.z);
+    });
     result.blocks.reserve(sorted.size());
-    for (const auto pair : sorted) {
-        const int target = pair[0];
-        const int source = pair[1];
+    for (const StaticP2PInteraction& interaction : sorted) {
+        const int target = interaction.target;
+        const int source = interaction.source;
         if (target < 0 || target >= result.target_count || source < 0 ||
             source >= result.source_count) {
-            throw std::invalid_argument("static P2P interaction index is invalid");
+            throw std::invalid_argument(
+                "static P2P interaction index is invalid");
         }
+        const Vec3 shifted_source =
+            source_positions[static_cast<std::size_t>(source)] +
+            interaction.source_shift;
         const Vec3 r = target_positions[static_cast<std::size_t>(target)] -
-            source_positions[static_cast<std::size_t>(source)];
+            shifted_source;
         if (source_geometry == SourceGeometry::PointDipole &&
-        target_geometry == TargetGeometry::Point && dot(r, r) == 0.0) {
+            target_geometry == TargetGeometry::Point && dot(r, r) == 0.0) {
             // Preserve the block so an explicit identity map can skip it. If
             // it is not a self pair, NaNs deliberately expose the same
             // undefined point-dipole singularity as the reference operator.
             const double undefined = std::numeric_limits<double>::quiet_NaN();
-      result.blocks.push_back({target, source, undefined, undefined, undefined,
-                               undefined, undefined, undefined, undefined,
-                               undefined, undefined});
+            result.blocks.push_back(
+                {target, source, undefined, undefined, undefined,
+                 undefined, undefined, undefined, undefined, undefined,
+                 undefined, interaction.skip_for_identity ? 1 : 0});
             ++result.row_offsets[static_cast<std::size_t>(target) + 1];
             continue;
         }
@@ -742,20 +844,22 @@ StaticP2POperator build_static_p2p_operator(
                 ? source_sizes[source_sizes.size() == 1 ? 0 : source]
                 : CuboidSize{};
         const PairTensor tensor = build_pair_tensor(
-            target_positions[target], source_positions[source], source_geometry,
-        target_geometry, source_size,
-        target_geometry == TargetGeometry::VolumeAveragedCuboid
-            ? target_sizes[target_sizes.size() == 1 ? 0 : target]
-            : CuboidSize{});
+            target_positions[target], shifted_source, source_geometry,
+            target_geometry, source_size,
+            target_geometry == TargetGeometry::VolumeAveragedCuboid
+                ? target_sizes[target_sizes.size() == 1 ? 0 : target]
+                : CuboidSize{});
         const double radius_squared = dot(r, r);
-    const double potential_scale =
-        radius_squared == 0.0 ? 0.0
-                              : 1.0 / (4.0 * std::numbers::pi * radius_squared *
-                                       std::sqrt(radius_squared));
-    result.blocks.push_back({target, source, potential_scale * r.x,
-                             potential_scale * r.y, potential_scale * r.z,
-                             tensor.xx, tensor.xy, tensor.xz, tensor.yy,
-                             tensor.yz, tensor.zz});
+        const double potential_scale =
+            radius_squared == 0.0
+                ? 0.0
+                : 1.0 / (4.0 * std::numbers::pi * radius_squared *
+                         std::sqrt(radius_squared));
+        result.blocks.push_back(
+            {target, source, potential_scale * r.x, potential_scale * r.y,
+             potential_scale * r.z, tensor.xx, tensor.xy, tensor.xz,
+             tensor.yy, tensor.yz, tensor.zz,
+             interaction.skip_for_identity ? 1 : 0});
         ++result.row_offsets[static_cast<std::size_t>(target) + 1];
     }
     for (std::size_t row = 1; row < result.row_offsets.size(); ++row) {
@@ -771,6 +875,7 @@ build_static_p2p_compact_plan(const StaticP2POperator &operator_map) {
   result.target_count = operator_map.target_count;
   result.row_offsets = operator_map.row_offsets;
   result.source_indices.reserve(operator_map.blocks.size());
+  result.skip_for_identity.reserve(operator_map.blocks.size());
   for (auto &coefficient : result.potential) {
     coefficient.reserve(operator_map.blocks.size());
   }
@@ -780,6 +885,8 @@ build_static_p2p_compact_plan(const StaticP2POperator &operator_map) {
 
   for (const StaticDipoleBlock &block : operator_map.blocks) {
     result.source_indices.push_back(block.source);
+    result.skip_for_identity.push_back(
+        static_cast<unsigned char>(block.skip_for_identity != 0));
     result.potential[0].push_back(block.px);
     result.potential[1].push_back(block.py);
     result.potential[2].push_back(block.pz);
@@ -932,7 +1039,7 @@ build_static_p2p_bsr_plan(const StaticP2POperator &operator_map,
 
   for (const StaticDipoleBlock &block : operator_map.blocks) {
     result.source_indices.push_back(block.source);
-    const bool self =
+    const bool self = block.skip_for_identity != 0 &&
         block.source ==
         result.target_source_indices[static_cast<std::size_t>(block.target)];
     const double xx = self ? 0.0 : block.xx;
@@ -968,7 +1075,7 @@ void apply_static_p2p_operator(
              ++entry) {
             const StaticDipoleBlock& block = operator_map.blocks[
                 static_cast<std::size_t>(entry)];
-            if (block.source == self) {
+            if (block.skip_for_identity != 0 && block.source == self) {
                 continue;
             }
             const Vec3 m = dipole_moments[static_cast<std::size_t>(block.source)];
@@ -984,6 +1091,7 @@ void apply_static_p2p_compact_plan(
     const std::span<const int> target_source_indices) {
   if (dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
       H.size() != static_cast<std::size_t>(plan.target_count) ||
+      plan.skip_for_identity.size() != plan.source_indices.size() ||
       (!target_source_indices.empty() &&
        target_source_indices.size() != H.size())) {
     throw std::invalid_argument("compact P2P dimensions are inconsistent");
@@ -1003,7 +1111,8 @@ void apply_static_p2p_compact_plan(
 #pragma omp simd reduction(+ : Hx, Hy, Hz)
     for (int entry = begin; entry < end; ++entry) {
       const int source = plan.source_indices[static_cast<std::size_t>(entry)];
-      if (source == self) {
+      if (plan.skip_for_identity[static_cast<std::size_t>(entry)] != 0 &&
+          source == self) {
         continue;
       }
       const Vec3 m = dipole_moments[static_cast<std::size_t>(source)];
@@ -1042,7 +1151,7 @@ void apply_static_p2p_operator(
              ++entry) {
             const FloatStaticDipoleBlock& block =
                 operator_map.blocks[static_cast<std::size_t>(entry)];
-            if (block.source == self) {
+            if (block.skip_for_identity != 0 && block.source == self) {
                 continue;
             }
             accumulate_static_dipole_block(
@@ -1331,7 +1440,7 @@ FloatStaticP2POperator quantise_static_p2p_operator(
             static_cast<float>(block.xx),
             static_cast<float>(block.xy), static_cast<float>(block.xz),
             static_cast<float>(block.yy), static_cast<float>(block.yz),
-            static_cast<float>(block.zz)});
+            static_cast<float>(block.zz), block.skip_for_identity});
     }
     return result;
 }
@@ -1344,6 +1453,7 @@ FloatStaticP2PCompactPlan quantise_static_p2p_compact_plan(
     result.target_count = source.target_count;
     result.row_offsets = source.row_offsets;
     result.source_indices = source.source_indices;
+    result.skip_for_identity = source.skip_for_identity;
     for (std::size_t component = 0; component < 3; ++component) {
         result.potential[component].assign(
             source.potential[component].begin(),
@@ -1416,7 +1526,8 @@ std::size_t FloatStaticP2POperator::memory_bytes() const noexcept {
 StaticP2PMemory FloatStaticP2PCompactPlan::memory() const noexcept {
     StaticP2PMemory result;
     result.tensor_bytes = tensors[0].size() * 9 * sizeof(float);
-    result.index_bytes = source_indices.size() * sizeof(int);
+    result.index_bytes = source_indices.size() * sizeof(int) +
+        skip_for_identity.size() * sizeof(unsigned char);
     result.row_metadata_bytes = row_offsets.size() * sizeof(int);
     return result;
 }
@@ -1484,6 +1595,7 @@ void apply_static_p2p_compact_plan(
 {
     if (dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
         H.size() != static_cast<std::size_t>(plan.target_count) ||
+        plan.skip_for_identity.size() != plan.source_indices.size() ||
         (!target_source_indices.empty() && target_source_indices.size() != H.size())) {
         throw std::invalid_argument("compact FP32 P2P dimensions are inconsistent");
     }
@@ -1497,7 +1609,7 @@ void apply_static_p2p_compact_plan(
              ++entry) {
             const std::size_t index = static_cast<std::size_t>(entry);
             const int source = plan.source_indices[index];
-            if (source == self) {
+            if (plan.skip_for_identity[index] != 0 && source == self) {
                 continue;
             }
             const FloatVec3 moment = dipole_moments[static_cast<std::size_t>(source)];
