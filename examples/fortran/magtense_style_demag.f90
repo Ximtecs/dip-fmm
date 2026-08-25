@@ -27,7 +27,8 @@ program magtense_style_demag
     end do
     call cdfmm_default_options(options)
     options%precision = CDFMM_PRECISION_FLOAT32
-    options%expansion_basis = CDFMM_BASIS_CARTESIAN
+    ! Change this single option to CDFMM_BASIS_CARTESIAN for a Cartesian plan.
+    options%expansion_basis = CDFMM_BASIS_SPHERICAL
     call cdfmm_create_same_uniform_cuboids( &
         plan, x, y, z, cell_size, options, ierr)
     if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()

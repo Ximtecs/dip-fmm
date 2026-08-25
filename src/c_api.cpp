@@ -235,10 +235,6 @@ int cdfmm_plan_create_uniform_cuboid_sources(
     cdfmm_plan **plan) {
     return guarded([&] {
         auto translated = translate_options(options);
-        if (translated.expansion_basis != cdfmm::ExpansionBasis::Cartesian) {
-            throw std::logic_error(
-                "uniform cuboid sources require Cartesian expansions");
-        }
         if (!(hx > 0.0 && hy > 0.0 && hz > 0.0)) {
             throw std::invalid_argument("cuboid side lengths must be positive");
         }
@@ -293,9 +289,6 @@ int cdfmm_plan_create_same_uniform_cuboids(size_t count, const double *x,
                                            cdfmm_plan **plan) {
   return guarded([&] {
     auto translated = translate_options(options);
-    if (translated.expansion_basis != cdfmm::ExpansionBasis::Cartesian) {
-      throw std::logic_error("uniform cuboids require Cartesian expansions");
-    }
     if (!(std::isfinite(hx) && std::isfinite(hy) && std::isfinite(hz) &&
           hx > 0.0 && hy > 0.0 && hz > 0.0)) {
       throw std::invalid_argument(

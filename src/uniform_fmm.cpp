@@ -371,11 +371,6 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
 
 void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
   source_geometry_ = options.source_geometry;
-  if (expansion_basis_ == ExpansionBasis::Spherical &&
-      source_geometry_ == SourceGeometry::UniformCuboid) {
-    throw std::invalid_argument(
-        "UniformCuboid sources are not supported by spherical expansions");
-  }
   use_cuboid_p2m_ = source_geometry_ == SourceGeometry::UniformCuboid &&
       options.use_cuboid_p2m;
   const std::size_t count = tree_.sorted_source_positions().size();
@@ -410,11 +405,6 @@ void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
 
 void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
   target_geometry_ = options.target_geometry;
-  if (expansion_basis_ == ExpansionBasis::Spherical &&
-      target_geometry_ == TargetGeometry::VolumeAveragedCuboid) {
-    throw std::invalid_argument("VolumeAveragedCuboid targets are not "
-                                "supported by spherical expansions");
-  }
   const std::size_t count = tree_.sorted_target_positions().size();
   if (target_geometry_ == TargetGeometry::Point) {
     if (!options.target_sizes.empty()) {
@@ -571,8 +561,13 @@ void UniformFmm::build_static_plan() {
           source_sizes.size() == 1
               ? source_sizes
               : source_sizes.subspan(leaf.source_begin, leaf.source_count());
-      plan.operator_map = build_static_cuboid_p2m_operator(
-          basis_, normalise_position(leaf.centre), leaf_positions, leaf_sizes);
+      plan.operator_map = expansion_basis_ == ExpansionBasis::Spherical
+          ? build_static_cuboid_p2m_operator(
+                spherical_basis_, normalise_position(leaf.centre),
+                leaf_positions, leaf_sizes)
+          : build_static_cuboid_p2m_operator(
+                basis_, normalise_position(leaf.centre), leaf_positions,
+                leaf_sizes);
     } else if (expansion_basis_ == ExpansionBasis::Spherical) {
       plan.operator_map = build_static_p2m_operator(
           spherical_basis_, normalise_position(leaf.centre), leaf_positions);
@@ -834,9 +829,14 @@ void UniformFmm::build_static_plan() {
          ++target) {
       l2p_evaluators_[target] =
           expansion_basis_ == ExpansionBasis::Spherical
-              ? build_static_l2p_evaluator(spherical_basis_,
-                                           normalise_position(leaf.centre),
-                sorted_targets[target])
+              ? target_geometry_ == TargetGeometry::VolumeAveragedCuboid
+                    ? build_static_cuboid_l2p_evaluator(
+                          spherical_basis_, normalise_position(leaf.centre),
+                          sorted_targets[target],
+                          target_sizes[target_sizes.size() == 1 ? 0 : target])
+                    : build_static_l2p_evaluator(
+                          spherical_basis_, normalise_position(leaf.centre),
+                          sorted_targets[target])
           : target_geometry_ == TargetGeometry::VolumeAveragedCuboid
               ? build_static_cuboid_l2p_evaluator(
                     basis_, normalise_position(leaf.centre),

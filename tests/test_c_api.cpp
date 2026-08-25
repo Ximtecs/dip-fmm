@@ -57,18 +57,13 @@ TEST_CASE("C ABI reports errors and supports native FP32 calls") {
     cdfmm_plan_destroy(plan);
 }
 
-TEST_CASE("C ABI exposes finite cuboids and rejects spherical cuboids")
+TEST_CASE("C ABI exposes finite cuboids for spherical and Cartesian bases")
 {
     cdfmm_options options{};
     cdfmm_default_options(&options);
     options.precision = CDFMM_PRECISION_FLOAT64;
     const double coordinate[] = {0.0};
     cdfmm_plan* plan = nullptr;
-    REQUIRE(cdfmm_plan_create_uniform_cuboid_sources(
-                1, coordinate, coordinate, coordinate, 1, coordinate,
-                coordinate, coordinate, 1.0, 1.0, 1.0, nullptr, &options,
-                &plan) == CDFMM_ERROR_UNSUPPORTED);
-    options.expansion_basis = CDFMM_BASIS_CARTESIAN;
     const int32_t identity[] = {0};
     REQUIRE(cdfmm_plan_create_uniform_cuboid_sources(
                 1, coordinate, coordinate, coordinate, 1, coordinate,
@@ -79,6 +74,14 @@ TEST_CASE("C ABI exposes finite cuboids and rejects spherical cuboids")
     double hx[1]{}, hy[1]{}, hz[1]{};
     REQUIRE(cdfmm_plan_evaluate_f64(plan, zero, zero, mz, hx, hy, hz) == 0);
     REQUIRE(hz[0] == Catch::Approx(-1.0 / 3.0));
+    cdfmm_plan_destroy(plan);
+
+    options.expansion_basis = CDFMM_BASIS_CARTESIAN;
+    plan = nullptr;
+    REQUIRE(cdfmm_plan_create_uniform_cuboid_sources(
+                1, coordinate, coordinate, coordinate, 1, coordinate,
+                coordinate, coordinate, 1.0, 1.0, 1.0, identity, &options,
+                &plan) == CDFMM_SUCCESS);
     cdfmm_plan_destroy(plan);
 }
 

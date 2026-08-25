@@ -261,17 +261,99 @@ TEST_CASE("complete spherical FMM converges against direct P2P")
   REQUIRE(final_error < 2.0e-3);
 }
 
-TEST_CASE("spherical plans reject unsupported source and reference modes")
+TEST_CASE("spherical cuboid P2M and L2P equal Gaussian volume averages")
+{
+  const SphericalHarmonicBasis basis(4);
+  const Vec3 centre{-0.2, 0.1, -0.3};
+  const Vec3 point{0.35, -0.25, 0.45};
+  const CuboidSize size{0.6, 0.4, 0.8};
+  const std::vector<Vec3> moment{{0.7, -0.2, 0.4}};
+  const auto inputs = flattened_moments(moment);
+  const auto cuboid_p2m = build_static_cuboid_p2m_operator(
+      basis, centre, std::span<const Vec3>(&point, 1),
+      std::span<const CuboidSize>(&size, 1));
+  std::vector<double> analytical_M(static_cast<std::size_t>(basis.size()));
+  apply_static_operator(cuboid_p2m, inputs, analytical_M);
+
+  std::vector<double> numerical_M(static_cast<std::size_t>(basis.size()));
+  std::vector<double> locals(static_cast<std::size_t>(basis.size()));
+  for (int mode = 0; mode < basis.size(); ++mode) {
+    locals[static_cast<std::size_t>(mode)] =
+        0.03 * static_cast<double>(mode + 1);
+  }
+  PotentialField numerical_target;
+  constexpr double node = 0.77459666924148337704;
+  constexpr double nodes[3] = {-node, 0.0, node};
+  constexpr double weights[3] = {5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0};
+  for (int x_index = 0; x_index < 3; ++x_index) {
+    for (int y_index = 0; y_index < 3; ++y_index) {
+      for (int z_index = 0; z_index < 3; ++z_index) {
+        const double x = nodes[x_index];
+        const double y = nodes[y_index];
+        const double z = nodes[z_index];
+        const double weight =
+            weights[x_index] * weights[y_index] * weights[z_index] / 8.0;
+        const Vec3 sample{point.x + 0.5 * size.hx * x,
+                          point.y + 0.5 * size.hy * y,
+                          point.z + 0.5 * size.hz * z};
+        const auto point_p2m = build_static_p2m_operator(
+            basis, centre, std::span<const Vec3>(&sample, 1));
+        std::vector<double> sample_M(static_cast<std::size_t>(basis.size()));
+        apply_static_operator(point_p2m, inputs, sample_M);
+        for (int mode = 0; mode < basis.size(); ++mode) {
+          numerical_M[static_cast<std::size_t>(mode)] +=
+              weight * sample_M[static_cast<std::size_t>(mode)];
+        }
+        const PotentialField sample_value = apply_static_l2p_evaluator(
+            build_static_l2p_evaluator(basis, centre, sample), locals,
+            OutputFlags::Both);
+        numerical_target.phi += weight * sample_value.phi;
+        numerical_target.H = numerical_target.H + weight * sample_value.H;
+      }
+    }
+  }
+  for (int mode = 0; mode < basis.size(); ++mode) {
+    REQUIRE(analytical_M[static_cast<std::size_t>(mode)] ==
+            Catch::Approx(numerical_M[static_cast<std::size_t>(mode)])
+                .margin(2.0e-14));
+  }
+
+  const PotentialField analytical_target = apply_static_l2p_evaluator(
+      build_static_cuboid_l2p_evaluator(basis, centre, point, size), locals,
+      OutputFlags::Both);
+  REQUIRE(analytical_target.phi ==
+          Catch::Approx(numerical_target.phi).margin(2.0e-13));
+  REQUIRE(analytical_target.H.x ==
+          Catch::Approx(numerical_target.H.x).margin(2.0e-13));
+  REQUIRE(analytical_target.H.y ==
+          Catch::Approx(numerical_target.H.y).margin(2.0e-13));
+  REQUIRE(analytical_target.H.z ==
+          Catch::Approx(numerical_target.H.z).margin(2.0e-13));
+}
+
+TEST_CASE("spherical plans accept finite cuboid source and target geometry")
 {
   const std::vector<Vec3> positions{{0.0, 0.0, 0.0}};
   UniformFmmOptions options;
   options.expansion_basis = ExpansionBasis::Spherical;
+  options.precision = StaticPrecision::Float64;
   options.source_geometry = SourceGeometry::UniformCuboid;
   options.source_sizes = {{1.0, 1.0, 1.0}};
-  REQUIRE_THROWS_AS(UniformFmm(positions, positions, options),
-                    std::invalid_argument);
+  options.target_geometry = TargetGeometry::VolumeAveragedCuboid;
+  options.target_sizes = options.source_sizes;
+  options.backend = ExecutionBackend::CpuStatic;
+  options.tree.root_centre = Vec3{};
+  options.tree.root_half_width = 1.0;
+  UniformFmm cuboid_fmm(positions, positions, options);
+  REQUIRE(cuboid_fmm.coefficient_count() == 25);
+  const auto self = cuboid_fmm.evaluate(
+      std::vector<Vec3>{{0.0, 0.0, 1.0}}, OutputFlags::Field);
+  REQUIRE(self[0].H.z == Catch::Approx(-1.0 / 3.0).epsilon(1.0e-12));
+
   options.source_geometry = SourceGeometry::PointDipole;
   options.source_sizes.clear();
+  options.target_geometry = TargetGeometry::Point;
+  options.target_sizes.clear();
   options.backend = ExecutionBackend::CpuReference;
   REQUIRE_THROWS_AS(UniformFmm(positions, positions, options),
                     std::invalid_argument);

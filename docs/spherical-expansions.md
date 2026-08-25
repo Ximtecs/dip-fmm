@@ -1,7 +1,7 @@
 # Real spherical-harmonic expansions
 
-Real spherical harmonics are the default far-field basis for point-source
-`UniformFmm` plans. The normative basis definition, solid-harmonic
+Real spherical harmonics are the default far-field basis for `UniformFmm`
+plans. The normative basis definition, solid-harmonic
 normalisation, coefficient indexing, P2M and evaluation signs, translation
 directions, and M2L box-width scaling are in
 [Mathematical formulation](math.md).
@@ -25,7 +25,12 @@ L2L, and L2P operators directly. It is algebraically equivalent to a
 rotate--axial-shift--rotate-back spherical translation, but neither Cartesian
 expansion state nor complex rotation data is retained at runtime.
 
-P2M and L2P use analytic regular-harmonic values and gradients. M2M and L2L
+Point P2M and L2P use analytic regular-harmonic values and gradients. For an
+axis-aligned uniform cuboid, setup analytically averages those finite
+Cartesian polynomials and their gradients over the source or target volume.
+The resulting P2M and L2P operators have spherical width and are stored
+directly; repeated evaluation performs neither cuboid integration nor a
+Cartesian/spherical conversion. M2M and L2L
 store the eight child classes per used level. M2L stores one dense real matrix
 per used integer displacement class and combines it with degree-dependent
 box-width scaling. No geometry-dependent harmonic construction or numerical
@@ -37,11 +42,13 @@ buffers use the selected execution scalar.
 
 ## Backends and limits
 
-Spherical point-dipole sources and point targets support FP32 and FP64 CPU
-static, oneMKL, CUDA partial, and CUDA full plans. The independent dynamic CPU
-reference traversal is Cartesian-only. Spherical plans reject
-`SourceGeometry::UniformCuboid`; finite-cuboid `UniformFmm` evaluation remains
-a Cartesian capability.
+Spherical point-dipole and uniform-cuboid sources, with point or
+volume-averaged cuboid targets, support FP32 and FP64 CPU static, oneMKL, CUDA
+partial, and CUDA full plans. The ordinary spherical M2M, M2L, and L2L
+operators are shared by every geometry. Exact near-field P2P tensors are
+basis-independent and use the same canonical builder as Cartesian and dense
+direct plans. The independent dynamic CPU reference traversal remains
+Cartesian-only.
 
 `SphericalM2LBackend::StaticDense` is the implemented M2L strategy. FMM3D
 v2.1.0 is used only as an external validation and performance comparison.

@@ -41,8 +41,8 @@ primarily replace the dipole moments.
 
 - [x] Complete Cartesian Taylor FMM.
 - [x] Real spherical basis, P2M, M2M, dense static M2L, L2L, and L2P.
-- [x] FP32 and FP64 operator storage, state, and execution for both point-source
-  bases.
+- [x] FP32 and FP64 operator storage, state, and execution for point and
+  finite-cuboid spherical sources and targets.
 - [x] Python basis selection and basis/order/coefficient-count inspection.
 - [x] Cartesian-versus-spherical and FMM3D comparison notebooks.
 
@@ -51,8 +51,7 @@ remove the Laplacian redundancy present in the Cartesian total-degree basis.
 That is not a universal performance claim: runtime and accuracy still depend
 on order, depth, geometry, precision, and hardware. The Cartesian backend
 remains a complete independent formulation, a spherical regression reference,
-the implemented basis for finite-cuboid FMM sources, and a useful static-plan
-comparison.
+a useful static-plan comparison.
 
 `SphericalM2LBackend::StaticDense` is implemented. FMM3D-style exponential or
 plane-wave M2L is not a dependency and is only a possible future optimisation:
@@ -77,11 +76,11 @@ See [Execution backends](backends.md) and [Numerical precision](precision.md).
 
 ## Current capability boundary
 
-Point dipole to point evaluation is supported by Cartesian and spherical
-`UniformFmm` plans. Cartesian `UniformFmm` also supports axis-aligned uniform
-cuboid sources evaluated at point or analytically volume-averaged cuboid
-targets, including finite-cuboid P2M and exact canonical `list1` tensors.
-Spherical plans reject either finite-cuboid geometry.
+Point dipole and axis-aligned uniform-cuboid sources are supported by Cartesian
+and spherical `UniformFmm` plans. Targets may be points or analytically
+volume-averaged cuboids. Both bases use finite-cuboid P2M, volume-averaged L2P,
+and the same exact canonical `list1` tensors; spherical runtime state remains
+`(p+1)^2` coefficients per node.
 
 The tree is complete and uniform, not adaptive. CUDA-full currently provides
 the repeated field path; potential output remains on the supported CPU and
@@ -106,7 +105,10 @@ longer depends on first implementing adaptive trees or basic CUDA support. The
 intended sequence is:
 
 ```text
-experimental MagTense demagnetisation backend
+validate spherical cuboid FMM
+    -> compare spherical and Cartesian finite-cell plans
+    -> select the preferred production basis
+    -> experimental persistent MagTense demagnetisation backend
     -> field-level validation against existing MagTense tensors
     -> repeated demagnetisation benchmark
     -> full micromagnetic simulation validation

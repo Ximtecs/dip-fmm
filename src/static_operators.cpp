@@ -409,6 +409,62 @@ StaticCoefficientOperator build_static_cuboid_p2m_operator(
     return result;
 }
 
+StaticCoefficientOperator build_static_cuboid_p2m_operator(
+    const SphericalHarmonicBasis& basis, const Vec3& centre,
+    const std::span<const Vec3> source_positions,
+    const std::span<const CuboidSize> source_sizes)
+{
+    if (source_sizes.size() != 1 &&
+        source_sizes.size() != source_positions.size()) {
+        throw std::invalid_argument(
+            "spherical cuboid P2M sizes must be common or per source");
+    }
+
+    StaticCoefficientOperator result;
+    result.input_size = static_cast<int>(3 * source_positions.size());
+    result.output_size = basis.size();
+    const double green_factor = 1.0 / (4.0 * std::numbers::pi);
+    for (std::size_t source = 0; source < source_positions.size(); ++source) {
+        const Vec3 d = source_positions[source] - centre;
+        const CuboidSize size =
+            source_sizes[source_sizes.size() == 1 ? 0 : source];
+        for (int mode = 0; mode < basis.size(); ++mode) {
+            double averaged_gradient[3]{0.0, 0.0, 0.0};
+            for (const SolidHarmonicTerm& term : basis.polynomial(mode)) {
+                const int powers[3] = {
+                    term.power.ax, term.power.ay, term.power.az};
+                for (int component = 0; component < 3; ++component) {
+                    if (powers[component] == 0) {
+                        continue;
+                    }
+                    MultiIndex derivative = term.power;
+                    if (component == 0) {
+                        --derivative.ax;
+                    } else if (component == 1) {
+                        --derivative.ay;
+                    } else {
+                        --derivative.az;
+                    }
+                    averaged_gradient[component] +=
+                        term.coefficient * powers[component] *
+                        MultiIndexSet::multi_factorial(derivative) *
+                        cuboid_averaged_monomial(derivative, d, size);
+                }
+            }
+            for (int component = 0; component < 3; ++component) {
+                const double value =
+                    green_factor * averaged_gradient[component];
+                if (value != 0.0) {
+                    result.entries.push_back(
+                        {mode, static_cast<int>(3 * source) + component,
+                         value});
+                }
+            }
+        }
+    }
+    return result;
+}
+
 StaticCoefficientOperator build_static_m2m_operator(const MultiIndexSet &basis,
                                                     const Vec3 &d) {
     StaticCoefficientOperator result{basis.size(), basis.size(), {}};
@@ -548,6 +604,47 @@ StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
         if (beta.az > 0) {
             result.field[2][beta_index] = -cuboid_averaged_monomial(
                 {beta.ax, beta.ay, beta.az - 1}, dx, target_size);
+        }
+    }
+    return result;
+}
+
+StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
+    const SphericalHarmonicBasis& basis, const Vec3& centre,
+    const Vec3& target, const CuboidSize& target_size)
+{
+    StaticL2PEvaluator result;
+    result.potential.resize(static_cast<std::size_t>(basis.size()));
+    for (auto& row : result.field) {
+        row.resize(static_cast<std::size_t>(basis.size()));
+    }
+    const Vec3 dx = target - centre;
+    for (int mode = 0; mode < basis.size(); ++mode) {
+        for (const SolidHarmonicTerm& term : basis.polynomial(mode)) {
+            result.potential[static_cast<std::size_t>(mode)] +=
+                term.coefficient *
+                MultiIndexSet::multi_factorial(term.power) *
+                cuboid_averaged_monomial(term.power, dx, target_size);
+            const int powers[3] = {
+                term.power.ax, term.power.ay, term.power.az};
+            for (int component = 0; component < 3; ++component) {
+                if (powers[component] == 0) {
+                    continue;
+                }
+                MultiIndex derivative = term.power;
+                if (component == 0) {
+                    --derivative.ax;
+                } else if (component == 1) {
+                    --derivative.ay;
+                } else {
+                    --derivative.az;
+                }
+                result.field[static_cast<std::size_t>(component)]
+                            [static_cast<std::size_t>(mode)] -=
+                    term.coefficient * powers[component] *
+                    MultiIndexSet::multi_factorial(derivative) *
+                    cuboid_averaged_monomial(derivative, dx, target_size);
+            }
         }
     }
     return result;
