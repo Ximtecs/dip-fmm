@@ -134,9 +134,10 @@ $J_{\alpha-e_k}$. Volume-averaged L2P similarly replaces its potential row by
 $J_\beta$ and field row by $-J_{\beta-e_k}$. M2M, M2L and L2L are unchanged
 because translations act on the resulting Cartesian expansion coefficients.
 
-End-to-end `UniformFmm` currently implements Cartesian uniform-cuboid sources
-to point targets. Volume-averaged cuboid targets are available in lower-level
-analytical and dense-direct APIs, but not as a `UniformFmm` target option.
+End-to-end Cartesian `UniformFmm` supports uniform-cuboid sources to point or
+analytically volume-averaged cuboid targets. Current MagTense uniform grids use
+the former, evaluating each finite prism source at the receiving cell centre;
+the latter is the intended receiving-cell definition for a future backend.
 
 Direct geometry stores exactly the six symmetric Cartesian components
 $K_{xx},K_{xy},K_{xz},K_{yy},K_{yz},K_{zz}$, each an $N_t\times N_s$ matrix.
@@ -147,6 +148,14 @@ corner formulas and finite-volume Newell primitives are independently
 implemented from published analytical results and are validated against the
 MagTense `getN_prism_3D` and `getAvgN_prism_3D` conventions without copying
 GPL source code.
+
+Both `DenseDirectPlan` and FMM `list1` construction call the single canonical
+`build_pair_tensor` implementation. Dense direct is therefore exact
+all-to-all, while FMM combines identical exact near-field physics with a
+truncated multipole/local far field. MagTense stores its demagnetisation tensor
+and applies the physical minus sign during the matrix-vector operation;
+dip-fmm's tensor maps total moments directly to the signed field
+$H=-\nabla\phi$ with $1/(4\pi)$ normalisation.
 
 For a centred cube the degree-three correction is proportional to
 $D_x^2+D_y^2+D_z^2=\nabla^2$ and vanishes outside the source. The first

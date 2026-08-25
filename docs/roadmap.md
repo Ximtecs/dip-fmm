@@ -1,8 +1,8 @@
 # Roadmap
 
 ABI version 1 provides the persistent C/Fortran plan boundary for a future
-MagTense adapter. Full cuboid-source to volume-averaged-cuboid-target FMM
-evaluation remains necessary for final cell-averaged demag equivalence.
+MagTense adapter, including cuboid-source to volume-averaged-cuboid-target
+Cartesian FMM evaluation.
 
 This roadmap records the present capability boundary and the next meaningful
 development stages. Mathematical details, execution layouts, and historical
@@ -19,6 +19,7 @@ than here.
 - [x] P2M, M2M, M2L, L2L, L2P, M2P, and exact P2P reference operators.
 - [x] Field-only, potential-only, and combined output on supported CPU paths.
 - [x] Independent direct CPU and CUDA references.
+- [x] Exact cuboid source to volume-averaged cuboid target direct and FMM paths.
 
 ### Static geometry architecture
 
@@ -78,13 +79,9 @@ See [Execution backends](backends.md) and [Numerical precision](precision.md).
 
 Point dipole to point evaluation is supported by Cartesian and spherical
 `UniformFmm` plans. Cartesian `UniformFmm` also supports axis-aligned uniform
-cuboid sources evaluated at point targets, including finite-cuboid P2M and
-exact cuboid-to-point `list1` tensors. Spherical plans reject uniform cuboid
-sources.
-
-The lower-level analytical and dense-direct APIs additionally support point or
-uniform-cuboid sources and point or volume-averaged-cuboid targets. This does
-not yet constitute end-to-end volume-averaged target support in `UniformFmm`.
+cuboid sources evaluated at point or analytically volume-averaged cuboid
+targets, including finite-cuboid P2M and exact canonical `list1` tensors.
+Spherical plans reject either finite-cuboid geometry.
 
 The tree is complete and uniform, not adaptive. CUDA-full currently provides
 the repeated field path; potential output remains on the supported CPU and
@@ -109,11 +106,9 @@ longer depends on first implementing adaptive trees or basic CUDA support. The
 intended sequence is:
 
 ```text
-complete cuboid -> volume-averaged-cuboid FMM
-    -> small stable C ABI
-    -> ISO_C_BINDING Fortran wrapper
-    -> experimental MagTense demagnetisation backend
+experimental MagTense demagnetisation backend
     -> field-level validation against existing MagTense tensors
+    -> repeated demagnetisation benchmark
     -> full micromagnetic simulation validation
 ```
 
@@ -122,8 +117,7 @@ integration API.
 
 ## Later work
 
-- Complete cuboid-source to volume-averaged-cuboid-target FMM evaluation.
-- Add the stable C ABI, Fortran wrapper, and MagTense backend described above.
+- Add the experimental MagTense backend described above.
 - Investigate adaptive or sparse trees only where non-uniform populations show
   a practical benefit over the complete tree.
 - Investigate exponential spherical M2L, translation symmetry, compression,

@@ -27,15 +27,12 @@ namespace {
 
 thread_local std::string last_error;
 
-int fail(const int status, std::string message)
-{
+int fail(const int status, std::string message) {
     last_error = std::move(message);
     return status;
 }
 
-template <typename Function>
-int guarded(Function&& function) noexcept
-{
+template <typename Function> int guarded(Function &&function) noexcept {
     try {
         function();
         last_error.clear();
@@ -100,12 +97,23 @@ cdfmm::UniformFmmOptions translate_options(const cdfmm_options* input)
         throw std::invalid_argument("unknown C ABI expansion basis");
     }
     switch (value.execution_backend) {
-    case CDFMM_BACKEND_AUTO: output.backend = cdfmm::ExecutionBackend::Auto; break;
-    case CDFMM_BACKEND_CPU_REFERENCE: output.backend = cdfmm::ExecutionBackend::CpuReference; break;
-    case CDFMM_BACKEND_CPU_STATIC: output.backend = cdfmm::ExecutionBackend::CpuStatic; break;
-    case CDFMM_BACKEND_CUDA_PARTIAL: output.backend = cdfmm::ExecutionBackend::CudaM2LP2P; break;
-    case CDFMM_BACKEND_CUDA_FULL: output.backend = cdfmm::ExecutionBackend::CudaFull; break;
-    default: throw std::invalid_argument("unknown C ABI execution backend");
+  case CDFMM_BACKEND_AUTO:
+    output.backend = cdfmm::ExecutionBackend::Auto;
+    break;
+  case CDFMM_BACKEND_CPU_REFERENCE:
+    output.backend = cdfmm::ExecutionBackend::CpuReference;
+    break;
+  case CDFMM_BACKEND_CPU_STATIC:
+    output.backend = cdfmm::ExecutionBackend::CpuStatic;
+    break;
+  case CDFMM_BACKEND_CUDA_PARTIAL:
+    output.backend = cdfmm::ExecutionBackend::CudaM2LP2P;
+    break;
+  case CDFMM_BACKEND_CUDA_FULL:
+    output.backend = cdfmm::ExecutionBackend::CudaFull;
+    break;
+  default:
+    throw std::invalid_argument("unknown C ABI execution backend");
     }
     switch (value.static_matrix_backend) {
     case CDFMM_STATIC_MATRIX_PORTABLE:
@@ -120,9 +128,9 @@ cdfmm::UniformFmmOptions translate_options(const cdfmm_options* input)
     return output;
 }
 
-std::vector<cdfmm::Vec3> pack_positions(
-    const std::size_t count, const double* x, const double* y, const double* z)
-{
+std::vector<cdfmm::Vec3> pack_positions(const std::size_t count,
+                                        const double *x, const double *y,
+                                        const double *z) {
     require_array(count, x, "x coordinate array");
     require_array(count, y, "y coordinate array");
     require_array(count, z, "z coordinate array");
@@ -194,11 +202,11 @@ void cdfmm_default_options(cdfmm_options* options)
     options->static_matrix_backend = CDFMM_STATIC_MATRIX_PORTABLE;
 }
 
-int cdfmm_plan_create_points(
-    size_t ns, const double* sx, const double* sy, const double* sz,
-    size_t nt, const double* tx, const double* ty, const double* tz,
-    const int32_t* identity, const cdfmm_options* options, cdfmm_plan** plan)
-{
+int cdfmm_plan_create_points(size_t ns, const double *sx, const double *sy,
+                             const double *sz, size_t nt, const double *tx,
+                             const double *ty, const double *tz,
+                             const int32_t *identity,
+                             const cdfmm_options *options, cdfmm_plan **plan) {
     return guarded([&] {
         create_plan(ns, sx, sy, sz, nt, tx, ty, tz, identity,
                     translate_options(options), plan);
@@ -221,11 +229,10 @@ int cdfmm_plan_create_same_points(size_t count, const double* x,
 }
 
 int cdfmm_plan_create_uniform_cuboid_sources(
-    size_t ns, const double* sx, const double* sy, const double* sz,
-    size_t nt, const double* tx, const double* ty, const double* tz,
-    double hx, double hy, double hz, const int32_t* identity,
-    const cdfmm_options* options, cdfmm_plan** plan)
-{
+    size_t ns, const double *sx, const double *sy, const double *sz, size_t nt,
+    const double *tx, const double *ty, const double *tz, double hx, double hy,
+    double hz, const int32_t *identity, const cdfmm_options *options,
+    cdfmm_plan **plan) {
     return guarded([&] {
         auto translated = translate_options(options);
         if (translated.expansion_basis != cdfmm::ExpansionBasis::Cartesian) {
@@ -255,37 +262,79 @@ int cdfmm_plan_create_uniform_cuboid_sources(
         const auto target_x_bounds = std::minmax_element(tx, tx + nt);
         const auto target_y_bounds = std::minmax_element(ty, ty + nt);
         const auto target_z_bounds = std::minmax_element(tz, tz + nt);
-        const double minimum_x = std::min(*source_x_bounds.first - 0.5 * hx,
-                                          *target_x_bounds.first);
-        const double maximum_x = std::max(*source_x_bounds.second + 0.5 * hx,
-                                          *target_x_bounds.second);
-        const double minimum_y = std::min(*source_y_bounds.first - 0.5 * hy,
-                                          *target_y_bounds.first);
-        const double maximum_y = std::max(*source_y_bounds.second + 0.5 * hy,
-                                          *target_y_bounds.second);
-        const double minimum_z = std::min(*source_z_bounds.first - 0.5 * hz,
-                                          *target_z_bounds.first);
-        const double maximum_z = std::max(*source_z_bounds.second + 0.5 * hz,
-                                          *target_z_bounds.second);
-        translated.tree.root_centre = {
-            0.5 * (minimum_x + maximum_x),
+    const double minimum_x =
+        std::min(*source_x_bounds.first - 0.5 * hx, *target_x_bounds.first);
+    const double maximum_x =
+        std::max(*source_x_bounds.second + 0.5 * hx, *target_x_bounds.second);
+    const double minimum_y =
+        std::min(*source_y_bounds.first - 0.5 * hy, *target_y_bounds.first);
+    const double maximum_y =
+        std::max(*source_y_bounds.second + 0.5 * hy, *target_y_bounds.second);
+    const double minimum_z =
+        std::min(*source_z_bounds.first - 0.5 * hz, *target_z_bounds.first);
+    const double maximum_z =
+        std::max(*source_z_bounds.second + 0.5 * hz, *target_z_bounds.second);
+    translated.tree.root_centre = {0.5 * (minimum_x + maximum_x),
             0.5 * (minimum_y + maximum_y),
             0.5 * (minimum_z + maximum_z)};
-        translated.tree.root_half_width = 1.000001 * std::max({
-            0.5 * (maximum_x - minimum_x),
-            0.5 * (maximum_y - minimum_y),
+    translated.tree.root_half_width =
+        1.000001 *
+        std::max({0.5 * (maximum_x - minimum_x), 0.5 * (maximum_y - minimum_y),
             0.5 * (maximum_z - minimum_z)});
-        create_plan(ns, sx, sy, sz, nt, tx, ty, tz, identity,
-                    std::move(translated), plan);
+    create_plan(ns, sx, sy, sz, nt, tx, ty, tz, identity, std::move(translated),
+                plan);
+  });
+}
+
+int cdfmm_plan_create_same_uniform_cuboids(size_t count, const double *x,
+                                           const double *y, const double *z,
+                                           double hx, double hy, double hz,
+                                           const cdfmm_options *options,
+                                           cdfmm_plan **plan) {
+  return guarded([&] {
+    auto translated = translate_options(options);
+    if (translated.expansion_basis != cdfmm::ExpansionBasis::Cartesian) {
+      throw std::logic_error("uniform cuboids require Cartesian expansions");
+    }
+    if (!(std::isfinite(hx) && std::isfinite(hy) && std::isfinite(hz) &&
+          hx > 0.0 && hy > 0.0 && hz > 0.0)) {
+      throw std::invalid_argument(
+          "cuboid side lengths must be finite and positive");
+    }
+    require_array(count, x, "x");
+    require_array(count, y, "y");
+    require_array(count, z, "z");
+    if (count == 0) {
+      throw std::invalid_argument("cuboid count must be positive");
+    }
+    translated.source_geometry = cdfmm::SourceGeometry::UniformCuboid;
+    translated.source_sizes = {{hx, hy, hz}};
+    translated.target_geometry = cdfmm::TargetGeometry::VolumeAveragedCuboid;
+    translated.target_sizes = {{hx, hy, hz}};
+    translated.use_cuboid_p2m = true;
+    const auto xb = std::minmax_element(x, x + count);
+    const auto yb = std::minmax_element(y, y + count);
+    const auto zb = std::minmax_element(z, z + count);
+    const cdfmm::Vec3 minimum{*xb.first - 0.5 * hx, *yb.first - 0.5 * hy,
+                              *zb.first - 0.5 * hz};
+    const cdfmm::Vec3 maximum{*xb.second + 0.5 * hx, *yb.second + 0.5 * hy,
+                              *zb.second + 0.5 * hz};
+    translated.tree.root_centre = 0.5 * (minimum + maximum);
+    translated.tree.root_half_width =
+        1.000001 *
+        std::max({0.5 * (maximum.x - minimum.x), 0.5 * (maximum.y - minimum.y),
+                  0.5 * (maximum.z - minimum.z)});
+    // Finite cuboid self interactions are physical and are not excluded.
+    create_plan(count, x, y, z, count, x, y, z, nullptr, std::move(translated),
+                plan);
     });
 }
 
-int cdfmm_plan_evaluate_f32(cdfmm_plan* plan, const float* mx,
-                            const float* my, const float* mz, float* hx,
-                            float* hy, float* hz)
-{
+int cdfmm_plan_evaluate_f32(cdfmm_plan *plan, const float *mx, const float *my,
+                            const float *mz, float *hx, float *hy, float *hz) {
     return guarded([&] {
-        if (plan == nullptr) throw std::invalid_argument("plan is NULL");
+    if (plan == nullptr)
+      throw std::invalid_argument("plan is NULL");
         if (plan->precision != cdfmm::StaticPrecision::Float32)
             throw std::invalid_argument("FP32 evaluation requires an FP32 plan");
         require_array(plan->source_count, mx, "mx");
@@ -334,8 +383,7 @@ int cdfmm_plan_evaluate_f64(cdfmm_plan* plan, const double* mx,
     });
 }
 
-int cdfmm_plan_get_stats(const cdfmm_plan* plan, cdfmm_plan_stats* stats)
-{
+int cdfmm_plan_get_stats(const cdfmm_plan *plan, cdfmm_plan_stats *stats) {
     return guarded([&] {
         if (plan == nullptr || stats == nullptr)
             throw std::invalid_argument("plan and stats must not be NULL");
@@ -350,7 +398,8 @@ int cdfmm_plan_get_stats(const cdfmm_plan* plan, cdfmm_plan_stats* stats)
         stats->target_count = plan->target_count;
         stats->expansion_order = plan->fmm->expansion_order();
         stats->coefficient_count = plan->fmm->coefficient_count();
-        stats->host_persistent_bytes = host.total_persistent_bytes() +
+    stats->host_persistent_bytes =
+        host.total_persistent_bytes() +
             plan->moments.capacity() * sizeof(cdfmm::Vec3) +
             plan->moments32.capacity() * sizeof(cdfmm::FloatVec3) +
             plan->results32.capacity() * sizeof(cdfmm::FloatPotentialField) +
@@ -369,8 +418,7 @@ int cdfmm_plan_get_last_evaluation_seconds(const cdfmm_plan* plan,
     });
 }
 
-void cdfmm_plan_destroy(cdfmm_plan* plan)
-{
+void cdfmm_plan_destroy(cdfmm_plan *plan) {
     try {
         delete plan;
     } catch (...) {

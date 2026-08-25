@@ -96,6 +96,11 @@ CDFMM_C_API int cdfmm_plan_create_uniform_cuboid_sources(
     double hz, const int32_t* target_source_identity,
     const cdfmm_options* options, cdfmm_plan** plan);
 
+CDFMM_C_API int cdfmm_plan_create_same_uniform_cuboids(
+    size_t count, const double* x, const double* y, const double* z,
+    double hx, double hy, double hz, const cdfmm_options* options,
+    cdfmm_plan** plan);
+
 CDFMM_C_API int cdfmm_plan_evaluate_f32(
     cdfmm_plan* plan, const float* mx, const float* my, const float* mz,
     float* hx, float* hy, float* hz);
