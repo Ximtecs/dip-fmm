@@ -725,6 +725,11 @@ PYBIND11_MODULE(cdfmm, module) {
         .def_property_readonly("tree", &UniformFmm::tree,
                                py::return_value_policy::reference_internal)
         .def_property_readonly(
+            "periodic_cell",
+            [](const UniformFmm& fmm) {
+              return fmm.periodic_cell();
+            })
+        .def_property_readonly(
             "expansion_order",
             &UniformFmm::expansion_order)
         .def_property_readonly("expansion_basis", &UniformFmm::expansion_basis)
