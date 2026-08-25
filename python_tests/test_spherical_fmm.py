@@ -38,17 +38,24 @@ def test_spherical_configuration_modes_and_statistics():
     assert statistics["total_persistent_bytes"] > statistics["total_bytes"]
 
 
-def test_spherical_rejects_cuboids_and_reference_execution():
+def test_spherical_accepts_cuboids_and_rejects_reference_execution():
     positions = np.zeros((1, 3))
     options = cdfmm.UniformFmmOptions()
     options.expansion_basis = cdfmm.ExpansionBasis.SPHERICAL
     options.source_geometry = cdfmm.SourceGeometry.UNIFORM_CUBOID
     options.source_sizes = [cdfmm.CuboidSize(1.0, 1.0, 1.0)]
-    with pytest.raises(ValueError, match="UniformCuboid"):
-        cdfmm.UniformFmm(positions, positions, options)
+    options.target_geometry = cdfmm.TargetGeometry.VOLUME_AVERAGED_CUBOID
+    options.target_sizes = options.source_sizes
+    options.tree.root_centre = cdfmm.Vec3(0.0, 0.0, 0.0)
+    options.tree.root_half_width = 1.0
+    plan = cdfmm.UniformFmm(positions, positions, options)
+    result = plan.evaluate(np.array([[0.0, 0.0, 1.0]]))
+    np.testing.assert_allclose(result["H"], [[0.0, 0.0, -1.0 / 3.0]])
 
     options.source_geometry = cdfmm.SourceGeometry.POINT_DIPOLE
     options.source_sizes = []
+    options.target_geometry = cdfmm.TargetGeometry.POINT
+    options.target_sizes = []
     options.backend = cdfmm.ExecutionBackend.CPU_REFERENCE
     with pytest.raises(ValueError, match="static M2L"):
         cdfmm.UniformFmm(positions, positions, options)

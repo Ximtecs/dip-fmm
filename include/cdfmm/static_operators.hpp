@@ -428,6 +428,19 @@ void apply_static_m2l_plan(
     std::span<const CuboidSize> source_sizes
 );
 
+/**
+ * @brief Builds analytical cuboid-averaged P2M in the real spherical basis.
+ *
+ * The returned operator maps dipole moments directly to `(p+1)^2` spherical
+ * coefficients. Cuboid integration is completed during plan construction.
+ */
+[[nodiscard]] StaticCoefficientOperator build_static_cuboid_p2m_operator(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& centre,
+    std::span<const Vec3> source_positions,
+    std::span<const CuboidSize> source_sizes
+);
+
 /** @brief Builds the triangular map M_parent += A(d) M_child. */
 [[nodiscard]] StaticCoefficientOperator build_static_m2m_operator(
     const MultiIndexSet& basis,
@@ -469,6 +482,19 @@ void apply_static_m2l_plan(
 /** @brief Builds rows evaluating the volume average over a fixed cuboid target. */
 [[nodiscard]] StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
     const MultiIndexSet& basis,
+    const Vec3& centre,
+    const Vec3& target,
+    const CuboidSize& target_size
+);
+
+/**
+ * @brief Builds analytical cuboid-volume rows for spherical local coefficients.
+ *
+ * The evaluator stores only potential and field rows of spherical width; no
+ * Cartesian coefficients or conversion maps are retained at evaluation time.
+ */
+[[nodiscard]] StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
+    const SphericalHarmonicBasis& basis,
     const Vec3& centre,
     const Vec3& target,
     const CuboidSize& target_size
