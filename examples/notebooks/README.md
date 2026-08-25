@@ -31,6 +31,7 @@ The sequence follows the data flow through the implemented operators:
 | `11_fmm3d_comparison.ipynb` | Spherical CUDA-full performance and accuracy versus FMM3D 2.1.0 |
 | `12_cuda_memory_usage.ipynb` | Estimated-versus-measured total and intermediate CPU/CUDA plan storage sweeps |
 | `13_parameter_selection.ipynb` | Empirical depth and order selection for performance and accuracy |
+| `14_periodic_fmm_direct_compare.ipynb` | Periodic versus non-periodic direct and FMM fields, with 3D list1/list2 topology comparisons |
 
 Focused notebooks outside the numbered teaching sequence have separate roles:
 
@@ -45,6 +46,9 @@ Focused notebooks outside the numbered teaching sequence have separate roles:
 Notebook 10 is the basic complete-FMM example. Notebook 11 is the external
 FMM3D comparison; the focused Cartesian/spherical notebook isolates basis
 choice without also changing the external library or tolerance convention.
+Notebook 14 contrasts periodic and non-periodic boundary conditions using both
+direct and FMM evaluations, and compares their corner-box interaction lists in
+the same three-dimensional style as notebook 08.
 
 Select the `Python (cdfmm)` kernel in JupyterLab or VSCode. Important
 parameters are collected near the top of each notebook, and all random
