@@ -286,9 +286,9 @@ TEST_CASE("spherical cuboid P2M and L2P equal Gaussian volume averages")
   for (const double x : {-node, node}) {
     for (const double y : {-node, node}) {
       for (const double z : {-node, node}) {
-        const Vec3 sample{point.x + 0.5 * size.dx * x,
-                          point.y + 0.5 * size.dy * y,
-                          point.z + 0.5 * size.dz * z};
+        const Vec3 sample{point.x + 0.5 * size.hx * x,
+                          point.y + 0.5 * size.hy * y,
+                          point.z + 0.5 * size.hz * z};
         const auto point_p2m = build_static_p2m_operator(
             basis, centre, std::span<const Vec3>(&sample, 1));
         std::vector<double> sample_M(static_cast<std::size_t>(basis.size()));
