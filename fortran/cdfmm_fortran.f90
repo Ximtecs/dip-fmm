@@ -34,6 +34,7 @@ module cdfmm_fortran
     public :: cdfmm_default_options
     public :: cdfmm_create_points, cdfmm_create_same_points
     public :: cdfmm_create_uniform_cuboids
+    public :: cdfmm_create_same_uniform_cuboids
     public :: cdfmm_evaluate_f32, cdfmm_evaluate_f64, cdfmm_destroy
     public :: cdfmm_last_error
 
@@ -78,6 +79,18 @@ module cdfmm_fortran
             integer(c_int) :: status
         end function
 
+        function c_create_same_cuboids(count, x, y, z, hx, hy, hz, options, &
+                                       plan) result(status) &
+                bind(c, name="cdfmm_plan_create_same_uniform_cuboids")
+            import :: c_size_t, c_double, c_ptr, c_int
+            integer(c_size_t), value :: count
+            real(c_double), intent(in) :: x(*), y(*), z(*)
+            real(c_double), value :: hx, hy, hz
+            type(c_ptr), value :: options
+            type(c_ptr), intent(out) :: plan
+            integer(c_int) :: status
+        end function
+
         function c_evaluate_f32(plan, mx, my, mz, hx, hy, hz) result(status) &
                                 bind(c, name="cdfmm_plan_evaluate_f32")
             import :: c_ptr, c_float, c_int
@@ -112,6 +125,19 @@ contains
     subroutine cdfmm_default_options(options)
         type(cdfmm_options_t), intent(out), target :: options
         call c_default_options(options)
+    end subroutine
+
+    subroutine cdfmm_create_same_uniform_cuboids(plan, x, y, z, cell_size, &
+                                                  options, ierr)
+        type(cdfmm_plan_t), intent(inout) :: plan
+        real(c_double), intent(in) :: x(:), y(:), z(:)
+        real(c_double), intent(in) :: cell_size(3)
+        type(cdfmm_options_t), intent(in), target :: options
+        integer(c_int), intent(out) :: ierr
+        call cdfmm_destroy(plan)
+        ierr = c_create_same_cuboids(size(x, kind=c_size_t), x, y, z, &
+            cell_size(1), cell_size(2), cell_size(3), c_loc(options), &
+            plan%handle)
     end subroutine
 
     subroutine cdfmm_create_points(plan, sx, sy, sz, tx, ty, tz, options, ierr, identity)

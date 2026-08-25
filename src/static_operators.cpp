@@ -13,21 +13,17 @@
 
 namespace cdfmm {
 
-void apply_static_m2l_plan(
-    const StaticM2LPlan& plan,
-    const int level,
+void apply_static_m2l_plan(const StaticM2LPlan &plan, const int level,
     const std::span<const double> multipoles,
-    const std::span<double> locals
-) {
+                           const std::span<double> locals) {
     const int n = plan.coefficient_count;
     const int target_begin =
         plan.level_target_begin[static_cast<std::size_t>(level)];
-    const int target_end =
-        plan.level_target_end[static_cast<std::size_t>(level)];
-    const double* multipole_scale = plan.multipole_scaling.data() +
-        static_cast<std::size_t>(level) * n;
-    const double* local_scale = plan.local_scaling.data() +
-        static_cast<std::size_t>(level) * n;
+  const int target_end = plan.level_target_end[static_cast<std::size_t>(level)];
+  const double *multipole_scale =
+      plan.multipole_scaling.data() + static_cast<std::size_t>(level) * n;
+  const double *local_scale =
+      plan.local_scaling.data() + static_cast<std::size_t>(level) * n;
 
     // Uniform-tree nodes are level ordered. Iterating only this level avoids
     // revisiting every other node for each downward-pass level; one iteration
@@ -41,14 +37,14 @@ void apply_static_m2l_plan(
         double value = 0.0;
         const int row_begin = plan.target_row_offsets[target];
         const int row_end = plan.target_row_offsets[target + 1];
-        for (int interaction = row_begin; interaction < row_end;
-             ++interaction) {
+    for (int interaction = row_begin; interaction < row_end; ++interaction) {
             const int source = plan.source_nodes[interaction];
             const int matrix_id = plan.matrix_ids[interaction];
-            const double* matrix_column = plan.matrices.data() +
-                static_cast<std::size_t>(matrix_id) * n * n + beta;
-            const double* source_M = multipoles.data() +
-                static_cast<std::size_t>(source) * n;
+      const double *matrix_column =
+          plan.matrices.data() + static_cast<std::size_t>(matrix_id) * n * n +
+          beta;
+      const double *source_M =
+          multipoles.data() + static_cast<std::size_t>(source) * n;
             for (int alpha = 0; alpha < n; ++alpha) {
                 value += matrix_column[static_cast<std::size_t>(alpha) * n] *
                     multipole_scale[alpha] * source_M[alpha];
@@ -59,21 +55,17 @@ void apply_static_m2l_plan(
     }
 }
 
-void apply_static_m2l_plan(
-    const FloatStaticM2LPlan& plan,
-    const int level,
+void apply_static_m2l_plan(const FloatStaticM2LPlan &plan, const int level,
     const std::span<const float> multipoles,
-    const std::span<float> locals)
-{
+                           const std::span<float> locals) {
     const int n = plan.coefficient_count;
     const int target_begin =
         plan.level_target_begin[static_cast<std::size_t>(level)];
-    const int target_end =
-        plan.level_target_end[static_cast<std::size_t>(level)];
-    const float* multipole_scale = plan.multipole_scaling.data() +
-        static_cast<std::size_t>(level) * n;
-    const float* local_scale = plan.local_scaling.data() +
-        static_cast<std::size_t>(level) * n;
+  const int target_end = plan.level_target_end[static_cast<std::size_t>(level)];
+  const float *multipole_scale =
+      plan.multipole_scaling.data() + static_cast<std::size_t>(level) * n;
+  const float *local_scale =
+      plan.local_scaling.data() + static_cast<std::size_t>(level) * n;
     const std::ptrdiff_t output_count =
         static_cast<std::ptrdiff_t>(target_end - target_begin) * n;
 #pragma omp parallel for schedule(static) if (output_count >= 256)
@@ -102,11 +94,9 @@ void apply_static_m2l_plan(
 }
 
 void apply_static_m2l_plan(
-    const StaticM2LPlan& plan,
-    const int level,
+    const StaticM2LPlan &plan, const int level,
     const std::span<const std::vector<double>> multipoles,
-    const std::span<std::vector<double>> locals
-) {
+    const std::span<std::vector<double>> locals) {
     const int n = plan.coefficient_count;
     const std::ptrdiff_t output_count =
         static_cast<std::ptrdiff_t>(locals.size()) * n;
@@ -116,8 +106,7 @@ void apply_static_m2l_plan(
         const int beta = static_cast<int>(output % n);
         double value = 0.0;
         for (int interaction = plan.target_row_offsets[target];
-             interaction < plan.target_row_offsets[target + 1];
-             ++interaction) {
+         interaction < plan.target_row_offsets[target + 1]; ++interaction) {
             if (plan.interaction_levels[interaction] != level) {
                 continue;
             }
@@ -129,7 +118,8 @@ void apply_static_m2l_plan(
                 const std::size_t matrix_index =
                     (static_cast<std::size_t>(matrix_id) * n + alpha) * n + beta;
                 value += local_scale * plan.matrices[matrix_index] *
-                    plan.multipole_scaling[static_cast<std::size_t>(level) * n + alpha] *
+                 plan.multipole_scaling[static_cast<std::size_t>(level) * n +
+                                        alpha] *
                     multipoles[source][alpha];
             }
         }
@@ -139,8 +129,7 @@ void apply_static_m2l_plan(
 
 namespace {
 
-double odd_double_factorial(const int l)
-{
+double odd_double_factorial(const int l) {
     double result = 1.0;
     for (int value = 1; value <= 2 * l - 1; value += 2) {
         result *= static_cast<double>(value);
@@ -157,15 +146,14 @@ struct SphericalCartesianMaps {
     std::vector<double> local_projection{};
 };
 
-SphericalCartesianMaps make_spherical_cartesian_maps(
-    const SphericalHarmonicBasis& spherical,
-    const MultiIndexSet& cartesian)
-{
+SphericalCartesianMaps
+make_spherical_cartesian_maps(const SphericalHarmonicBasis &spherical,
+                              const MultiIndexSet &cartesian) {
     SphericalCartesianMaps maps;
     maps.cartesian_count = cartesian.size();
     maps.spherical_count = spherical.size();
-    const std::size_t values = static_cast<std::size_t>(cartesian.size()) *
-                               spherical.size();
+  const std::size_t values =
+      static_cast<std::size_t>(cartesian.size()) * spherical.size();
     maps.multipole_embedding.assign(values, 0.0);
     maps.multipole_projection.assign(values, 0.0);
     maps.local_embedding.assign(values, 0.0);
@@ -221,28 +209,27 @@ std::vector<double> compose_spherical_translation(
         for (int cartesian = 0; cartesian < cartesian_count; ++cartesian) {
             const double projection =
                 output_projection[static_cast<std::size_t>(output_mode) *
-                                      cartesian_count + cartesian];
+                                cartesian_count +
+                            cartesian];
             if (projection == 0.0) {
                 continue;
             }
-            for (int input_mode = 0; input_mode < spherical_count;
-                 ++input_mode) {
+      for (int input_mode = 0; input_mode < spherical_count; ++input_mode) {
                 result[static_cast<std::size_t>(output_mode) +
                        static_cast<std::size_t>(spherical_count) * input_mode] +=
                     projection *
-                    intermediate[static_cast<std::size_t>(cartesian) *
-                                     spherical_count + input_mode];
+            intermediate[static_cast<std::size_t>(cartesian) * spherical_count +
+                         input_mode];
             }
         }
     }
     return result;
 }
 
-StaticCoefficientOperator pack_spherical_translation(
-    const SphericalHarmonicBasis& basis,
+StaticCoefficientOperator
+pack_spherical_translation(const SphericalHarmonicBasis &basis,
     const std::span<const double> matrix,
-    const bool multipole_translation)
-{
+                           const bool multipole_translation) {
     StaticCoefficientOperator result;
     result.input_size = basis.size();
     result.output_size = basis.size();
@@ -263,11 +250,9 @@ StaticCoefficientOperator pack_spherical_translation(
     return result;
 }
 
-void validate_operator_dimensions(
-    const StaticCoefficientOperator& operator_map,
+void validate_operator_dimensions(const StaticCoefficientOperator &operator_map,
     const std::span<const double> input,
-    const std::span<double> output)
-{
+                                  const std::span<double> output) {
     if (input.size() != static_cast<std::size_t>(operator_map.input_size) ||
         output.size() != static_cast<std::size_t>(operator_map.output_size)) {
         throw std::invalid_argument("static operator dimensions are inconsistent");
@@ -280,77 +265,58 @@ void validate_operator_dimensions(
 // Canonical static mathematical operators
 //------------------------------------------------------------------------------
 
-std::vector<double> build_static_m2l_matrix(
-    const MultiIndexSet& basis,
-    const Vec3& R)
-{
+std::vector<double> build_static_m2l_matrix(const MultiIndexSet &basis,
+                                            const Vec3 &R) {
     const int coefficient_count = basis.size();
     const MultiIndexSet derivative_basis(2 * basis.order());
-    const CoeffVector derivatives = laplace_derivatives_raw(
-        derivative_basis, R
-    );
-    std::vector<double> matrix(
-        static_cast<std::size_t>(coefficient_count) * coefficient_count
-    );
+  const CoeffVector derivatives = laplace_derivatives_raw(derivative_basis, R);
+  std::vector<double> matrix(static_cast<std::size_t>(coefficient_count) *
+                             coefficient_count);
     for (int alpha_index = 0; alpha_index < coefficient_count; ++alpha_index) {
         for (int beta_index = 0; beta_index < coefficient_count; ++beta_index) {
-            const MultiIndex gamma = add(
-                basis[alpha_index], basis[beta_index]
-            );
+      const MultiIndex gamma = add(basis[alpha_index], basis[beta_index]);
             matrix[static_cast<std::size_t>(beta_index) +
                    static_cast<std::size_t>(coefficient_count) * alpha_index] =
-                derivatives[static_cast<std::size_t>(
-                    derivative_basis.index(gamma)
-                )];
+          derivatives[static_cast<std::size_t>(derivative_basis.index(gamma))];
         }
     }
     return matrix;
 }
 
-std::vector<double> build_static_m2l_matrix(
-    const SphericalHarmonicBasis& basis,
-    const Vec3& R)
-{
+std::vector<double> build_static_m2l_matrix(const SphericalHarmonicBasis &basis,
+                                            const Vec3 &R) {
     const MultiIndexSet derivatives_basis(2 * basis.order());
-    const CoeffVector derivatives =
-        laplace_derivatives_raw(derivatives_basis, R);
+  const CoeffVector derivatives = laplace_derivatives_raw(derivatives_basis, R);
     std::vector<double> matrix(
         static_cast<std::size_t>(basis.size()) * basis.size(), 0.0);
     for (int input = 0; input < basis.size(); ++input) {
         const int input_degree = basis[input].l;
-        const double input_factor =
-            4.0 * std::numbers::pi *
+    const double input_factor = 4.0 * std::numbers::pi *
             (input_degree % 2 == 0 ? 1.0 : -1.0) /
             odd_double_factorial(input_degree);
         for (int output = 0; output < basis.size(); ++output) {
-            const double factor = input_factor /
-                odd_double_factorial(basis[output].l);
+      const double factor =
+          input_factor / odd_double_factorial(basis[output].l);
             double value = 0.0;
-            for (const SolidHarmonicTerm& source_term :
-                 basis.polynomial(input)) {
-                for (const SolidHarmonicTerm& target_term :
-                     basis.polynomial(output)) {
+      for (const SolidHarmonicTerm &source_term : basis.polynomial(input)) {
+        for (const SolidHarmonicTerm &target_term : basis.polynomial(output)) {
                     const MultiIndex derivative =
                         add(source_term.power, target_term.power);
-                    value += source_term.coefficient *
-                             target_term.coefficient *
+          value += source_term.coefficient * target_term.coefficient *
                              derivatives[static_cast<std::size_t>(
                                  derivatives_basis.index(derivative))];
                 }
             }
             matrix[static_cast<std::size_t>(output) +
-                   static_cast<std::size_t>(basis.size()) * input] =
-                factor * value;
+             static_cast<std::size_t>(basis.size()) * input] = factor * value;
         }
     }
     return matrix;
 }
 
-StaticCoefficientOperator build_static_p2m_operator(
-    const MultiIndexSet& basis,
-    const Vec3& centre,
-    const std::span<const Vec3> source_positions)
-{
+StaticCoefficientOperator
+build_static_p2m_operator(const MultiIndexSet &basis, const Vec3 &centre,
+                          const std::span<const Vec3> source_positions) {
     StaticCoefficientOperator result;
     result.input_size = static_cast<int>(3 * source_positions.size());
     result.output_size = basis.size();
@@ -410,13 +376,13 @@ StaticCoefficientOperator build_static_p2m_operator(
 }
 
 StaticCoefficientOperator build_static_cuboid_p2m_operator(
-    const MultiIndexSet& basis,
-    const Vec3& centre,
+    const MultiIndexSet &basis, const Vec3 &centre,
     const std::span<const Vec3> source_positions,
-    const std::span<const CuboidSize> source_sizes)
-{
-    if (source_sizes.size() != 1 && source_sizes.size() != source_positions.size()) {
-        throw std::invalid_argument("cuboid P2M sizes must be common or per source");
+    const std::span<const CuboidSize> source_sizes) {
+  if (source_sizes.size() != 1 &&
+      source_sizes.size() != source_positions.size()) {
+    throw std::invalid_argument(
+        "cuboid P2M sizes must be common or per source");
     }
     StaticCoefficientOperator result;
     result.input_size = static_cast<int>(3 * source_positions.size());
@@ -433,10 +399,9 @@ StaticCoefficientOperator build_static_cuboid_p2m_operator(
             const int components[3] = {alpha.ax, alpha.ay, alpha.az};
             for (int component = 0; component < 3; ++component) {
                 if (components[component] > 0) {
-                    result.entries.push_back({
-                        alpha_index, static_cast<int>(3 * source) + component,
-                        sign * cuboid_averaged_monomial(shifted[component], d, h)
-                    });
+          result.entries.push_back(
+              {alpha_index, static_cast<int>(3 * source) + component,
+               sign * cuboid_averaged_monomial(shifted[component], d, h)});
                 }
             }
         }
@@ -444,47 +409,38 @@ StaticCoefficientOperator build_static_cuboid_p2m_operator(
     return result;
 }
 
-StaticCoefficientOperator build_static_m2m_operator(
-    const MultiIndexSet& basis,
-    const Vec3& d)
-{
+StaticCoefficientOperator build_static_m2m_operator(const MultiIndexSet &basis,
+                                                    const Vec3 &d) {
     StaticCoefficientOperator result{basis.size(), basis.size(), {}};
     for (int alpha_index = 0; alpha_index < basis.size(); ++alpha_index) {
         const MultiIndex alpha = basis[alpha_index];
         for (int gamma_index = 0; gamma_index < basis.size(); ++gamma_index) {
             const MultiIndex gamma = basis[gamma_index];
             if (leq(gamma, alpha)) {
-                result.entries.push_back({
-                    alpha_index,
-                    basis.index(sub(alpha, gamma)),
-                    MultiIndexSet::monomial_over_factorial(d, gamma)
-                });
+        result.entries.push_back(
+            {alpha_index, basis.index(sub(alpha, gamma)),
+             MultiIndexSet::monomial_over_factorial(d, gamma)});
             }
         }
     }
     return result;
 }
 
-StaticCoefficientOperator build_static_m2m_operator(
-    const SphericalHarmonicBasis& basis,
-    const Vec3& d)
-{
+StaticCoefficientOperator
+build_static_m2m_operator(const SphericalHarmonicBasis &basis, const Vec3 &d) {
     const MultiIndexSet cartesian(basis.order());
     const SphericalCartesianMaps maps =
         make_spherical_cartesian_maps(basis, cartesian);
     const StaticCoefficientOperator cartesian_operator =
         build_static_m2m_operator(cartesian, d);
     const std::vector<double> matrix = compose_spherical_translation(
-        cartesian_operator, maps.multipole_embedding,
-        maps.multipole_projection, maps.cartesian_count,
-        maps.spherical_count);
+      cartesian_operator, maps.multipole_embedding, maps.multipole_projection,
+      maps.cartesian_count, maps.spherical_count);
     return pack_spherical_translation(basis, matrix, true);
 }
 
-StaticCoefficientOperator build_static_l2l_operator(
-    const MultiIndexSet& basis,
-    const Vec3& d)
-{
+StaticCoefficientOperator build_static_l2l_operator(const MultiIndexSet &basis,
+                                                    const Vec3 &d) {
     StaticCoefficientOperator result{basis.size(), basis.size(), {}};
     for (int beta_index = 0; beta_index < basis.size(); ++beta_index) {
         const MultiIndex beta = basis[beta_index];
@@ -492,21 +448,17 @@ StaticCoefficientOperator build_static_l2l_operator(
             const MultiIndex gamma = basis[gamma_index];
             const MultiIndex sum = add(beta, gamma);
             if (sum.degree() <= basis.order()) {
-                result.entries.push_back({
-                    beta_index,
-                    basis.index(sum),
-                    MultiIndexSet::monomial_over_factorial(d, gamma)
-                });
+        result.entries.push_back(
+            {beta_index, basis.index(sum),
+             MultiIndexSet::monomial_over_factorial(d, gamma)});
             }
         }
     }
     return result;
 }
 
-StaticCoefficientOperator build_static_l2l_operator(
-    const SphericalHarmonicBasis& basis,
-    const Vec3& d)
-{
+StaticCoefficientOperator
+build_static_l2l_operator(const SphericalHarmonicBasis &basis, const Vec3 &d) {
     const MultiIndexSet cartesian(basis.order());
     const SphericalCartesianMaps maps =
         make_spherical_cartesian_maps(basis, cartesian);
@@ -536,30 +488,25 @@ StaticL2PEvaluator build_static_l2p_evaluator(
         if (beta.ax > 0) {
             result.field[0][static_cast<std::size_t>(beta_index)] =
                 -MultiIndexSet::monomial_over_factorial(
-                    dx, {beta.ax - 1, beta.ay, beta.az}
-                );
+              dx, {beta.ax - 1, beta.ay, beta.az});
         }
         if (beta.ay > 0) {
             result.field[1][static_cast<std::size_t>(beta_index)] =
                 -MultiIndexSet::monomial_over_factorial(
-                    dx, {beta.ax, beta.ay - 1, beta.az}
-                );
+              dx, {beta.ax, beta.ay - 1, beta.az});
         }
         if (beta.az > 0) {
             result.field[2][static_cast<std::size_t>(beta_index)] =
                 -MultiIndexSet::monomial_over_factorial(
-                    dx, {beta.ax, beta.ay, beta.az - 1}
-                );
+              dx, {beta.ax, beta.ay, beta.az - 1});
         }
     }
     return result;
 }
 
-StaticL2PEvaluator build_static_l2p_evaluator(
-    const SphericalHarmonicBasis& basis,
-    const Vec3& centre,
-    const Vec3& target)
-{
+StaticL2PEvaluator
+build_static_l2p_evaluator(const SphericalHarmonicBasis &basis,
+                           const Vec3 &centre, const Vec3 &target) {
     const SolidHarmonicValues regular =
         regular_solid_harmonics(basis, target - centre);
     StaticL2PEvaluator result;
@@ -588,8 +535,8 @@ StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
     const Vec3 dx = target - centre;
     for (int beta_index = 0; beta_index < basis.size(); ++beta_index) {
         const MultiIndex beta = basis[beta_index];
-        result.potential[beta_index] = cuboid_averaged_monomial(
-            beta, dx, target_size);
+    result.potential[beta_index] =
+        cuboid_averaged_monomial(beta, dx, target_size);
         if (beta.ax > 0) {
             result.field[0][beta_index] = -cuboid_averaged_monomial(
                 {beta.ax - 1, beta.ay, beta.az}, dx, target_size);
@@ -606,8 +553,7 @@ StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
     return result;
 }
 
-std::size_t StaticP2POperator::memory_bytes() const noexcept
-{
+std::size_t StaticP2POperator::memory_bytes() const noexcept {
     return row_offsets.size() * sizeof(int) +
         blocks.size() * sizeof(StaticDipoleBlock);
 }
@@ -649,20 +595,28 @@ StaticP2POperator build_static_p2p_operator(
     const std::span<const Vec3> source_positions,
     const std::span<const std::array<int, 2>> interactions,
     const SourceGeometry source_geometry,
-    const std::span<const CuboidSize> source_sizes)
-{
+    const std::span<const CuboidSize> source_sizes,
+    const TargetGeometry target_geometry,
+    const std::span<const CuboidSize> target_sizes) {
     if (source_geometry == SourceGeometry::UniformCuboid &&
         source_sizes.size() != 1 &&
         source_sizes.size() != source_positions.size()) {
         throw std::invalid_argument(
             "static cuboid P2P sizes must be common or per source");
     }
+  if (target_geometry == TargetGeometry::VolumeAveragedCuboid &&
+      target_sizes.size() != 1 &&
+      target_sizes.size() != target_positions.size()) {
+    throw std::invalid_argument(
+        "static cuboid P2P target sizes must be common or per target");
+  }
     StaticP2POperator result;
     result.source_count = static_cast<int>(source_positions.size());
     result.target_count = static_cast<int>(target_positions.size());
     result.row_offsets.assign(target_positions.size() + 1, 0);
 
-    std::vector<std::array<int, 2>> sorted(interactions.begin(), interactions.end());
+  std::vector<std::array<int, 2>> sorted(interactions.begin(),
+                                         interactions.end());
     std::sort(sorted.begin(), sorted.end());
     result.blocks.reserve(sorted.size());
     for (const auto pair : sorted) {
@@ -675,14 +629,14 @@ StaticP2POperator build_static_p2p_operator(
         const Vec3 r = target_positions[static_cast<std::size_t>(target)] -
             source_positions[static_cast<std::size_t>(source)];
         if (source_geometry == SourceGeometry::PointDipole &&
-            dot(r, r) == 0.0) {
+        target_geometry == TargetGeometry::Point && dot(r, r) == 0.0) {
             // Preserve the block so an explicit identity map can skip it. If
             // it is not a self pair, NaNs deliberately expose the same
             // undefined point-dipole singularity as the reference operator.
             const double undefined = std::numeric_limits<double>::quiet_NaN();
-            result.blocks.push_back(
-                {target, source, undefined, undefined, undefined, undefined,
-                 undefined, undefined, undefined, undefined, undefined});
+      result.blocks.push_back({target, source, undefined, undefined, undefined,
+                               undefined, undefined, undefined, undefined,
+                               undefined, undefined});
             ++result.row_offsets[static_cast<std::size_t>(target) + 1];
             continue;
         }
@@ -692,17 +646,19 @@ StaticP2POperator build_static_p2p_operator(
                 : CuboidSize{};
         const PairTensor tensor = build_pair_tensor(
             target_positions[target], source_positions[source], source_geometry,
-            TargetGeometry::Point, source_size);
+        target_geometry, source_size,
+        target_geometry == TargetGeometry::VolumeAveragedCuboid
+            ? target_sizes[target_sizes.size() == 1 ? 0 : target]
+            : CuboidSize{});
         const double radius_squared = dot(r, r);
-        const double potential_scale = radius_squared == 0.0
-            ? 0.0
-            : 1.0 / (4.0 * std::numbers::pi *
-                     radius_squared * std::sqrt(radius_squared));
-        result.blocks.push_back({
-            target, source, potential_scale * r.x, potential_scale * r.y,
-            potential_scale * r.z, tensor.xx, tensor.xy, tensor.xz,
-            tensor.yy, tensor.yz, tensor.zz
-        });
+    const double potential_scale =
+        radius_squared == 0.0 ? 0.0
+                              : 1.0 / (4.0 * std::numbers::pi * radius_squared *
+                                       std::sqrt(radius_squared));
+    result.blocks.push_back({target, source, potential_scale * r.x,
+                             potential_scale * r.y, potential_scale * r.z,
+                             tensor.xx, tensor.xy, tensor.xz, tensor.yy,
+                             tensor.yz, tensor.zz});
         ++result.row_offsets[static_cast<std::size_t>(target) + 1];
     }
     for (std::size_t row = 1; row < result.row_offsets.size(); ++row) {
@@ -993,9 +949,7 @@ void apply_static_p2p_operator(
                 continue;
             }
             accumulate_static_dipole_block(
-                block,
-                dipole_moments[static_cast<std::size_t>(block.source)],
-                field);
+          block, dipole_moments[static_cast<std::size_t>(block.source)], field);
         }
         H[static_cast<std::size_t>(target)] += field;
     }
@@ -1221,22 +1175,18 @@ PotentialField apply_static_l2p_evaluator(
     return result;
 }
 
-void apply_static_coefficient_matrix(
-    const std::span<const double> matrix,
+void apply_static_coefficient_matrix(const std::span<const double> matrix,
     const std::span<const double> input,
-    const std::span<double> output)
-{
+                                     const std::span<double> output) {
     const std::size_t coefficient_count = input.size();
     if (output.size() != coefficient_count ||
         matrix.size() != coefficient_count * coefficient_count) {
         throw std::invalid_argument(
-            "static coefficient matrix dimensions are inconsistent"
-        );
+        "static coefficient matrix dimensions are inconsistent");
     }
     for (std::size_t alpha = 0; alpha < coefficient_count; ++alpha) {
         for (std::size_t beta = 0; beta < coefficient_count; ++beta) {
-            output[beta] += matrix[beta + coefficient_count * alpha] *
-                input[alpha];
+      output[beta] += matrix[beta + coefficient_count * alpha] * input[alpha];
         }
     }
 }
@@ -1245,9 +1195,8 @@ void apply_static_coefficient_matrix(
 // FP32 plan conversion and execution
 //------------------------------------------------------------------------------
 
-FloatStaticCoefficientOperator quantise_static_operator(
-    const StaticCoefficientOperator& source)
-{
+FloatStaticCoefficientOperator
+quantise_static_operator(const StaticCoefficientOperator &source) {
     FloatStaticCoefficientOperator result;
     result.input_size = source.input_size;
     result.output_size = source.output_size;
@@ -1259,9 +1208,8 @@ FloatStaticCoefficientOperator quantise_static_operator(
     return result;
 }
 
-FloatStaticL2PEvaluator quantise_static_l2p_evaluator(
-    const StaticL2PEvaluator& source)
-{
+FloatStaticL2PEvaluator
+quantise_static_l2p_evaluator(const StaticL2PEvaluator &source) {
     FloatStaticL2PEvaluator result;
     result.potential.assign(source.potential.begin(), source.potential.end());
     for (std::size_t component = 0; component < 3; ++component) {
@@ -1311,9 +1259,8 @@ FloatStaticP2PCompactPlan quantise_static_p2p_compact_plan(
     return result;
 }
 
-FloatStaticP2PLeafPlan quantise_static_p2p_leaf_plan(
-    const StaticP2PLeafPlan& source)
-{
+FloatStaticP2PLeafPlan
+quantise_static_p2p_leaf_plan(const StaticP2PLeafPlan &source) {
     FloatStaticP2PLeafPlan result;
     result.source_count = source.source_count;
     result.target_count = source.target_count;
@@ -1333,9 +1280,8 @@ FloatStaticP2PLeafPlan quantise_static_p2p_leaf_plan(
     return result;
 }
 
-FloatStaticP2PBsrPlan quantise_static_p2p_bsr_plan(
-    const StaticP2PBsrPlan& source)
-{
+FloatStaticP2PBsrPlan
+quantise_static_p2p_bsr_plan(const StaticP2PBsrPlan &source) {
     FloatStaticP2PBsrPlan result;
     result.source_count = source.source_count;
     result.target_count = source.target_count;
@@ -1346,8 +1292,7 @@ FloatStaticP2PBsrPlan quantise_static_p2p_bsr_plan(
     return result;
 }
 
-FloatStaticM2LPlan quantise_static_m2l_plan(const StaticM2LPlan& source)
-{
+FloatStaticM2LPlan quantise_static_m2l_plan(const StaticM2LPlan &source) {
     FloatStaticM2LPlan result;
     result.coefficient_count = source.coefficient_count;
     result.matrix_count = source.matrix_count;
@@ -1366,14 +1311,12 @@ FloatStaticM2LPlan quantise_static_m2l_plan(const StaticM2LPlan& source)
     return result;
 }
 
-std::size_t FloatStaticP2POperator::memory_bytes() const noexcept
-{
+std::size_t FloatStaticP2POperator::memory_bytes() const noexcept {
     return row_offsets.size() * sizeof(int) +
            blocks.size() * sizeof(FloatStaticDipoleBlock);
 }
 
-StaticP2PMemory FloatStaticP2PCompactPlan::memory() const noexcept
-{
+StaticP2PMemory FloatStaticP2PCompactPlan::memory() const noexcept {
     StaticP2PMemory result;
     result.tensor_bytes = tensors[0].size() * 9 * sizeof(float);
     result.index_bytes = source_indices.size() * sizeof(int);
@@ -1381,8 +1324,7 @@ StaticP2PMemory FloatStaticP2PCompactPlan::memory() const noexcept
     return result;
 }
 
-StaticP2PMemory FloatStaticP2PLeafPlan::memory() const noexcept
-{
+StaticP2PMemory FloatStaticP2PLeafPlan::memory() const noexcept {
     StaticP2PMemory result;
     result.tensor_bytes = tensors[0].size() * 6 * sizeof(float);
     result.row_metadata_bytes = leaf_row_offsets.size() * sizeof(int);
@@ -1392,8 +1334,7 @@ StaticP2PMemory FloatStaticP2PLeafPlan::memory() const noexcept
     return result;
 }
 
-StaticP2PMemory FloatStaticP2PBsrPlan::memory() const noexcept
-{
+StaticP2PMemory FloatStaticP2PBsrPlan::memory() const noexcept {
     StaticP2PMemory result;
     result.tensor_bytes = values.size() * sizeof(float);
     result.index_bytes = source_indices.size() * sizeof(int);
@@ -1417,11 +1358,10 @@ void apply_static_operator(
     }
 }
 
-FloatPotentialField apply_static_l2p_evaluator(
-    const FloatStaticL2PEvaluator& evaluator,
+FloatPotentialField
+apply_static_l2p_evaluator(const FloatStaticL2PEvaluator &evaluator,
     const std::span<const float> L,
-    const OutputFlags output)
-{
+                           const OutputFlags output) {
     if (evaluator.potential.size() != L.size()) {
         throw std::invalid_argument("static FP32 L2P dimensions are inconsistent");
     }

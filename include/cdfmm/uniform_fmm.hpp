@@ -145,6 +145,10 @@ struct UniformFmmOptions {
   SourceGeometry source_geometry{SourceGeometry::PointDipole};
   /// @brief Cuboid dimensions: one common size or one per source in user order.
   std::vector<CuboidSize> source_sizes{};
+  /// @brief Physical evaluation geometry represented by every target.
+  TargetGeometry target_geometry{TargetGeometry::Point};
+  /// @brief Cuboid dimensions: one common size or one per target in user order.
+  std::vector<CuboidSize> target_sizes{};
   /**
    * @brief Uses finite cuboid moments in P2M for uniform-cuboid sources.
    *
@@ -402,6 +406,7 @@ private:
   void build_static_plan();
   void quantise_static_plan_to_float();
   void initialise_source_geometry(const UniformFmmOptions &options);
+  void initialise_target_geometry(const UniformFmmOptions &options);
   void initialise_p2p_policy(const UniformFmmOptions &options);
   void build_cuda_p2p_plan();
   void build_cuda_full_plan();
@@ -454,8 +459,10 @@ private:
   double float_coordinate_scale_{1.0};
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
   SourceGeometry source_geometry_{SourceGeometry::PointDipole};
+  TargetGeometry target_geometry_{TargetGeometry::Point};
   bool use_cuboid_p2m_{false};
   std::vector<CuboidSize> sorted_source_sizes_{};
+  std::vector<CuboidSize> sorted_target_sizes_{};
   P2PExecutionPacking p2p_execution_packing_{P2PExecutionPacking::Reference};
   std::size_t cuda_p2p_bsr_max_bytes_{20ULL * 1024ULL * 1024ULL * 1024ULL};
   mutable CudaPlanStatistics empty_cuda_statistics_{};

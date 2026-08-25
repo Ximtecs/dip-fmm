@@ -486,7 +486,9 @@ void apply_static_m2l_plan(
     std::span<const Vec3> source_positions,
     std::span<const std::array<int, 2>> interactions,
     SourceGeometry source_geometry = SourceGeometry::PointDipole,
-    std::span<const CuboidSize> source_sizes = {}
+    std::span<const CuboidSize> source_sizes = {},
+    TargetGeometry target_geometry = TargetGeometry::Point,
+    std::span<const CuboidSize> target_sizes = {}
 );
 
 /** @brief Packs canonical particle rows into six contiguous tensor streams. */

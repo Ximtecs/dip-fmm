@@ -8,8 +8,7 @@
 
 #include "cdfmm/c_api.h"
 
-TEST_CASE("C ABI creates, reuses, diagnoses, and destroys a point plan")
-{
+TEST_CASE("C ABI creates, reuses, diagnoses, and destroys a point plan") {
     REQUIRE(cdfmm_abi_version() == CDFMM_ABI_VERSION);
     cdfmm_options options{};
     cdfmm_default_options(&options);
@@ -37,11 +36,10 @@ TEST_CASE("C ABI creates, reuses, diagnoses, and destroys a point plan")
     cdfmm_plan_destroy(nullptr);
 }
 
-TEST_CASE("C ABI reports errors and supports native FP32 calls")
-{
-    REQUIRE(cdfmm_plan_evaluate_f32(nullptr, nullptr, nullptr, nullptr,
-                                    nullptr, nullptr, nullptr) ==
-            CDFMM_ERROR_INVALID_ARGUMENT);
+TEST_CASE("C ABI reports errors and supports native FP32 calls") {
+  REQUIRE(cdfmm_plan_evaluate_f32(nullptr, nullptr, nullptr, nullptr, nullptr,
+                                  nullptr,
+                                  nullptr) == CDFMM_ERROR_INVALID_ARGUMENT);
     REQUIRE(cdfmm_get_last_error()[0] != '\0');
     cdfmm_options options{};
     cdfmm_default_options(&options);
@@ -82,4 +80,33 @@ TEST_CASE("C ABI exposes finite cuboids and rejects spherical cuboids")
     REQUIRE(cdfmm_plan_evaluate_f64(plan, zero, zero, mz, hx, hy, hz) == 0);
     REQUIRE(hz[0] == Catch::Approx(-1.0 / 3.0));
     cdfmm_plan_destroy(plan);
+}
+
+TEST_CASE("C ABI same cuboids include finite volume-averaged self field") {
+  cdfmm_options options{};
+  cdfmm_default_options(&options);
+  options.precision = CDFMM_PRECISION_FLOAT64;
+  options.expansion_basis = CDFMM_BASIS_CARTESIAN;
+  options.execution_backend = CDFMM_BACKEND_CPU_STATIC;
+  const double coordinate[] = {0.0};
+  cdfmm_plan *plan = nullptr;
+  REQUIRE(cdfmm_plan_create_same_uniform_cuboids(
+              1, coordinate, coordinate, coordinate, 2.0, 2.0, 2.0, &options,
+              &plan) == CDFMM_SUCCESS);
+
+  // Runtime inputs are total moments: m=V*M=8*(1,0,0).
+  const double mx[] = {8.0};
+  const double zero[] = {0.0};
+  double hx[1]{}, hy[1]{}, hz[1]{};
+  REQUIRE(cdfmm_plan_evaluate_f64(plan, mx, zero, zero, hx, hy, hz) ==
+          CDFMM_SUCCESS);
+  REQUIRE(hx[0] == Catch::Approx(-1.0 / 3.0).margin(2.0e-14));
+  REQUIRE(hy[0] == Catch::Approx(0.0).margin(2.0e-14));
+  REQUIRE(hz[0] == Catch::Approx(0.0).margin(2.0e-14));
+
+  // The immutable plan is reusable for an independent magnetisation state.
+  REQUIRE(cdfmm_plan_evaluate_f64(plan, zero, mx, zero, hx, hy, hz) ==
+          CDFMM_SUCCESS);
+  REQUIRE(hy[0] == Catch::Approx(-1.0 / 3.0).margin(2.0e-14));
+  cdfmm_plan_destroy(plan);
 }
