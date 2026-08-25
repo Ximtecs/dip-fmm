@@ -282,10 +282,17 @@ TEST_CASE("spherical cuboid P2M and L2P equal Gaussian volume averages")
         0.03 * static_cast<double>(mode + 1);
   }
   PotentialField numerical_target;
-  constexpr double node = 0.57735026918962576451;
-  for (const double x : {-node, node}) {
-    for (const double y : {-node, node}) {
-      for (const double z : {-node, node}) {
+  constexpr double node = 0.77459666924148337704;
+  constexpr double nodes[3] = {-node, 0.0, node};
+  constexpr double weights[3] = {5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0};
+  for (int x_index = 0; x_index < 3; ++x_index) {
+    for (int y_index = 0; y_index < 3; ++y_index) {
+      for (int z_index = 0; z_index < 3; ++z_index) {
+        const double x = nodes[x_index];
+        const double y = nodes[y_index];
+        const double z = nodes[z_index];
+        const double weight =
+            weights[x_index] * weights[y_index] * weights[z_index] / 8.0;
         const Vec3 sample{point.x + 0.5 * size.hx * x,
                           point.y + 0.5 * size.hy * y,
                           point.z + 0.5 * size.hz * z};
@@ -295,13 +302,13 @@ TEST_CASE("spherical cuboid P2M and L2P equal Gaussian volume averages")
         apply_static_operator(point_p2m, inputs, sample_M);
         for (int mode = 0; mode < basis.size(); ++mode) {
           numerical_M[static_cast<std::size_t>(mode)] +=
-              sample_M[static_cast<std::size_t>(mode)] / 8.0;
+              weight * sample_M[static_cast<std::size_t>(mode)];
         }
         const PotentialField sample_value = apply_static_l2p_evaluator(
             build_static_l2p_evaluator(basis, centre, sample), locals,
             OutputFlags::Both);
-        numerical_target.phi += sample_value.phi / 8.0;
-        numerical_target.H = numerical_target.H + sample_value.H * 0.125;
+        numerical_target.phi += weight * sample_value.phi;
+        numerical_target.H = numerical_target.H + weight * sample_value.H;
       }
     }
   }
@@ -329,6 +336,7 @@ TEST_CASE("spherical plans accept finite cuboid source and target geometry")
   const std::vector<Vec3> positions{{0.0, 0.0, 0.0}};
   UniformFmmOptions options;
   options.expansion_basis = ExpansionBasis::Spherical;
+  options.precision = StaticPrecision::Float64;
   options.source_geometry = SourceGeometry::UniformCuboid;
   options.source_sizes = {{1.0, 1.0, 1.0}};
   options.target_geometry = TargetGeometry::VolumeAveragedCuboid;
