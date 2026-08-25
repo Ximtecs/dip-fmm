@@ -4,6 +4,7 @@
 #include <array>
 #include <vector>
 
+#include "cdfmm/multi_index.hpp"
 #include "cdfmm/vec3.hpp"
 
 namespace cdfmm {
@@ -61,6 +62,12 @@ void validate_periodic_cell(const PeriodicCellOptions& options);
     int boxes_per_axis
 );
 
+/** @brief Wraps one position into the half-open fundamental periodic cell. */
+[[nodiscard]] Vec3 wrap_periodic_position(
+    const Vec3& position,
+    const PeriodicCellOptions& options
+);
+
 /** @brief Builds the periodic 3x3x3 same-level neighbourhood of a box. */
 [[nodiscard]] std::vector<PeriodicBoxIdentity> build_periodic_list1(
     int level,
@@ -76,6 +83,24 @@ void validate_periodic_cell(const PeriodicCellOptions& options);
 [[nodiscard]] std::vector<PeriodicBoxIdentity> build_periodic_list2(
     int level,
     const std::array<int, 3>& target_coordinate
+);
+
+/**
+ * @brief Computes zero-k0 periodic Laplace derivatives at coincident centres.
+ *
+ * The returned raw derivatives describe every periodic source-cell image
+ * outside the explicitly traversed 3x3x3 root neighbourhood. The Ewald real
+ * and reciprocal sums use the configured cubic cell and setup tolerance.
+ *
+ * @param basis Cartesian derivative multi-indices through the required order.
+ * @param options Valid enabled fully periodic cubic-cell configuration.
+ * @param explicit_image_radius Root-image radius handled by wrapped traversal.
+ * @return Raw derivatives D_alpha G_far(0) in `basis` order.
+ */
+[[nodiscard]] std::vector<double> periodic_laplace_derivatives_raw(
+    const MultiIndexSet& basis,
+    const PeriodicCellOptions& options,
+    int explicit_image_radius = 1
 );
 
 } // namespace cdfmm
