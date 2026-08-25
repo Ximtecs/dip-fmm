@@ -495,6 +495,12 @@ void UniformFmm::downward_pass() {
     return;
   }
 
+  if (periodic_.enabled && m2l_backend_ == M2LBackend::Static) {
+    phase_start = Clock::now();
+    static_m2l(0);
+    last_timings_.m2l.add(elapsed_seconds(phase_start));
+  }
+
   const auto nodes = tree_.nodes();
   for (int level = 1; level <= tree_.leaf_level(); ++level) {
     // Parent locals must be inherited before this level's M2L is added.
@@ -579,6 +585,11 @@ void UniformFmm::downward_pass_float() {
   }
 
   const auto nodes = tree_.nodes();
+  if (periodic_.enabled && !cuda_m2l_executor) {
+    phase_start = Clock::now();
+    static_m2l_float(0);
+    last_timings_.m2l.add(elapsed_seconds(phase_start));
+  }
   for (int level = 1; level <= tree_.leaf_level(); ++level) {
     const int begin = level_offset(level);
     const int end = level_offset(level + 1);

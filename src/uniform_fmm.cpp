@@ -48,6 +48,21 @@ UniformTreeOptions tree_options_for_periodic_cell(
   return tree_options;
 }
 
+std::vector<Vec3> positions_for_periodic_cell(
+    const std::vector<Vec3>& positions,
+    const PeriodicCellOptions& periodic)
+{
+  if (!periodic.enabled) {
+    return positions;
+  }
+  std::vector<Vec3> wrapped;
+  wrapped.reserve(positions.size());
+  for (const Vec3& position : positions) {
+    wrapped.push_back(wrap_periodic_position(position, periodic));
+  }
+  return wrapped;
+}
+
 double elapsed_seconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
@@ -113,7 +128,9 @@ private:
 
 UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const UniformFmmOptions &options)
-    : tree_(source_positions, tree_options_for_periodic_cell(options)),
+    : tree_(positions_for_periodic_cell(source_positions, options.periodic),
+            tree_options_for_periodic_cell(options)),
+      periodic_(options.periodic),
       basis_(std::max(options.expansion_order, 0)),
       spherical_basis_(std::max(options.expansion_order, 0)),
       expansion_basis_(options.expansion_basis),
@@ -138,6 +155,12 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
   if (expansion_basis_ == ExpansionBasis::Spherical &&
       spherical_m2l_backend_ != SphericalM2LBackend::StaticDense) {
     throw std::invalid_argument("unsupported spherical M2L backend");
+  }
+  if (periodic_.enabled &&
+      (options.backend == ExecutionBackend::CpuReference ||
+       options.m2l_backend == M2LBackend::Reference)) {
+    throw std::invalid_argument(
+        "periodic evaluation requires a static execution backend");
   }
   initialise_source_geometry(options);
   initialise_target_geometry(options);
@@ -235,12 +258,15 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
 UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const std::vector<Vec3> &target_positions,
                        const UniformFmmOptions &options)
-    : tree_(source_positions, target_positions,
+    : tree_(positions_for_periodic_cell(source_positions, options.periodic),
+            positions_for_periodic_cell(target_positions, options.periodic),
             tree_options_for_periodic_cell(options)),
+      periodic_(options.periodic),
       basis_(std::max(options.expansion_order, 0)),
       spherical_basis_(std::max(options.expansion_order, 0)),
       expansion_basis_(options.expansion_basis),
       spherical_m2l_backend_(options.spherical_m2l_backend),
+      m2l_backend_(options.m2l_backend),
       static_matrix_backend_(options.static_matrix_backend),
       precision_(options.precision) {
   if (options.expansion_order < 0) {
@@ -260,6 +286,12 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
   if (expansion_basis_ == ExpansionBasis::Spherical &&
       spherical_m2l_backend_ != SphericalM2LBackend::StaticDense) {
     throw std::invalid_argument("unsupported spherical M2L backend");
+  }
+  if (periodic_.enabled &&
+      (options.backend == ExecutionBackend::CpuReference ||
+       options.m2l_backend == M2LBackend::Reference)) {
+    throw std::invalid_argument(
+        "periodic evaluation requires a static execution backend");
   }
   initialise_source_geometry(options);
   initialise_target_geometry(options);
@@ -453,7 +485,7 @@ void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
 
 void UniformFmm::build_cuda_p2p_plan() {
   if (precision_ == StaticPrecision::Float32) {
-    if (fixed_target_source_indices_.has_value() &&
+    if (!periodic_.enabled && fixed_target_source_indices_.has_value() &&
         p2p_bsr_plan_float_.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_) {
       cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
           std::make_unique<CudaP2PPlan>(p2p_bsr_plan_float_));
@@ -469,7 +501,7 @@ void UniformFmm::build_cuda_p2p_plan() {
     p2p_execution_packing_ = P2PExecutionPacking::CanonicalAos;
     return;
   }
-  if (fixed_target_source_indices_.has_value()) {
+  if (!periodic_.enabled && fixed_target_source_indices_.has_value()) {
     StaticP2PBsrPlan bsr =
         build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_);
     if (bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_) {
@@ -659,21 +691,45 @@ void UniformFmm::build_static_plan() {
     if (target.level == 0 || target.target_count() == 0) {
       continue;
     }
-    for (const int source_index : target.list2) {
-      const TreeNode &source = nodes[static_cast<std::size_t>(source_index)];
-      if (source.source_count() == 0) {
-        continue;
+    if (periodic_.enabled) {
+      const int boxes_per_axis = 1 << target.level;
+      const auto identities = build_periodic_list2(
+          target.level, {target.ix, target.iy, target.iz});
+      for (const PeriodicBoxIdentity& identity : identities) {
+        const TreeNode& source =
+            nodes[static_cast<std::size_t>(identity.node)];
+        if (source.source_count() == 0) {
+          continue;
+        }
+        const Key key{
+            target.ix -
+                (source.ix + identity.image_shift[0] * boxes_per_axis),
+            target.iy -
+                (source.iy + identity.image_shift[1] * boxes_per_axis),
+            target.iz -
+                (source.iz + identity.image_shift[2] * boxes_per_axis)};
+        classes[key].emplace_back(identity.node, target.index);
       }
-      const Key key{target.ix - source.ix, target.iy - source.iy,
-                    target.iz - source.iz};
-      classes[key].emplace_back(source_index, target.index);
+    } else {
+      for (const int source_index : target.list2) {
+        const TreeNode &source = nodes[static_cast<std::size_t>(source_index)];
+        if (source.source_count() == 0) {
+          continue;
+        }
+        const Key key{target.ix - source.ix, target.iy - source.iy,
+                      target.iz - source.iz};
+        classes[key].emplace_back(source_index, target.index);
+      }
     }
   }
   static_plan_statistics_.transfer_discovery.add(elapsed_seconds(phase_start));
 
   const int coefficient_count = this->coefficient_count();
   m2l_plan_.coefficient_count = coefficient_count;
-  m2l_plan_.matrix_count = static_cast<int>(classes.size());
+  const bool has_periodic_root = periodic_.enabled && !nodes.empty() &&
+      nodes.front().source_count() != 0 && nodes.front().target_count() != 0;
+  m2l_plan_.matrix_count = static_cast<int>(classes.size()) +
+      (has_periodic_root ? 1 : 0);
   m2l_plan_.level_count = tree_.leaf_level() + 1;
   m2l_plan_.target_row_offsets.assign(nodes.size() + 1, 0);
   m2l_plan_.level_target_begin.resize(
@@ -729,9 +785,13 @@ void UniformFmm::build_static_plan() {
     ordered_classes.push_back(&entry);
     interaction_count += entry.second.size();
   }
+  if (has_periodic_root) {
+    ++interaction_count;
+  }
   const std::size_t matrix_values =
       static_cast<std::size_t>(coefficient_count) * coefficient_count;
-  m2l_plan_.matrices.resize(classes.size() * matrix_values);
+  m2l_plan_.matrices.resize(
+      static_cast<std::size_t>(m2l_plan_.matrix_count) * matrix_values);
 
   // Displacement classes are independent setup work. Constructing them in
   // parallel substantially reduces high-order plan initialisation while
@@ -754,11 +814,27 @@ void UniformFmm::build_static_plan() {
               m2l_plan_.matrices.begin() + id * matrix_values);
   }
 
+  if (has_periodic_root) {
+    // Wrapped traversal resolves the central root and its 26 neighbours. The
+    // appended self translation represents every more distant lattice image.
+    const std::vector<double> matrix =
+        expansion_basis_ == ExpansionBasis::Spherical
+            ? build_static_periodic_m2l_matrix(spherical_basis_, periodic_)
+            : build_static_periodic_m2l_matrix(basis_, periodic_);
+    std::copy(
+        matrix.begin(), matrix.end(),
+        m2l_plan_.matrices.begin() +
+            static_cast<std::ptrdiff_t>(classes.size() * matrix_values));
+  }
+
   for (const ClassEntry* entry : ordered_classes) {
     for (const auto [source, target] : entry->second) {
       (void)source;
       ++m2l_plan_.target_row_offsets[static_cast<std::size_t>(target) + 1];
     }
+  }
+  if (has_periodic_root) {
+    ++m2l_plan_.target_row_offsets[1];
   }
   std::partial_sum(m2l_plan_.target_row_offsets.begin(),
                    m2l_plan_.target_row_offsets.end(),
@@ -780,6 +856,12 @@ void UniformFmm::build_static_plan() {
           nodes[static_cast<std::size_t>(target)].level;
     }
     ++matrix_id;
+  }
+  if (has_periodic_root) {
+    const int slot = row_cursors[0]++;
+    m2l_plan_.source_nodes[static_cast<std::size_t>(slot)] = 0;
+    m2l_plan_.matrix_ids[static_cast<std::size_t>(slot)] = matrix_id;
+    m2l_plan_.interaction_levels[static_cast<std::size_t>(slot)] = 0;
   }
   static_plan_statistics_.operator_construction.add(
       elapsed_seconds(phase_start));
@@ -837,7 +919,8 @@ void UniformFmm::build_static_plan() {
     }
   }
   static_plan_statistics_.transfer_classes = classes.size();
-  static_plan_statistics_.m2l_operators = classes.size();
+  static_plan_statistics_.m2l_operators =
+      static_cast<std::size_t>(m2l_plan_.matrix_count);
   static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
   phase_start = Clock::now();
   l2p_evaluators_.resize(sorted_targets.size());
@@ -872,25 +955,61 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.l2p_plan.add(elapsed_seconds(phase_start));
 
   phase_start = Clock::now();
-  std::vector<std::array<int, 2>> near_interactions;
-  for (const int leaf_index : tree_.occupied_target_leaves()) {
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
-    for (std::size_t target = leaf.target_begin; target < leaf.target_end;
-         ++target) {
-      for (const int neighbour_index : leaf.list1) {
-        const TreeNode &neighbour =
-            nodes[static_cast<std::size_t>(neighbour_index)];
-        for (std::size_t source = neighbour.source_begin;
-             source < neighbour.source_end; ++source) {
-          near_interactions.push_back(
-              {static_cast<int>(target), static_cast<int>(source)});
+  if (periodic_.enabled) {
+    std::vector<StaticP2PInteraction> near_interactions;
+    const double shift_scale = precision_ == StaticPrecision::Float32
+        ? 1.0 / float_coordinate_scale_
+        : 1.0;
+    for (const int leaf_index : tree_.occupied_target_leaves()) {
+      const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
+      const auto identities = build_periodic_list1(
+          leaf.level, {leaf.ix, leaf.iy, leaf.iz});
+      for (std::size_t target = leaf.target_begin; target < leaf.target_end;
+           ++target) {
+        for (const PeriodicBoxIdentity& identity : identities) {
+          const TreeNode& neighbour =
+              nodes[static_cast<std::size_t>(identity.node)];
+          const Vec3 source_shift{
+              shift_scale * periodic_.lengths.x * identity.image_shift[0],
+              shift_scale * periodic_.lengths.y * identity.image_shift[1],
+              shift_scale * periodic_.lengths.z * identity.image_shift[2],
+          };
+          const bool central_image = identity.image_shift[0] == 0 &&
+              identity.image_shift[1] == 0 &&
+              identity.image_shift[2] == 0;
+          for (std::size_t source = neighbour.source_begin;
+               source < neighbour.source_end; ++source) {
+            near_interactions.push_back({
+                static_cast<int>(target), static_cast<int>(source),
+                source_shift, central_image});
+          }
         }
       }
     }
+    p2p_operator_ = build_static_p2p_operator(
+        sorted_targets, sorted_positions, near_interactions, source_geometry_,
+        source_sizes, target_geometry_, target_sizes);
+  } else {
+    std::vector<std::array<int, 2>> near_interactions;
+    for (const int leaf_index : tree_.occupied_target_leaves()) {
+      const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+      for (std::size_t target = leaf.target_begin; target < leaf.target_end;
+           ++target) {
+        for (const int neighbour_index : leaf.list1) {
+          const TreeNode &neighbour =
+              nodes[static_cast<std::size_t>(neighbour_index)];
+          for (std::size_t source = neighbour.source_begin;
+               source < neighbour.source_end; ++source) {
+            near_interactions.push_back(
+                {static_cast<int>(target), static_cast<int>(source)});
+          }
+        }
+      }
+    }
+    p2p_operator_ = build_static_p2p_operator(
+        sorted_targets, sorted_positions, near_interactions, source_geometry_,
+        source_sizes, target_geometry_, target_sizes);
   }
-  p2p_operator_ = build_static_p2p_operator(
-      sorted_targets, sorted_positions, near_interactions, source_geometry_,
-      source_sizes, target_geometry_, target_sizes);
   p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
   if (backend_ == ExecutionBackend::CpuStatic) {
     p2p_execution_packing_ = P2PExecutionPacking::ParticleRowSoa;
@@ -900,7 +1019,8 @@ void UniformFmm::build_static_plan() {
       p2p_operator_.blocks.size() * 6 * sizeof(double);
   static_plan_statistics_.p2p_index_bytes =
       p2p_compact_plan_.row_offsets.size() * sizeof(int) +
-      p2p_compact_plan_.source_indices.size() * sizeof(int);
+      p2p_compact_plan_.source_indices.size() * sizeof(int) +
+      p2p_compact_plan_.skip_for_identity.size() * sizeof(unsigned char);
   static_plan_statistics_.operator_bytes +=
       p2p_operator_.memory_bytes() + p2p_compact_plan_.memory().total_bytes();
   static_plan_statistics_.near_field_operator_bytes =
@@ -938,7 +1058,7 @@ void UniformFmm::quantise_static_plan_to_float() {
   }
   p2p_operator_float_ = quantise_static_p2p_operator(p2p_operator_);
   p2p_compact_plan_float_ = quantise_static_p2p_compact_plan(p2p_compact_plan_);
-  if (fixed_target_source_indices_.has_value()) {
+  if (!periodic_.enabled && fixed_target_source_indices_.has_value()) {
     p2p_bsr_plan_float_ = quantise_static_p2p_bsr_plan(
         build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_));
   }
@@ -1106,9 +1226,11 @@ void UniformFmm::build_cuda_full_plan() {
     if (fixed_target_source_indices_.has_value()) {
       data.has_fixed_self_indices = true;
       data.fixed_self_indices = fixed_sorted_self_indices_;
-      data.p2p_bsr = p2p_bsr_plan_float_;
-      data.use_p2p_bsr =
-          data.p2p_bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_;
+      if (!periodic_.enabled) {
+        data.p2p_bsr = p2p_bsr_plan_float_;
+        data.use_p2p_bsr =
+            data.p2p_bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_;
+      }
     }
     p2p_execution_packing_ = data.use_p2p_bsr
         ? P2PExecutionPacking::CudaBsr3
@@ -1200,10 +1322,12 @@ void UniformFmm::build_cuda_full_plan() {
   if (fixed_target_source_indices_.has_value()) {
     data.has_fixed_self_indices = true;
     data.fixed_self_indices = fixed_sorted_self_indices_;
-    data.p2p_bsr =
-        build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_);
-    data.use_p2p_bsr =
-        data.p2p_bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_;
+    if (!periodic_.enabled) {
+      data.p2p_bsr =
+          build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_);
+      data.use_p2p_bsr =
+          data.p2p_bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_;
+    }
   }
   p2p_execution_packing_ = data.use_p2p_bsr ? P2PExecutionPacking::CudaBsr3
                                             : P2PExecutionPacking::CanonicalAos;
@@ -1418,10 +1542,37 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     }
   }
 
+  if (periodic_.enabled && has_flag(output, OutputFlags::Potential)) {
+    const StaticP2PCompactPlan& plan = p2p_compact_plan_;
+#pragma omp parallel for schedule(static) if (target_count >= 64)
+    for (std::ptrdiff_t target = 0;
+         target < static_cast<std::ptrdiff_t>(target_count); ++target) {
+      double potential = 0.0;
+      const int self = sorted_self_indices_[static_cast<std::size_t>(target)];
+      const int begin = plan.row_offsets[static_cast<std::size_t>(target)];
+      const int end = plan.row_offsets[static_cast<std::size_t>(target) + 1];
+      for (int entry = begin; entry < end; ++entry) {
+        const std::size_t index = static_cast<std::size_t>(entry);
+        const int source = plan.source_indices[index];
+        if (plan.skip_for_identity[index] != 0 && source == self) {
+          continue;
+        }
+        const Vec3 moment =
+            sorted_dipole_moments_[static_cast<std::size_t>(source)];
+        potential += plan.potential[0][index] * moment.x +
+            plan.potential[1][index] * moment.y +
+            plan.potential[2][index] * moment.z;
+      }
+      sorted_results_[static_cast<std::size_t>(target)].phi += potential;
+    }
+  }
+
   phase_start = Clock::now();
   detail::ProfileRange output_range{"cdfmm/output_permutation"};
   const OutputFlags reference_near_output =
-      execution_plan().p2p == StaticOperatorExecutor::Reference
+      periodic_.enabled
+          ? OutputFlags::None
+          : execution_plan().p2p == StaticOperatorExecutor::Reference
           ? output
           : (has_flag(output, OutputFlags::Potential) ? OutputFlags::Potential
                                                       : OutputFlags::None);
@@ -1636,7 +1787,7 @@ void UniformFmm::evaluate_into_float32_impl(
       for (int entry = begin; entry < end; ++entry) {
         const std::size_t index = static_cast<std::size_t>(entry);
         const int source = plan.source_indices[index];
-        if (source == self) {
+        if (plan.skip_for_identity[index] != 0 && source == self) {
           continue;
         }
         const FloatVec3 moment =
@@ -1674,6 +1825,10 @@ void UniformFmm::evaluate_into_float32_impl(
 //------------------------------------------------------------------------------
 
 const UniformTree &UniformFmm::tree() const { return tree_; }
+const PeriodicCellOptions& UniformFmm::periodic_cell() const noexcept
+{
+  return periodic_;
+}
 const MultiIndexSet &UniformFmm::basis() const {
   if (expansion_basis_ != ExpansionBasis::Cartesian) {
     throw std::logic_error(

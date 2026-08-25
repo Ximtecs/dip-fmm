@@ -290,6 +290,8 @@ public:
 
   /// @brief Returns the fixed complete uniform-tree geometry.
   [[nodiscard]] const UniformTree &tree() const;
+  /// @brief Returns the explicit periodic-cell configuration of this plan.
+  [[nodiscard]] const PeriodicCellOptions& periodic_cell() const noexcept;
   /// @brief Returns Cartesian ordering; throws for a spherical plan.
   [[nodiscard]] const MultiIndexSet &basis() const;
   /// @brief Returns spherical mode ordering; throws for a Cartesian plan.
@@ -458,6 +460,7 @@ private:
 
   // Fixed geometry and immutable operator descriptions outlive every call.
   UniformTree tree_;
+  PeriodicCellOptions periodic_{};
   MultiIndexSet basis_;
   SphericalHarmonicBasis spherical_basis_;
   ExpansionBasis expansion_basis_{ExpansionBasis::Spherical};
