@@ -120,10 +120,10 @@ TEST_CASE("dense and static P2P store the same canonical cuboid tensor") {
       source_sizes, TargetGeometry::VolumeAveragedCuboid, target_sizes);
   const auto &matrices = dense.matrices();
   const auto &block = sparse.blocks.front();
-  REQUIRE(block.kxx == matrices[0][0]);
-  REQUIRE(block.kxy == matrices[1][0]);
-  REQUIRE(block.kxz == matrices[2][0]);
-  REQUIRE(block.kyy == matrices[3][0]);
-  REQUIRE(block.kyz == matrices[4][0]);
-  REQUIRE(block.kzz == matrices[5][0]);
+  REQUIRE(block.xx == matrices[0][0]);
+  REQUIRE(block.xy == matrices[1][0]);
+  REQUIRE(block.xz == matrices[2][0]);
+  REQUIRE(block.yy == matrices[3][0]);
+  REQUIRE(block.yz == matrices[4][0]);
+  REQUIRE(block.zz == matrices[5][0]);
 }
