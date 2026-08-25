@@ -34,6 +34,20 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+UniformTreeOptions tree_options_for_periodic_cell(
+    const UniformFmmOptions& options
+)
+{
+  validate_periodic_cell(options.periodic);
+  UniformTreeOptions tree_options = options.tree;
+  if (!options.periodic.enabled) {
+    return tree_options;
+  }
+  tree_options.root_centre = options.periodic.centre;
+  tree_options.root_half_width = 0.5 * options.periodic.lengths.x;
+  return tree_options;
+}
+
 double elapsed_seconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
@@ -99,7 +113,7 @@ private:
 
 UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const UniformFmmOptions &options)
-    : tree_(source_positions, options.tree),
+    : tree_(source_positions, tree_options_for_periodic_cell(options)),
       basis_(std::max(options.expansion_order, 0)),
       spherical_basis_(std::max(options.expansion_order, 0)),
       expansion_basis_(options.expansion_basis),
@@ -221,7 +235,8 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
 UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const std::vector<Vec3> &target_positions,
                        const UniformFmmOptions &options)
-    : tree_(source_positions, target_positions, options.tree),
+    : tree_(source_positions, target_positions,
+            tree_options_for_periodic_cell(options)),
       basis_(std::max(options.expansion_order, 0)),
       spherical_basis_(std::max(options.expansion_order, 0)),
       expansion_basis_(options.expansion_basis),
