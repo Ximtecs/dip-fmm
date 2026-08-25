@@ -19,6 +19,7 @@
       },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INSTALL_PREFIX": "$env{CONDA_PREFIX}",
         "CMAKE_CXX_COMPILER": "g++",
         "CMAKE_CUDA_HOST_COMPILER": "g++",
         "CMAKE_CUDA_ARCHITECTURES": "native",

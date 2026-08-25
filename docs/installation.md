@@ -406,11 +406,13 @@ Consequently the preset requires CMake 3.24 or newer and a GCC version supported
 by the selected CUDA toolkit. `--fresh` prevents compiler paths from an earlier
 CPU or failed CUDA configuration remaining in the CMake cache.
 
-The CUDA build preset targets `install`, placing the newly built extension in
-the active Conda environment's Python platform-library directory. Plain
+The CUDA build preset targets `install` and uses the active Conda environment
+as `CMAKE_INSTALL_PREFIX`. This places the C library, public headers, Fortran
+interface source, and newly built extension inside that environment. Plain
 `import cdfmm` and `python -m pytest` therefore use the current CUDA build;
 `PYTHONPATH` is neither required nor recommended. Activate `cdfmm` before
-configuring so the install target is derived from the intended interpreter.
+configuring so both the prefix and Python install directory are derived from
+the intended environment.
 
 The C++ suite contains explicit CUDA tests which are skipped in CPU-only
 builds and exercise the partial `CudaPartial` and device-resident `CudaFull`
