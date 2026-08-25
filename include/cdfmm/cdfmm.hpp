@@ -10,6 +10,7 @@
 #include "cdfmm/multi_index.hpp"
 #include "cdfmm/operators.hpp"
 #include "cdfmm/output_flags.hpp"
+#include "cdfmm/periodic.hpp"
 #include "cdfmm/precision.hpp"
 #include "cdfmm/spherical_harmonics.hpp"
 #include "cdfmm/parameter_selection.hpp"

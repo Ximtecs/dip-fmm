@@ -350,6 +350,18 @@ PYBIND11_MODULE(cdfmm, module) {
       .def_readwrite("root_centre", &UniformTreeOptions::root_centre)
       .def_readwrite("root_half_width", &UniformTreeOptions::root_half_width);
 
+  py::enum_<PeriodicConvention>(module, "PeriodicConvention")
+      .value("ZeroK0", PeriodicConvention::ZeroK0);
+
+  py::class_<PeriodicCellOptions>(module, "PeriodicCellOptions")
+      .def(py::init<>())
+      .def_readwrite("enabled", &PeriodicCellOptions::enabled)
+      .def_readwrite("axes", &PeriodicCellOptions::axes)
+      .def_readwrite("centre", &PeriodicCellOptions::centre)
+      .def_readwrite("lengths", &PeriodicCellOptions::lengths)
+      .def_readwrite("convention", &PeriodicCellOptions::convention)
+      .def_readwrite("setup_tolerance", &PeriodicCellOptions::setup_tolerance);
+
   py::class_<UniformTree>(module, "UniformTree")
       .def(py::init([](py::object source_positions,
                        const UniformTreeOptions &options) {
@@ -618,6 +630,7 @@ PYBIND11_MODULE(cdfmm, module) {
 
     py::class_<UniformFmmOptions>(module, "UniformFmmOptions")
         .def(py::init<>())
+        .def_readwrite("periodic", &UniformFmmOptions::periodic)
         .def_readwrite("precision", &UniformFmmOptions::precision)
         .def_readwrite("expansion_order", &UniformFmmOptions::expansion_order)
         .def_property(

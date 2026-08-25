@@ -12,6 +12,7 @@
 #include "cdfmm/cuboid.hpp"
 #include "cdfmm/multi_index.hpp"
 #include "cdfmm/output_flags.hpp"
+#include "cdfmm/periodic.hpp"
 #include "cdfmm/precision.hpp"
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/spherical_harmonics.hpp"
@@ -124,6 +125,8 @@ struct StaticExecutionPlan {
  * dipole moments are supplied separately for each upward evaluation.
  */
 struct UniformFmmOptions {
+  /// @brief Explicit periodic cell; disabled preserves free-space traversal.
+  PeriodicCellOptions periodic{};
   /// @brief Scalar precision used by operators, state, and execution.
   StaticPrecision precision{StaticPrecision::Float32};
   /// @brief Maximum degree of the selected multipole expansion.
