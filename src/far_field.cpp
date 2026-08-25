@@ -274,6 +274,33 @@ void UniformFmm::prepare_moments_float(
   last_timings_.moment_permutation.add(elapsed_seconds(phase_start));
 }
 
+void UniformFmm::prepare_moments_float(
+    const std::span<const FloatVec3> dipole_moments) {
+  detail::ProfileRange input_range{"cdfmm/input_preparation_fp32"};
+  if (dipole_moments.size() != tree_.sorted_source_positions().size()) {
+    throw std::invalid_argument(
+        "UniformFmm::upward_pass requires one dipole moment per source position");
+  }
+  auto phase_start = Clock::now();
+  std::fill(multipoles_float_.begin(), multipoles_float_.end(), 0.0F);
+  last_timings_.multipole_reset.add(elapsed_seconds(phase_start));
+  phase_start = Clock::now();
+  const auto permutation = tree_.source_permutation();
+  const float scale = static_cast<float>(float_coordinate_scale_);
+#pragma omp parallel for schedule(static) if (permutation.size() >= 256)
+  for (std::ptrdiff_t sorted_index = 0;
+       sorted_index < static_cast<std::ptrdiff_t>(permutation.size());
+       ++sorted_index) {
+    const FloatVec3 moment = dipole_moments[static_cast<std::size_t>(
+        permutation[static_cast<std::size_t>(sorted_index)])];
+    sorted_dipole_moments_float_[static_cast<std::size_t>(sorted_index)] = {
+        moment.x / scale / scale / scale,
+        moment.y / scale / scale / scale,
+        moment.z / scale / scale / scale};
+  }
+  last_timings_.moment_permutation.add(elapsed_seconds(phase_start));
+}
+
 void UniformFmm::upward_pass_prepared_float() {
   const auto nodes = tree_.nodes();
   const auto occupied_leaves = tree_.occupied_source_leaves();

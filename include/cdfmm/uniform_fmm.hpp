@@ -331,6 +331,13 @@ public:
       OutputFlags output = OutputFlags::Field,
       std::span<const int> target_source_indices = {});
 
+  /** @brief Evaluates native FP32 moments without a double-precision round trip. */
+  void evaluate_into_float32(
+      std::span<const FloatVec3> dipole_moments,
+      std::span<FloatPotentialField> results,
+      OutputFlags output = OutputFlags::Field,
+      std::span<const int> target_source_indices = {});
+
   /** @brief Evaluates an FP64 plan and rejects an FP32 plan. */
   [[nodiscard]] std::vector<PotentialField>
   evaluate_float64(std::span<const Vec3> dipole_moments,
@@ -401,6 +408,7 @@ private:
   [[nodiscard]] int coefficient_degree(int coefficient) const;
   void prepare_moments(std::span<const Vec3> dipole_moments);
   void prepare_moments_float(std::span<const Vec3> dipole_moments);
+  void prepare_moments_float(std::span<const FloatVec3> dipole_moments);
   void upward_pass_prepared();
   void upward_pass_prepared_float();
   void prepare_self_indices(std::span<const int> target_source_indices);
@@ -481,6 +489,9 @@ private:
   std::vector<FloatVec3> sorted_dipole_moments_float_{};
   std::vector<FloatPotentialField> sorted_results_float_{};
   std::vector<FloatVec3> near_fields_float_{};
+  // Native FP32 compatibility input and CUDA output staging are persistent.
+  std::vector<FloatVec3> input_moments_float_{};
+  std::vector<FloatVec3> cuda_fields_float_{};
   // Legacy coefficient inspection widens FP32 state only on demand.
   mutable std::vector<double> inspection_widening_buffer_{};
   std::vector<int> sorted_self_indices_{};

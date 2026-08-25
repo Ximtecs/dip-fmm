@@ -1,5 +1,10 @@
 # Installation and building
 
+The plain C ABI shared library and header are built unconditionally. Modern
+Fortran support remains optional; configure with
+`-DCDFMM_BUILD_FORTRAN_INTERFACE=ON`. See
+[C and Fortran integration](fortran-interface.md) for CMake and manual builds.
+
 This guide starts from a clean source checkout.  It assumes only Git, internet
 access, and Conda; [Miniforge](https://github.com/conda-forge/miniforge) is the
 recommended Conda distribution because it uses conda-forge by default.

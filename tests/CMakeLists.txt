@@ -16,8 +16,9 @@ add_executable(cdfmm_tests
   test_cuboid.cpp
   test_precision.cpp
   test_spherical_harmonics.cpp
+  test_c_api.cpp
 )
-target_link_libraries(cdfmm_tests PRIVATE cdfmm_core Catch2::Catch2WithMain)
+target_link_libraries(cdfmm_tests PRIVATE cdfmm_core cdfmm_c Catch2::Catch2WithMain)
 target_include_directories(cdfmm_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 cdfmm_enable_ipo(cdfmm_tests)
 include(Catch)
