@@ -45,7 +45,7 @@ Each focused notebook answers a different question:
 | `examples/simple_notebooks/simple_cuboid_magtense_compare.ipynb` | Direct cuboid field comparison with MagTense conventions |
 | `examples/simple_notebooks/simple_dense_direct_precision_compare.ipynb` | FP32 versus FP64 across available static FMM backends |
 | `examples/simple_notebooks/simple_cartesian_spherical_fmm_compare.ipynb` | Cartesian versus spherical finite-cuboid CUDA-full FMM |
-| `examples/notebooks/14_periodic_fmm_direct_compare.ipynb` | Four periodic/non-periodic direct and spherical FMM runs, five relative-error comparisons, and 3D list1/list2 visualisation |
+| `examples/notebooks/14_periodic_fmm_direct_compare.ipynb` | Selectable point-dipole or cuboid periodic/non-periodic CUDA direct and spherical FMM sweep, with exact cuboid near fields and point far-field expansions |
 | `examples/notebooks/11_fmm3d_comparison.ipynb` | Spherical CUDA-full FMM versus FMM3D 2.1.0 |
 
 The Cartesian/spherical notebook uses one 512-cuboid grid, volume-averaged
