@@ -9,6 +9,52 @@ This guide starts from a clean source checkout.  It assumes only Git, internet
 access, and Conda; [Miniforge](https://github.com/conda-forge/miniforge) is the
 recommended Conda distribution because it uses conda-forge by default.
 
+## Compile the repository with a preset: two commands
+
+After creating and activating the required Conda environment, these are the
+two commands needed to configure and compile the repository:
+
+```console
+cmake --fresh --preset <preset>
+cmake --build --preset <preset> -j
+```
+
+Use the same preset name in both commands. `--fresh` discards stale CMake cache
+entries while preserving source files, and `-j` allows Ninja to build in
+parallel. For example, the complete CUDA, oneMKL, Python, and notebook build is:
+
+```console
+cmake --fresh --preset notebooks
+cmake --build --preset notebooks -j
+```
+
+The repository provides all of the following configure and build presets:
+
+| Preset | Build directory | Purpose | Installs into active Conda environment | Test preset |
+| --- | --- | --- | --- | --- |
+| `dev` | `build/` | CPU development build with tests, examples, and Python bindings | No | `ctest --preset dev` |
+| `release` | `build-release/` | C++ release build with examples | No | None |
+| `cuda` | `build-cuda/` | CUDA validation build with tests, Python bindings, and benchmarks | Yes | `ctest --preset cuda` |
+| `notebooks` | `build-notebooks/` | CUDA and oneMKL build for the installed Python notebooks | Yes | `ctest --preset notebooks` |
+| `magtense` | `build-magtense/` | CUDA and oneMKL build for MagTense comparison work | Yes | `ctest --preset magtense` |
+| `benchmark` | `build-bench/` | CPU benchmark build using `icpx` and OpenMP | No | None |
+| `benchmark-mkl` | `build-bench-mkl/` | CPU benchmark build with oneMKL | No | None |
+| `benchmark-all` | `build-bench-all/` | Combined portable CPU, oneMKL, and CUDA benchmarks | No | None |
+| `profile-all` | `build-profile-all/` | Combined benchmark build with NVTX profiling | No | None |
+
+The `cuda`, `notebooks`, and `magtense` build presets target `install`; their
+second command installs the C library, headers, and Python extension into the
+active Conda environment. Restart an existing Python or Jupyter process after
+installing so it loads the new native extension. Other presets keep their
+artefacts in the build directory shown above.
+
+Only presets that compile the C++ test suite have a matching test preset. Run
+that optional third command after compilation, for example:
+
+```console
+ctest --preset notebooks
+```
+
 ## Complete clean rebuild, test, and MKL benchmark
 
 Run the following commands from the repository root. They update the existing

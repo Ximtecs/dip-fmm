@@ -105,6 +105,13 @@ if(CDFMM_ENABLE_MKL)
   # Keeping it private prevents Intel compiler compatibility headers such as
   # <complex> from shadowing libstdc++ in pybind11 and downstream consumers.
   target_link_libraries(cdfmm_core PRIVATE MKL::MKL)
+  if(UNIX AND NOT APPLE AND MKL_LINK STREQUAL "dynamic")
+    # Dynamic oneMKL uses separate interface, threading, and core libraries.
+    # The Conda GNU toolchain enables --as-needed, while oneMKL's CMake package
+    # omits --no-as-needed unless GNU Fortran is enabled.  Preserve the full
+    # component set in every final consumer of this static core library.
+    target_link_options(cdfmm_core INTERFACE "LINKER:--no-as-needed")
+  endif()
   target_compile_definitions(cdfmm_core PUBLIC CDFMM_USE_MKL=1)
 endif()
 

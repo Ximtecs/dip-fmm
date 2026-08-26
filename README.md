@@ -59,16 +59,29 @@ the precise capability boundary.
 
 ## Build and test
 
+After activating the required Conda environment, compiling with any checked-in
+preset always uses the same two-command pattern:
+
 ```console
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-  -DCDFMM_BUILD_TESTS=ON -DCDFMM_BUILD_PYTHON=ON
-cmake --build build -j
-ctest --test-dir build --output-on-failure
+cmake --fresh --preset <preset>
+cmake --build --preset <preset> -j
 ```
 
-Examples build by default. Enable the P2P and static/reference uniform-FMM
-benchmarks with
-`-DCDFMM_BUILD_BENCHMARKS=ON`.
+Available presets are `dev`, `release`, `cuda`, `notebooks`, `magtense`,
+`benchmark`, `benchmark-mkl`, `benchmark-all`, and `profile-all`. The
+`cuda`, `notebooks`, and `magtense` build presets also install the native
+library and Python extension into the active Conda environment. The
+[installation guide](docs/installation.md#compile-the-repository-with-a-preset-two-commands)
+describes every preset, its build directory, installation behaviour, and test
+command.
+
+For example, build and test the normal CPU development configuration with:
+
+```console
+cmake --fresh --preset dev
+cmake --build --preset dev -j
+ctest --preset dev
+```
 
 ## Python
 

@@ -50,9 +50,9 @@ def test_single_particle_storage_has_manual_counts():
     assert estimate.transfer_classes == 0
     assert estimate.m2l_interactions == 0
     assert estimate.p2p_pairs == 1
-    assert estimate.host_static_bytes == 776
-    assert estimate.cuda_partial_bytes == 356
-    assert estimate.cuda_full_bytes == 724
+    assert estimate.host_static_bytes == 785
+    assert estimate.cuda_partial_bytes == 364
+    assert estimate.cuda_full_bytes == 732
 
 
 def test_storage_estimate_detects_far_field_interactions():

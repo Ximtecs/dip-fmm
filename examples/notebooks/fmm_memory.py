@@ -11,8 +11,12 @@ import cdfmm
 
 
 STATIC_ENTRY_BYTES = 16
-P2P_BLOCK_BYTES = 80
-P2P_SOA_INTERACTION_BYTES = 76
+# StaticDipoleBlock stores two indices, nine FP64 coefficients, one identity
+# marker, and the padding required by its native C++ layout.
+P2P_BLOCK_BYTES = 88
+# The SoA packing stores nine FP64 coefficients, one source index, and one
+# byte-sized identity marker per interaction.
+P2P_SOA_INTERACTION_BYTES = 77
 VEC3_BYTES = 24
 DOUBLE_BYTES = 8
 INT_BYTES = 4
