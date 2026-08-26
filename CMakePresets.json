@@ -71,14 +71,11 @@
     },
     {
       "name": "release",
-      "displayName": "C++ release build",
-      "generator": "Ninja",
+      "displayName": "CUDA and oneMKL release installation",
+      "inherits": "notebooks",
       "binaryDir": "${sourceDir}/build-release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CDFMM_BUILD_TESTS": "OFF",
         "CDFMM_BUILD_EXAMPLES": "ON",
-        "CDFMM_BUILD_PYTHON": "OFF",
         "CDFMM_BUILD_BENCHMARKS": "OFF"
       }
     },
@@ -166,7 +163,8 @@
     },
     {
       "name": "release",
-      "configurePreset": "release"
+      "configurePreset": "release",
+      "targets": ["install"]
     },
     {
       "name": "benchmark",
@@ -210,6 +208,13 @@
     {
       "name": "dev",
       "configurePreset": "dev",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
       "output": {
         "outputOnFailure": true
       }

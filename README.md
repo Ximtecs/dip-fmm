@@ -67,20 +67,22 @@ cmake --fresh --preset <preset>
 cmake --build --preset <preset> -j
 ```
 
-Available presets are `dev`, `release`, `cuda`, `notebooks`, `magtense`,
-`benchmark`, `benchmark-mkl`, `benchmark-all`, and `profile-all`. The
-`cuda`, `notebooks`, and `magtense` build presets also install the native
-library and Python extension into the active Conda environment. The
-[installation guide](docs/installation.md#compile-the-repository-with-a-preset-two-commands)
-describes every preset, its build directory, installation behaviour, and test
-command.
+Available presets are `release`, `dev`, `cuda`, `notebooks`, `magtense`,
+`benchmark`, `benchmark-mkl`, `benchmark-all`, and `profile-all`. The default
+`release` preset enables CUDA and oneMKL and installs the native library and
+Python extension into the active Conda environment. The `cuda`, `notebooks`,
+and `magtense` presets also install into that environment. The
+[installation guide](docs/installation.md#install-from-scratch)
+starts with the complete release installation and then describes feature
+variants, every preset, clean rebuilds, and environment recovery.
 
-For example, build and test the normal CPU development configuration with:
+For example, build and optionally test the installed release configuration
+after creating the Conda environment as described in the installation guide:
 
 ```console
-cmake --fresh --preset dev
-cmake --build --preset dev -j
-ctest --preset dev
+cmake --fresh --preset release
+cmake --build --preset release -j
+ctest --preset release
 ```
 
 ## Python

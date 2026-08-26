@@ -1,558 +1,409 @@
 # Installation and building
 
-The plain C ABI shared library and header are built unconditionally. Modern
-Fortran support remains optional; configure with
-`-DCDFMM_BUILD_FORTRAN_INTERFACE=ON`. See
-[C and Fortran integration](fortran-interface.md) for CMake and manual builds.
+This guide begins with the recommended complete installation. It then covers
+CPU-only and oneMKL-free variants, specialised presets, routine updates, clean
+resets, and troubleshooting.
 
-This guide starts from a clean source checkout.  It assumes only Git, internet
-access, and Conda; [Miniforge](https://github.com/conda-forge/miniforge) is the
-recommended Conda distribution because it uses conda-forge by default.
+The commands assume Linux, Git, internet access, and Conda. Miniforge is the
+recommended Conda distribution. The default release build also requires an
+NVIDIA GPU with a driver compatible with the CUDA toolkit declared in
+`environment-cuda.yml`.
 
-## Compile the repository with a preset: two commands
+## Install from scratch
 
-After creating and activating the required Conda environment, these are the
-two commands needed to configure and compile the repository:
+The recommended installation is an optimised release build with both CUDA and
+oneMKL enabled. It installs the native library, headers, and Python extension
+into the `cdfmm` Conda environment.
 
-```console
-cmake --fresh --preset <preset>
-cmake --build --preset <preset> -j
-```
-
-Use the same preset name in both commands. `--fresh` discards stale CMake cache
-entries while preserving source files, and `-j` allows Ninja to build in
-parallel. For example, the complete CUDA, oneMKL, Python, and notebook build is:
-
-```console
-cmake --fresh --preset notebooks
-cmake --build --preset notebooks -j
-```
-
-The repository provides all of the following configure and build presets:
-
-| Preset | Build directory | Purpose | Installs into active Conda environment | Test preset |
-| --- | --- | --- | --- | --- |
-| `dev` | `build/` | CPU development build with tests, examples, and Python bindings | No | `ctest --preset dev` |
-| `release` | `build-release/` | C++ release build with examples | No | None |
-| `cuda` | `build-cuda/` | CUDA validation build with tests, Python bindings, and benchmarks | Yes | `ctest --preset cuda` |
-| `notebooks` | `build-notebooks/` | CUDA and oneMKL build for the installed Python notebooks | Yes | `ctest --preset notebooks` |
-| `magtense` | `build-magtense/` | CUDA and oneMKL build for MagTense comparison work | Yes | `ctest --preset magtense` |
-| `benchmark` | `build-bench/` | CPU benchmark build using `icpx` and OpenMP | No | None |
-| `benchmark-mkl` | `build-bench-mkl/` | CPU benchmark build with oneMKL | No | None |
-| `benchmark-all` | `build-bench-all/` | Combined portable CPU, oneMKL, and CUDA benchmarks | No | None |
-| `profile-all` | `build-profile-all/` | Combined benchmark build with NVTX profiling | No | None |
-
-The `cuda`, `notebooks`, and `magtense` build presets target `install`; their
-second command installs the C library, headers, and Python extension into the
-active Conda environment. Restart an existing Python or Jupyter process after
-installing so it loads the new native extension. Other presets keep their
-artefacts in the build directory shown above.
-
-Only presets that compile the C++ test suite have a matching test preset. Run
-that optional third command after compilation, for example:
-
-```console
-ctest --preset notebooks
-```
-
-## Complete clean rebuild, test, and MKL benchmark
-
-Run the following commands from the repository root. They update the existing
-`cdfmm` environment with the newest declared requirements, remove all previous
-build directories, rebuild and test the development configuration, reinstall
-the Python extension, and run the quick oneMKL benchmark profile.
-
-```console
-conda env update \
-  --name cdfmm \
-  --file environment.yml
-
-conda activate cdfmm
-
-rm -rf \
-  build \
-  build-release \
-  build-bench \
-  build-bench-mkl \
-  build-bench-all \
-  build-profile-all
-
-cmake --preset dev
-cmake --build --preset dev -j
-
-ctest --preset dev
-
-PYTHONPATH="$PWD/build" python -m pytest python_tests -v
-
-python -m pip install --force-reinstall --no-deps .
-python -m pytest python_tests -v
-
-cmake --preset benchmark-mkl
-cmake --build --preset benchmark-mkl -j
-
-python benchmarks/run_benchmarks.py \
-  --profile quick \
-  --max-threads 16 \
-  --executable build-bench-mkl/benchmarks/benchmark_uniform_fmm
-```
-
-## Optional oneMKL backend
-
-The portable build uses an exact internal grouped dense kernel. For Intel
-performance builds, use oneMKL's CMake package:
-
-```console
-conda env update -n cdfmm -f environment.yml
-conda activate cdfmm
-cmake --preset benchmark-mkl
-cmake --build --preset benchmark-mkl
-```
-
-The `mkl-devel` dependency provides `MKLConfig.cmake`; the preset resolves it
-from `$CONDA_PREFIX/lib/cmake/mkl`. If CMake still reports that MKL is missing,
-verify the active environment with
-`test -f "$CONDA_PREFIX/lib/cmake/mkl/MKLConfig.cmake"`.
-
-Static M2L issues one SGEMM or DGEMM per transfer class according to plan
-precision. It does not place an OpenMP region around the BLAS call, preventing
-accidental OpenMP-by-MKL multiplication. Set and record `OMP_NUM_THREADS` and
-`MKL_NUM_THREADS` explicitly when benchmarking.
-
-For the six-way CPU direct, CUDA direct, portable static-matrix FMM, oneMKL
-static-matrix FMM, partial CUDA FMM, and full CUDA FMM comparison, build the
-combined executable:
-
-```console
-conda env update -n cdfmm -f environment.yml
-conda env update -n cdfmm -f environment-cuda.yml
-conda activate cdfmm
-cmake --fresh --preset benchmark-all
-cmake --build --preset benchmark-all
-python benchmarks/run_benchmarks.py --profile standard --max-threads 8 \
-  --executable build-bench-all/benchmarks/benchmark_uniform_fmm
-```
-
-## Quick start
-
-Clone the project and enter the checkout:
+### 1. Clone the repository
 
 ```console
 git clone https://github.com/Ximtecs/dip-fmm.git
 cd dip-fmm
 ```
 
-**Unless stated otherwise, every command in this guide is run from the
-repository root:** the directory containing `CMakeLists.txt`, `pyproject.toml`,
-and `environment.yml`.
+All remaining commands in this guide are run from this repository root: the
+directory containing `CMakeLists.txt`, `CMakePresets.json`, and
+`environment.yml`.
 
-Create the comprehensive development environment once, then activate it:
+### 2. Create the Conda environment
+
+Create the base environment, add the CUDA development toolkit, and activate
+the result:
 
 ```console
-conda env create -f environment.yml
+conda env create --file environment.yml
+conda env update --name cdfmm --file environment-cuda.yml
 conda activate cdfmm
 ```
 
-`mamba env create -f environment.yml` is an interchangeable, often faster,
-first command when Mamba is available.  Configure, build, and test from the
-same repository-root directory:
+The base file supplies CMake, Ninja, C++ and Python development tools, oneMKL,
+the test stack, documentation tools, and Jupyter. The supplemental CUDA file
+adds a consistent NVIDIA compiler, headers, runtime, cuBLAS, and NVTX toolkit.
+`mamba` may be substituted for `conda` in the create and update commands.
+
+### 3. Configure CMake
 
 ```console
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
-python -m pip install .
+cmake --fresh --preset release
+```
+
+This creates `build-release/` and configures an optimised build with CUDA,
+oneMKL, the Python extension, examples, and tests. `--fresh` discards any old
+CMake cache for this build directory, without touching source files.
+
+### 4. Compile and install
+
+```console
+cmake --build --preset release -j
+```
+
+This is the only compilation command required. The `release` build preset
+targets `install`, so it also places the C library, public headers, and Python
+extension in the active Conda environment. Restart any existing Python,
+Jupyter, or VSCode kernel after rebuilding so it loads the new extension.
+
+Confirm that the installed module exposes both accelerated backends:
+
+```console
+python -c "import cdfmm; print('CUDA:', cdfmm.cuda_full_available()); print('oneMKL:', cdfmm.one_mkl_available())"
+```
+
+Both values should be `True`. If CUDA is unavailable, first check that the
+machine has a supported NVIDIA GPU and that `nvidia-smi` can see it.
+
+### 5. Optionally run the tests
+
+Testing is recommended after the first installation, but is not required to
+compile or install the project:
+
+```console
+ctest --preset release
 python -m pytest python_tests -v
-sphinx-build -W --keep-going -b html docs docs/_build/html
 ```
 
-The initial CMake configuration may download Catch2 and pybind11.  The final
-command writes the documentation homepage to
-`<repo-root>/docs/_build/html/index.html`.
+The first command runs the compiled C++ suite. The second tests the installed
+Python module from the active environment.
 
-## Repository root and generated directories
-
-```text
-dip-fmm/                         <- <repo-root>
-├── CMakeLists.txt
-├── CMakePresets.json
-├── pyproject.toml
-├── environment.yml
-├── include/
-├── src/
-├── python/
-├── tests/
-├── python_tests/
-├── examples/
-├── benchmarks/
-└── docs/
-```
-
-In this guide, `<repo-root>` means the `dip-fmm/` directory above.  Commands
-use `-S .` because the current directory is `<repo-root>`, not its parent,
-`<repo-root>/build/`, or `<repo-root>/docs/`.  Generated files belong in such
-directories as `<repo-root>/build/` and `<repo-root>/docs/_build/`; do not run
-the commands by changing into those directories.
-
-## Development environment
-
-The intended workflow is:
-
-```text
-clone repository -> create environment once -> activate cdfmm -> configure/build
-                 -> develop -> run tests -> build documentation
-```
-
-For later sessions, environment creation is unnecessary.  Run:
+The complete default workflow is therefore:
 
 ```console
-cd <path-to>/dip-fmm
+git clone https://github.com/Ximtecs/dip-fmm.git
+cd dip-fmm
+conda env create --file environment.yml
+conda env update --name cdfmm --file environment-cuda.yml
 conda activate cdfmm
+cmake --fresh --preset release
+cmake --build --preset release -j
+
+# Optional validation
+ctest --preset release
+python -m pytest python_tests -v
 ```
+
+## Choose CUDA and oneMKL features
+
+The default `release` preset enables both acceleration systems. CMake options
+can disable either one while retaining the same optimised, installed release
+layout.
+
+### Release build without CUDA
+
+CUDA is not required for a portable CPU build. Skip `environment-cuda.yml`
+when creating the environment, then configure the release preset with CUDA
+disabled:
+
+```console
+conda env create --file environment.yml
+conda activate cdfmm
+cmake --fresh --preset release -DCDFMM_ENABLE_CUDA=OFF
+cmake --build --preset release -j
+ctest --preset release  # Optional
+```
+
+This retains oneMKL and installs the Python extension, library, and headers.
+
+### Release build without oneMKL
+
+```console
+cmake --fresh --preset release -DCDFMM_ENABLE_MKL=OFF
+cmake --build --preset release -j
+ctest --preset release  # Optional
+```
+
+CUDA remains enabled. CPU static-matrix work uses the portable internal
+backend instead of oneMKL.
+
+### Release build without CUDA or oneMKL
+
+```console
+cmake --fresh --preset release \
+  -DCDFMM_ENABLE_CUDA=OFF \
+  -DCDFMM_ENABLE_MKL=OFF
+cmake --build --preset release -j
+ctest --preset release  # Optional
+```
+
+This is the smallest feature variant of the same installed release build. For
+day-to-day CPU development without installation, the `dev` preset described
+below is usually more convenient.
+
+## Available CMake presets
+
+Every checked-in preset uses the same configure/build pattern:
+
+```console
+cmake --fresh --preset <preset>
+cmake --build --preset <preset> -j
+```
+
+Use the same name for both commands.
+
+| Preset | Build directory | Intended use | CUDA | oneMKL | Installs into active environment | Test command |
+| --- | --- | --- | --- | --- | --- | --- |
+| `release` | `build-release/` | Recommended optimised library, Python, examples, and tests | Yes | Yes | Yes | `ctest --preset release` |
+| `dev` | `build/` | Portable CPU development with library, Python, examples, and tests | No | No | No | `ctest --preset dev` |
+| `cuda` | `build-cuda/` | CUDA validation and benchmarks without oneMKL | Yes | No | Yes | `ctest --preset cuda` |
+| `notebooks` | `build-notebooks/` | CUDA and oneMKL notebook/benchmark work | Yes | Yes | Yes | `ctest --preset notebooks` |
+| `magtense` | `build-magtense/` | MagTense comparison configuration | Yes | Yes | Yes | `ctest --preset magtense` |
+| `benchmark` | `build-bench/` | Portable CPU benchmarks with `icpx`, OpenMP, and LTO | No | No | No | None |
+| `benchmark-mkl` | `build-bench-mkl/` | CPU benchmarks with oneMKL | No | Yes | No | None |
+| `benchmark-all` | `build-bench-all/` | Portable CPU, oneMKL, and CUDA benchmarks | Yes | Yes | No | None |
+| `profile-all` | `build-profile-all/` | Combined CUDA/oneMKL build with NVTX and debug symbols | Yes | Yes | No | None |
+
+Only presets listed with a test command compile the C++ test suite. The
+`release`, `cuda`, `notebooks`, and `magtense` build presets target `install`;
+the other presets leave their outputs only in the stated build directory.
+
+## Routine updates and rebuilds
 
 (updating-an-existing-environment)=
-### Updating an existing environment
+### Update an existing environment
 
-After pulling repository changes, synchronise the existing `cdfmm` environment
-with the current `environment.yml` from `<repo-root>`:
+After pulling repository changes, synchronise the existing environment rather
+than recreating it:
 
 ```console
 conda env update --name cdfmm --file environment.yml --prune
+conda env update --name cdfmm --file environment-cuda.yml
 conda activate cdfmm
 ```
 
-This installs the newest compatible versions allowed by `environment.yml`, adds
-new dependencies, and, because of `--prune`, removes dependencies that are no
-longer required by the file.  The environment does not need to be deleted and
-created again.  If Mamba is available, `mamba env update --name cdfmm --file
-environment.yml --prune` is an interchangeable, often faster command.
+Omit the CUDA update for a CPU-only installation. The base update uses
+`--prune` to remove packages that are no longer declared; the CUDA update is
+applied afterwards so its supplemental packages are retained.
 
-The readable `environment.yml` specifies the direct tools, rather than pinning
-every machine-specific transitive package.  It uses Python 3.11 as the
-reproducible development version; the package metadata supports Python 3.9 and
-newer.
+### Recompile after source changes
 
-| Component | Purpose |
-|---|---|
-| Intel oneAPI `icpx` | Compile the high-performance C++20 library, benchmarks, and Python extension |
-| CMake | Configure the C++ project |
-| Ninja | Provide one cross-platform CMake build backend |
-| Python | Run the bindings and development tools |
-| NumPy | Supply Python numerical arrays |
-| Matplotlib | Plot operator convergence and uniform-tree geometry |
-| pandas | Tabulate parameter-selection measurements in notebooks |
-| JupyterLab | Run the interactive scientific examples |
-| ipykernel | Expose the `cdfmm` environment as a notebook kernel |
-| ipywidgets | Provide optional interactive notebook controls |
-| pybind11 | Implement the C++/Python binding layer |
-| scikit-build-core | Drive CMake when building the Python package |
-| pytest | Run Python tests |
-| Doxygen | Extract the public C++ API as XML |
-| Sphinx | Generate the documentation site |
-| Breathe | Integrate Doxygen XML into Sphinx |
-| MyST parser | Add Markdown support to Sphinx |
-| sphinx-rtd-theme | Style the generated documentation |
-
-`docs/requirements.txt` is deliberately retained for Read the Docs and for
-documentation-only installations outside Conda.  Its four Python constraints
-match `environment.yml`; normal Conda development does **not** require
-`python -m pip install -r docs/requirements.txt`.
-
-The notebook stack is part of the development environment, not the core
-package dependency set. Outside Conda, it can be installed explicitly with
-`python -m pip install ".[examples]"`.
-
-### Interactive examples
-
-After updating or creating the development environment, launch Jupyter from
-`<repo-root>`:
+An existing build is incremental. Ninja recompiles only affected files:
 
 ```console
-conda env update -n cdfmm -f environment.yml
+conda activate cdfmm
+cmake --build --preset release -j
+```
+
+You normally do not need to reconfigure. Use `cmake --fresh --preset release`
+again after changing compilers, environments, or major CMake feature options.
+
+### Build the documentation
+
+```console
+sphinx-build -W --keep-going -b html docs docs/_build/html
+```
+
+The generated homepage is `docs/_build/html/index.html`.
+
+### Start the notebooks
+
+The notebook stack is already included in `environment.yml`:
+
+```console
 conda activate cdfmm
 jupyter lab
 ```
 
-Open `examples/notebooks/00_direct_p2p.ipynb` to begin the operator sequence.
-JupyterLab and VSCode should offer `Python (cdfmm)` as the kernel. If a local
-Conda installation does not register it automatically, run:
+Run Jupyter from the repository root and select the `Python (cdfmm)` kernel.
+If the kernel is not registered automatically, run:
 
 ```console
 python -m ipykernel install --user --name cdfmm --display-name "Python (cdfmm)"
 ```
 
-The notebooks use Matplotlib, pandas, and ipywidgets for plotting, tabulation,
-and optional visual controls while calling the compiled C++ operator
-implementations for all numerical work.
+## Other installation options
 
-### Compiler strategy and platform status
+### Python-only portable installation
 
-The environment requests Intel oneAPI's C++ compiler package. On Linux this
-provides `icpx`, the supported compiler for performance development and
-benchmark reproduction. Portable standards-compliant source remains buildable
-with other C++20 compilers, but benchmark comparisons must record the compiler
-metadata emitted by the executable. The oneAPI Conda path in this repository
-has not been validated on native Windows; Windows toolchain validation remains
-tracked in the [roadmap](roadmap.md).
-
-## CMake builds
-
-### Normal development build
-
-From `<repo-root>`, with `cdfmm` activated, the quick-start configuration
-builds tests, examples, and Python bindings (their project defaults are `ON`):
+For a portable Python package without the preset-managed CUDA/oneMKL build:
 
 ```console
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
-
-Here `-S .` selects the current repository as the source tree; `-B build`
-writes generated files to `<repo-root>/build/`; `-G Ninja` selects Ninja from
-the Conda environment; and `-DCMAKE_BUILD_TYPE=Release` enables optimised
-compilation.  `cmake --build build -j 4`, for example, permits four concurrent
-build jobs; omitting `-j` is simpler and lets the backend choose its default.
-Examples are written beneath `<repo-root>/build/examples/`.
-
-The equivalent convenience interface is:
-
-```console
-cmake --preset dev
-cmake --build --preset dev
-ctest --preset dev
-```
-
-The checked-in presets use Ninja and separate binary directories.  They are
-shortcuts, not a separate build system; the explicit commands remain useful
-for understanding or customising a build.
-
-### Recompiling after source changes
-
-After changing a C++ source or header file, rebuild the existing development
-tree from `<repo-root>`:
-
-```console
+conda env create --file environment.yml
 conda activate cdfmm
-cmake --build build
-ctest --test-dir build --output-on-failure
-```
-
-The build is incremental: Ninja recompiles only the affected files and then
-relinks the necessary targets.  There is normally no need to delete `build/` or
-repeat the initial CMake configuration.  The preset equivalents are:
-
-```console
-cmake --build --preset dev
-ctest --preset dev
-```
-
-CMake normally detects changes to `CMakeLists.txt` and regenerates the build
-files automatically.  When changing CMake options, or if automatic regeneration
-does not occur, configure again before rebuilding:
-
-```console
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
-
-The manually built Python extension remains under `build/`; it does not replace
-a copy previously installed into the Conda environment.  To run Python code or
-Python tests against the latest C++ changes using the documented installed
-package workflow, rebuild and reinstall the extension before testing:
-
-```console
-python -m pip install . --no-deps --force-reinstall
-python -m pytest python_tests -v
-```
-
-For a change confined to Python test files, no compilation or reinstallation is
-needed; rerun `python -m pytest python_tests -v` directly.
-
-### C++-only build
-
-This separate build disables Python and tests while retaining examples:
-
-```console
-cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release -DCDFMM_BUILD_PYTHON=OFF -DCDFMM_BUILD_TESTS=OFF
-cmake --build build-release
-```
-
-The equivalent commands are `cmake --preset release` and
-`cmake --build --preset release`.
-
-### Python-focused build and installation
-
-From `<repo-root>`, the following command asks pip and scikit-build-core to
-configure CMake, compile the native `cdfmm` extension, and install it into the
-currently active `cdfmm` environment:
-
-```console
 python -m pip install .
+python -m pytest python_tests -v  # Optional
 ```
 
-Pip normally creates an isolated build environment using the requirements in
-`pyproject.toml`; scikit-build-core and pybind11 are also present in Conda for
-interactive development and offline diagnosis.  The `[tool.scikit-build]`
-arguments enable Python while disabling C++ tests and examples, so this
-package build is independent of the manual `<repo-root>/build/` tree.  NumPy is
-installed as the package's runtime dependency.
+Pip uses scikit-build-core to compile and install the native extension. This
+workflow is convenient for Python use, but the `release` preset is the
+recommended route when CUDA and oneMKL are required.
 
-Run the Python tests after installation:
+### FMM3D notebook comparison
 
-```console
-python -m pytest python_tests -v
-```
-
-An editable scikit-build-core installation may be useful in future, but it is
-not the documented default until rebuild behaviour for this native extension
-has been validated on every development platform.
-
-### Benchmark build
-
-Keep benchmark configuration isolated from normal development:
+FMM3D 2.1.0 has additional compiler and NumPy constraints. Add its environment
+overlay and run the checked-in installer after completing the main setup:
 
 ```console
-cmake -S . -B build-bench -G Ninja -DCMAKE_BUILD_TYPE=Release -DCDFMM_BUILD_BENCHMARKS=ON -DCDFMM_BUILD_TESTS=OFF -DCDFMM_BUILD_EXAMPLES=OFF -DCDFMM_BUILD_PYTHON=OFF
-cmake --build build-bench
-```
-
-The executable is `<repo-root>/build-bench/benchmarks/benchmark_p2p` on Linux
-and normally has an `.exe` suffix on Windows.  The equivalent preset commands
-are `cmake --preset benchmark` and `cmake --build --preset benchmark`.
-
-## Building the documentation
-
-## Optional CUDA environment and build
-
-CUDA dependencies are supplemental and do not affect normal CPU development:
-
-```console
-conda env update -n cdfmm -f environment.yml --prune
-conda env update -n cdfmm -f environment-cuda.yml
+conda env update --name cdfmm --file environment-fmm3d.yml
 conda activate cdfmm
-nvcc --version
-nvidia-smi
-cmake --fresh --preset cuda
-cmake --build --preset cuda
-ctest --preset cuda
-python -m pytest python_tests -v
+./examples/notebooks/install_fmm3d.sh
 ```
 
-The NVIDIA-channel environment provides the compiler, runtime development
-files, headers, and cuBLAS development package. The supplemental file pins all
-CUDA components to release 13.3 so an existing environment cannot retain an
-older `nvcc` beside newer headers. The installed NVIDIA driver must be
-compatible with the CUDA 13 toolkit and the machine must provide a
-CUDA-capable GPU.
+See [Examples and notebooks](examples.md) for the associated comparison
+workflow.
 
-The CUDA preset deliberately clears Conda's `NVCC_PREPEND_FLAGS`, selects a
-supported `g++` from `PATH` for both C++ and CUDA host compilation, and compiles
-for the locally installed GPU through `CMAKE_CUDA_ARCHITECTURES=native`.
-Consequently the preset requires CMake 3.24 or newer and a GCC version supported
-by the selected CUDA toolkit. `--fresh` prevents compiler paths from an earlier
-CPU or failed CUDA configuration remaining in the CMake cache.
+### MagTense comparison environment
 
-The CUDA build preset targets `install` and uses the active Conda environment
-as `CMAKE_INSTALL_PREFIX`. This places the C library, public headers, Fortran
-interface source, and newly built extension inside that environment. Plain
-`import cdfmm` and `python -m pytest` therefore use the current CUDA build;
-`PYTHONPATH` is neither required nor recommended. Activate `cdfmm` before
-configuring so both the prefix and Python install directory are derived from
-the intended environment.
-
-The C++ suite contains explicit CUDA tests which are skipped in CPU-only
-builds and exercise the partial `CudaPartial` and device-resident `CudaFull`
-backends when a device is present. `CudaM2LP2P` remains a compatibility alias
-for the partial path.
-In `CudaPartial`, P2M, M2M, L2L, and L2P remain CPU static; cached M2L and
-list-1 P2P operators
-run on independent CUDA streams. Verify `cuda_available()` and
-`cuda_device_description()` from Python after building. GitHub Actions
-explicitly configures
-`CDFMM_ENABLE_CUDA=OFF`: CUDA compilation, tests, and performance measurements
-are intentionally manual and require a real NVIDIA CUDA-capable system.
-
-All documentation dependencies, including Doxygen, are already in the Conda
-environment.  From `<repo-root>`, run:
+MagTense uses a separate, pinned environment because its Python and runtime
+requirements differ from the main development environment:
 
 ```console
-conda activate cdfmm
-sphinx-build -W --keep-going -b html docs docs/_build/html
+conda env create --file environment-magtense.yml
+conda activate cdfmm-magtense
 ```
 
-Sphinx invokes Doxygen automatically.  Open
-`<repo-root>/docs/_build/html/index.html` locally after a successful build.
-Doxygen XML is generated under `<repo-root>/docs/_build/doxygen/`; both output
-directories are generated artefacts and intentionally are not committed.  Read
-the Docs uses `.readthedocs.yaml` and the separate `docs/requirements.txt`.
+Use the `magtense` preset when configuring cdfmm for those comparisons. A CUDA
+toolkit must also be available because that preset enables CUDA.
+
+### C and Fortran integration
+
+The C ABI shared library and public header are built unconditionally. Enable
+the optional modern Fortran wrapper while configuring any suitable preset:
+
+```console
+cmake --fresh --preset release -DCDFMM_BUILD_FORTRAN_INTERFACE=ON
+cmake --build --preset release -j
+```
+
+See [C and Fortran integration](fortran-interface.md) for compiler and linking
+details.
+
+### Manual CMake configuration
+
+Presets are recommended because they keep compiler and feature choices
+consistent. A minimal portable development build can also be configured
+explicitly:
+
+```console
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCDFMM_ENABLE_CUDA=OFF \
+  -DCDFMM_ENABLE_MKL=OFF \
+  -DCDFMM_BUILD_TESTS=ON \
+  -DCDFMM_BUILD_PYTHON=ON
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
+
+(clean-resets)=
+## Clean resets
+
+### Reset only the CMake configuration
+
+The normal clean reconfiguration keeps compiled artefacts but discards cached
+CMake choices:
+
+```console
+cmake --fresh --preset release
+cmake --build --preset release -j
+```
+
+Use this first for stale compiler paths or changed build options.
+
+### Remove and rebuild one generated build directory
+
+For a completely clean release compilation, remove only its generated build
+directory and recreate it:
+
+```console
+cmake -E remove_directory build-release
+cmake --fresh --preset release
+cmake --build --preset release -j
+```
+
+This does not remove source files or the Conda environment. Other preset build
+directories are independent and can be removed in the same way when needed.
+
+### Recreate the Conda environment from scratch
+
+Use this only when updating the existing environment does not resolve a broken
+or inconsistent installation:
+
+```console
+conda deactivate
+conda env remove --name cdfmm
+conda env create --file environment.yml
+conda env update --name cdfmm --file environment-cuda.yml
+conda activate cdfmm
+cmake -E remove_directory build-release
+cmake --fresh --preset release
+cmake --build --preset release -j
+```
+
+Omit the CUDA environment update and configure with
+`-DCDFMM_ENABLE_CUDA=OFF` when recreating a CPU-only installation.
 
 ## Troubleshooting
 
 ### The environment already exists
 
-Do not run `conda env create` again.  Follow
-[Updating an existing environment](#updating-an-existing-environment) to
-synchronise the existing `cdfmm` environment with `environment.yml`.
+Do not run `conda env create` again. Follow
+[Update an existing environment](#updating-an-existing-environment), then
+reconfigure with `cmake --fresh --preset release` if build options changed.
 
-### The wrong Python is active
+### The wrong Python module is imported
 
-On Linux/macOS run `which python`; in Windows PowerShell run
-`where.exe python`.  The first result should be inside the `cdfmm` environment.
-Confirm the main tools with:
+Check that the active executables and imported extension belong to `cdfmm`:
 
 ```console
-python --version
-cmake --version
-ninja --version
-doxygen --version
-clang++ --version
+which python
+python -c "import cdfmm; print(cdfmm.__file__)"
 ```
 
-On Windows the Clang driver may be named `clang-cl`; use
-`where.exe clang++` and `where.exe clang-cl` to inspect both possibilities.
+Reactivate the environment and rebuild the installing preset if either path
+points elsewhere. Restart long-running Python and Jupyter processes after an
+installation.
+
+### The oneMKL backend is unavailable
+
+The default release configuration must report `CDFMM_ENABLE_MKL=ON` during
+CMake configuration. Check the active environment and oneMKL package metadata:
+
+```console
+test -f "$CONDA_PREFIX/lib/cmake/mkl/MKLConfig.cmake"
+python -c "import cdfmm; print(cdfmm.one_mkl_available())"
+```
+
+If necessary, update `environment.yml`, run a fresh release configuration,
+and rebuild. A CPU-only build and an MKL-free build are different choices:
+`CDFMM_ENABLE_CUDA=OFF` does not disable oneMKL.
+
+### CUDA configuration fails
+
+Confirm the driver and Conda toolkit before reconfiguring:
+
+```console
+nvidia-smi
+nvcc --version
+cmake --fresh --preset release
+```
+
+The presets clear Conda's `NVCC_PREPEND_FLAGS`, use `g++` as the CUDA host
+compiler, and compile for the local GPU with
+`CMAKE_CUDA_ARCHITECTURES=native`. The installed NVIDIA driver must support the
+toolkit version pinned in `environment-cuda.yml`.
 
 ### CMake remembers an old compiler
 
-CMake caches absolute compiler paths.  After changing environments or
-compilers, safely remove the generated tree from `<repo-root>` and configure it
-again:
-
-```console
-cmake -E remove_directory build
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-```
-
-### No compiler is found
-
-First reactivate `cdfmm`, check the compiler commands above, and remove the old
-build directory.  On Linux, updating the Conda environment should restore the
-Conda-supplied Clang.  On Windows, Conda does not promise a complete MSVC/SDK
-installation: install the Visual Studio C++ workload described above if the
-diagnostic concerns SDK headers, libraries, `link.exe`, or runtime components.
-When reporting a problem, include `conda list clangxx`, the compiler version,
-and the complete CMake diagnostic.
-
-## Intel oneAPI performance build and OpenMP
-
-The reference performance compiler is Intel oneAPI `icpx` (the C++ driver, not
-the `ifx` Fortran compiler). `environment.yml` supplies the oneAPI DPC++/C++
-compiler package on the supported Linux development path. Build the optimised
-benchmark configuration with:
-
-```console
-conda activate cdfmm
-cmake --preset benchmark
-cmake --build --preset benchmark
-OMP_NUM_THREADS=16 ./build-bench/benchmarks/benchmark_uniform_fmm --help
-```
-
-The benchmark preset selects `icpx`, OpenMP, Release `-O3`, native CPU tuning,
-and LTO when supported. LTO is enabled by default for Release builds. For
-explicit configuration, the equivalent core
-settings are `CXX=icpx cmake -S . -B build-bench -G Ninja
--DCMAKE_BUILD_TYPE=Release -DCDFMM_BUILD_BENCHMARKS=ON
--DCDFMM_ENABLE_OPENMP=ON -DCDFMM_ENABLE_NATIVE_ARCH=ON
--DCDFMM_ENABLE_LTO=ON`. Disable internal parallelism with
-`-DCDFMM_ENABLE_OPENMP=OFF`; otherwise use `OMP_NUM_THREADS` or the benchmark's
-`--threads` option. See [Performance benchmarks](benchmarks.md) for the complete
-runner workflow.
+First use `cmake --fresh --preset <preset>`. If that is insufficient, remove
+only the corresponding generated build directory as described in
+[Clean resets](#clean-resets), then configure it again from the repository
+root.
