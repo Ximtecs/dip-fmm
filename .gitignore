@@ -33,6 +33,13 @@ docs/_build/
 .pytest_cache/
 .mypy_cache/
 
+# Persistent runtime caches are reusable local artefacts, not source files.
+/caches/*
+!/caches/README.md
+
+# Repository-local installation prefixes contain generated binaries/headers.
+/local/
+
 benchmark_results/
 p2p_sweep_results/
 profiling_results/
