@@ -13,6 +13,12 @@ L2P, and exact `list1` P2P operators once. Repeated calls then replace only the
 dipole moments. The independent Cartesian reference traversal remains
 selectable for validation.
 
+Validated persistent caches reuse the depth-independent translation bank and
+complete static geometry plans across processes, including geometries that
+differ only by physical translation or uniform scale. See the
+[cache guide](docs/caching.md), including `CDFMM_CACHE_DIR`,
+`CDFMM_DISABLE_CACHE`, and `cdfmm-precompute`.
+
 ```cpp
 cdfmm::UniformFmm fmm(source_positions, target_positions, options);
 for (const auto& moments : moment_states) {

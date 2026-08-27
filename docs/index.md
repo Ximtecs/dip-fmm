@@ -16,6 +16,7 @@ explicit zero-`k=0` convention.
 
 overview
 static-architecture
+caching
 backends
 installation
 fortran-interface
