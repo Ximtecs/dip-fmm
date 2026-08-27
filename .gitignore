@@ -34,8 +34,7 @@ docs/_build/
 .mypy_cache/
 
 # Persistent runtime caches are reusable local artefacts, not source files.
-/caches/*
-!/caches/README.md
+/caches/
 
 # Repository-local installation prefixes contain generated binaries/headers.
 /local/
