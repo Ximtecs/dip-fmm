@@ -42,6 +42,7 @@ Focused notebooks outside the numbered teaching sequence have separate roles:
 | `../simple_notebooks/simple_cuboid_magtense_compare.ipynb` | Direct cuboid convention versus MagTense |
 | `../simple_notebooks/simple_dense_direct_precision_compare.ipynb` | FP32 versus FP64 static FMM and backend comparison |
 | `../simple_notebooks/simple_cartesian_spherical_fmm_compare.ipynb` | Cartesian versus spherical finite-cuboid FP64 CUDA-full FMM |
+| `../simple_notebooks/simple_persistent_cache_reuse.ipynb` | Cold/warm binary cache loading and scale-independent geometry reuse |
 
 Notebook 10 is the basic complete-FMM example. Notebook 11 is the external
 FMM3D comparison; the focused Cartesian/spherical notebook isolates basis
@@ -49,6 +50,13 @@ choice without also changing the external library or tolerance convention.
 Notebook 14 contrasts periodic and non-periodic boundary conditions using both
 direct and FMM evaluations, and compares their corner-box interaction lists in
 the same three-dimensional style as notebook 08.
+
+The persistent-cache notebook uses the portable CPU backend and can be run
+without loading CUDA:
+
+```console
+jupyter lab examples/simple_notebooks/simple_persistent_cache_reuse.ipynb
+```
 
 Select the `Python (cdfmm)` kernel in JupyterLab or VSCode. Important
 parameters are collected near the top of each notebook, and all random
