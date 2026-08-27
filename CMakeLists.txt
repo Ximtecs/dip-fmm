@@ -8,6 +8,7 @@ project(cartesian_dipole_fmm LANGUAGES C CXX)
 option(CDFMM_BUILD_TESTS "Build C++ tests" ON)
 option(CDFMM_BUILD_EXAMPLES "Build examples" ON)
 option(CDFMM_BUILD_BENCHMARKS "Build benchmarks" OFF)
+option(CDFMM_BUILD_TOOLS "Build cache precomputation tools" ON)
 option(CDFMM_BUILD_PYTHON "Build Python bindings" ON)
 option(CDFMM_BUILD_FORTRAN_INTERFACE
        "Build the ISO_C_BINDING module, smoke test, and Fortran example" OFF)
@@ -197,6 +198,12 @@ if(CDFMM_BUILD_BENCHMARKS)
   add_subdirectory(benchmarks)
 endif()
 
+if(CDFMM_BUILD_TOOLS)
+  add_executable(cdfmm-precompute tools/cdfmm_precompute.cpp)
+  target_link_libraries(cdfmm-precompute PRIVATE cdfmm_core)
+  cdfmm_enable_ipo(cdfmm-precompute)
+endif()
+
 if(CDFMM_BUILD_PYTHON)
   include(FetchContent)
   FetchContent_Declare(
@@ -228,6 +235,9 @@ install(TARGETS cdfmm_c
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+if(CDFMM_BUILD_TOOLS)
+  install(TARGETS cdfmm-precompute RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 install(FILES include/cdfmm/c_api.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cdfmm)
 install(FILES fortran/cdfmm_fortran.f90 DESTINATION ${CMAKE_INSTALL_DATADIR}/cdfmm/fortran)
