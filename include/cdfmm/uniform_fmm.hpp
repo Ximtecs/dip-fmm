@@ -181,6 +181,8 @@ struct UniformFmmOptions {
   std::optional<std::vector<int>> fixed_target_source_indices{};
   /// @brief Maximum persistent bytes permitted for an automatic CUDA BSR plan.
   std::size_t cuda_p2p_bsr_max_bytes{20ULL * 1024ULL * 1024ULL * 1024ULL};
+  /// @brief Enables validated persistent operator and geometry-plan caches.
+  bool enable_cache{true};
 };
 
 using M2LBackend = UniformFmmOptions::M2LBackend;
@@ -288,8 +290,12 @@ public:
   /// @brief Clears accumulated evaluation timings without changing geometry.
   void reset_timings();
 
-  /// @brief Returns the fixed complete uniform-tree geometry.
+  /// @brief Returns the fixed geometry tree in caller-supplied physical units.
   [[nodiscard]] const UniformTree &tree() const;
+  /// @brief Returns the centre of the enclosing root cube in physical units.
+  [[nodiscard]] const Vec3& physical_root_centre() const noexcept;
+  /// @brief Returns the side length of the enclosing root cube in physical units.
+  [[nodiscard]] double physical_root_side_length() const noexcept;
   /// @brief Returns the explicit periodic-cell configuration of this plan.
   [[nodiscard]] const PeriodicCellOptions& periodic_cell() const noexcept;
   /// @brief Returns Cartesian ordering; throws for a spherical plan.
@@ -320,6 +326,12 @@ public:
   [[nodiscard]] const CudaPlanStatistics &cuda_plan_statistics() const;
   /// @brief Returns one-time static-plan timing and memory information.
   [[nodiscard]] const StaticPlanStatistics &static_plan_statistics() const;
+  /// @brief Stable key of the depth-independent translation operator bank.
+  [[nodiscard]] const std::string& universal_cache_key() const noexcept;
+  /// @brief Stable key of the normalised immutable geometry plan.
+  [[nodiscard]] const std::string& geometry_cache_key() const noexcept;
+  /// @brief Stable key of the unit-cell periodic root operator, if enabled.
+  [[nodiscard]] const std::string& periodic_cache_key() const noexcept;
 
   /**
    * @brief Returns a read-only multipole for a flat tree-node index.
@@ -379,9 +391,16 @@ public:
   [[nodiscard]] std::span<const double> root_multipole_float64() const;
 
 private:
+  struct NormalisedGeometry;
   class CudaM2LPlanOwner;
   class CudaP2PPlanOwner;
   class CudaFullPlanOwner;
+  UniformFmm(NormalisedGeometry geometry,
+             const UniformFmmOptions& physical_options);
+  [[nodiscard]] static NormalisedGeometry normalise_geometry(
+      const std::vector<Vec3>& source_positions,
+      const std::vector<Vec3>& target_positions,
+      const UniformFmmOptions& options);
   /** @brief Immutable leaf index and geometry-specific P2M coefficient map. */
   struct P2MPlan {
     int leaf{0};
@@ -418,6 +437,14 @@ private:
   };
 
   void build_static_plan();
+  void initialise_cache_keys(const UniformFmmOptions& options);
+  [[nodiscard]] bool load_universal_cache();
+  void build_missing_universal_operators(bool universal_available,
+                                         bool periodic_required);
+  void write_universal_cache() const;
+  [[nodiscard]] bool load_geometry_cache();
+  void write_geometry_cache() const;
+  void build_backend_packing();
   void quantise_static_plan_to_float();
   void initialise_source_geometry(const UniformFmmOptions &options);
   void initialise_target_geometry(const UniformFmmOptions &options);
@@ -459,8 +486,13 @@ private:
   [[nodiscard]] std::span<const float> local_float_for_node(
       int node_index) const noexcept;
 
-  // Fixed geometry and immutable operator descriptions outlive every call.
+  // The public physical tree preserves the API boundary; all execution uses
+  // the canonical normalised tree.
+  UniformTree physical_tree_;
   UniformTree tree_;
+  Vec3 physical_root_centre_{};
+  double physical_root_side_length_{1.0};
+  PeriodicCellOptions physical_periodic_{};
   PeriodicCellOptions periodic_{};
   MultiIndexSet basis_;
   SphericalHarmonicBasis spherical_basis_;
@@ -470,9 +502,19 @@ private:
   M2LBackend m2l_backend_{M2LBackend::Static};
   StaticMatrixBackend static_matrix_backend_{StaticMatrixBackend::Portable};
   StaticPrecision precision_{StaticPrecision::Float32};
-  // FP32 operators use root-width-normalised coordinates. This geometric
-  // scale remains double precision, like the source and target positions.
-  double float_coordinate_scale_{1.0};
+  // Physical moments are divided by L^3 while packing, where L is the
+  // physical root side length. Potential is multiplied by L on output.
+  double coordinate_scale_{1.0};
+  bool cache_enabled_{true};
+  // True when a warm FP32 geometry plan was decoded directly into its
+  // canonical FP32 representation rather than through FP64 construction data.
+  bool geometry_cache_loaded_direct_float_{false};
+  bool periodic_operator_available_{false};
+  std::string cache_directory_{};
+  std::string universal_cache_key_{};
+  std::string periodic_cache_key_{};
+  std::string geometry_cache_key_{};
+  std::string geometry_hash_digest_{};
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
   SourceGeometry source_geometry_{SourceGeometry::PointDipole};
   TargetGeometry target_geometry_{TargetGeometry::Point};
@@ -490,16 +532,14 @@ private:
   std::vector<FloatM2LGroup> m2l_groups_float_{};
   std::vector<P2MPlan> p2m_plans_{};
   std::vector<FloatP2MPlan> p2m_plans_float_{};
-  std::vector<std::array<StaticCoefficientOperator, 8>> m2m_operators_{};
-  std::vector<std::array<StaticCoefficientOperator, 8>> l2l_operators_{};
+  std::array<StaticCoefficientOperator, 8> m2m_operators_{};
+  std::array<StaticCoefficientOperator, 8> l2l_operators_{};
   std::vector<StaticL2PEvaluator> l2p_evaluators_{};
   StaticP2POperator p2p_operator_{};
   StaticP2PCompactPlan p2p_compact_plan_{};
   StaticM2LPlan m2l_plan_{};
-  std::vector<std::array<FloatStaticCoefficientOperator, 8>>
-      m2m_operators_float_{};
-  std::vector<std::array<FloatStaticCoefficientOperator, 8>>
-      l2l_operators_float_{};
+  std::array<FloatStaticCoefficientOperator, 8> m2m_operators_float_{};
+  std::array<FloatStaticCoefficientOperator, 8> l2l_operators_float_{};
   std::vector<FloatStaticL2PEvaluator> l2p_evaluators_float_{};
   FloatStaticP2POperator p2p_operator_float_{};
   FloatStaticP2PCompactPlan p2p_compact_plan_float_{};
@@ -521,6 +561,7 @@ private:
   std::vector<FloatVec3> near_fields_float_{};
   // Legacy coefficient inspection widens FP32 state only on demand.
   mutable std::vector<double> inspection_widening_buffer_{};
+  mutable std::vector<float> float_inspection_buffer_{};
   std::vector<int> sorted_self_indices_{};
   std::optional<std::vector<int>> fixed_target_source_indices_{};
   std::vector<int> fixed_sorted_self_indices_{};

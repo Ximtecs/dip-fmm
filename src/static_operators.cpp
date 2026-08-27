@@ -900,6 +900,38 @@ build_static_p2p_compact_plan(const StaticP2POperator &operator_map) {
   return result;
 }
 
+FloatStaticP2PCompactPlan
+build_static_p2p_compact_plan(const FloatStaticP2POperator &operator_map) {
+  FloatStaticP2PCompactPlan result;
+  result.source_count = operator_map.source_count;
+  result.target_count = operator_map.target_count;
+  result.row_offsets = operator_map.row_offsets;
+  result.source_indices.reserve(operator_map.blocks.size());
+  result.skip_for_identity.reserve(operator_map.blocks.size());
+  for (auto &coefficient : result.potential) {
+    coefficient.reserve(operator_map.blocks.size());
+  }
+  for (auto &tensor : result.tensors) {
+    tensor.reserve(operator_map.blocks.size());
+  }
+
+  for (const FloatStaticDipoleBlock &block : operator_map.blocks) {
+    result.source_indices.push_back(block.source);
+    result.skip_for_identity.push_back(
+        static_cast<unsigned char>(block.skip_for_identity != 0));
+    result.potential[0].push_back(block.px);
+    result.potential[1].push_back(block.py);
+    result.potential[2].push_back(block.pz);
+    result.tensors[0].push_back(block.xx);
+    result.tensors[1].push_back(block.xy);
+    result.tensors[2].push_back(block.xz);
+    result.tensors[3].push_back(block.yy);
+    result.tensors[4].push_back(block.yz);
+    result.tensors[5].push_back(block.zz);
+  }
+  return result;
+}
+
 StaticP2PLeafPlan build_static_p2p_leaf_plan(
     const StaticP2POperator &operator_map,
     const std::span<const StaticP2PLeafPair> leaf_pairs) {
@@ -1048,6 +1080,46 @@ build_static_p2p_bsr_plan(const StaticP2POperator &operator_map,
     const double yy = self ? 0.0 : block.yy;
     const double yz = self ? 0.0 : block.yz;
     const double zz = self ? 0.0 : block.zz;
+    result.values.insert(result.values.end(),
+                         {xx, xy, xz, xy, yy, yz, xz, yz, zz});
+  }
+  return result;
+}
+
+FloatStaticP2PBsrPlan
+build_static_p2p_bsr_plan(
+    const FloatStaticP2POperator &operator_map,
+    const std::span<const int> target_source_indices) {
+  if (!target_source_indices.empty() &&
+      target_source_indices.size() !=
+          static_cast<std::size_t>(operator_map.target_count)) {
+    throw std::invalid_argument("BSR P2P identity dimensions are inconsistent");
+  }
+
+  FloatStaticP2PBsrPlan result;
+  result.source_count = operator_map.source_count;
+  result.target_count = operator_map.target_count;
+  result.row_offsets = operator_map.row_offsets;
+  result.target_source_indices.assign(target_source_indices.begin(),
+                                      target_source_indices.end());
+  if (result.target_source_indices.empty()) {
+    result.target_source_indices.assign(
+        static_cast<std::size_t>(operator_map.target_count), -1);
+  }
+  result.source_indices.reserve(operator_map.blocks.size());
+  result.values.reserve(operator_map.blocks.size() * 9);
+
+  for (const FloatStaticDipoleBlock &block : operator_map.blocks) {
+    result.source_indices.push_back(block.source);
+    const bool self = block.skip_for_identity != 0 &&
+        block.source ==
+            result.target_source_indices[static_cast<std::size_t>(block.target)];
+    const float xx = self ? 0.0F : block.xx;
+    const float xy = self ? 0.0F : block.xy;
+    const float xz = self ? 0.0F : block.xz;
+    const float yy = self ? 0.0F : block.yy;
+    const float yz = self ? 0.0F : block.yz;
+    const float zz = self ? 0.0F : block.zz;
     result.values.insert(result.values.end(),
                          {xx, xy, xz, xy, yy, yz, xz, yz, zz});
   }

@@ -485,8 +485,8 @@ TEST_CASE("static grouped M2L matches the independent reference traversal") {
                 StaticMatrixBackend::Portable);
         REQUIRE(static_fmm.static_plan_statistics().transfer_classes > 0);
         const auto& plan = static_fmm.static_plan_statistics();
-        REQUIRE(plan.m2m_operators == static_cast<std::size_t>(8 * 3));
-        REQUIRE(plan.l2l_operators == static_cast<std::size_t>(8 * 3));
+        REQUIRE(plan.m2m_operators == static_cast<std::size_t>(8));
+        REQUIRE(plan.l2l_operators == static_cast<std::size_t>(8));
         REQUIRE(plan.m2m_operators < plan.m2m_theoretical_interactions);
     REQUIRE(plan.l2l_operators < plan.l2l_theoretical_interactions);
     REQUIRE(plan.m2l_operators == plan.transfer_classes);

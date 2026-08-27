@@ -163,9 +163,10 @@ TEST_CASE("FP32 canonical compact leaf and BSR P2P agree") {
   const StaticP2PBsrPlan bsr =
       build_static_p2p_bsr_plan(canonical, identities);
   const auto canonical_float = quantise_static_p2p_operator(canonical);
-  const auto compact_float = quantise_static_p2p_compact_plan(compact);
+  const auto compact_float = build_static_p2p_compact_plan(canonical_float);
   const auto leaf_float = quantise_static_p2p_leaf_plan(leaf);
-  const auto bsr_float = quantise_static_p2p_bsr_plan(bsr);
+  const auto bsr_float =
+      build_static_p2p_bsr_plan(canonical_float, identities);
   const std::vector<FloatVec3> moments{
       {0.2F, -0.4F, 0.7F}, {-0.3F, 0.8F, 0.1F}, {0.6F, 0.2F, -0.5F}};
   std::vector<FloatVec3> expected(targets.size());

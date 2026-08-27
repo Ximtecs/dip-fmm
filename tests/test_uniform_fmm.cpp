@@ -118,7 +118,8 @@ TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
         options.expansion_order = order;
         options.tree.max_level = 2;
         options.tree.root_centre = {0.2, 0.2, 0.2};
-        options.tree.root_half_width = 0.21;
+        // The explicit root encloses the complete cuboids, not only centres.
+        options.tree.root_half_width = 0.24;
         options.source_geometry = SourceGeometry::UniformCuboid;
         options.source_sizes = {cube};
         options.use_cuboid_p2m = use_cuboid_p2m;

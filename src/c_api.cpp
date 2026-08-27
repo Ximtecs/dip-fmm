@@ -203,26 +203,6 @@ void create_same_uniform_cuboid_plan(
     options.target_sizes = {{hx, hy, hz}};
     options.use_cuboid_p2m = true;
 
-    const auto xb = std::minmax_element(x, x + count);
-    const auto yb = std::minmax_element(y, y + count);
-    const auto zb = std::minmax_element(z, z + count);
-    const cdfmm::Vec3 minimum{
-        *xb.first - 0.5 * hx,
-        *yb.first - 0.5 * hy,
-        *zb.first - 0.5 * hz,
-    };
-    const cdfmm::Vec3 maximum{
-        *xb.second + 0.5 * hx,
-        *yb.second + 0.5 * hy,
-        *zb.second + 0.5 * hz,
-    };
-    options.tree.root_centre = 0.5 * (minimum + maximum);
-    options.tree.root_half_width =
-        1.000001 *
-        std::max({0.5 * (maximum.x - minimum.x),
-                  0.5 * (maximum.y - minimum.y),
-                  0.5 * (maximum.z - minimum.z)});
-
     // Finite cuboid self interactions are physical and are not excluded.
     create_plan(count, x, y, z, count, x, y, z, nullptr, std::move(options),
                 output);
@@ -304,33 +284,6 @@ int cdfmm_plan_create_uniform_cuboid_sources(
         translated.source_geometry = cdfmm::SourceGeometry::UniformCuboid;
         translated.source_sizes = {{hx, hy, hz}};
         translated.use_cuboid_p2m = true;
-        // Include the finite source extent, including the one-cell case where
-        // point-coordinate bounds alone have zero width.
-        const auto source_x_bounds = std::minmax_element(sx, sx + ns);
-        const auto source_y_bounds = std::minmax_element(sy, sy + ns);
-        const auto source_z_bounds = std::minmax_element(sz, sz + ns);
-        const auto target_x_bounds = std::minmax_element(tx, tx + nt);
-        const auto target_y_bounds = std::minmax_element(ty, ty + nt);
-        const auto target_z_bounds = std::minmax_element(tz, tz + nt);
-    const double minimum_x =
-        std::min(*source_x_bounds.first - 0.5 * hx, *target_x_bounds.first);
-    const double maximum_x =
-        std::max(*source_x_bounds.second + 0.5 * hx, *target_x_bounds.second);
-    const double minimum_y =
-        std::min(*source_y_bounds.first - 0.5 * hy, *target_y_bounds.first);
-    const double maximum_y =
-        std::max(*source_y_bounds.second + 0.5 * hy, *target_y_bounds.second);
-    const double minimum_z =
-        std::min(*source_z_bounds.first - 0.5 * hz, *target_z_bounds.first);
-    const double maximum_z =
-        std::max(*source_z_bounds.second + 0.5 * hz, *target_z_bounds.second);
-    translated.tree.root_centre = {0.5 * (minimum_x + maximum_x),
-            0.5 * (minimum_y + maximum_y),
-            0.5 * (minimum_z + maximum_z)};
-    translated.tree.root_half_width =
-        1.000001 *
-        std::max({0.5 * (maximum_x - minimum_x), 0.5 * (maximum_y - minimum_y),
-            0.5 * (maximum_z - minimum_z)});
     create_plan(ns, sx, sy, sz, nt, tx, ty, tz, identity, std::move(translated),
                 plan);
   });

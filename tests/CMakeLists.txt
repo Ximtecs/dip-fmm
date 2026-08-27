@@ -15,6 +15,8 @@ add_executable(cdfmm_tests
   test_parameter_selection.cpp
   test_cuboid.cpp
   test_precision.cpp
+  test_normalisation.cpp
+  test_cache.cpp
   test_periodic.cpp
   test_spherical_harmonics.cpp
   test_c_api.cpp

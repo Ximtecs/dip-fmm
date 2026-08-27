@@ -80,7 +80,9 @@ apply_shared_translation_kernel(const Entry *matrices,
                                 const CudaTranslationInteraction *interactions,
                                 const std::size_t interaction_count,
                                 const int entries_per_matrix,
-                                const int coefficient_count, const int level,
+                                const int coefficient_count,
+                                const int* coefficient_degrees,
+                                const int level,
                                 const Scalar *input, Scalar *output) {
   const std::size_t item = blockIdx.x * blockDim.x + threadIdx.x;
   const std::size_t item_count = interaction_count * entries_per_matrix;
@@ -98,11 +100,17 @@ apply_shared_translation_kernel(const Entry *matrices,
       matrices[static_cast<std::size_t>(interaction.matrix_id) *
                    entries_per_matrix +
                matrix_entry];
+  const int degree_difference =
+      coefficient_degrees[entry.output] - coefficient_degrees[entry.input];
+  const int power = degree_difference < 0 ? -degree_difference
+                                         : degree_difference;
+  const Scalar scaled_value =
+      ldexp(static_cast<Scalar>(entry.value), -(level - 1) * power);
   atomicAdd(output +
                 static_cast<std::size_t>(interaction.target_node) *
                     coefficient_count +
                 entry.output,
-            entry.value *
+            scaled_value *
                 input[static_cast<std::size_t>(interaction.source_node) *
                           coefficient_count +
                       entry.input]);
@@ -2646,6 +2654,7 @@ struct CudaFullPlan::Implementation {
     int target_count{0};
     int* source_permutation{nullptr};
     int* target_permutation{nullptr};
+    int* coefficient_degrees{nullptr};
     int* self_indices{nullptr};
     CudaP2PDeviceView<StaticDipoleBlock> p2p{};
     CudaBsrP2PDeviceView<double> p2p_bsr{};
@@ -2782,6 +2791,8 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
            data.source_permutation.size() * sizeof(int));
   allocate(&plan.target_permutation,
            data.target_permutation.size() * sizeof(int));
+  allocate(&plan.coefficient_degrees,
+           data.coefficient_degrees.size() * sizeof(int));
   if (!plan.use_p2p_bsr) {
     allocate(&plan.self_indices,
              static_cast<std::size_t>(plan.target_count) * sizeof(int));
@@ -2844,6 +2855,8 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
            data.source_permutation.size() * sizeof(int));
     upload(plan.target_permutation, data.target_permutation.data(),
            data.target_permutation.size() * sizeof(int));
+    upload(plan.coefficient_degrees, data.coefficient_degrees.data(),
+           data.coefficient_degrees.size() * sizeof(int));
   if (!plan.use_p2p_bsr) {
     upload(plan.p2p.row_offsets, data.p2p.row_offsets.data(),
            data.p2p.row_offsets.size() * sizeof(int));
@@ -2998,6 +3011,8 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
            data.source_permutation.size() * sizeof(int));
   allocate(&plan.target_permutation,
            data.target_permutation.size() * sizeof(int));
+  allocate(&plan.coefficient_degrees,
+           data.coefficient_degrees.size() * sizeof(int));
   if (!plan.use_p2p_bsr) {
     allocate(&plan.self_indices,
              static_cast<std::size_t>(plan.target_count) * sizeof(int));
@@ -3061,6 +3076,8 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
          data.source_permutation.size() * sizeof(int));
   upload(plan.target_permutation, data.target_permutation.data(),
          data.target_permutation.size() * sizeof(int));
+  upload(plan.coefficient_degrees, data.coefficient_degrees.data(),
+         data.coefficient_degrees.size() * sizeof(int));
   if (!plan.use_p2p_bsr) {
     upload(plan.p2p_float.row_offsets, data.p2p.row_offsets.data(),
            data.p2p.row_offsets.size() * sizeof(int));
@@ -3185,6 +3202,7 @@ CudaFullPlan::~CudaFullPlan() {
   cudaFree(plan.p2p_bsr_float.source_indices);
   cudaFree(plan.p2p_bsr_float.values);
   cudaFree(plan.entries);
+  cudaFree(plan.coefficient_degrees);
   cudaFree(plan.m2m_matrices);
   cudaFree(plan.l2l_matrices);
   cudaFree(plan.m2m_interactions);
@@ -3336,8 +3354,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
       apply_shared_translation_kernel<<<(items + threads - 1) / threads,
                                         threads, 0, plan.far_field_stream>>>(
           plan.m2m_matrices, plan.m2m_interactions, plan.m2m_interaction_count,
-          plan.m2m_entries_per_matrix, plan.coefficient_count, level,
-          plan.multipoles, plan.multipoles);
+          plan.m2m_entries_per_matrix, plan.coefficient_count,
+          plan.coefficient_degrees, level, plan.multipoles, plan.multipoles);
     }
   }
   check_cuda(cudaEventRecord(plan.m2m_complete, plan.far_field_stream),
@@ -3364,8 +3382,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
       apply_shared_translation_kernel<<<(items + threads - 1) / threads,
                                         threads, 0, plan.far_field_stream>>>(
           plan.l2l_matrices, plan.l2l_interactions, plan.l2l_interaction_count,
-          plan.l2l_entries_per_matrix, plan.coefficient_count, level,
-          plan.locals, plan.locals);
+          plan.l2l_entries_per_matrix, plan.coefficient_count,
+          plan.coefficient_degrees, level, plan.locals, plan.locals);
     }
   }
   check_cuda(cudaEventRecord(plan.l2l_complete, plan.far_field_stream),
@@ -3548,7 +3566,8 @@ void CudaFullPlan::evaluate(
           plan.far_field_stream>>>(
           plan.m2m_matrices_float, plan.m2m_interactions,
           plan.m2m_interaction_count, plan.m2m_entries_per_matrix,
-          plan.coefficient_count, level, plan.multipoles_float,
+          plan.coefficient_count, plan.coefficient_degrees, level,
+          plan.multipoles_float,
           plan.multipoles_float);
     }
   }
@@ -3574,7 +3593,8 @@ void CudaFullPlan::evaluate(
           plan.far_field_stream>>>(
           plan.l2l_matrices_float, plan.l2l_interactions,
           plan.l2l_interaction_count, plan.l2l_entries_per_matrix,
-          plan.coefficient_count, level, plan.locals_float,
+          plan.coefficient_count, plan.coefficient_degrees, level,
+          plan.locals_float,
           plan.locals_float);
     }
   }

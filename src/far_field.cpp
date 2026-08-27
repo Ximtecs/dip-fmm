@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 
 #ifdef CDFMM_USE_MKL
 #include <mkl.h>
@@ -37,6 +38,21 @@ using Clock = std::chrono::steady_clock;
 
 inline double elapsed_seconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+template <typename Operator, typename Scalar, typename Degree>
+void apply_level_scaled_translation(const Operator& operator_map,
+                                    const std::span<Scalar> input,
+                                    const std::span<Scalar> output,
+                                    const int level,
+                                    const Degree& degree) {
+  for (const auto& entry : operator_map.entries) {
+    const int power = std::abs(degree(entry.output) - degree(entry.input));
+    const Scalar value = std::ldexp(
+        static_cast<Scalar>(entry.value), -(level - 1) * power);
+    output[static_cast<std::size_t>(entry.output)] +=
+        value * input[static_cast<std::size_t>(entry.input)];
+  }
 }
 } // namespace
 
@@ -265,7 +281,7 @@ void UniformFmm::prepare_moments_float(
        ++sorted_index) {
     const Vec3 moment = dipole_moments[static_cast<std::size_t>(
         permutation[static_cast<std::size_t>(sorted_index)])];
-    const double scale = float_coordinate_scale_;
+    const double scale = coordinate_scale_;
     sorted_dipole_moments_float_[static_cast<std::size_t>(sorted_index)] = {
         static_cast<float>(moment.x / scale / scale / scale),
         static_cast<float>(moment.y / scale / scale / scale),
@@ -286,7 +302,7 @@ void UniformFmm::prepare_moments_float(
   last_timings_.multipole_reset.add(elapsed_seconds(phase_start));
   phase_start = Clock::now();
   const auto permutation = tree_.source_permutation();
-  const float scale = static_cast<float>(float_coordinate_scale_);
+  const float scale = static_cast<float>(coordinate_scale_);
 #pragma omp parallel for schedule(static) if (permutation.size() >= 256)
   for (std::ptrdiff_t sorted_index = 0;
        sorted_index < static_cast<std::ptrdiff_t>(permutation.size());
@@ -347,10 +363,12 @@ void UniformFmm::upward_pass_prepared_float() {
           }
           const int child_class =
               (child.ix & 1) | ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
-          apply_static_operator(
-              m2m_operators_float_[static_cast<std::size_t>(child.level)]
-                                  [child_class],
-              multipole_float_for_node(child_index), parent_M);
+          apply_level_scaled_translation(
+              m2m_operators_float_[child_class],
+              multipole_float_for_node(child_index), parent_M, child.level,
+              [this](const int coefficient) {
+                return coefficient_degree(coefficient);
+              });
         }
       }
     }
@@ -379,6 +397,8 @@ void UniformFmm::prepare_moments(std::span<const Vec3> dipole_moments) {
   detail::ProfileRange permutation_range{
       "cdfmm/input_preparation/moment_permutation"};
   const auto permutation = tree_.source_permutation();
+  const double scale = coordinate_scale_;
+  const double inverse_volume_scale = 1.0 / (scale * scale * scale);
 #pragma omp parallel for schedule(static) if (permutation.size() >= 256)
   for (std::ptrdiff_t sorted_index = 0;
        sorted_index < static_cast<std::ptrdiff_t>(permutation.size());
@@ -386,7 +406,8 @@ void UniformFmm::prepare_moments(std::span<const Vec3> dipole_moments) {
     const int original_index =
         permutation[static_cast<std::size_t>(sorted_index)];
     sorted_dipole_moments_[static_cast<std::size_t>(sorted_index)] =
-        dipole_moments[static_cast<std::size_t>(original_index)];
+        dipole_moments[static_cast<std::size_t>(original_index)] *
+        inverse_volume_scale;
   }
   last_timings_.moment_permutation.add(elapsed_seconds(phase_start));
 }
@@ -456,10 +477,12 @@ void UniformFmm::upward_pass_prepared() {
           if (m2m_executor != StaticOperatorExecutor::Reference) {
             const int child_class =
                 (child.ix & 1) | ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
-            apply_static_operator(
-                m2m_operators_[static_cast<std::size_t>(child.level)]
-                              [child_class],
-                multipole_for_node(child_index), parent_M);
+            apply_level_scaled_translation(
+                m2m_operators_[child_class],
+                multipole_for_node(child_index), parent_M, child.level,
+                [this](const int coefficient) {
+                  return coefficient_degree(coefficient);
+                });
           } else {
             const Vec3 d = parent.centre - child.centre;
             m2m_add(basis_, d,
@@ -520,10 +543,12 @@ void UniformFmm::downward_pass() {
       if (execution_plan().l2l != StaticOperatorExecutor::Reference) {
         const int child_class =
             (target.ix & 1) | ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
-        apply_static_operator(
-            l2l_operators_[static_cast<std::size_t>(target.level)][child_class],
-            local_for_node(target.parent),
-            local_for_node(target_index));
+        apply_level_scaled_translation(
+            l2l_operators_[child_class], local_for_node(target.parent),
+            local_for_node(target_index), target.level,
+            [this](const int coefficient) {
+              return coefficient_degree(coefficient);
+            });
       } else {
         const Vec3 d = target.centre - parent.centre;
         l2l_add(basis_, d, local_for_node(target.parent),
@@ -602,11 +627,13 @@ void UniformFmm::downward_pass_float() {
       }
       const int child_class =
           (target.ix & 1) | ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
-      apply_static_operator(
-          l2l_operators_float_[static_cast<std::size_t>(target.level)]
-                              [child_class],
+      apply_level_scaled_translation(
+          l2l_operators_float_[child_class],
           local_float_for_node(target.parent),
-          local_float_for_node(target_index));
+          local_float_for_node(target_index), target.level,
+          [this](const int coefficient) {
+            return coefficient_degree(coefficient);
+          });
     }
     last_timings_.l2l.add(elapsed_seconds(phase_start));
 
@@ -648,10 +675,12 @@ void UniformFmm::l2l_downward() {
       }
       const int child_class =
           (target.ix & 1) | ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
-      apply_static_operator(
-          l2l_operators_[static_cast<std::size_t>(target.level)][child_class],
-          local_for_node(target.parent),
-          local_for_node(target_index));
+      apply_level_scaled_translation(
+          l2l_operators_[child_class], local_for_node(target.parent),
+          local_for_node(target_index), target.level,
+          [this](const int coefficient) {
+            return coefficient_degree(coefficient);
+          });
     }
     last_timings_.l2l.add(elapsed_seconds(phase_start));
   }

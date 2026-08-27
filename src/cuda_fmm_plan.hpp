@@ -53,6 +53,7 @@ struct CudaFullPlanData {
     int target_count{0};
   std::vector<int> source_permutation{};
   std::vector<int> target_permutation{};
+  std::vector<int> coefficient_degrees{};
   std::vector<StaticOperatorEntry> p2m{};
   CudaSharedTranslationData m2m{};
   StaticM2LPlan m2l{};
@@ -73,6 +74,7 @@ struct FloatCudaFullPlanData {
   int target_count{0};
   std::vector<int> source_permutation{};
   std::vector<int> target_permutation{};
+  std::vector<int> coefficient_degrees{};
   std::vector<FloatStaticOperatorEntry> p2m{};
   FloatCudaSharedTranslationData m2m{};
   FloatStaticM2LPlan m2l{};

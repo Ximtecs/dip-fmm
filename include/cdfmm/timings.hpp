@@ -105,6 +105,45 @@ struct EvaluationTimings {
 
 /** @brief One-time cost and storage of the immutable static CPU plan. */
 struct StaticPlanStatistics {
+    /// @brief Time spent converting physical inputs to the canonical cube.
+    PhaseTiming normalisation{};
+    /// @brief Time spent constructing the immutable uniform tree.
+    PhaseTiming tree_construction{};
+    /// @brief Time spent locating and validating the universal cache file.
+    PhaseTiming universal_cache_lookup{};
+    /// @brief Time spent loading a valid universal operator bank.
+    PhaseTiming universal_cache_load{};
+    /// @brief Time spent analytically building universal translations.
+    PhaseTiming universal_operator_build{};
+    /// @brief Time spent serialising universal and periodic operator files.
+    PhaseTiming universal_cache_write{};
+    /// @brief Time spent locating and validating the periodic operator file.
+    PhaseTiming periodic_cache_lookup{};
+    /// @brief Time spent loading a valid periodic root operator.
+    PhaseTiming periodic_cache_load{};
+    /// @brief Time spent analytically building a periodic root operator.
+    PhaseTiming periodic_operator_build{};
+    /// @brief Time spent hashing canonical geometry and plan options.
+    PhaseTiming geometry_hash{};
+    /// @brief Time spent locating and validating the geometry cache file.
+    PhaseTiming geometry_cache_lookup{};
+    /// @brief Time spent loading a valid complete geometry plan.
+    PhaseTiming geometry_cache_load{};
+    /// @brief Time spent serialising a complete geometry plan.
+    PhaseTiming geometry_cache_write{};
+    /// @brief Time spent deriving backend-specific host packing.
+    PhaseTiming backend_packing{};
+    /// @brief Time spent creating and uploading persistent CUDA state.
+    PhaseTiming cuda_upload{};
+    /// @brief Complete constructor setup time, including backend creation.
+    PhaseTiming total_setup{};
+    /// @brief Cache outcomes for this construction.
+    bool universal_cache_hit{false};
+    bool periodic_cache_hit{false};
+    bool geometry_cache_hit{false};
+    /// @brief Validated cache traffic for this construction.
+    std::size_t cache_bytes_read{0};
+    std::size_t cache_bytes_written{0};
     /// @brief Maximum expansion degree selected by the plan.
     int expansion_order{0};
     /// @brief Number of real coefficients stored for each node expansion.
@@ -161,7 +200,7 @@ struct StaticPlanStatistics {
     std::size_t near_field_operator_bytes{0};
     /// @brief Bytes occupied by immutable uniform-tree storage.
     std::size_t tree_bytes{0};
-    /// @brief Shared M2M matrices stored (eight child classes per used level).
+    /// @brief Universal M2M templates stored (exactly eight child classes).
     std::size_t m2m_operators{0};
     /// @brief Complete-tree parent-child relations represented by M2M IDs.
     std::size_t m2m_theoretical_interactions{0};
@@ -173,7 +212,7 @@ struct StaticPlanStatistics {
     std::size_t m2l_operator_bytes{0};
     /// @brief Bytes occupied by M2L source, target, and level metadata.
     std::size_t m2l_interaction_bytes{0};
-    /// @brief Shared L2L matrices stored (eight child classes per used level).
+    /// @brief Universal L2L templates stored (exactly eight child classes).
     std::size_t l2l_operators{0};
     /// @brief Complete-tree parent-child relations represented by L2L IDs.
     std::size_t l2l_theoretical_interactions{0};

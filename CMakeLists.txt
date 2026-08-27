@@ -43,6 +43,7 @@ add_library(cdfmm_core
     src/validation.cpp
     src/uniform_tree.cpp
     src/uniform_fmm.cpp
+    src/cache.cpp
     src/far_field.cpp
     src/near_field.cpp
     src/parameter_selection.cpp
@@ -71,6 +72,8 @@ else()
   target_sources(cdfmm_core PRIVATE src/cuda_fmm_stub.cpp)
 endif()
 target_include_directories(cdfmm_core PUBLIC include)
+target_compile_definitions(cdfmm_core PRIVATE
+  CDFMM_DEFAULT_CACHE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/caches")
 set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Project optimisation options append to, rather than replace, flags selected by

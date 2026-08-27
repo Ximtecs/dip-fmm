@@ -560,6 +560,10 @@ void apply_static_m2l_plan(
 [[nodiscard]] StaticP2PCompactPlan
 build_static_p2p_compact_plan(const StaticP2POperator &operator_map);
 
+/** @brief Packs canonical FP32 particle rows into contiguous tensor streams. */
+[[nodiscard]] FloatStaticP2PCompactPlan
+build_static_p2p_compact_plan(const FloatStaticP2POperator &operator_map);
+
 /**
  * @brief Packs dense target/source leaf pairs from a canonical P2P operator.
  *
@@ -574,6 +578,11 @@ build_static_p2p_leaf_plan(const StaticP2POperator &operator_map,
 /** @brief Expands canonical tensors into full BSR(3) blocks. */
 [[nodiscard]] StaticP2PBsrPlan
 build_static_p2p_bsr_plan(const StaticP2POperator &operator_map,
+                          std::span<const int> target_source_indices = {});
+
+/** @brief Expands canonical FP32 tensors into full BSR(3) blocks. */
+[[nodiscard]] FloatStaticP2PBsrPlan
+build_static_p2p_bsr_plan(const FloatStaticP2POperator &operator_map,
                           std::span<const int> target_source_indices = {});
 
 /**

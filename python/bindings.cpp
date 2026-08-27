@@ -670,7 +670,8 @@ PYBIND11_MODULE(cdfmm, module) {
         .def_readwrite("fixed_target_source_indices",
                        &UniformFmmOptions::fixed_target_source_indices)
         .def_readwrite("cuda_p2p_bsr_max_bytes",
-                       &UniformFmmOptions::cuda_p2p_bsr_max_bytes);
+                       &UniformFmmOptions::cuda_p2p_bsr_max_bytes)
+        .def_readwrite("enable_cache", &UniformFmmOptions::enable_cache);
 
     py::class_<UniformFmm>(module, "UniformFmm")
         .def(py::init([](py::object source_positions,
@@ -844,8 +845,64 @@ PYBIND11_MODULE(cdfmm, module) {
               result["total_persistent_bytes"] =
                   statistics.total_persistent_bytes();
               result["setup_seconds"] = statistics.total.total_seconds;
+              result["normalisation_seconds"] =
+                  statistics.normalisation.total_seconds;
+              result["tree_construction_seconds"] =
+                  statistics.tree_construction.total_seconds;
+              result["universal_cache_lookup_seconds"] =
+                  statistics.universal_cache_lookup.total_seconds;
+              result["universal_cache_load_seconds"] =
+                  statistics.universal_cache_load.total_seconds;
+              result["universal_operator_build_seconds"] =
+                  statistics.universal_operator_build.total_seconds;
+              result["universal_cache_write_seconds"] =
+                  statistics.universal_cache_write.total_seconds;
+              result["periodic_cache_lookup_seconds"] =
+                  statistics.periodic_cache_lookup.total_seconds;
+              result["periodic_cache_load_seconds"] =
+                  statistics.periodic_cache_load.total_seconds;
+              result["periodic_operator_build_seconds"] =
+                  statistics.periodic_operator_build.total_seconds;
+              result["geometry_hash_seconds"] =
+                  statistics.geometry_hash.total_seconds;
+              result["geometry_cache_lookup_seconds"] =
+                  statistics.geometry_cache_lookup.total_seconds;
+              result["geometry_cache_load_seconds"] =
+                  statistics.geometry_cache_load.total_seconds;
+              result["geometry_cache_write_seconds"] =
+                  statistics.geometry_cache_write.total_seconds;
+              result["p2m_construction_seconds"] =
+                  statistics.p2m_plan.total_seconds;
+              result["m2m_construction_seconds"] =
+                  statistics.m2m_plan.total_seconds;
+              result["m2l_construction_seconds"] =
+                  statistics.m2l_plan.total_seconds;
+              result["l2l_construction_seconds"] =
+                  statistics.l2l_plan.total_seconds;
+              result["l2p_construction_seconds"] =
+                  statistics.l2p_plan.total_seconds;
+              result["p2p_construction_seconds"] =
+                  statistics.p2p_tensor_plan.total_seconds;
+              result["backend_packing_seconds"] =
+                  statistics.backend_packing.total_seconds;
+              result["cuda_upload_seconds"] =
+                  statistics.cuda_upload.total_seconds;
+              result["total_setup_seconds"] =
+                  statistics.total_setup.total_seconds;
+              result["universal_cache_hit"] =
+                  statistics.universal_cache_hit;
+              result["periodic_cache_hit"] = statistics.periodic_cache_hit;
+              result["geometry_cache_hit"] = statistics.geometry_cache_hit;
+              result["cache_bytes_read"] = statistics.cache_bytes_read;
+              result["cache_bytes_written"] = statistics.cache_bytes_written;
               return result;
             })
+        .def_property_readonly("universal_cache_key",
+                               &UniformFmm::universal_cache_key)
+        .def_property_readonly("periodic_cache_key",
+                               &UniformFmm::periodic_cache_key)
+        .def_property_readonly("geometry_cache_key",
+                               &UniformFmm::geometry_cache_key)
         .def_property_readonly("root_multipole",
                                [](const UniformFmm &fmm) {
                                  if (fmm.precision() ==

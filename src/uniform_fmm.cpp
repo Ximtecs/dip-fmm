@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <sstream>
@@ -37,35 +39,6 @@ namespace cdfmm {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-
-UniformTreeOptions tree_options_for_periodic_cell(
-    const UniformFmmOptions& options
-)
-{
-  validate_periodic_cell(options.periodic);
-  UniformTreeOptions tree_options = options.tree;
-  if (!options.periodic.enabled) {
-    return tree_options;
-  }
-  tree_options.root_centre = options.periodic.centre;
-  tree_options.root_half_width = 0.5 * options.periodic.lengths.x;
-  return tree_options;
-}
-
-std::vector<Vec3> positions_for_periodic_cell(
-    const std::vector<Vec3>& positions,
-    const PeriodicCellOptions& periodic)
-{
-  if (!periodic.enabled) {
-    return positions;
-  }
-  std::vector<Vec3> wrapped;
-  wrapped.reserve(positions.size());
-  for (const Vec3& position : positions) {
-    wrapped.push_back(wrap_periodic_position(position, periodic));
-  }
-  return wrapped;
-}
 
 double elapsed_seconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
@@ -257,150 +230,246 @@ private:
 // Construction
 //------------------------------------------------------------------------------
 
+struct UniformFmm::NormalisedGeometry {
+  std::vector<Vec3> physical_source_positions{};
+  std::vector<Vec3> physical_target_positions{};
+  UniformTreeOptions physical_tree_options{};
+  std::vector<Vec3> source_positions{};
+  std::vector<Vec3> target_positions{};
+  UniformFmmOptions options{};
+  Vec3 physical_root_centre{};
+  double physical_root_side_length{1.0};
+  double normalisation_seconds{0.0};
+  Clock::time_point construction_start{};
+};
+
+UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
+    const std::vector<Vec3>& source_positions,
+    const std::vector<Vec3>& target_positions,
+    const UniformFmmOptions& options) {
+  const auto normalisation_start = Clock::now();
+  validate_periodic_cell(options.periodic);
+
+  const auto finite_position = [](const Vec3& position) {
+    return std::isfinite(position.x) && std::isfinite(position.y) &&
+        std::isfinite(position.z);
+  };
+  const auto validate_sizes = [](const std::vector<CuboidSize>& sizes,
+                                 const std::size_t count,
+                                 const char* description) {
+    if (sizes.size() != 1 && sizes.size() != count) {
+      throw std::invalid_argument(std::string(description) +
+                                  " sizes must contain one or one per object");
+    }
+    for (const CuboidSize& size : sizes) {
+      if (!std::isfinite(size.hx) || !std::isfinite(size.hy) ||
+          !std::isfinite(size.hz) || size.hx <= 0.0 || size.hy <= 0.0 ||
+          size.hz <= 0.0) {
+        throw std::invalid_argument(std::string(description) +
+                                    " dimensions must be finite and positive");
+      }
+    }
+  };
+
+  for (const Vec3& position : source_positions) {
+    if (!finite_position(position)) {
+      throw std::invalid_argument("source positions must be finite");
+    }
+  }
+  for (const Vec3& position : target_positions) {
+    if (!finite_position(position)) {
+      throw std::invalid_argument("target positions must be finite");
+    }
+  }
+  if (options.source_geometry == SourceGeometry::UniformCuboid) {
+    validate_sizes(options.source_sizes, source_positions.size(),
+                   "source cuboid");
+  }
+  if (options.target_geometry == TargetGeometry::VolumeAveragedCuboid) {
+    validate_sizes(options.target_sizes, target_positions.size(),
+                   "target cuboid");
+  }
+
+  Vec3 minimum{std::numeric_limits<double>::infinity(),
+               std::numeric_limits<double>::infinity(),
+               std::numeric_limits<double>::infinity()};
+  Vec3 maximum{-std::numeric_limits<double>::infinity(),
+               -std::numeric_limits<double>::infinity(),
+               -std::numeric_limits<double>::infinity()};
+  bool has_geometry = false;
+  const auto include_population = [&](const std::vector<Vec3>& positions,
+                                      const std::vector<CuboidSize>& sizes,
+                                      const bool cuboids) {
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+      const CuboidSize size = cuboids
+          ? sizes[sizes.size() == 1 ? 0 : index]
+          : CuboidSize{};
+      const Vec3 half_extent{0.5 * size.hx, 0.5 * size.hy,
+                             0.5 * size.hz};
+      const Vec3 lower = positions[index] - half_extent;
+      const Vec3 upper = positions[index] + half_extent;
+      minimum.x = std::min(minimum.x, lower.x);
+      minimum.y = std::min(minimum.y, lower.y);
+      minimum.z = std::min(minimum.z, lower.z);
+      maximum.x = std::max(maximum.x, upper.x);
+      maximum.y = std::max(maximum.y, upper.y);
+      maximum.z = std::max(maximum.z, upper.z);
+      has_geometry = true;
+    }
+  };
+  include_population(source_positions, options.source_sizes,
+                     options.source_geometry == SourceGeometry::UniformCuboid);
+  include_population(
+      target_positions, options.target_sizes,
+      options.target_geometry == TargetGeometry::VolumeAveragedCuboid);
+
+  NormalisedGeometry geometry;
+  geometry.construction_start = normalisation_start;
+  geometry.options = options;
+  if (options.periodic.enabled) {
+    geometry.physical_root_centre = options.periodic.centre;
+    geometry.physical_root_side_length = options.periodic.lengths.x;
+  } else {
+    if (!has_geometry) {
+      minimum = {};
+      maximum = {};
+    }
+    geometry.physical_root_centre = options.tree.root_centre.value_or(
+        (minimum + maximum) * 0.5);
+    const Vec3 upper_distance = maximum - geometry.physical_root_centre;
+    const Vec3 lower_distance = geometry.physical_root_centre - minimum;
+    double required_half_width = has_geometry
+        ? std::max({upper_distance.x, upper_distance.y, upper_distance.z,
+                    lower_distance.x, lower_distance.y, lower_distance.z})
+        : 0.0;
+    if (required_half_width < 0.0 || !std::isfinite(required_half_width)) {
+      throw std::invalid_argument("invalid physical root geometry");
+    }
+    if (options.tree.root_half_width.has_value()) {
+      const double requested = *options.tree.root_half_width;
+      if (!std::isfinite(requested) || requested <= 0.0) {
+        throw std::invalid_argument(
+            "UniformTreeOptions.root_half_width must be finite and positive");
+      }
+      const double tolerance = 32.0 * std::numeric_limits<double>::epsilon() *
+          std::max({1.0, requested, required_half_width});
+      if (requested + tolerance < required_half_width) {
+        throw std::invalid_argument(
+            "complete geometry lies outside the requested root box");
+      }
+      required_half_width = requested;
+    } else if (required_half_width == 0.0) {
+      // A finite convention is required for empty or coincident point sets.
+      required_half_width = 0.5;
+    }
+    geometry.physical_root_side_length = 2.0 * required_half_width;
+  }
+
+  const double inverse_length = 1.0 / geometry.physical_root_side_length;
+  const auto canonicalise = [](const double value) {
+    // Inputs translated far from a small geometry lose a few low mantissa
+    // bits during subtraction.  A nanounit grid removes that representation
+    // noise so physically translated/rescaled copies have identical canonical
+    // coordinates and therefore identical reusable plans.
+    constexpr double resolution = 1.0e9;
+    return std::nearbyint(value * resolution) / resolution;
+  };
+  const auto physical_positions = [&](const std::vector<Vec3>& positions) {
+    std::vector<Vec3> wrapped;
+    wrapped.reserve(positions.size());
+    for (Vec3 position : positions) {
+      if (options.periodic.enabled) {
+        position = wrap_periodic_position(position, options.periodic);
+      }
+      wrapped.push_back(position);
+    }
+    return wrapped;
+  };
+  const auto normalise_sizes = [inverse_length](
+                                   std::vector<CuboidSize>& sizes) {
+    for (CuboidSize& size : sizes) {
+      size.hx *= inverse_length;
+      size.hy *= inverse_length;
+      size.hz *= inverse_length;
+    }
+  };
+
+  geometry.physical_source_positions = physical_positions(source_positions);
+  geometry.physical_target_positions = physical_positions(target_positions);
+  geometry.source_positions.reserve(geometry.physical_source_positions.size());
+  for (const Vec3& position : geometry.physical_source_positions) {
+    const Vec3 value =
+        (position - geometry.physical_root_centre) * inverse_length;
+    geometry.source_positions.push_back(
+        {canonicalise(value.x), canonicalise(value.y), canonicalise(value.z)});
+  }
+  geometry.target_positions.reserve(geometry.physical_target_positions.size());
+  for (const Vec3& position : geometry.physical_target_positions) {
+    const Vec3 value =
+        (position - geometry.physical_root_centre) * inverse_length;
+    geometry.target_positions.push_back(
+        {canonicalise(value.x), canonicalise(value.y), canonicalise(value.z)});
+  }
+  geometry.physical_tree_options = options.tree;
+  geometry.physical_tree_options.root_centre = geometry.physical_root_centre;
+  geometry.physical_tree_options.root_half_width =
+      0.5 * geometry.physical_root_side_length;
+  normalise_sizes(geometry.options.source_sizes);
+  normalise_sizes(geometry.options.target_sizes);
+  const auto canonicalise_sizes = [canonicalise](
+                                      std::vector<CuboidSize>& sizes) {
+    for (CuboidSize& size : sizes) {
+      size.hx = canonicalise(size.hx);
+      size.hy = canonicalise(size.hy);
+      size.hz = canonicalise(size.hz);
+    }
+  };
+  canonicalise_sizes(geometry.options.source_sizes);
+  canonicalise_sizes(geometry.options.target_sizes);
+  geometry.options.tree.root_centre = Vec3{};
+  geometry.options.tree.root_half_width = 0.5;
+  if (geometry.options.periodic.enabled) {
+    geometry.options.periodic.centre = {};
+    geometry.options.periodic.lengths = {1.0, 1.0, 1.0};
+  }
+  geometry.normalisation_seconds = elapsed_seconds(normalisation_start);
+  return geometry;
+}
+
 UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const UniformFmmOptions &options)
-    : tree_(positions_for_periodic_cell(source_positions, options.periodic),
-            tree_options_for_periodic_cell(options)),
-      periodic_(options.periodic),
-      basis_(std::max(options.expansion_order, 0)),
-      spherical_basis_(std::max(options.expansion_order, 0)),
-      expansion_basis_(options.expansion_basis),
-      spherical_m2l_backend_(options.spherical_m2l_backend),
-      m2l_backend_(options.m2l_backend),
-      static_matrix_backend_(options.static_matrix_backend),
-      precision_(options.precision) {
-  if (options.expansion_order < 0) {
-    throw std::invalid_argument(
-        "UniformFmmOptions.expansion_order must be >= 0");
-  }
-  if (expansion_basis_ != ExpansionBasis::Cartesian &&
-      expansion_basis_ != ExpansionBasis::Spherical) {
-    throw std::invalid_argument("unsupported expansion basis");
-  }
-  if (expansion_basis_ == ExpansionBasis::Spherical &&
-      (options.backend == ExecutionBackend::CpuReference ||
-       options.m2l_backend == M2LBackend::Reference)) {
-    throw std::invalid_argument(
-        "spherical expansions require a static M2L execution backend");
-  }
-  if (expansion_basis_ == ExpansionBasis::Spherical &&
-      spherical_m2l_backend_ != SphericalM2LBackend::StaticDense) {
-    throw std::invalid_argument("unsupported spherical M2L backend");
-  }
-  if (periodic_.enabled &&
-      (options.backend == ExecutionBackend::CpuReference ||
-       options.m2l_backend == M2LBackend::Reference)) {
-    throw std::invalid_argument(
-        "periodic evaluation requires a static execution backend");
-  }
-  initialise_source_geometry(options);
-  initialise_target_geometry(options);
-
-  backend_ = options.backend;
-  if (backend_ == ExecutionBackend::Auto) {
-    backend_ = options.m2l_backend == M2LBackend::Reference
-                   ? ExecutionBackend::CpuReference
-                   : ExecutionBackend::CpuStatic;
-  }
-  if (backend_ == ExecutionBackend::CudaM2LP2P && !cuda_m2l_p2p_available()) {
-    throw std::runtime_error("CudaM2LP2P is unavailable in this build");
-  }
-  if (backend_ == ExecutionBackend::CudaFull && !cuda_full_available()) {
-    throw std::runtime_error("CudaFull is unavailable in this build");
-  }
-  m2l_backend_ = backend_ == ExecutionBackend::CpuReference
-                     ? M2LBackend::Reference
-                     : M2LBackend::Static;
-  if (m2l_backend_ == M2LBackend::Static &&
-      static_matrix_backend_ == StaticMatrixBackend::OneMkl &&
-      !one_mkl_available()) {
-    throw std::runtime_error(
-        "The oneMKL static-matrix backend is unavailable in this build");
-  }
-
-  const std::size_t coefficient_values =
-      tree_.nodes().size() * static_cast<std::size_t>(coefficient_count());
-  if (precision_ == StaticPrecision::Float32) {
-    multipoles_float_.assign(coefficient_values, 0.0F);
-    locals_float_.assign(coefficient_values, 0.0F);
-    sorted_dipole_moments_float_.resize(source_positions.size());
-    sorted_results_float_.resize(tree_.sorted_target_positions().size());
-    near_fields_float_.resize(tree_.sorted_target_positions().size());
-  } else {
-    multipoles_.assign(coefficient_values, 0.0);
-    locals_.assign(coefficient_values, 0.0);
-    sorted_dipole_moments_.resize(source_positions.size());
-    sorted_results_.resize(tree_.sorted_target_positions().size());
-    near_fields_.resize(tree_.sorted_target_positions().size());
-  }
-  sorted_self_indices_.resize(tree_.sorted_target_positions().size(), -1);
-  initialise_p2p_policy(options);
-  if (m2l_backend_ == M2LBackend::Static ||
-      precision_ == StaticPrecision::Float32) {
-    build_static_plan();
-  }
-  static_plan_statistics_.state_bytes =
-      precision_ == StaticPrecision::Float32
-      ? (multipoles_float_.capacity() + locals_float_.capacity()) *
-                sizeof(float) +
-            sorted_dipole_moments_float_.capacity() * sizeof(FloatVec3) +
-            sorted_results_float_.capacity() * sizeof(FloatPotentialField) +
-            near_fields_float_.capacity() * sizeof(FloatVec3)
-      : (multipoles_.capacity() + locals_.capacity()) * sizeof(double) +
-            sorted_dipole_moments_.capacity() * sizeof(Vec3) +
-            sorted_results_.capacity() * sizeof(PotentialField) +
-            near_fields_.capacity() * sizeof(Vec3);
-  static_plan_statistics_.state_bytes +=
-      (sorted_self_indices_.capacity() + fixed_sorted_self_indices_.capacity() +
-       (fixed_target_source_indices_.has_value()
-            ? fixed_target_source_indices_->capacity()
-            : 0)) *
-          sizeof(int) +
-      sorted_source_sizes_.capacity() * sizeof(CuboidSize);
-  static_plan_statistics_.state_bytes +=
-      sorted_target_sizes_.capacity() * sizeof(CuboidSize);
-  const std::size_t coefficient_scalar_bytes =
-      precision_ == StaticPrecision::Float32 ? sizeof(float) : sizeof(double);
-  static_plan_statistics_.multipole_state_bytes =
-      coefficient_values * coefficient_scalar_bytes;
-  static_plan_statistics_.local_state_bytes =
-      coefficient_values * coefficient_scalar_bytes;
-  static_plan_statistics_.other_state_bytes =
-      static_plan_statistics_.state_bytes -
-      static_plan_statistics_.multipole_state_bytes -
-      static_plan_statistics_.local_state_bytes;
-  if (backend_ == ExecutionBackend::CudaM2LP2P) {
-    if (precision_ == StaticPrecision::Float32) {
-      cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
-          std::make_unique<CudaM2LPlan>(m2l_plan_float_));
-    } else {
-      cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
-          std::make_unique<CudaM2LPlan>(m2l_plan_));
-    }
-    if (!tree_.sorted_target_positions().empty()) {
-      build_cuda_p2p_plan();
-    }
-  }
-  if (backend_ == ExecutionBackend::CudaFull) {
-    build_cuda_full_plan();
-  }
-  print_initialisation_summary(options);
-}
+    : UniformFmm(source_positions, std::vector<Vec3>{}, options) {}
 
 UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const std::vector<Vec3> &target_positions,
                        const UniformFmmOptions &options)
-    : tree_(positions_for_periodic_cell(source_positions, options.periodic),
-            positions_for_periodic_cell(target_positions, options.periodic),
-            tree_options_for_periodic_cell(options)),
-      periodic_(options.periodic),
-      basis_(std::max(options.expansion_order, 0)),
-      spherical_basis_(std::max(options.expansion_order, 0)),
-      expansion_basis_(options.expansion_basis),
-      spherical_m2l_backend_(options.spherical_m2l_backend),
-      m2l_backend_(options.m2l_backend),
-      static_matrix_backend_(options.static_matrix_backend),
-      precision_(options.precision) {
+    : UniformFmm(normalise_geometry(source_positions, target_positions, options),
+                 options) {}
+
+UniformFmm::UniformFmm(NormalisedGeometry geometry,
+                       const UniformFmmOptions& physical_options)
+    : physical_tree_(geometry.physical_source_positions,
+                     geometry.physical_target_positions,
+                     geometry.physical_tree_options),
+      tree_(geometry.source_positions, geometry.target_positions,
+            geometry.options.tree),
+      physical_root_centre_(geometry.physical_root_centre),
+      physical_root_side_length_(geometry.physical_root_side_length),
+      physical_periodic_(physical_options.periodic),
+      periodic_(geometry.options.periodic),
+      basis_(std::max(geometry.options.expansion_order, 0)),
+      spherical_basis_(std::max(geometry.options.expansion_order, 0)),
+      expansion_basis_(geometry.options.expansion_basis),
+      spherical_m2l_backend_(geometry.options.spherical_m2l_backend),
+      m2l_backend_(geometry.options.m2l_backend),
+      static_matrix_backend_(geometry.options.static_matrix_backend),
+      precision_(geometry.options.precision),
+      coordinate_scale_(geometry.physical_root_side_length) {
+  const UniformFmmOptions& options = geometry.options;
+  static_plan_statistics_.normalisation.add(geometry.normalisation_seconds);
+  static_plan_statistics_.tree_construction = tree_.build_timings().total;
+  static_plan_statistics_.tree_construction.add(
+      physical_tree_.build_timings().total.total_seconds);
   if (options.expansion_order < 0) {
     throw std::invalid_argument(
         "UniformFmmOptions.expansion_order must be >= 0");
@@ -452,21 +521,24 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
 
   const std::size_t coefficient_values =
       tree_.nodes().size() * static_cast<std::size_t>(coefficient_count());
+  const std::size_t source_count = tree_.sorted_source_positions().size();
+  const std::size_t target_count = tree_.sorted_target_positions().size();
   if (precision_ == StaticPrecision::Float32) {
     multipoles_float_.assign(coefficient_values, 0.0F);
     locals_float_.assign(coefficient_values, 0.0F);
-    sorted_dipole_moments_float_.resize(source_positions.size());
-    sorted_results_float_.resize(target_positions.size());
-    near_fields_float_.resize(target_positions.size());
+    sorted_dipole_moments_float_.resize(source_count);
+    sorted_results_float_.resize(target_count);
+    near_fields_float_.resize(target_count);
   } else {
     multipoles_.assign(coefficient_values, 0.0);
     locals_.assign(coefficient_values, 0.0);
-    sorted_dipole_moments_.resize(source_positions.size());
-    sorted_results_.resize(target_positions.size());
-    near_fields_.resize(target_positions.size());
+    sorted_dipole_moments_.resize(source_count);
+    sorted_results_.resize(target_count);
+    near_fields_.resize(target_count);
   }
-  sorted_self_indices_.resize(target_positions.size(), -1);
+  sorted_self_indices_.resize(target_count, -1);
   initialise_p2p_policy(options);
+  initialise_cache_keys(options);
   if (m2l_backend_ == M2LBackend::Static ||
       precision_ == StaticPrecision::Float32) {
     build_static_plan();
@@ -501,6 +573,9 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
       static_plan_statistics_.state_bytes -
       static_plan_statistics_.multipole_state_bytes -
       static_plan_statistics_.local_state_bytes;
+  const auto cuda_setup_start = Clock::now();
+  const bool creates_cuda_plan = backend_ == ExecutionBackend::CudaM2LP2P ||
+      backend_ == ExecutionBackend::CudaFull;
   if (backend_ == ExecutionBackend::CudaM2LP2P) {
     if (precision_ == StaticPrecision::Float32) {
       cuda_m2l_plan_ = std::make_unique<CudaM2LPlanOwner>(
@@ -514,7 +589,13 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
   if (backend_ == ExecutionBackend::CudaFull) {
     build_cuda_full_plan();
   }
-  print_initialisation_summary(options);
+  if (creates_cuda_plan) {
+    static_plan_statistics_.cuda_upload.add(
+        elapsed_seconds(cuda_setup_start));
+  }
+  static_plan_statistics_.total_setup.add(
+      elapsed_seconds(geometry.construction_start));
+  print_initialisation_summary(physical_options);
 }
 
 void UniformFmm::print_initialisation_summary(
@@ -558,8 +639,8 @@ void UniformFmm::print_initialisation_summary(
     stream << "auto";
   }
   stream << '\n';
-  stream << "  tree.root_centre.resolved: ";
-  append_vec3(stream, tree_.root_centre());
+  stream << "  tree.root_centre.physical_resolved: ";
+  append_vec3(stream, physical_root_centre_);
   stream << '\n';
   stream << "  tree.root_half_width.requested: ";
   if (options.tree.root_half_width.has_value()) {
@@ -568,7 +649,14 @@ void UniformFmm::print_initialisation_summary(
     stream << "auto";
   }
   stream << '\n';
-  stream << "  tree.root_half_width.resolved: " << tree_.root_half_width()
+  stream << "  tree.root_half_width.physical_resolved: "
+         << 0.5 * physical_root_side_length_ << '\n';
+  stream << "  tree.root_side_length.physical_resolved: "
+         << physical_root_side_length_ << '\n';
+  stream << "  tree.root_centre.internal: ";
+  append_vec3(stream, tree_.root_centre());
+  stream << '\n';
+  stream << "  tree.root_half_width.internal: " << tree_.root_half_width()
          << '\n';
   stream << "  source_geometry: " << name(source_geometry_) << '\n';
   append_size_option(stream, "source_sizes", options.source_sizes);
@@ -585,17 +673,87 @@ void UniformFmm::print_initialisation_summary(
            << options.fixed_target_source_indices->size() << '\n';
   }
   stream << "  cuda_p2p_bsr_max_bytes: " << cuda_p2p_bsr_max_bytes_ << '\n';
-  stream << "  periodic.enabled: " << periodic_.enabled << '\n';
-  stream << "  periodic.axes: [" << periodic_.axes[0] << ", "
-         << periodic_.axes[1] << ", " << periodic_.axes[2] << "]\n";
+  stream << "  cache.enabled: " << cache_enabled_ << '\n';
+  stream << "  cache.directory: " << cache_directory_ << '\n';
+  stream << "  cache.universal.key: " << universal_cache_key_ << '\n';
+  stream << "  cache.universal.hit: "
+         << static_plan_statistics_.universal_cache_hit << '\n';
+  stream << "  cache.periodic.key: "
+         << (periodic_cache_key_.empty() ? "disabled" : periodic_cache_key_)
+         << '\n';
+  stream << "  cache.periodic.hit: "
+         << static_plan_statistics_.periodic_cache_hit << '\n';
+  stream << "  cache.geometry.key: " << geometry_cache_key_ << '\n';
+  stream << "  cache.geometry.hit: "
+         << static_plan_statistics_.geometry_cache_hit << '\n';
+  stream << "  cache.bytes_read: "
+         << static_plan_statistics_.cache_bytes_read << '\n';
+  stream << "  cache.bytes_written: "
+         << static_plan_statistics_.cache_bytes_written << '\n';
+  stream << "  setup.normalisation_seconds: "
+         << static_plan_statistics_.normalisation.total_seconds << '\n';
+  stream << "  setup.tree_construction_seconds: "
+         << static_plan_statistics_.tree_construction.total_seconds << '\n';
+  stream << "  setup.universal_cache_lookup_seconds: "
+         << static_plan_statistics_.universal_cache_lookup.total_seconds
+         << '\n';
+  stream << "  setup.universal_cache_load_seconds: "
+         << static_plan_statistics_.universal_cache_load.total_seconds << '\n';
+  stream << "  setup.universal_operator_build_seconds: "
+         << static_plan_statistics_.universal_operator_build.total_seconds
+         << '\n';
+  stream << "  setup.universal_cache_write_seconds: "
+         << static_plan_statistics_.universal_cache_write.total_seconds
+         << '\n';
+  stream << "  setup.periodic_cache_lookup_seconds: "
+         << static_plan_statistics_.periodic_cache_lookup.total_seconds
+         << '\n';
+  stream << "  setup.periodic_cache_load_seconds: "
+         << static_plan_statistics_.periodic_cache_load.total_seconds << '\n';
+  stream << "  setup.periodic_operator_build_seconds: "
+         << static_plan_statistics_.periodic_operator_build.total_seconds
+         << '\n';
+  stream << "  setup.geometry_hash_seconds: "
+         << static_plan_statistics_.geometry_hash.total_seconds << '\n';
+  stream << "  setup.geometry_cache_lookup_seconds: "
+         << static_plan_statistics_.geometry_cache_lookup.total_seconds << '\n';
+  stream << "  setup.geometry_cache_load_seconds: "
+         << static_plan_statistics_.geometry_cache_load.total_seconds << '\n';
+  stream << "  setup.geometry_cache_write_seconds: "
+         << static_plan_statistics_.geometry_cache_write.total_seconds << '\n';
+  stream << "  setup.p2m_seconds: "
+         << static_plan_statistics_.p2m_plan.total_seconds << '\n';
+  stream << "  setup.m2m_seconds: "
+         << static_plan_statistics_.m2m_plan.total_seconds << '\n';
+  stream << "  setup.m2l_seconds: "
+         << static_plan_statistics_.m2l_plan.total_seconds << '\n';
+  stream << "  setup.l2l_seconds: "
+         << static_plan_statistics_.l2l_plan.total_seconds << '\n';
+  stream << "  setup.l2p_seconds: "
+         << static_plan_statistics_.l2p_plan.total_seconds << '\n';
+  stream << "  setup.p2p_seconds: "
+         << static_plan_statistics_.p2p_tensor_plan.total_seconds << '\n';
+  stream << "  setup.backend_packing_seconds: "
+         << static_plan_statistics_.backend_packing.total_seconds << '\n';
+  stream << "  setup.cuda_upload_seconds: "
+         << static_plan_statistics_.cuda_upload.total_seconds << '\n';
+  stream << "  setup.static_plan_seconds: "
+         << static_plan_statistics_.total.total_seconds << '\n';
+  stream << "  setup.total_seconds: "
+         << static_plan_statistics_.total_setup.total_seconds << '\n';
+  stream << "  periodic.enabled: " << physical_periodic_.enabled << '\n';
+  stream << "  periodic.axes: [" << physical_periodic_.axes[0] << ", "
+         << physical_periodic_.axes[1] << ", "
+         << physical_periodic_.axes[2] << "]\n";
   stream << "  periodic.centre: ";
-  append_vec3(stream, periodic_.centre);
+  append_vec3(stream, physical_periodic_.centre);
   stream << '\n';
   stream << "  periodic.lengths: ";
-  append_vec3(stream, periodic_.lengths);
+  append_vec3(stream, physical_periodic_.lengths);
   stream << '\n';
   stream << "  periodic.convention: zero_k0\n";
-  stream << "  periodic.setup_tolerance: " << periodic_.setup_tolerance
+  stream << "  periodic.setup_tolerance: "
+         << physical_periodic_.setup_tolerance
          << '\n';
   stream << "  build.cuda_compiled: " << cuda_compiled() << '\n';
   stream << "  build.one_mkl_available: " << one_mkl_available() << '\n';
@@ -739,6 +897,143 @@ void UniformFmm::build_cuda_p2p_plan() {
   p2p_execution_packing_ = P2PExecutionPacking::CanonicalAos;
 }
 
+void UniformFmm::build_backend_packing() {
+  const bool cuda_executes_m2l = backend_ == ExecutionBackend::CudaM2LP2P ||
+      backend_ == ExecutionBackend::CudaFull;
+  if (static_matrix_backend_ != StaticMatrixBackend::OneMkl ||
+      cuda_executes_m2l) {
+    return;
+  }
+  const auto start = Clock::now();
+  const auto pack = [this](const auto& plan, auto& groups,
+                           const std::size_t scalar_bytes) {
+    groups.clear();
+    groups.resize(static_cast<std::size_t>(plan.matrix_count));
+    for (int id = 0; id < plan.matrix_count; ++id) {
+      groups[static_cast<std::size_t>(id)].matrix_id = id;
+    }
+    for (std::size_t target = 0;
+         target + 1 < plan.target_row_offsets.size(); ++target) {
+      const int begin = plan.target_row_offsets[target];
+      const int end = plan.target_row_offsets[target + 1];
+      for (int interaction = begin; interaction < end; ++interaction) {
+        const std::size_t slot = static_cast<std::size_t>(interaction);
+        auto& group =
+            groups[static_cast<std::size_t>(plan.matrix_ids[slot])];
+        group.sources.push_back(plan.source_nodes[slot]);
+        group.targets.push_back(static_cast<int>(target));
+        group.levels.push_back(plan.interaction_levels[slot]);
+      }
+    }
+    for (auto& group : groups) {
+      const std::size_t values =
+          static_cast<std::size_t>(coefficient_count()) * group.sources.size();
+      group.gathered.resize(values);
+      group.translated.resize(values);
+      const std::size_t metadata_bytes =
+          (group.sources.size() + group.targets.size() + group.levels.size()) *
+          sizeof(int);
+      static_plan_statistics_.interaction_bytes += metadata_bytes;
+      static_plan_statistics_.m2l_interaction_bytes += metadata_bytes;
+      static_plan_statistics_.scratch_bytes += 2 * values * scalar_bytes;
+    }
+  };
+  if (precision_ == StaticPrecision::Float32) {
+    pack(m2l_plan_float_, m2l_groups_float_, sizeof(float));
+  } else {
+    pack(m2l_plan_, m2l_groups_, sizeof(double));
+  }
+  static_plan_statistics_.backend_packing.add(elapsed_seconds(start));
+}
+
+void UniformFmm::build_missing_universal_operators(
+    const bool universal_available, const bool periodic_required) {
+  constexpr std::size_t class_count =
+      StaticPlanStatistics::theoretical_maximum_m2l_classes;
+  if (!universal_available) {
+    const auto shared_start = Clock::now();
+    constexpr double child_half_width = 0.25;
+    for (int child_class = 0; child_class < 8; ++child_class) {
+      const Vec3 child_offset{
+          (child_class & 1) != 0 ? child_half_width : -child_half_width,
+          (child_class & 2) != 0 ? child_half_width : -child_half_width,
+          (child_class & 4) != 0 ? child_half_width : -child_half_width};
+      if (expansion_basis_ == ExpansionBasis::Spherical) {
+        m2m_operators_[child_class] =
+            build_static_m2m_operator(spherical_basis_, child_offset * -1.0);
+        l2l_operators_[child_class] =
+            build_static_l2l_operator(spherical_basis_, child_offset);
+      } else {
+        m2m_operators_[child_class] =
+            build_static_m2m_operator(basis_, child_offset * -1.0);
+        l2l_operators_[child_class] =
+            build_static_l2l_operator(basis_, child_offset);
+      }
+      const std::size_t m2m_bytes = m2m_operators_[child_class].entries.size() *
+          sizeof(StaticOperatorEntry);
+      const std::size_t l2l_bytes = l2l_operators_[child_class].entries.size() *
+          sizeof(StaticOperatorEntry);
+      static_plan_statistics_.m2m_operator_bytes += m2m_bytes;
+      static_plan_statistics_.l2l_operator_bytes += l2l_bytes;
+      static_plan_statistics_.operator_bytes += m2m_bytes + l2l_bytes;
+      ++static_plan_statistics_.m2m_operators;
+      ++static_plan_statistics_.l2l_operators;
+    }
+    const double shared_seconds = elapsed_seconds(shared_start);
+    static_plan_statistics_.m2m_plan.add(shared_seconds);
+    static_plan_statistics_.l2l_plan.add(shared_seconds);
+    static_plan_statistics_.universal_operator_build.add(shared_seconds);
+
+    const std::size_t matrix_values =
+        static_cast<std::size_t>(coefficient_count()) * coefficient_count();
+    m2l_plan_.matrices.resize(class_count * matrix_values);
+    std::vector<std::array<int, 3>> displacements;
+    displacements.reserve(class_count);
+    for (int dx = -3; dx <= 3; ++dx) {
+      for (int dy = -3; dy <= 3; ++dy) {
+        for (int dz = -3; dz <= 3; ++dz) {
+          if (std::abs(dx) <= 1 && std::abs(dy) <= 1 &&
+              std::abs(dz) <= 1) {
+            continue;
+          }
+          displacements.push_back({dx, dy, dz});
+        }
+      }
+    }
+    const auto m2l_start = Clock::now();
+#pragma omp parallel for schedule(dynamic) if(class_count >= 8)
+    for (std::ptrdiff_t id = 0;
+         id < static_cast<std::ptrdiff_t>(class_count); ++id) {
+      const auto [dx, dy, dz] =
+          displacements[static_cast<std::size_t>(id)];
+      const Vec3 displacement{static_cast<double>(dx),
+                              static_cast<double>(dy),
+                              static_cast<double>(dz)};
+      const std::vector<double> matrix =
+          expansion_basis_ == ExpansionBasis::Spherical
+          ? build_static_m2l_matrix(spherical_basis_, displacement)
+          : build_static_m2l_matrix(basis_, displacement);
+      std::copy(matrix.begin(), matrix.end(),
+                m2l_plan_.matrices.begin() + id * matrix_values);
+    }
+    static_plan_statistics_.universal_operator_build.add(
+        elapsed_seconds(m2l_start));
+  }
+
+  if (periodic_required && !periodic_operator_available_) {
+    const auto periodic_start = Clock::now();
+    const std::vector<double> matrix =
+        expansion_basis_ == ExpansionBasis::Spherical
+        ? build_static_periodic_m2l_matrix(spherical_basis_, periodic_)
+        : build_static_periodic_m2l_matrix(basis_, periodic_);
+    m2l_plan_.matrices.insert(m2l_plan_.matrices.end(), matrix.begin(),
+                              matrix.end());
+    periodic_operator_available_ = true;
+    static_plan_statistics_.periodic_operator_build.add(
+        elapsed_seconds(periodic_start));
+  }
+}
+
 void UniformFmm::build_static_plan() {
   // This is the geometry-dependent half of the evaluator. None of the data
   // built here depends on dipole moments, so it remains valid for every later
@@ -750,73 +1045,67 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.spherical =
       expansion_basis_ == ExpansionBasis::Spherical;
   static_plan_statistics_.tree_bytes = tree_.memory_statistics().total_bytes();
+  bool universal_available = load_universal_cache();
+  const bool periodic_required = periodic_.enabled && !tree_.nodes().empty() &&
+      tree_.nodes().front().source_count() != 0 &&
+      tree_.nodes().front().target_count() != 0;
+  const bool universal_write_required = !universal_available ||
+      (periodic_required && !periodic_operator_available_);
+  if (universal_write_required) {
+    build_missing_universal_operators(universal_available, periodic_required);
+    universal_available = true;
+    write_universal_cache();
+  }
+  if (universal_available) {
+    // The universal bank always owns exactly eight child-class templates.
+    // Record them on both cache hits and analytical construction paths.
+    static_plan_statistics_.m2m_operators = 8;
+    static_plan_statistics_.l2l_operators = 8;
+  }
+  if (universal_available &&
+      (!periodic_required || periodic_operator_available_) &&
+      load_geometry_cache()) {
+    static_plan_statistics_.m2l_operators =
+        static_cast<std::size_t>(precision_ == StaticPrecision::Float32
+                                     ? m2l_plan_float_.matrix_count
+                                     : m2l_plan_.matrix_count);
+    static_plan_statistics_.transfer_classes =
+        StaticPlanStatistics::theoretical_maximum_m2l_classes;
+    static_plan_statistics_.interactions =
+        precision_ == StaticPrecision::Float32
+            ? m2l_plan_float_.source_nodes.size()
+            : m2l_plan_.source_nodes.size();
+    static_plan_statistics_.p2p_interactions =
+        precision_ == StaticPrecision::Float32
+            ? p2p_operator_float_.blocks.size()
+            : p2p_operator_.blocks.size();
+    static_plan_statistics_.m2m_theoretical_interactions =
+        tree_.nodes().empty() ? 0 : tree_.nodes().size() - 1;
+    static_plan_statistics_.l2l_theoretical_interactions =
+        static_plan_statistics_.m2m_theoretical_interactions;
+    if (backend_ == ExecutionBackend::CpuStatic) {
+      p2p_execution_packing_ = P2PExecutionPacking::ParticleRowSoa;
+    }
+    if (precision_ == StaticPrecision::Float32) {
+      quantise_static_plan_to_float();
+    }
+    build_backend_packing();
+    static_plan_statistics_.total.add(elapsed_seconds(total_start));
+    return;
+  }
+  const bool universal_cache_hit = universal_available;
   const auto nodes = tree_.nodes();
   using Key = std::tuple<int, int, int>;
   using ClassMap = std::map<Key, std::vector<std::pair<int, int>>>;
   ClassMap classes;
 
-  // FP32 expansion coefficients are expressed in root-width-normalised
-  // coordinates. This prevents physical length powers from separately
-  // underflowing multipoles and overflowing M2L scaling tables before their
-  // product is formed. Moments are divided by scale^3 at the evaluation
-  // boundary, so the resulting field retains its physical value.
-  const Vec3 root_centre = nodes.empty() ? Vec3{} : nodes.front().centre;
-  if (precision_ == StaticPrecision::Float32 && !nodes.empty()) {
-    float_coordinate_scale_ = 2.0 * nodes.front().half_width;
-  }
-  const auto normalise_position = [&](const Vec3 position) {
-    return precision_ == StaticPrecision::Float32
-        ? (position - root_centre) * (1.0 / float_coordinate_scale_)
-        : position;
-  };
-  const auto normalise_size = [&](const CuboidSize size) {
-    return precision_ == StaticPrecision::Float32
-        ? CuboidSize{size.hx / float_coordinate_scale_,
-                     size.hy / float_coordinate_scale_,
-                     size.hz / float_coordinate_scale_}
-        : size;
-  };
-
-  std::vector<Vec3> operator_source_positions;
-  std::vector<Vec3> operator_target_positions;
-  std::vector<CuboidSize> operator_source_sizes;
-  std::vector<CuboidSize> operator_target_sizes;
-  if (precision_ == StaticPrecision::Float32) {
-    operator_source_positions.reserve(tree_.sorted_source_positions().size());
-    for (const Vec3 position : tree_.sorted_source_positions()) {
-      operator_source_positions.push_back(normalise_position(position));
-    }
-    operator_target_positions.reserve(tree_.sorted_target_positions().size());
-    for (const Vec3 position : tree_.sorted_target_positions()) {
-      operator_target_positions.push_back(normalise_position(position));
-    }
-    operator_source_sizes.reserve(sorted_source_sizes_.size());
-    for (const CuboidSize size : sorted_source_sizes_) {
-      operator_source_sizes.push_back(normalise_size(size));
-    }
-    operator_target_sizes.reserve(sorted_target_sizes_.size());
-    for (const CuboidSize size : sorted_target_sizes_) {
-      operator_target_sizes.push_back(normalise_size(size));
-    }
-  }
-
   auto phase_start = Clock::now();
   const std::span<const Vec3> sorted_positions =
-      precision_ == StaticPrecision::Float32
-          ? std::span<const Vec3>(operator_source_positions)
-          : tree_.sorted_source_positions();
+      tree_.sorted_source_positions();
   const std::span<const Vec3> sorted_targets =
-      precision_ == StaticPrecision::Float32
-          ? std::span<const Vec3>(operator_target_positions)
-          : tree_.sorted_target_positions();
-  const std::span<const CuboidSize> source_sizes =
-      precision_ == StaticPrecision::Float32
-          ? std::span<const CuboidSize>(operator_source_sizes)
-          : std::span<const CuboidSize>(sorted_source_sizes_);
-  const std::span<const CuboidSize> target_sizes =
-      precision_ == StaticPrecision::Float32
-          ? std::span<const CuboidSize>(operator_target_sizes)
-          : std::span<const CuboidSize>(sorted_target_sizes_);
+      tree_.sorted_target_positions();
+  const std::span<const CuboidSize> source_sizes = sorted_source_sizes_;
+  const std::span<const CuboidSize> target_sizes = sorted_target_sizes_;
   p2m_plans_.reserve(tree_.occupied_source_leaves().size());
   for (const int leaf_index : tree_.occupied_source_leaves()) {
     const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
@@ -831,17 +1120,16 @@ void UniformFmm::build_static_plan() {
               : source_sizes.subspan(leaf.source_begin, leaf.source_count());
       plan.operator_map = expansion_basis_ == ExpansionBasis::Spherical
           ? build_static_cuboid_p2m_operator(
-                spherical_basis_, normalise_position(leaf.centre),
+                spherical_basis_, leaf.centre,
                 leaf_positions, leaf_sizes)
           : build_static_cuboid_p2m_operator(
-                basis_, normalise_position(leaf.centre), leaf_positions,
-                leaf_sizes);
+                basis_, leaf.centre, leaf_positions, leaf_sizes);
     } else if (expansion_basis_ == ExpansionBasis::Spherical) {
       plan.operator_map = build_static_p2m_operator(
-          spherical_basis_, normalise_position(leaf.centre), leaf_positions);
+          spherical_basis_, leaf.centre, leaf_positions);
     } else {
       plan.operator_map = build_static_p2m_operator(
-          basis_, normalise_position(leaf.centre), leaf_positions);
+          basis_, leaf.centre, leaf_positions);
     }
     const std::size_t bytes =
         plan.operator_map.entries.size() * sizeof(StaticOperatorEntry);
@@ -852,54 +1140,51 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.p2m_plan.add(elapsed_seconds(phase_start));
 
   phase_start = Clock::now();
-  m2m_operators_.resize(static_cast<std::size_t>(tree_.leaf_level() + 1));
-  l2l_operators_.resize(static_cast<std::size_t>(tree_.leaf_level() + 1));
   static_plan_statistics_.m2m_theoretical_interactions =
       nodes.empty() ? 0 : nodes.size() - 1;
   static_plan_statistics_.l2l_theoretical_interactions =
       static_plan_statistics_.m2m_theoretical_interactions;
-  for (int level = 1; level <= tree_.leaf_level(); ++level) {
-    const double physical_child_half_width =
-        nodes[static_cast<std::size_t>(level_offset(level))].half_width;
-    const double child_half_width =
-        precision_ == StaticPrecision::Float32
-        ? physical_child_half_width / float_coordinate_scale_
-        : physical_child_half_width;
-    for (int child_class = 0; child_class < 8; ++child_class) {
-      // Parity of the three child coordinates identifies one of the eight
-      // parent-child displacements. Sharing by class avoids storing a copy of
-      // the same triangular map for every tree edge.
-      const Vec3 child_offset{
-          (child_class & 1) != 0 ? child_half_width : -child_half_width,
-          (child_class & 2) != 0 ? child_half_width : -child_half_width,
-          (child_class & 4) != 0 ? child_half_width : -child_half_width};
-      if (expansion_basis_ == ExpansionBasis::Spherical) {
-        m2m_operators_[static_cast<std::size_t>(level)][child_class] =
-            build_static_m2m_operator(spherical_basis_, child_offset * -1.0);
-        l2l_operators_[static_cast<std::size_t>(level)][child_class] =
-            build_static_l2l_operator(spherical_basis_, child_offset);
-      } else {
-        m2m_operators_[static_cast<std::size_t>(level)][child_class] =
-            build_static_m2m_operator(basis_, child_offset * -1.0);
-        l2l_operators_[static_cast<std::size_t>(level)][child_class] =
-            build_static_l2l_operator(basis_, child_offset);
-      }
-      const std::size_t m2m_bytes =
-          m2m_operators_[static_cast<std::size_t>(level)][child_class]
-              .entries.size() *
-          sizeof(StaticOperatorEntry);
-      const std::size_t l2l_bytes =
-          l2l_operators_[static_cast<std::size_t>(level)][child_class]
-              .entries.size() *
-          sizeof(StaticOperatorEntry);
-      static_plan_statistics_.m2m_operator_bytes += m2m_bytes;
-      static_plan_statistics_.l2l_operator_bytes += l2l_bytes;
-      static_plan_statistics_.operator_bytes += m2m_bytes + l2l_bytes;
-      ++static_plan_statistics_.m2m_operators;
-      ++static_plan_statistics_.l2l_operators;
+  constexpr double canonical_child_half_width = 0.25;
+  for (int child_class = 0;
+       child_class < (universal_cache_hit ? 0 : 8); ++child_class) {
+    // The eight templates use the level-one child displacement. At level l,
+    // each translation monomial is multiplied by 2^(-(l-1) degree).
+    const Vec3 child_offset{
+        (child_class & 1) != 0 ? canonical_child_half_width
+                               : -canonical_child_half_width,
+        (child_class & 2) != 0 ? canonical_child_half_width
+                               : -canonical_child_half_width,
+        (child_class & 4) != 0 ? canonical_child_half_width
+                               : -canonical_child_half_width};
+    if (expansion_basis_ == ExpansionBasis::Spherical) {
+      m2m_operators_[child_class] =
+          build_static_m2m_operator(spherical_basis_, child_offset * -1.0);
+      l2l_operators_[child_class] =
+          build_static_l2l_operator(spherical_basis_, child_offset);
+    } else {
+      m2m_operators_[child_class] =
+          build_static_m2m_operator(basis_, child_offset * -1.0);
+      l2l_operators_[child_class] =
+          build_static_l2l_operator(basis_, child_offset);
     }
+    const std::size_t m2m_bytes =
+        m2m_operators_[child_class].entries.size() *
+        sizeof(StaticOperatorEntry);
+    const std::size_t l2l_bytes =
+        l2l_operators_[child_class].entries.size() *
+        sizeof(StaticOperatorEntry);
+    static_plan_statistics_.m2m_operator_bytes += m2m_bytes;
+    static_plan_statistics_.l2l_operator_bytes += l2l_bytes;
+    static_plan_statistics_.operator_bytes += m2m_bytes + l2l_bytes;
+    ++static_plan_statistics_.m2m_operators;
+    ++static_plan_statistics_.l2l_operators;
   }
-  static_plan_statistics_.m2m_plan.add(elapsed_seconds(phase_start));
+  const double shared_translation_seconds = elapsed_seconds(phase_start);
+  static_plan_statistics_.m2m_plan.add(shared_translation_seconds);
+  if (!universal_cache_hit) {
+    static_plan_statistics_.universal_operator_build.add(
+        shared_translation_seconds);
+  }
   // The two triangular families are constructed together from each shared
   // parent-child displacement class.
   static_plan_statistics_.l2l_plan = static_plan_statistics_.m2m_plan;
@@ -946,7 +1231,25 @@ void UniformFmm::build_static_plan() {
   m2l_plan_.coefficient_count = coefficient_count;
   const bool has_periodic_root = periodic_.enabled && !nodes.empty() &&
       nodes.front().source_count() != 0 && nodes.front().target_count() != 0;
-  m2l_plan_.matrix_count = static_cast<int>(classes.size()) +
+  std::vector<Key> universal_classes;
+  universal_classes.reserve(
+      StaticPlanStatistics::theoretical_maximum_m2l_classes);
+  std::map<Key, int> universal_class_ids;
+  for (int dx = -3; dx <= 3; ++dx) {
+    for (int dy = -3; dy <= 3; ++dy) {
+      for (int dz = -3; dz <= 3; ++dz) {
+        if (std::abs(dx) <= 1 && std::abs(dy) <= 1 &&
+            std::abs(dz) <= 1) {
+          continue;
+        }
+        const Key key{dx, dy, dz};
+        universal_class_ids.emplace(
+            key, static_cast<int>(universal_classes.size()));
+        universal_classes.push_back(key);
+      }
+    }
+  }
+  m2l_plan_.matrix_count = static_cast<int>(universal_classes.size()) +
       (has_periodic_root ? 1 : 0);
   m2l_plan_.level_count = tree_.leaf_level() + 1;
   m2l_plan_.target_row_offsets.assign(nodes.size() + 1, 0);
@@ -967,11 +1270,8 @@ void UniformFmm::build_static_plan() {
         level_offset(level);
     m2l_plan_.level_target_end[static_cast<std::size_t>(level)] =
         level_offset(level + 1);
-    const double physical_box_width =
+    const double box_width =
         2.0 * nodes[static_cast<std::size_t>(level_offset(level))].half_width;
-    const double box_width = precision_ == StaticPrecision::Float32
-        ? physical_box_width / float_coordinate_scale_
-        : physical_box_width;
     const std::size_t scaling_offset =
         static_cast<std::size_t>(level) * coefficient_count;
     // The matrices below are dimensionless and level independent. These two
@@ -1015,12 +1315,14 @@ void UniformFmm::build_static_plan() {
   // parallel substantially reduces high-order plan initialisation while
   // preserving the canonical lexicographic matrix-ID ordering.
   const std::ptrdiff_t class_count =
-      static_cast<std::ptrdiff_t>(ordered_classes.size());
+      static_cast<std::ptrdiff_t>(universal_classes.size());
+  const auto universal_m2l_start = Clock::now();
 #pragma omp parallel for schedule(dynamic) if (class_count >= 8)
   for (std::ptrdiff_t id = 0; id < class_count; ++id) {
-    const auto& [key, interactions] =
-        *ordered_classes[static_cast<std::size_t>(id)];
-    (void)interactions;
+    if (universal_cache_hit) {
+      continue;
+    }
+    const Key& key = universal_classes[static_cast<std::size_t>(id)];
     const auto [dx, dy, dz] = key;
     const Vec3 R{static_cast<double>(dx), static_cast<double>(dy),
                  static_cast<double>(dz)};
@@ -1031,10 +1333,15 @@ void UniformFmm::build_static_plan() {
     std::copy(matrix.begin(), matrix.end(),
               m2l_plan_.matrices.begin() + id * matrix_values);
   }
+  if (!universal_cache_hit) {
+    static_plan_statistics_.universal_operator_build.add(
+        elapsed_seconds(universal_m2l_start));
+  }
 
-  if (has_periodic_root) {
+  if (has_periodic_root && !periodic_operator_available_) {
     // Wrapped traversal resolves the central root and its 26 neighbours. The
     // appended self translation represents every more distant lattice image.
+    const auto periodic_build_start = Clock::now();
     const std::vector<double> matrix =
         expansion_basis_ == ExpansionBasis::Spherical
             ? build_static_periodic_m2l_matrix(spherical_basis_, periodic_)
@@ -1042,7 +1349,11 @@ void UniformFmm::build_static_plan() {
     std::copy(
         matrix.begin(), matrix.end(),
         m2l_plan_.matrices.begin() +
-            static_cast<std::ptrdiff_t>(classes.size() * matrix_values));
+            static_cast<std::ptrdiff_t>(universal_classes.size() *
+                                        matrix_values));
+    static_plan_statistics_.periodic_operator_build.add(
+        elapsed_seconds(periodic_build_start));
+    periodic_operator_available_ = true;
   }
 
   for (const ClassEntry* entry : ordered_classes) {
@@ -1064,8 +1375,8 @@ void UniformFmm::build_static_plan() {
   m2l_plan_.matrix_ids.resize(interaction_count);
   m2l_plan_.interaction_levels.resize(interaction_count);
   std::vector<int> row_cursors = m2l_plan_.target_row_offsets;
-  int matrix_id = 0;
   for (const ClassEntry* entry : ordered_classes) {
+    const int matrix_id = universal_class_ids.at(entry->first);
     for (const auto [source, target] : entry->second) {
       const int slot = row_cursors[static_cast<std::size_t>(target)]++;
       m2l_plan_.source_nodes[static_cast<std::size_t>(slot)] = source;
@@ -1073,12 +1384,12 @@ void UniformFmm::build_static_plan() {
       m2l_plan_.interaction_levels[static_cast<std::size_t>(slot)] =
           nodes[static_cast<std::size_t>(target)].level;
     }
-    ++matrix_id;
   }
   if (has_periodic_root) {
     const int slot = row_cursors[0]++;
     m2l_plan_.source_nodes[static_cast<std::size_t>(slot)] = 0;
-    m2l_plan_.matrix_ids[static_cast<std::size_t>(slot)] = matrix_id;
+    m2l_plan_.matrix_ids[static_cast<std::size_t>(slot)] =
+        static_cast<int>(universal_classes.size());
     m2l_plan_.interaction_levels[static_cast<std::size_t>(slot)] = 0;
   }
   static_plan_statistics_.operator_construction.add(
@@ -1103,40 +1414,7 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.m2l_interaction_bytes += metadata_bytes;
   static_plan_statistics_.interactions = interaction_count;
 
-  // oneMKL uses an execution-only gather/GEMM/scatter packing derived from the
-  // canonical target-row plan. Portable CPU and CUDA retain no such buffers.
-  if (static_matrix_backend_ == StaticMatrixBackend::OneMkl) {
-    m2l_groups_.resize(static_cast<std::size_t>(m2l_plan_.matrix_count));
-    for (int id = 0; id < m2l_plan_.matrix_count; ++id) {
-      m2l_groups_[static_cast<std::size_t>(id)].matrix_id = id;
-    }
-    for (std::size_t target = 0;
-         target + 1 < m2l_plan_.target_row_offsets.size(); ++target) {
-      const int begin = m2l_plan_.target_row_offsets[target];
-      const int end = m2l_plan_.target_row_offsets[target + 1];
-      for (int interaction = begin; interaction < end; ++interaction) {
-        const std::size_t slot = static_cast<std::size_t>(interaction);
-        M2LGroup &group =
-            m2l_groups_[static_cast<std::size_t>(m2l_plan_.matrix_ids[slot])];
-        group.sources.push_back(m2l_plan_.source_nodes[slot]);
-        group.targets.push_back(static_cast<int>(target));
-        group.levels.push_back(m2l_plan_.interaction_levels[slot]);
-      }
-    }
-    for (M2LGroup &group : m2l_groups_) {
-      const std::size_t values =
-          static_cast<std::size_t>(coefficient_count) * group.sources.size();
-      group.gathered.resize(values);
-      group.translated.resize(values);
-      const std::size_t group_metadata_bytes =
-          (group.sources.size() + group.targets.size() + group.levels.size()) *
-          sizeof(int);
-      static_plan_statistics_.interaction_bytes += group_metadata_bytes;
-      static_plan_statistics_.m2l_interaction_bytes += group_metadata_bytes;
-      static_plan_statistics_.scratch_bytes += 2 * values * sizeof(double);
-    }
-  }
-  static_plan_statistics_.transfer_classes = classes.size();
+  static_plan_statistics_.transfer_classes = universal_classes.size();
   static_plan_statistics_.m2l_operators =
       static_cast<std::size_t>(m2l_plan_.matrix_count);
   static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
@@ -1150,19 +1428,18 @@ void UniformFmm::build_static_plan() {
           expansion_basis_ == ExpansionBasis::Spherical
               ? use_cuboid_l2p_
                     ? build_static_cuboid_l2p_evaluator(
-                          spherical_basis_, normalise_position(leaf.centre),
+                          spherical_basis_, leaf.centre,
                           sorted_targets[target],
                           target_sizes[target_sizes.size() == 1 ? 0 : target])
                     : build_static_l2p_evaluator(
-                          spherical_basis_, normalise_position(leaf.centre),
+                          spherical_basis_, leaf.centre,
                           sorted_targets[target])
           : use_cuboid_l2p_
               ? build_static_cuboid_l2p_evaluator(
-                    basis_, normalise_position(leaf.centre),
+                    basis_, leaf.centre,
                     sorted_targets[target],
                     target_sizes[target_sizes.size() == 1 ? 0 : target])
-              : build_static_l2p_evaluator(basis_,
-                                           normalise_position(leaf.centre),
+              : build_static_l2p_evaluator(basis_, leaf.centre,
                                            sorted_targets[target]);
       const std::size_t bytes =
           4 * static_cast<std::size_t>(coefficient_count) * sizeof(double);
@@ -1175,9 +1452,6 @@ void UniformFmm::build_static_plan() {
   phase_start = Clock::now();
   if (periodic_.enabled) {
     std::vector<StaticP2PInteraction> near_interactions;
-    const double shift_scale = precision_ == StaticPrecision::Float32
-        ? 1.0 / float_coordinate_scale_
-        : 1.0;
     for (const int leaf_index : tree_.occupied_target_leaves()) {
       const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
       const auto identities = build_periodic_list1(
@@ -1188,9 +1462,9 @@ void UniformFmm::build_static_plan() {
           const TreeNode& neighbour =
               nodes[static_cast<std::size_t>(identity.node)];
           const Vec3 source_shift{
-              shift_scale * periodic_.lengths.x * identity.image_shift[0],
-              shift_scale * periodic_.lengths.y * identity.image_shift[1],
-              shift_scale * periodic_.lengths.z * identity.image_shift[2],
+              periodic_.lengths.x * identity.image_shift[0],
+              periodic_.lengths.y * identity.image_shift[1],
+              periodic_.lengths.z * identity.image_shift[2],
           };
           const bool central_image = identity.image_shift[0] == 0 &&
               identity.image_shift[1] == 0 &&
@@ -1247,52 +1521,62 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.total.add(elapsed_seconds(total_start));
   ++static_plan_statistics_.construction_count;
 
+  write_geometry_cache();
+
   if (precision_ == StaticPrecision::Float32) {
     quantise_static_plan_to_float();
   }
+  // oneMKL derives execution-only gather/GEMM/scatter packing from the same
+  // canonical target-row metadata used by portable CPU and CUDA.
+  build_backend_packing();
 }
 
 void UniformFmm::quantise_static_plan_to_float() {
-  p2m_plans_float_.reserve(p2m_plans_.size());
-  for (const P2MPlan &plan : p2m_plans_) {
-    p2m_plans_float_.push_back(
-        {plan.leaf, quantise_static_operator(plan.operator_map)});
-  }
-
-  m2m_operators_float_.resize(m2m_operators_.size());
-  l2l_operators_float_.resize(l2l_operators_.size());
-  for (std::size_t level = 0; level < m2m_operators_.size(); ++level) {
-    for (int child_class = 0; child_class < 8; ++child_class) {
-      m2m_operators_float_[level][child_class] =
-          quantise_static_operator(m2m_operators_[level][child_class]);
-      l2l_operators_float_[level][child_class] =
-          quantise_static_operator(l2l_operators_[level][child_class]);
+  if (!geometry_cache_loaded_direct_float_) {
+    p2m_plans_float_.reserve(p2m_plans_.size());
+    for (const P2MPlan &plan : p2m_plans_) {
+      p2m_plans_float_.push_back(
+          {plan.leaf, quantise_static_operator(plan.operator_map)});
     }
   }
 
-  l2p_evaluators_float_.reserve(l2p_evaluators_.size());
-  for (const StaticL2PEvaluator &evaluator : l2p_evaluators_) {
-    l2p_evaluators_float_.push_back(quantise_static_l2p_evaluator(evaluator));
+  for (int child_class = 0; child_class < 8; ++child_class) {
+    m2m_operators_float_[child_class] =
+        quantise_static_operator(m2m_operators_[child_class]);
+    l2l_operators_float_[child_class] =
+        quantise_static_operator(l2l_operators_[child_class]);
   }
-  p2p_operator_float_ = quantise_static_p2p_operator(p2p_operator_);
-  p2p_compact_plan_float_ = quantise_static_p2p_compact_plan(p2p_compact_plan_);
-  if (!periodic_.enabled && fixed_target_source_indices_.has_value()) {
-    p2p_bsr_plan_float_ = quantise_static_p2p_bsr_plan(
-        build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_));
-  }
-  m2l_plan_float_ = quantise_static_m2l_plan(m2l_plan_);
 
-  m2l_groups_float_.reserve(m2l_groups_.size());
-  for (const M2LGroup &group : m2l_groups_) {
-    FloatM2LGroup converted;
-    converted.matrix_id = group.matrix_id;
-    converted.sources = group.sources;
-    converted.targets = group.targets;
-    converted.levels = group.levels;
-    converted.gathered.resize(group.gathered.size());
-    converted.translated.resize(group.translated.size());
-    m2l_groups_float_.push_back(std::move(converted));
+  if (!geometry_cache_loaded_direct_float_) {
+    l2p_evaluators_float_.reserve(l2p_evaluators_.size());
+    for (const StaticL2PEvaluator &evaluator : l2p_evaluators_) {
+      l2p_evaluators_float_.push_back(
+          quantise_static_l2p_evaluator(evaluator));
+    }
+    p2p_operator_float_ = quantise_static_p2p_operator(p2p_operator_);
+    m2l_plan_float_ = quantise_static_m2l_plan(m2l_plan_);
+  } else {
+    // Universal matrices are stored separately from the geometry plan. Only
+    // this shared array still needs conversion after a direct FP32 load.
+    m2l_plan_float_.matrices.assign(m2l_plan_.matrices.begin(),
+                                    m2l_plan_.matrices.end());
   }
+
+  const auto p2p_packing_start = Clock::now();
+  const bool uses_cuda_plan = backend_ == ExecutionBackend::CudaM2LP2P ||
+      backend_ == ExecutionBackend::CudaFull;
+  if (uses_cuda_plan) {
+    p2p_compact_plan_float_ = {};
+  } else {
+    p2p_compact_plan_float_ =
+        build_static_p2p_compact_plan(p2p_operator_float_);
+  }
+  if (!periodic_.enabled && fixed_target_source_indices_.has_value()) {
+    p2p_bsr_plan_float_ = build_static_p2p_bsr_plan(
+        p2p_operator_float_, fixed_sorted_self_indices_);
+  }
+  static_plan_statistics_.backend_packing.add(
+      elapsed_seconds(p2p_packing_start));
 
   // Recalculate scalar-dependent storage from the representation that will
   // remain alive. Integer metadata is unchanged by precision selection.
@@ -1304,13 +1588,11 @@ void UniformFmm::quantise_static_plan_to_float() {
     p2m_bytes +=
         plan.operator_map.entries.size() * sizeof(FloatStaticOperatorEntry);
   }
-  for (std::size_t level = 0; level < m2m_operators_float_.size(); ++level) {
-    for (int child_class = 0; child_class < 8; ++child_class) {
-      m2m_bytes += m2m_operators_float_[level][child_class].entries.size() *
-                   sizeof(FloatStaticOperatorEntry);
-      l2l_bytes += l2l_operators_float_[level][child_class].entries.size() *
-                   sizeof(FloatStaticOperatorEntry);
-    }
+  for (int child_class = 0; child_class < 8; ++child_class) {
+    m2m_bytes += m2m_operators_float_[child_class].entries.size() *
+                 sizeof(FloatStaticOperatorEntry);
+    l2l_bytes += l2l_operators_float_[child_class].entries.size() *
+                 sizeof(FloatStaticOperatorEntry);
   }
   const std::size_t m2l_bytes = (m2l_plan_float_.matrices.size() +
        m2l_plan_float_.multipole_scaling.size() +
@@ -1339,6 +1621,12 @@ void UniformFmm::quantise_static_plan_to_float() {
   static_plan_statistics_.near_field_operator_bytes = near_field_bytes;
   static_plan_statistics_.p2p_value_bytes =
       p2p_operator_float_.blocks.size() * 6 * sizeof(float);
+  static_plan_statistics_.p2p_index_bytes =
+      p2p_operator_float_.row_offsets.size() * sizeof(int) +
+      p2p_operator_float_.blocks.size() * 2 * sizeof(int) +
+      p2p_compact_plan_float_.source_indices.size() * sizeof(int) +
+      p2p_compact_plan_float_.skip_for_identity.size() *
+          sizeof(unsigned char);
   static_plan_statistics_.scratch_bytes = 0;
   for (const FloatM2LGroup &group : m2l_groups_float_) {
     static_plan_statistics_.scratch_bytes +=
@@ -1349,10 +1637,8 @@ void UniformFmm::quantise_static_plan_to_float() {
   // retains no hidden double-precision operator or expansion representation.
   p2m_plans_.clear();
   p2m_plans_.shrink_to_fit();
-  m2m_operators_.clear();
-  m2m_operators_.shrink_to_fit();
-  l2l_operators_.clear();
-  l2l_operators_.shrink_to_fit();
+  m2m_operators_ = {};
+  l2l_operators_ = {};
   l2p_evaluators_.clear();
   l2p_evaluators_.shrink_to_fit();
   p2p_operator_ = {};
@@ -1376,6 +1662,10 @@ void UniformFmm::build_cuda_full_plan() {
     data.target_permutation.assign(tree_.target_permutation().begin(),
                                    tree_.target_permutation().end());
     const int n = coefficient_count();
+    data.coefficient_degrees.reserve(static_cast<std::size_t>(n));
+    for (int coefficient = 0; coefficient < n; ++coefficient) {
+      data.coefficient_degrees.push_back(coefficient_degree(coefficient));
+    }
     const auto nodes = tree_.nodes();
     for (const FloatP2MPlan &leaf_plan : p2m_plans_float_) {
       const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_plan.leaf)];
@@ -1387,24 +1677,22 @@ void UniformFmm::build_cuda_full_plan() {
     }
     if (tree_.leaf_level() > 0) {
       data.m2m.entries_per_matrix =
-          static_cast<int>(m2m_operators_float_[1][0].entries.size());
+          static_cast<int>(m2m_operators_float_[0].entries.size());
       data.l2l.entries_per_matrix =
-          static_cast<int>(l2l_operators_float_[1][0].entries.size());
+          static_cast<int>(l2l_operators_float_[0].entries.size());
     }
-    for (int level = 1; level <= tree_.leaf_level(); ++level) {
-      for (int child_class = 0; child_class < 8; ++child_class) {
-        data.m2m.matrices.insert(
-            data.m2m.matrices.end(),
-            m2m_operators_float_[level][child_class].entries.begin(),
-            m2m_operators_float_[level][child_class].entries.end());
-        data.l2l.matrices.insert(
-            data.l2l.matrices.end(),
-            l2l_operators_float_[level][child_class].entries.begin(),
-            l2l_operators_float_[level][child_class].entries.end());
-      }
+    for (int child_class = 0; child_class < 8; ++child_class) {
+      data.m2m.matrices.insert(
+          data.m2m.matrices.end(),
+          m2m_operators_float_[child_class].entries.begin(),
+          m2m_operators_float_[child_class].entries.end());
+      data.l2l.matrices.insert(
+          data.l2l.matrices.end(),
+          l2l_operators_float_[child_class].entries.begin(),
+          l2l_operators_float_[child_class].entries.end());
     }
-    data.m2m.matrix_count = tree_.leaf_level() * 8;
-    data.l2l.matrix_count = tree_.leaf_level() * 8;
+    data.m2m.matrix_count = tree_.leaf_level() == 0 ? 0 : 8;
+    data.l2l.matrix_count = tree_.leaf_level() == 0 ? 0 : 8;
     for (int level = 1; level <= tree_.leaf_level(); ++level) {
       const int begin = level_offset(level);
       const int end = level_offset(level + 1);
@@ -1412,7 +1700,7 @@ void UniformFmm::build_cuda_full_plan() {
         const TreeNode &child = nodes[static_cast<std::size_t>(child_index)];
         const int child_class =
             (child.ix & 1) | ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
-        const int matrix_id = (level - 1) * 8 + child_class;
+        const int matrix_id = child_class;
         if (child.source_count() != 0) {
           data.m2m.interactions.push_back(
               {child.index, child.parent, matrix_id, level});
@@ -1440,15 +1728,19 @@ void UniformFmm::build_cuda_full_plan() {
         }
       }
     }
-    data.p2p = p2p_operator_float_;
     if (fixed_target_source_indices_.has_value()) {
       data.has_fixed_self_indices = true;
       data.fixed_self_indices = fixed_sorted_self_indices_;
       if (!periodic_.enabled) {
-        data.p2p_bsr = p2p_bsr_plan_float_;
         data.use_p2p_bsr =
-            data.p2p_bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_;
+            p2p_bsr_plan_float_.memory().total_bytes() <=
+            cuda_p2p_bsr_max_bytes_;
       }
+    }
+    if (data.use_p2p_bsr) {
+      data.p2p_bsr = std::move(p2p_bsr_plan_float_);
+    } else {
+      data.p2p = p2p_operator_float_;
     }
     p2p_execution_packing_ = data.use_p2p_bsr
         ? P2PExecutionPacking::CudaBsr3
@@ -1468,6 +1760,10 @@ void UniformFmm::build_cuda_full_plan() {
   data.target_permutation.assign(tree_.target_permutation().begin(),
                                  tree_.target_permutation().end());
   const int n = coefficient_count();
+  data.coefficient_degrees.reserve(static_cast<std::size_t>(n));
+  for (int coefficient = 0; coefficient < n; ++coefficient) {
+    data.coefficient_degrees.push_back(coefficient_degree(coefficient));
+  }
   const auto nodes = tree_.nodes();
 
   for (const P2MPlan &leaf_plan : p2m_plans_) {
@@ -1480,26 +1776,22 @@ void UniformFmm::build_cuda_full_plan() {
   }
   if (tree_.leaf_level() > 0) {
     data.m2m.entries_per_matrix =
-        static_cast<int>(m2m_operators_[1][0].entries.size());
+        static_cast<int>(m2m_operators_[0].entries.size());
     data.l2l.entries_per_matrix =
-        static_cast<int>(l2l_operators_[1][0].entries.size());
+        static_cast<int>(l2l_operators_[0].entries.size());
   }
-  for (int level = 1; level <= tree_.leaf_level(); ++level) {
-    for (int child_class = 0; child_class < 8; ++child_class) {
-      const int matrix_id = (level - 1) * 8 + child_class;
-      data.m2m.matrices.insert(
-          data.m2m.matrices.end(),
-          m2m_operators_[level][child_class].entries.begin(),
-          m2m_operators_[level][child_class].entries.end());
-      data.l2l.matrices.insert(
-          data.l2l.matrices.end(),
-          l2l_operators_[level][child_class].entries.begin(),
-          l2l_operators_[level][child_class].entries.end());
-      (void)matrix_id;
-    }
+  for (int child_class = 0; child_class < 8; ++child_class) {
+    data.m2m.matrices.insert(
+        data.m2m.matrices.end(),
+        m2m_operators_[child_class].entries.begin(),
+        m2m_operators_[child_class].entries.end());
+    data.l2l.matrices.insert(
+        data.l2l.matrices.end(),
+        l2l_operators_[child_class].entries.begin(),
+        l2l_operators_[child_class].entries.end());
   }
-  data.m2m.matrix_count = tree_.leaf_level() * 8;
-  data.l2l.matrix_count = tree_.leaf_level() * 8;
+  data.m2m.matrix_count = tree_.leaf_level() == 0 ? 0 : 8;
+  data.l2l.matrix_count = tree_.leaf_level() == 0 ? 0 : 8;
   for (int level = 1; level <= tree_.leaf_level(); ++level) {
     const int begin = level_offset(level);
     const int end = level_offset(level + 1);
@@ -1507,7 +1799,7 @@ void UniformFmm::build_cuda_full_plan() {
       const TreeNode &child = nodes[static_cast<std::size_t>(child_index)];
       const int child_class =
           (child.ix & 1) | ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
-      const int matrix_id = (level - 1) * 8 + child_class;
+      const int matrix_id = child_class;
       if (child.source_count() != 0) {
         data.m2m.interactions.push_back(
             {child.index, child.parent, matrix_id, level});
@@ -1536,16 +1828,21 @@ void UniformFmm::build_cuda_full_plan() {
       }
     }
   }
-  data.p2p = p2p_operator_;
   if (fixed_target_source_indices_.has_value()) {
     data.has_fixed_self_indices = true;
     data.fixed_self_indices = fixed_sorted_self_indices_;
     if (!periodic_.enabled) {
-      data.p2p_bsr =
+      StaticP2PBsrPlan bsr =
           build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_);
       data.use_p2p_bsr =
-          data.p2p_bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_;
+          bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_;
+      if (data.use_p2p_bsr) {
+        data.p2p_bsr = std::move(bsr);
+      }
     }
+  }
+  if (!data.use_p2p_bsr) {
+    data.p2p = p2p_operator_;
   }
   p2p_execution_packing_ = data.use_p2p_bsr ? P2PExecutionPacking::CudaBsr3
                                             : P2PExecutionPacking::CanonicalAos;
@@ -1648,7 +1945,13 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     const auto evaluation_start = Clock::now();
     prepare_self_indices(target_source_indices);
     detail::ProfileRange device_range{"cdfmm/cuda_full"};
-    cuda_full_plan_->plan->evaluate(dipole_moments, near_fields_,
+    const double inverse_volume_scale =
+        1.0 / (coordinate_scale_ * coordinate_scale_ * coordinate_scale_);
+    for (std::size_t index = 0; index < dipole_moments.size(); ++index) {
+      sorted_dipole_moments_[index] =
+          dipole_moments[index] * inverse_volume_scale;
+    }
+    cuda_full_plan_->plan->evaluate(sorted_dipole_moments_, near_fields_,
                                     sorted_self_indices_);
     for (std::size_t target = 0; target < target_count; ++target) {
       results[target].phi = 0.0;
@@ -1814,6 +2117,8 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
         target_permutation[static_cast<std::size_t>(sorted_index)];
     results[static_cast<std::size_t>(original_index)] =
         sorted_results_[static_cast<std::size_t>(sorted_index)];
+    results[static_cast<std::size_t>(original_index)].phi *=
+        coordinate_scale_;
   }
   last_timings_.result_unpermutation.add(elapsed_seconds(phase_start));
   last_timings_.total.add(elapsed_seconds(evaluation_start));
@@ -1898,7 +2203,7 @@ void UniformFmm::evaluate_into_float32_impl(
     for (std::size_t index = 0; index < dipole_moments.size(); ++index) {
       const Moment value = dipole_moments[index];
       using Scalar = decltype(value.x);
-      const Scalar scale = static_cast<Scalar>(float_coordinate_scale_);
+      const Scalar scale = static_cast<Scalar>(coordinate_scale_);
       sorted_dipole_moments_float_[index] = {
           static_cast<float>(value.x / scale / scale / scale),
           static_cast<float>(value.y / scale / scale / scale),
@@ -1994,25 +2299,42 @@ void UniformFmm::evaluate_into_float32_impl(
   }
 
   if (has_flag(output, OutputFlags::Potential)) {
-    const FloatStaticP2PCompactPlan &plan = p2p_compact_plan_float_;
+    const bool has_compact_plan =
+        !p2p_compact_plan_float_.row_offsets.empty();
 #pragma omp parallel for schedule(static) if (target_count >= 64)
     for (std::ptrdiff_t target = 0;
          target < static_cast<std::ptrdiff_t>(target_count); ++target) {
       float potential = 0.0F;
       const int self = sorted_self_indices_[static_cast<std::size_t>(target)];
-      const int begin = plan.row_offsets[static_cast<std::size_t>(target)];
-      const int end = plan.row_offsets[static_cast<std::size_t>(target) + 1];
+      const auto& row_offsets = has_compact_plan
+          ? p2p_compact_plan_float_.row_offsets
+          : p2p_operator_float_.row_offsets;
+      const int begin = row_offsets[static_cast<std::size_t>(target)];
+      const int end = row_offsets[static_cast<std::size_t>(target) + 1];
       for (int entry = begin; entry < end; ++entry) {
         const std::size_t index = static_cast<std::size_t>(entry);
-        const int source = plan.source_indices[index];
-        if (plan.skip_for_identity[index] != 0 && source == self) {
+        const FloatStaticDipoleBlock* block = has_compact_plan
+            ? nullptr
+            : &p2p_operator_float_.blocks[index];
+        const int source = has_compact_plan
+            ? p2p_compact_plan_float_.source_indices[index]
+            : block->source;
+        const bool skip_for_identity = has_compact_plan
+            ? p2p_compact_plan_float_.skip_for_identity[index] != 0
+            : block->skip_for_identity != 0;
+        if (skip_for_identity && source == self) {
           continue;
         }
         const FloatVec3 moment =
             sorted_dipole_moments_float_[static_cast<std::size_t>(source)];
-        potential += plan.potential[0][index] * moment.x +
-            plan.potential[1][index] * moment.y +
-            plan.potential[2][index] * moment.z;
+        if (has_compact_plan) {
+          potential += p2p_compact_plan_float_.potential[0][index] * moment.x +
+              p2p_compact_plan_float_.potential[1][index] * moment.y +
+              p2p_compact_plan_float_.potential[2][index] * moment.z;
+        } else {
+          potential += block->px * moment.x + block->py * moment.y +
+              block->pz * moment.z;
+        }
       }
       sorted_results_float_[static_cast<std::size_t>(target)].phi += potential;
     }
@@ -2030,7 +2352,7 @@ void UniformFmm::evaluate_into_float32_impl(
     // The normalised-coordinate potential differs by one power of length;
     // the field is invariant after moment scaling by root_width^-3.
     results[static_cast<std::size_t>(original_index)].phi *=
-        static_cast<float>(float_coordinate_scale_);
+        static_cast<float>(coordinate_scale_);
   }
   last_timings_.result_unpermutation.add(elapsed_seconds(phase_start));
   last_timings_.total.add(elapsed_seconds(evaluation_start));
@@ -2042,10 +2364,16 @@ void UniformFmm::evaluate_into_float32_impl(
 // Public inspection
 //------------------------------------------------------------------------------
 
-const UniformTree &UniformFmm::tree() const { return tree_; }
+const UniformTree &UniformFmm::tree() const { return physical_tree_; }
+const Vec3& UniformFmm::physical_root_centre() const noexcept {
+  return physical_root_centre_;
+}
+double UniformFmm::physical_root_side_length() const noexcept {
+  return physical_root_side_length_;
+}
 const PeriodicCellOptions& UniformFmm::periodic_cell() const noexcept
 {
-  return periodic_;
+  return physical_periodic_;
 }
 const MultiIndexSet &UniformFmm::basis() const {
   if (expansion_basis_ != ExpansionBasis::Cartesian) {
@@ -2155,11 +2483,16 @@ std::span<const double> UniformFmm::multipole(const int node_index) const {
       static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
     throw std::out_of_range("multipole node index is out of range");
   }
-  if (precision_ == StaticPrecision::Float64) {
-    return multipole_for_node(node_index);
+  inspection_widening_buffer_.resize(
+      static_cast<std::size_t>(coefficient_count()));
+  for (int coefficient = 0; coefficient < coefficient_count(); ++coefficient) {
+    const double value = precision_ == StaticPrecision::Float64
+        ? multipole_for_node(node_index)[static_cast<std::size_t>(coefficient)]
+        : static_cast<double>(multipole_float_for_node(node_index)[
+              static_cast<std::size_t>(coefficient)]);
+    inspection_widening_buffer_[static_cast<std::size_t>(coefficient)] =
+        value * std::pow(coordinate_scale_, coefficient_degree(coefficient) + 2);
   }
-  const auto values = multipole_float_for_node(node_index);
-  inspection_widening_buffer_.assign(values.begin(), values.end());
   return inspection_widening_buffer_;
 }
 
@@ -2168,11 +2501,17 @@ std::span<const double> UniformFmm::local(const int node_index) const {
       static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
     throw std::out_of_range("local node index is out of range");
   }
-  if (precision_ == StaticPrecision::Float64) {
-    return local_for_node(node_index);
+  inspection_widening_buffer_.resize(
+      static_cast<std::size_t>(coefficient_count()));
+  for (int coefficient = 0; coefficient < coefficient_count(); ++coefficient) {
+    const double value = precision_ == StaticPrecision::Float64
+        ? local_for_node(node_index)[static_cast<std::size_t>(coefficient)]
+        : static_cast<double>(local_float_for_node(node_index)[
+              static_cast<std::size_t>(coefficient)]);
+    inspection_widening_buffer_[static_cast<std::size_t>(coefficient)] =
+        value * std::pow(coordinate_scale_,
+                         1 - coefficient_degree(coefficient));
   }
-  const auto values = local_float_for_node(node_index);
-  inspection_widening_buffer_.assign(values.begin(), values.end());
   return inspection_widening_buffer_;
 }
 
@@ -2189,7 +2528,15 @@ UniformFmm::multipole_float32(const int node_index) const {
       static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
     throw std::out_of_range("multipole node index is out of range");
   }
-  return multipole_float_for_node(node_index);
+  const auto values = multipole_float_for_node(node_index);
+  float_inspection_buffer_.resize(values.size());
+  for (int coefficient = 0; coefficient < coefficient_count(); ++coefficient) {
+    float_inspection_buffer_[static_cast<std::size_t>(coefficient)] =
+        values[static_cast<std::size_t>(coefficient)] *
+        static_cast<float>(std::pow(
+            coordinate_scale_, coefficient_degree(coefficient) + 2));
+  }
+  return float_inspection_buffer_;
 }
 
 std::span<const float> UniformFmm::local_float32(const int node_index) const {
@@ -2200,7 +2547,15 @@ std::span<const float> UniformFmm::local_float32(const int node_index) const {
       static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
     throw std::out_of_range("local node index is out of range");
   }
-  return local_float_for_node(node_index);
+  const auto values = local_float_for_node(node_index);
+  float_inspection_buffer_.resize(values.size());
+  for (int coefficient = 0; coefficient < coefficient_count(); ++coefficient) {
+    float_inspection_buffer_[static_cast<std::size_t>(coefficient)] =
+        values[static_cast<std::size_t>(coefficient)] *
+        static_cast<float>(std::pow(
+            coordinate_scale_, 1 - coefficient_degree(coefficient)));
+  }
+  return float_inspection_buffer_;
 }
 
 std::span<const float> UniformFmm::root_multipole_float32() const {
