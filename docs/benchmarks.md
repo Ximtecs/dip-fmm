@@ -410,6 +410,20 @@ grouped M2L translation matrices, reusable gather/scatter buffers, and sparse
 near-field tensors. Morton stable sorting remains serial, and complete-tree
 storage can become expensive at excessive depth.
 
+Persistent-cache setup can be measured separately with the release benchmark:
+
+```console
+cache_dir=$(mktemp -d)
+benchmark_cache_initialisation --depth 3 --grid 8 --backend onemkl \
+    --cache-dir "$cache_dir"
+```
+
+The cache directory must initially be empty. The program constructs the same
+spherical `p=6`, FP32, uniform-cuboid plan twice and emits `CACHE_BENCH` CSV
+rows for cold and warm setup, with normalization, tree, lookup/hash/load,
+analytical operator, backend-packing, CUDA-upload, and byte-count columns.
+Backends are `portable`, `onemkl`, and `cuda-full`.
+
 ## Reproducible optimisation configuration
 
 Release builds enable LTO and native CPU instruction selection by default:

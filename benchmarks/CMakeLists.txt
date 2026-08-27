@@ -6,3 +6,7 @@ add_executable(benchmark_uniform_fmm benchmark_uniform_fmm.cpp)
 target_link_libraries(benchmark_uniform_fmm PRIVATE cdfmm_core)
 target_include_directories(benchmark_uniform_fmm PRIVATE ${PROJECT_SOURCE_DIR}/src)
 cdfmm_enable_ipo(benchmark_uniform_fmm)
+
+add_executable(benchmark_cache_initialisation benchmark_cache_initialisation.cpp)
+target_link_libraries(benchmark_cache_initialisation PRIVATE cdfmm_core)
+cdfmm_enable_ipo(benchmark_cache_initialisation)
