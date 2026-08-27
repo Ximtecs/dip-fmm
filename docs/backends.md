@@ -6,6 +6,12 @@ change the tree, interaction partition, operator mathematics, or requested
 precision. `ExecutionBackend::Auto` resolves to `CpuStatic` and never replaces
 an FMM request with an all-to-all direct calculation.
 
+Every `UniformFmm` construction prints the requested options and resolved
+execution choices to standard output. Because this happens in the C++ core,
+the same initialisation summary is emitted for direct C++, Python, C ABI, and
+Fortran callers. In particular, it reports the resolved per-operator executors
+and P2P packing rather than leaving `Auto` ambiguous.
+
 ## Operator placement
 
 | Public selection | P2M | M2M | M2L | L2L | L2P | P2P | Device residency |
@@ -95,3 +101,7 @@ CUDA compilation and runtime device availability are separate. Capability
 queries report both, and requesting an unavailable backend raises an error.
 The standalone CUDA direct reference remains separately named so its
 quadratic algorithm cannot be mistaken for a fallback FMM.
+
+The C ABI and native Fortran wrapper expose `cdfmm_one_mkl_available()` so
+host applications can implement an explicit oneMKL-to-portable CPU fallback
+before constructing a plan.

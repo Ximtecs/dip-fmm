@@ -10,6 +10,8 @@
 
 TEST_CASE("C ABI creates, reuses, diagnoses, and destroys a point plan") {
     REQUIRE(cdfmm_abi_version() == CDFMM_ABI_VERSION);
+    REQUIRE((cdfmm_one_mkl_available() == 0 ||
+             cdfmm_one_mkl_available() == 1));
     cdfmm_options options{};
     cdfmm_default_options(&options);
     options.precision = CDFMM_PRECISION_FLOAT64;
@@ -112,4 +114,41 @@ TEST_CASE("C ABI same cuboids include finite volume-averaged self field") {
           CDFMM_SUCCESS);
   REQUIRE(hy[0] == Catch::Approx(-1.0 / 3.0).margin(2.0e-14));
   cdfmm_plan_destroy(plan);
+}
+
+TEST_CASE("C ABI creates fully periodic same-cuboid plans")
+{
+    cdfmm_options options{};
+    cdfmm_default_options(&options);
+    options.precision = CDFMM_PRECISION_FLOAT64;
+    options.expansion_order = 4;
+    options.tree_depth = 1;
+    options.execution_backend = CDFMM_BACKEND_CPU_STATIC;
+
+    const double coordinate[] = {0.0};
+    const double cell_centre[] = {0.0, 0.0, 0.0};
+    const double cell_lengths[] = {1.0, 1.0, 1.0};
+    cdfmm_plan* plan = nullptr;
+    REQUIRE(cdfmm_plan_create_same_uniform_cuboids_periodic(
+                1, coordinate, coordinate, coordinate, 0.2, 0.2, 0.2,
+                cell_centre, cell_lengths, 1.0e-12, &options, &plan) ==
+            CDFMM_SUCCESS);
+
+    const double zero[] = {0.0};
+    const double mz[] = {1.0};
+    double hx[1]{}, hy[1]{}, hz[1]{};
+    REQUIRE(cdfmm_plan_evaluate_f64(plan, zero, zero, mz, hx, hy, hz) ==
+            CDFMM_SUCCESS);
+    REQUIRE(std::isfinite(hx[0]));
+    REQUIRE(std::isfinite(hy[0]));
+    REQUIRE(std::isfinite(hz[0]));
+    cdfmm_plan_destroy(plan);
+
+    const double non_cubic_lengths[] = {1.0, 2.0, 1.0};
+    plan = nullptr;
+    REQUIRE(cdfmm_plan_create_same_uniform_cuboids_periodic(
+                1, coordinate, coordinate, coordinate, 0.2, 0.2, 0.2,
+                cell_centre, non_cubic_lengths, 1.0e-12, &options, &plan) ==
+            CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(plan == nullptr);
 }

@@ -4,9 +4,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <iomanip>
+#include <iostream>
 #include <map>
 #include <numeric>
+#include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <tuple>
 
 #include "cdfmm/laplace_derivatives.hpp"
@@ -99,6 +103,133 @@ void accumulate_timings(EvaluationTimings &aggregate,
   accumulate_phase(aggregate.cuda_p2p_wait, value.cuda_p2p_wait);
   accumulate_phase(aggregate.total, value.total);
   aggregate.evaluations += value.evaluations;
+}
+
+std::string_view name(const ExpansionBasis value) {
+  switch (value) {
+  case ExpansionBasis::Cartesian:
+    return "cartesian";
+  case ExpansionBasis::Spherical:
+    return "spherical";
+  }
+  return "unknown";
+}
+
+std::string_view name(const SphericalM2LBackend value) {
+  switch (value) {
+  case SphericalM2LBackend::StaticDense:
+    return "static_dense";
+  }
+  return "unknown";
+}
+
+std::string_view name(const ExecutionBackend value) {
+  switch (value) {
+  case ExecutionBackend::Auto:
+    return "auto";
+  case ExecutionBackend::CpuReference:
+    return "cpu_reference";
+  case ExecutionBackend::CpuStatic:
+    return "cpu_static";
+  case ExecutionBackend::CudaM2LP2P:
+    return "cuda_partial";
+  case ExecutionBackend::CudaFull:
+    return "cuda_full";
+  }
+  return "unknown";
+}
+
+std::string_view name(const M2LBackend value) {
+  switch (value) {
+  case M2LBackend::Static:
+    return "static";
+  case M2LBackend::Reference:
+    return "reference";
+  }
+  return "unknown";
+}
+
+std::string_view name(const StaticMatrixBackend value) {
+  switch (value) {
+  case StaticMatrixBackend::Portable:
+    return "portable";
+  case StaticMatrixBackend::OneMkl:
+    return "one_mkl";
+  }
+  return "unknown";
+}
+
+std::string_view name(const StaticOperatorExecutor value) {
+  switch (value) {
+  case StaticOperatorExecutor::Reference:
+    return "reference";
+  case StaticOperatorExecutor::Portable:
+    return "portable";
+  case StaticOperatorExecutor::OneMkl:
+    return "one_mkl";
+  case StaticOperatorExecutor::Cuda:
+    return "cuda";
+  }
+  return "unknown";
+}
+
+std::string_view name(const P2PExecutionPacking value) {
+  switch (value) {
+  case P2PExecutionPacking::Reference:
+    return "reference";
+  case P2PExecutionPacking::CanonicalAos:
+    return "canonical_aos";
+  case P2PExecutionPacking::ParticleRowSoa:
+    return "particle_row_soa";
+  case P2PExecutionPacking::CudaBsr3:
+    return "cuda_bsr3";
+  }
+  return "unknown";
+}
+
+std::string_view name(const StaticPrecision value) {
+  switch (value) {
+  case StaticPrecision::Float32:
+    return "float32";
+  case StaticPrecision::Float64:
+    return "float64";
+  }
+  return "unknown";
+}
+
+std::string_view name(const SourceGeometry value) {
+  switch (value) {
+  case SourceGeometry::PointDipole:
+    return "point_dipole";
+  case SourceGeometry::UniformCuboid:
+    return "uniform_cuboid";
+  }
+  return "unknown";
+}
+
+std::string_view name(const TargetGeometry value) {
+  switch (value) {
+  case TargetGeometry::Point:
+    return "point";
+  case TargetGeometry::VolumeAveragedCuboid:
+    return "volume_averaged_cuboid";
+  }
+  return "unknown";
+}
+
+void append_vec3(std::ostringstream& stream, const Vec3& value) {
+  stream << '[' << value.x << ", " << value.y << ", " << value.z << ']';
+}
+
+void append_size_option(std::ostringstream& stream, const char* label,
+                        const std::vector<CuboidSize>& sizes) {
+  stream << "  " << label << ".count: " << sizes.size() << '\n';
+  if (sizes.size() == 1) {
+    stream << "  " << label << ".common: [" << sizes[0].hx << ", "
+           << sizes[0].hy << ", " << sizes[0].hz << "]\n";
+  } else if (sizes.size() > 1) {
+    stream << "  " << label << ".layout: per_particle\n";
+  }
 }
 
 class PendingCudaP2PGuard {
@@ -253,6 +384,7 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
   if (backend_ == ExecutionBackend::CudaFull) {
     build_cuda_full_plan();
   }
+  print_initialisation_summary(options);
 }
 
 UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
@@ -382,6 +514,92 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
   if (backend_ == ExecutionBackend::CudaFull) {
     build_cuda_full_plan();
   }
+  print_initialisation_summary(options);
+}
+
+void UniformFmm::print_initialisation_summary(
+    const UniformFmmOptions& options) const {
+  const StaticExecutionPlan executors = execution_plan();
+  std::ostringstream stream;
+  stream << std::boolalpha << std::setprecision(12);
+  stream << "[cdfmm] UniformFmm initialisation\n";
+  stream << "  source_count: " << tree_.sorted_source_positions().size()
+         << '\n';
+  stream << "  target_count: " << tree_.sorted_target_positions().size()
+         << '\n';
+  stream << "  expansion_order: " << expansion_order() << '\n';
+  stream << "  coefficient_count: " << coefficient_count() << '\n';
+  stream << "  expansion_basis: " << name(expansion_basis_) << '\n';
+  stream << "  precision: " << name(precision_) << '\n';
+  stream << "  backend.requested: " << name(options.backend) << '\n';
+  stream << "  backend.resolved: " << name(backend_) << '\n';
+  stream << "  m2l_backend.requested: " << name(options.m2l_backend) << '\n';
+  stream << "  m2l_backend.resolved: " << name(m2l_backend_) << '\n';
+  stream << "  spherical_m2l_backend: " << name(spherical_m2l_backend_)
+         << '\n';
+  stream << "  static_matrix_backend: " << name(static_matrix_backend_)
+         << '\n';
+  stream << "  executor.p2m: " << name(executors.p2m) << '\n';
+  stream << "  executor.m2m: " << name(executors.m2m) << '\n';
+  stream << "  executor.m2l: " << name(executors.m2l) << '\n';
+  stream << "  executor.l2l: " << name(executors.l2l) << '\n';
+  stream << "  executor.l2p: " << name(executors.l2p) << '\n';
+  stream << "  executor.p2p: " << name(executors.p2p) << '\n';
+  stream << "  p2p_packing: " << name(p2p_execution_packing_) << '\n';
+  stream << "  tree.max_level.requested: " << options.tree.max_level << '\n';
+  stream << "  tree.max_level.resolved: " << tree_.max_level() << '\n';
+  stream << "  tree.include_empty_nodes: "
+         << options.tree.include_empty_nodes << '\n';
+  stream << "  tree.cubic_root_box: " << options.tree.cubic_root_box << '\n';
+  stream << "  tree.root_centre.requested: ";
+  if (options.tree.root_centre.has_value()) {
+    append_vec3(stream, *options.tree.root_centre);
+  } else {
+    stream << "auto";
+  }
+  stream << '\n';
+  stream << "  tree.root_centre.resolved: ";
+  append_vec3(stream, tree_.root_centre());
+  stream << '\n';
+  stream << "  tree.root_half_width.requested: ";
+  if (options.tree.root_half_width.has_value()) {
+    stream << *options.tree.root_half_width;
+  } else {
+    stream << "auto";
+  }
+  stream << '\n';
+  stream << "  tree.root_half_width.resolved: " << tree_.root_half_width()
+         << '\n';
+  stream << "  source_geometry: " << name(source_geometry_) << '\n';
+  append_size_option(stream, "source_sizes", options.source_sizes);
+  stream << "  use_cuboid_p2m: " << use_cuboid_p2m_ << '\n';
+  stream << "  target_geometry: " << name(target_geometry_) << '\n';
+  append_size_option(stream, "target_sizes", options.target_sizes);
+  stream << "  use_cuboid_l2p: " << use_cuboid_l2p_ << '\n';
+  stream << "  fixed_target_source_indices.requested: "
+         << options.fixed_target_source_indices.has_value() << '\n';
+  stream << "  fixed_target_source_indices.active: "
+         << fixed_target_source_indices_.has_value() << '\n';
+  if (options.fixed_target_source_indices.has_value()) {
+    stream << "  fixed_target_source_indices.count: "
+           << options.fixed_target_source_indices->size() << '\n';
+  }
+  stream << "  cuda_p2p_bsr_max_bytes: " << cuda_p2p_bsr_max_bytes_ << '\n';
+  stream << "  periodic.enabled: " << periodic_.enabled << '\n';
+  stream << "  periodic.axes: [" << periodic_.axes[0] << ", "
+         << periodic_.axes[1] << ", " << periodic_.axes[2] << "]\n";
+  stream << "  periodic.centre: ";
+  append_vec3(stream, periodic_.centre);
+  stream << '\n';
+  stream << "  periodic.lengths: ";
+  append_vec3(stream, periodic_.lengths);
+  stream << '\n';
+  stream << "  periodic.convention: zero_k0\n";
+  stream << "  periodic.setup_tolerance: " << periodic_.setup_tolerance
+         << '\n';
+  stream << "  build.cuda_compiled: " << cuda_compiled() << '\n';
+  stream << "  build.one_mkl_available: " << one_mkl_available() << '\n';
+  std::cout << stream.str() << std::flush;
 }
 
 void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {

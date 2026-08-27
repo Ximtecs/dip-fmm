@@ -3,6 +3,7 @@
 #include "cdfmm/c_api.h"
 
 #include <algorithm>
+#include <cmath>
 #include <exception>
 #include <memory>
 #include <new>
@@ -179,6 +180,54 @@ void create_plan(std::size_t source_count, const double* source_x,
     *output = plan.release();
 }
 
+void create_same_uniform_cuboid_plan(
+    const std::size_t count, const double* x, const double* y, const double* z,
+    const double hx, const double hy, const double hz,
+    cdfmm::UniformFmmOptions options, cdfmm_plan** output)
+{
+    if (!(std::isfinite(hx) && std::isfinite(hy) && std::isfinite(hz) &&
+          hx > 0.0 && hy > 0.0 && hz > 0.0)) {
+        throw std::invalid_argument(
+            "cuboid side lengths must be finite and positive");
+    }
+    require_array(count, x, "x");
+    require_array(count, y, "y");
+    require_array(count, z, "z");
+    if (count == 0) {
+        throw std::invalid_argument("cuboid count must be positive");
+    }
+
+    options.source_geometry = cdfmm::SourceGeometry::UniformCuboid;
+    options.source_sizes = {{hx, hy, hz}};
+    options.target_geometry = cdfmm::TargetGeometry::VolumeAveragedCuboid;
+    options.target_sizes = {{hx, hy, hz}};
+    options.use_cuboid_p2m = true;
+
+    const auto xb = std::minmax_element(x, x + count);
+    const auto yb = std::minmax_element(y, y + count);
+    const auto zb = std::minmax_element(z, z + count);
+    const cdfmm::Vec3 minimum{
+        *xb.first - 0.5 * hx,
+        *yb.first - 0.5 * hy,
+        *zb.first - 0.5 * hz,
+    };
+    const cdfmm::Vec3 maximum{
+        *xb.second + 0.5 * hx,
+        *yb.second + 0.5 * hy,
+        *zb.second + 0.5 * hz,
+    };
+    options.tree.root_centre = 0.5 * (minimum + maximum);
+    options.tree.root_half_width =
+        1.000001 *
+        std::max({0.5 * (maximum.x - minimum.x),
+                  0.5 * (maximum.y - minimum.y),
+                  0.5 * (maximum.z - minimum.z)});
+
+    // Finite cuboid self interactions are physical and are not excluded.
+    create_plan(count, x, y, z, count, x, y, z, nullptr, std::move(options),
+                output);
+}
+
 } // namespace
 
 extern "C" {
@@ -200,6 +249,11 @@ void cdfmm_default_options(cdfmm_options* options)
     options->expansion_basis = CDFMM_BASIS_SPHERICAL;
     options->execution_backend = CDFMM_BACKEND_AUTO;
     options->static_matrix_backend = CDFMM_STATIC_MATRIX_PORTABLE;
+}
+
+int cdfmm_one_mkl_available(void)
+{
+    return cdfmm::one_mkl_available() ? 1 : 0;
 }
 
 int cdfmm_plan_create_points(size_t ns, const double *sx, const double *sy,
@@ -287,39 +341,30 @@ int cdfmm_plan_create_same_uniform_cuboids(size_t count, const double *x,
                                            double hx, double hy, double hz,
                                            const cdfmm_options *options,
                                            cdfmm_plan **plan) {
-  return guarded([&] {
-    auto translated = translate_options(options);
-    if (!(std::isfinite(hx) && std::isfinite(hy) && std::isfinite(hz) &&
-          hx > 0.0 && hy > 0.0 && hz > 0.0)) {
-      throw std::invalid_argument(
-          "cuboid side lengths must be finite and positive");
-    }
-    require_array(count, x, "x");
-    require_array(count, y, "y");
-    require_array(count, z, "z");
-    if (count == 0) {
-      throw std::invalid_argument("cuboid count must be positive");
-    }
-    translated.source_geometry = cdfmm::SourceGeometry::UniformCuboid;
-    translated.source_sizes = {{hx, hy, hz}};
-    translated.target_geometry = cdfmm::TargetGeometry::VolumeAveragedCuboid;
-    translated.target_sizes = {{hx, hy, hz}};
-    translated.use_cuboid_p2m = true;
-    const auto xb = std::minmax_element(x, x + count);
-    const auto yb = std::minmax_element(y, y + count);
-    const auto zb = std::minmax_element(z, z + count);
-    const cdfmm::Vec3 minimum{*xb.first - 0.5 * hx, *yb.first - 0.5 * hy,
-                              *zb.first - 0.5 * hz};
-    const cdfmm::Vec3 maximum{*xb.second + 0.5 * hx, *yb.second + 0.5 * hy,
-                              *zb.second + 0.5 * hz};
-    translated.tree.root_centre = 0.5 * (minimum + maximum);
-    translated.tree.root_half_width =
-        1.000001 *
-        std::max({0.5 * (maximum.x - minimum.x), 0.5 * (maximum.y - minimum.y),
-                  0.5 * (maximum.z - minimum.z)});
-    // Finite cuboid self interactions are physical and are not excluded.
-    create_plan(count, x, y, z, count, x, y, z, nullptr, std::move(translated),
-                plan);
+    return guarded([&] {
+        create_same_uniform_cuboid_plan(
+            count, x, y, z, hx, hy, hz, translate_options(options), plan);
+    });
+}
+
+int cdfmm_plan_create_same_uniform_cuboids_periodic(
+    size_t count, const double* x, const double* y, const double* z,
+    double hx, double hy, double hz, const double cell_centre[3],
+    const double cell_lengths[3], double setup_tolerance,
+    const cdfmm_options* options, cdfmm_plan** plan)
+{
+    return guarded([&] {
+        require_array(3, cell_centre, "periodic cell centre");
+        require_array(3, cell_lengths, "periodic cell lengths");
+        auto translated = translate_options(options);
+        translated.periodic.enabled = true;
+        translated.periodic.centre = {
+            cell_centre[0], cell_centre[1], cell_centre[2]};
+        translated.periodic.lengths = {
+            cell_lengths[0], cell_lengths[1], cell_lengths[2]};
+        translated.periodic.setup_tolerance = setup_tolerance;
+        create_same_uniform_cuboid_plan(
+            count, x, y, z, hx, hy, hz, std::move(translated), plan);
     });
 }
 

@@ -19,7 +19,12 @@ options%order = 6
 options%depth = 4
 options%basis = CDFMM_BASIS_SPHERICAL
 options%precision = CDFMM_PRECISION_FLOAT32
-options%backend = CDFMM_BACKEND_CUDA_FULL
+options%backend = CDFMM_BACKEND_CPU_STATIC
+if (cdfmm_one_mkl_available()) then
+    options%static_matrix_backend = CDFMM_STATIC_MATRIX_ONE_MKL
+else
+    options%static_matrix_backend = CDFMM_STATIC_MATRIX_PORTABLE
+end if
 
 call cdfmm_create_uniform_cuboids(fmm, x, y, z, cell_size, options, ierr)
 if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
@@ -29,6 +34,17 @@ if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
 
 call fmm%destroy()
 ```
+
+Plan creation prints a complete initialisation summary to standard output,
+including requested options, resolved backend, per-operator executors, P2P
+packing, tree geometry, physical source/target geometry, and periodic settings.
+The summary is produced by the shared C++ core and is therefore identical for
+Fortran, C, C++, and Python callers.
+
+`cdfmm_one_mkl_available()` reports whether the linked library contains the
+optional oneMKL executor. This lets an application prefer oneMKL without
+turning its absence into a plan-construction error. The equivalent additive C
+ABI query is also named `cdfmm_one_mkl_available()` and returns zero or one.
 
 `cdfmm_evaluate` selects the existing FP32 or FP64 C evaluator from the array
 kind. The kind must match `options%precision`; a mismatch returns
@@ -40,9 +56,10 @@ magnetised cuboid sources, volume-averaged cuboid targets, and one common
 `cell_size(3)`. Geometry and backend resources are created once and reused by
 every evaluation. Periodicity is configured through `options%periodic`,
 `periodic_cell_center`, `periodic_cell_lengths`, and `periodic_tolerance`.
-The current C ABI does not yet expose periodic persistent-plan construction, so
-requesting it returns `CDFMM_ERROR_UNSUPPORTED`; the calling workflow will not
-change when that support is added.
+The same high-level constructor selects the fully periodic, cubic, zero-`k=0`
+plan internally. Partial periodicity and non-cubic periodic cells are not
+currently supported; invalid cell settings return an error through `ierr` and
+`cdfmm_last_error()`.
 
 Inputs are **total physical magnetic moments**, not magnetisation density:
 
@@ -60,7 +77,8 @@ The boundary beneath the convenience layer remains `ISO_C_BINDING` Fortran ->
 the versioned plain C ABI in `cdfmm/c_api.h` -> `cdfmm::UniformFmm`. Advanced
 callers may use `cdfmm_c_options_t`, `cdfmm_default_options`, the constructors
 with separate source and target arrays, and explicit `cdfmm_evaluate_f32` or
-`cdfmm_evaluate_f64`. The C header and its symbols remain unchanged.
+`cdfmm_evaluate_f64`. Existing version-one C options and constructor symbols
+remain unchanged; periodic same-cuboid plans use an additive C entry point.
 
 No exception crosses this boundary. Calls return integer status values and a
 thread-local C error is exposed through `cdfmm_last_error()`. One plan is

@@ -7,6 +7,9 @@ module cdfmm_fortran
     integer(c_int), parameter, public :: CDFMM_SUCCESS = 0_c_int
     integer(c_int), parameter, public :: CDFMM_ERROR_INVALID_ARGUMENT = 1_c_int
     integer(c_int), parameter, public :: CDFMM_ERROR_UNSUPPORTED = 2_c_int
+    integer(c_int), parameter, public :: CDFMM_ERROR_RUNTIME = 3_c_int
+    integer(c_int), parameter, public :: CDFMM_ERROR_CUDA_UNAVAILABLE = 4_c_int
+    integer(c_int), parameter, public :: CDFMM_ERROR_UNKNOWN = 5_c_int
     integer(c_int), parameter, public :: CDFMM_PRECISION_FLOAT32 = 0_c_int
     integer(c_int), parameter, public :: CDFMM_PRECISION_FLOAT64 = 1_c_int
     integer(c_int), parameter, public :: CDFMM_BASIS_SPHERICAL = 0_c_int
@@ -16,6 +19,8 @@ module cdfmm_fortran
     integer(c_int), parameter, public :: CDFMM_BACKEND_CPU_STATIC = 2_c_int
     integer(c_int), parameter, public :: CDFMM_BACKEND_CUDA_PARTIAL = 3_c_int
     integer(c_int), parameter, public :: CDFMM_BACKEND_CUDA_FULL = 4_c_int
+    integer(c_int), parameter, public :: CDFMM_STATIC_MATRIX_PORTABLE = 0_c_int
+    integer(c_int), parameter, public :: CDFMM_STATIC_MATRIX_ONE_MKL = 1_c_int
 
     !> Native options for the recommended Fortran interface.
     type, public :: cdfmm_options_t
@@ -24,6 +29,7 @@ module cdfmm_fortran
         integer :: basis = CDFMM_BASIS_SPHERICAL
         integer :: precision = CDFMM_PRECISION_FLOAT32
         integer :: backend = CDFMM_BACKEND_AUTO
+        integer :: static_matrix_backend = CDFMM_STATIC_MATRIX_PORTABLE
         logical :: periodic = .false.
         real(c_double) :: periodic_cell_center(3) = 0.0_c_double
         real(c_double) :: periodic_cell_lengths(3) = 0.0_c_double
@@ -56,6 +62,7 @@ module cdfmm_fortran
     character(len=:), allocatable, save :: wrapper_error
 
     public :: cdfmm_options, cdfmm_default_options
+    public :: cdfmm_one_mkl_available
     public :: cdfmm_create_points, cdfmm_create_same_points
     public :: cdfmm_create_uniform_cuboids, cdfmm_create_same_uniform_cuboids
     public :: cdfmm_evaluate, cdfmm_evaluate_f32, cdfmm_evaluate_f64
@@ -76,6 +83,10 @@ module cdfmm_fortran
             import :: cdfmm_c_options_t
             type(cdfmm_c_options_t), intent(out) :: options
         end subroutine
+        function c_one_mkl_available() result(available) bind(c, name="cdfmm_one_mkl_available")
+            import :: c_int
+            integer(c_int) :: available
+        end function
         function c_create_points(ns, sx, sy, sz, nt, tx, ty, tz, identity, options, plan) result(status) &
                 bind(c, name="cdfmm_plan_create_points")
             import :: c_size_t, c_double, c_ptr, c_int
@@ -101,6 +112,19 @@ module cdfmm_fortran
             integer(c_size_t), value :: count
             real(c_double), intent(in) :: x(*), y(*), z(*)
             real(c_double), value :: hx, hy, hz
+            type(c_ptr), value :: options
+            type(c_ptr), intent(out) :: plan
+            integer(c_int) :: status
+        end function
+        function c_create_same_cuboids_periodic(count, x, y, z, hx, hy, hz, cell_center, cell_lengths, &
+                setup_tolerance, options, plan) result(status) &
+                bind(c, name="cdfmm_plan_create_same_uniform_cuboids_periodic")
+            import :: c_size_t, c_double, c_ptr, c_int
+            integer(c_size_t), value :: count
+            real(c_double), intent(in) :: x(*), y(*), z(*)
+            real(c_double), value :: hx, hy, hz
+            real(c_double), intent(in) :: cell_center(3), cell_lengths(3)
+            real(c_double), value :: setup_tolerance
             type(c_ptr), value :: options
             type(c_ptr), intent(out) :: plan
             integer(c_int) :: status
@@ -141,6 +165,12 @@ contains
         options%basis = c_options%expansion_basis
         options%precision = c_options%precision
         options%backend = c_options%execution_backend
+        options%static_matrix_backend = c_options%static_matrix_backend
+    end function
+
+    !> Reports whether the linked C++ library contains the oneMKL executor.
+    logical function cdfmm_one_mkl_available()
+        cdfmm_one_mkl_available = c_one_mkl_available() /= 0_c_int
     end function
 
     !> Initialises the advanced C ABI options structure.
@@ -158,6 +188,7 @@ contains
         c_options%precision = int(options%precision, c_int)
         c_options%expansion_basis = int(options%basis, c_int)
         c_options%execution_backend = int(options%backend, c_int)
+        c_options%static_matrix_backend = int(options%static_matrix_backend, c_int)
     end subroutine
 
     !> Creates the common same-source/same-target uniform-cuboid plan.
@@ -171,19 +202,20 @@ contains
 
         call clear_wrapper_error()
         call cdfmm_destroy(plan)
-        if (options%periodic) then
-            call set_wrapper_error("periodic persistent plans are not supported by the current C ABI")
-            ierr = CDFMM_ERROR_UNSUPPORTED
-            return
-        end if
         if (size(y) /= size(x) .or. size(z) /= size(x)) then
             call set_wrapper_error("x, y, and z must have equal sizes")
             ierr = CDFMM_ERROR_INVALID_ARGUMENT
             return
         end if
         call to_c_options(options, c_options)
-        ierr = c_create_same_cuboids(size(x, kind=c_size_t), x, y, z, cell_size(1), cell_size(2), cell_size(3), &
-                                     c_loc(c_options), plan%handle)
+        if (options%periodic) then
+            ierr = c_create_same_cuboids_periodic(size(x, kind=c_size_t), x, y, z, cell_size(1), cell_size(2), &
+                cell_size(3), options%periodic_cell_center, options%periodic_cell_lengths, &
+                options%periodic_tolerance, c_loc(c_options), plan%handle)
+        else
+            ierr = c_create_same_cuboids(size(x, kind=c_size_t), x, y, z, cell_size(1), cell_size(2), cell_size(3), &
+                                         c_loc(c_options), plan%handle)
+        end if
         if (ierr == CDFMM_SUCCESS) then
             plan%precision = c_options%precision
             plan%count = size(x, kind=c_size_t)

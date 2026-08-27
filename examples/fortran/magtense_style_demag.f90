@@ -30,10 +30,11 @@ program magtense_style_demag
     options%precision = CDFMM_PRECISION_FLOAT32
     options%backend = CDFMM_BACKEND_AUTO
 
-    ! Periodicity uses this same constructor when periodic plan support is available.
+    ! Fully periodic cubic cells use the same constructor and evaluation calls.
     ! options%periodic = .true.
     ! options%periodic_cell_center = [0.5d-9, 0.5d-9, 0.5d-9]
     ! options%periodic_cell_lengths = [2.0d-9, 2.0d-9, 2.0d-9]
+    ! options%periodic_tolerance = 1.0d-12
 
     call cdfmm_create_uniform_cuboids(fmm, x, y, z, cell_size, options, ierr)
     if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()

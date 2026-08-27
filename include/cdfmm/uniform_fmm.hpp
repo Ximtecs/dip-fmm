@@ -422,6 +422,7 @@ private:
   void initialise_source_geometry(const UniformFmmOptions &options);
   void initialise_target_geometry(const UniformFmmOptions &options);
   void initialise_p2p_policy(const UniformFmmOptions &options);
+  void print_initialisation_summary(const UniformFmmOptions &options) const;
   void build_cuda_p2p_plan();
   void build_cuda_full_plan();
   [[nodiscard]] int coefficient_degree(int coefficient) const;

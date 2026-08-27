@@ -5,8 +5,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <numeric>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <vector>
 
@@ -19,6 +21,33 @@
 #endif
 
 using namespace cdfmm;
+
+TEST_CASE("FMM initialisation reports requested and resolved options")
+{
+    const std::vector<Vec3> positions{{-0.25, 0.0, 0.0},
+                                      {0.25, 0.0, 0.0}};
+    UniformFmmOptions options;
+    options.expansion_order = 5;
+    options.tree.max_level = 2;
+    options.backend = ExecutionBackend::Auto;
+
+    std::ostringstream output;
+    std::streambuf* previous = std::cout.rdbuf(output.rdbuf());
+    {
+        UniformFmm fmm(positions, positions, options);
+    }
+    std::cout.rdbuf(previous);
+
+    REQUIRE(output.str().find("[cdfmm] UniformFmm initialisation") !=
+            std::string::npos);
+    REQUIRE(output.str().find("expansion_order: 5") != std::string::npos);
+    REQUIRE(output.str().find("backend.requested: auto") !=
+            std::string::npos);
+    REQUIRE(output.str().find("backend.resolved: cpu_static") !=
+            std::string::npos);
+    REQUIRE(output.str().find("p2p_packing: particle_row_soa") !=
+            std::string::npos);
+}
 
 TEST_CASE("automatic FMM execution resolves to a truthful CPU backend")
 {

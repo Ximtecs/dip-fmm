@@ -77,6 +77,8 @@ typedef struct cdfmm_plan_stats {
 CDFMM_C_API uint32_t cdfmm_abi_version(void);
 CDFMM_C_API const char* cdfmm_get_last_error(void);
 CDFMM_C_API void cdfmm_default_options(cdfmm_options* options);
+/** @return One when this library was built with the oneMKL backend. */
+CDFMM_C_API int cdfmm_one_mkl_available(void);
 
 CDFMM_C_API int cdfmm_plan_create_points(
     size_t source_count, const double* source_x, const double* source_y,
@@ -100,6 +102,20 @@ CDFMM_C_API int cdfmm_plan_create_same_uniform_cuboids(
     size_t count, const double* x, const double* y, const double* z,
     double hx, double hy, double hz, const cdfmm_options* options,
     cdfmm_plan** plan);
+
+/**
+ * @brief Creates a fully periodic same-source/same-target uniform-cuboid plan.
+ *
+ * This additive entry point keeps the version-one options structure unchanged
+ * while exposing the periodic cell required by native-language wrappers. The
+ * currently supported periodic mode is a three-dimensional cubic cell using
+ * the zero-k0 convention.
+ */
+CDFMM_C_API int cdfmm_plan_create_same_uniform_cuboids_periodic(
+    size_t count, const double* x, const double* y, const double* z,
+    double hx, double hy, double hz, const double cell_centre[3],
+    const double cell_lengths[3], double setup_tolerance,
+    const cdfmm_options* options, cdfmm_plan** plan);
 
 CDFMM_C_API int cdfmm_plan_evaluate_f32(
     cdfmm_plan* plan, const float* mx, const float* my, const float* mz,

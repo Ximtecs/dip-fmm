@@ -18,12 +18,36 @@ program test_fortran_api
 
     options = cdfmm_options()
     if (options%basis /= CDFMM_BASIS_SPHERICAL) error stop "incorrect default basis"
+    if (cdfmm_one_mkl_available()) then
+        options%static_matrix_backend = CDFMM_STATIC_MATRIX_ONE_MKL
+    else
+        options%static_matrix_backend = CDFMM_STATIC_MATRIX_PORTABLE
+    end if
     call cdfmm_create_uniform_cuboids(plan, x, y, z, cell_size, options, ierr)
     if (ierr /= CDFMM_SUCCESS .or. .not. plan%valid()) error stop cdfmm_last_error()
     call plan%destroy()
 
-    options%order = 5
+    options%order = 3
     options%depth = 1
+    options%basis = CDFMM_BASIS_CARTESIAN
+    options%backend = CDFMM_BACKEND_CPU_REFERENCE
+    call cdfmm_create_uniform_cuboids(plan, x, y, z, cell_size, options, ierr)
+    if (ierr /= CDFMM_ERROR_INVALID_ARGUMENT .or. plan%valid()) then
+        error stop "CPU reference should reject finite cuboids"
+    end if
+
+    options = cdfmm_options()
+    options%backend = CDFMM_BACKEND_CUDA_FULL
+    call cdfmm_create_uniform_cuboids(plan, x, y, z, cell_size, options, ierr)
+    if (ierr == CDFMM_SUCCESS) then
+        call plan%destroy()
+    else if (ierr /= CDFMM_ERROR_CUDA_UNAVAILABLE) then
+        error stop cdfmm_last_error()
+    end if
+
+    options = cdfmm_options()
+    options%order = 5
+    options%depth = 2
     options%basis = CDFMM_BASIS_CARTESIAN
     options%precision = CDFMM_PRECISION_FLOAT32
     options%backend = CDFMM_BACKEND_CPU_STATIC
@@ -60,9 +84,13 @@ program test_fortran_api
     if (maxval(abs(low_hz - hz)) > 1.0e-6_c_float) error stop "high- and low-level results differ"
 
     options%periodic = .true.
+    options%backend = CDFMM_BACKEND_CPU_STATIC
+    options%basis = CDFMM_BASIS_SPHERICAL
     options%periodic_cell_lengths = [2.0_c_double, 2.0_c_double, 2.0_c_double]
     call cdfmm_create_uniform_cuboids(plan, x, y, z, cell_size, options, ierr)
-    if (ierr /= CDFMM_ERROR_UNSUPPORTED) error stop "periodic option should report unsupported"
+    if (ierr /= CDFMM_SUCCESS .or. .not. plan%valid()) error stop cdfmm_last_error()
+    call cdfmm_evaluate(plan, mx, my, mz, hx, hy, hz, ierr)
+    if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
 
     call plan%destroy()
     call plan%destroy()
@@ -76,5 +104,14 @@ program test_fortran_api
     dmz = [1.0_c_double, 0.0_c_double]
     call cdfmm_evaluate(plan, dmx, dmy, dmz, dhx, dhy, dhz, ierr)
     if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
+    call cdfmm_evaluate(plan, mx, my, mz, hx, hy, hz, ierr)
+    if (ierr /= CDFMM_ERROR_INVALID_ARGUMENT) error stop "reverse precision mismatch was accepted"
+    if (index(cdfmm_last_error(), "FLOAT32") == 0) error stop "reverse mismatch message is unclear"
     call plan%destroy()
+
+    block
+        type(cdfmm_plan_t) :: finalised_plan
+        call cdfmm_create_uniform_cuboids(finalised_plan, x, y, z, cell_size, options, ierr)
+        if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
+    end block
 end program test_fortran_api
