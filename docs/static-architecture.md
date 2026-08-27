@@ -9,16 +9,19 @@ evaluations.
 ```text
 INITIALISATION
 
-positions
+physical positions, cuboid sizes
+   |
+   v
+canonical root normalisation
    |
    v
 uniform tree and Morton permutations
    |
    v
-list1 near interactions and list2 far interactions
+validated universal/geometry cache lookup
    |
    v
-static P2M / M2M / M2L / L2L / L2P / P2P construction
+load, or construct, static P2M / M2M / M2L / L2L / L2P / P2P
    |
    v
 canonical packed execution plans

@@ -32,12 +32,13 @@ next.
 
 1. **P2M:** each occupied source leaf applies its fixed source-to-multipole map.
 2. **M2M:** child multipoles are shifted and added from the leaves towards the
-   root using one of eight child-offset classes per used level.
+   root using one of eight universal child-offset templates and exact level
+   degree scaling.
 3. **M2L:** every target box accumulates its well-separated `list2` source
    boxes. Integer displacement classes share level-independent dense matrices;
    precomputed degree factors account for box width.
 4. **L2L:** parent locals are shifted and added towards the leaves using the
-   corresponding eight child classes.
+   corresponding eight universal child templates and level scaling.
 5. **L2P:** fixed target rows evaluate leaf locals as potential and/or field.
 6. **P2P:** the exact cached tensor applies every `list1` near interaction.
 7. **Assembly:** far and near contributions are added and unpermuted.

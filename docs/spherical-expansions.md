@@ -30,8 +30,8 @@ axis-aligned uniform cuboid, setup analytically averages those finite
 Cartesian polynomials and their gradients over the source or target volume.
 The resulting P2M and L2P operators have spherical width and are stored
 directly; repeated evaluation performs neither cuboid integration nor a
-Cartesian/spherical conversion. M2M and L2L
-store the eight child classes per used level. M2L stores one dense real matrix
+Cartesian/spherical conversion. M2M and L2L store eight universal child
+templates with exact power-of-two level scaling. M2L stores one dense real matrix
 per used integer displacement class and combines it with degree-dependent
 box-width scaling. No geometry-dependent harmonic construction or numerical
 field sampling occurs during `evaluate()`.

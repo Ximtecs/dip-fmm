@@ -216,8 +216,8 @@ M_{\alpha-\gamma}(c_{\mathrm{child}}).$$
 The additive form permits accumulation from all eight children. Here $d$
 points **from child centre to parent centre**, $\gamma\leq\alpha$ means
 component-wise inequality, and the input and output are the child and parent
-$M$ coefficients. A uniform tree has eight child-offset classes per level, so
-fixed geometry permits exact maps to be shared by children in a class.
+$M$ coefficients. A uniform tree has eight child-offset classes. One canonical
+level-one bank plus exact power-of-two degree scaling serves every depth.
 
 ## M2L
 
@@ -254,7 +254,7 @@ $$L_\beta(c_{\mathrm{child}})\mathrel{+}=
 Here $d$ points **from parent centre to child centre**, the higher-degree local
 is the parent input, and $L_\beta$ is the child output. The degree bound
 prevents coefficients outside order $p$. Fixed uniform geometry again reduces
-the shifts to eight reusable classes per level.
+the shifts to eight universal templates plus level degree scaling.
 
 ## L2P
 
@@ -398,6 +398,24 @@ Consequently these alternatives require benchmarks before adoption. Explicitly
 composing all stages is avoided because fill-in would approach an all-to-all
 operator and discard the FMM hierarchy and scaling.
 
+## Global root normalisation
+
+Public coordinates remain physical. Internally the physical root centre $c$
+and side length $L$ define
+
+\[
+r'=(r-c)/L,\qquad h'=h/L,\qquad m'=m/L^3.
+\]
+
+Every internal tree therefore has centre zero and half-width $1/2$. For a
+free-space cuboid problem, the bounds used to determine $c$ and $L$ include
+each full interval $r_i-h_i/2$ through $r_i+h_i/2$; for a periodic problem the
+explicit cubic cell supplies both values. The magnetic dipole tensor obeys
+$T(Lr')=T(r')/L^3$, so evaluating $m'$ in canonical coordinates returns the
+physical field directly: $H_{physical}=H_{internal}$. No field post-scaling is
+applied. Scalar potential has one fewer inverse power of length and is returned
+as $\phi_{physical}=L\phi_{internal}$.
+
 ## M2L normalisation and cross-level reuse
 
 For a same-level M2L interaction, let the physical box width be $h_\ell$ and
@@ -437,8 +455,8 @@ parent-neighbour stencil but outside the $3\times3\times3$ near stencil. It
 therefore has at most $7^3-3^3=316$ transfer classes, irrespective of depth.
 
 For M2M and L2L, a child centre differs from its parent centre by
-(d=h\delta), where (h) is the child box width and every component of
-(delta) is either (-1/2) or (+1/2).  There are therefore only eight
-child-offset classes.  Static plans store shared operators for those classes
-(at most eight per used level) and compact child-to-operator identifiers,
-rather than duplicating coefficient values for every parent-child edge.
+$d=h\delta$, where $h$ is the child box width and every component of
+$\delta$ is either $-1/2$ or $+1/2$. There are therefore only eight
+child-offset classes. Static plans store eight level-one templates and apply
+exact powers of two derived from coefficient degree at later levels. The
+stored M2M, M2L, and L2L mathematical banks are independent of tree depth.
