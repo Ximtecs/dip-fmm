@@ -15,7 +15,8 @@
         "NVCC_PREPEND_FLAGS": "",
         "CPATH": "",
         "CPLUS_INCLUDE_PATH": "",
-        "CXXFLAGS": ""
+        "CXXFLAGS": "",
+        "LDFLAGS": ""
       },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -167,6 +168,17 @@
       "targets": ["install"]
     },
     {
+      "name": "release-clean-install",
+      "configurePreset": "release",
+      "targets": ["cdfmm-clean-install"]
+    },
+    {
+      "name": "release-clean-build",
+      "configurePreset": "release",
+      "targets": ["install"],
+      "cleanFirst": true
+    },
+    {
       "name": "benchmark",
       "configurePreset": "benchmark"
     },
@@ -218,6 +230,27 @@
       "output": {
         "outputOnFailure": true
       }
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "release-clean",
+      "displayName": "Clean installed dip-fmm artifacts and rebuild release",
+      "description": "Removes only installed dip-fmm outputs, cleans build-release, rebuilds, and reinstalls.",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "release"
+        },
+        {
+          "type": "build",
+          "name": "release-clean-install"
+        },
+        {
+          "type": "build",
+          "name": "release-clean-build"
+        }
+      ]
     }
   ]
 }

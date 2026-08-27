@@ -332,6 +332,19 @@ cmake --build --preset release -j
 This does not remove source files or the Conda environment. Other preset build
 directories are independent and can be removed in the same way when needed.
 
+### Remove the installed library and rebuild release
+
+Use the clean release workflow when an older dip-fmm installation is present
+in the active environment:
+
+```console
+cmake --workflow --preset release-clean
+```
+
+This removes only installed dip-fmm outputs, cleans `build-release/`, rebuilds,
+and reinstalls. It preserves all Conda dependencies and does not remove the
+repository-local `caches/` or `local/` directories.
+
 ### Recreate the Conda environment from scratch
 
 Use this only when updating the existing environment does not resolve a broken

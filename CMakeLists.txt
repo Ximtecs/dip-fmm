@@ -245,6 +245,30 @@ install(FILES include/cdfmm/c_api.h
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cdfmm)
 install(FILES fortran/cdfmm_fortran.f90 DESTINATION ${CMAKE_INSTALL_DATADIR}/cdfmm/fortran)
 
+# A normal rebuild must not require users to remove a previous installation by
+# hand. Keep this target deliberately narrower than the install prefix: Conda,
+# CUDA, oneMKL, Jupyter, unrelated headers, and persistent caches are untouched.
+set(CDFMM_CLEAN_INSTALL_COMMANDS
+  COMMAND ${CMAKE_COMMAND} -E rm -f
+          "${CMAKE_INSTALL_FULL_LIBDIR}/$<TARGET_FILE_NAME:cdfmm_c>"
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+          "${CMAKE_INSTALL_FULL_INCLUDEDIR}/cdfmm"
+          "${CMAKE_INSTALL_FULL_DATADIR}/cdfmm")
+if(CDFMM_BUILD_PYTHON)
+  list(APPEND CDFMM_CLEAN_INSTALL_COMMANDS
+    COMMAND ${CMAKE_COMMAND} -E rm -f
+            "${CDFMM_PYTHON_INSTALL_DIR}/$<TARGET_FILE_NAME:cdfmm>")
+endif()
+if(CDFMM_BUILD_TOOLS)
+  list(APPEND CDFMM_CLEAN_INSTALL_COMMANDS
+    COMMAND ${CMAKE_COMMAND} -E rm -f
+            "${CMAKE_INSTALL_FULL_BINDIR}/$<TARGET_FILE_NAME:cdfmm-precompute>")
+endif()
+add_custom_target(cdfmm-clean-install
+  ${CDFMM_CLEAN_INSTALL_COMMANDS}
+  COMMENT "Removing installed dip-fmm artifacts from ${CMAKE_INSTALL_PREFIX}"
+  VERBATIM)
+
 message(STATUS "CDFMM optimisation configuration")
 message(STATUS "  Build type:          ${CMAKE_BUILD_TYPE}")
 message(STATUS "  Native architecture: ${CDFMM_ENABLE_NATIVE_ARCH}")
