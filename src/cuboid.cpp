@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
@@ -340,35 +341,72 @@ DenseDirectPlan::DenseDirectPlan(
         target_sizes.empty()) {
         throw std::invalid_argument("cuboid targets require dimensions");
     }
+    if (source_geometry == SourceGeometry::UniformCuboid) {
+        for (const CuboidSize& size : source_sizes) {
+            validate_size(size, "source cuboid");
+        }
+    }
+    if (target_geometry == TargetGeometry::VolumeAveragedCuboid) {
+        for (const CuboidSize& size : target_sizes) {
+            validate_size(size, "target cuboid");
+        }
+    }
     std::visit([&](auto& matrices) {
         for (auto& matrix : matrices) {
             matrix.resize(ns_ * nt_);
         }
     }, matrices_);
-    for (std::size_t target = 0; target < nt_; ++target) {
-        for (std::size_t source = 0; source < ns_; ++source) {
-            const bool identity = !target_source_indices.empty() &&
-                target_source_indices[target] == static_cast<int>(source);
-            const CuboidSize source_size = source_sizes.empty() ? CuboidSize{} :
-                source_sizes[source_sizes.size() == 1 ? 0 : source];
-            const CuboidSize target_size = target_sizes.empty() ? CuboidSize{} :
-                target_sizes[target_sizes.size() == 1 ? 0 : target];
-            const PairTensor tensor = build_pair_tensor(
-                target_positions[target], source_positions[source],
-                source_geometry, target_geometry, source_size, target_size,
-                identity && source_geometry == SourceGeometry::PointDipole &&
-                    target_geometry == TargetGeometry::Point);
-            const std::size_t index = target * ns_ + source;
-            std::visit([&](auto& matrices) {
-                using Scalar = typename std::decay_t<decltype(matrices)>::value_type::value_type;
+
+    // Every source-target tensor owns one fixed matrix entry. Constructing
+    // those entries in parallel preserves the target-major storage order and
+    // introduces no floating-point reductions.
+    std::exception_ptr construction_error;
+    std::visit([&](auto& matrices) {
+        using Scalar = typename std::decay_t<
+            decltype(matrices)>::value_type::value_type;
+        const std::ptrdiff_t pair_count =
+            static_cast<std::ptrdiff_t>(ns_ * nt_);
+#pragma omp parallel for schedule(static) if (pair_count >= 256)
+        for (std::ptrdiff_t pair_index = 0; pair_index < pair_count;
+             ++pair_index) {
+            try {
+                const std::size_t index =
+                    static_cast<std::size_t>(pair_index);
+                const std::size_t target = index / ns_;
+                const std::size_t source = index % ns_;
+                const bool identity = !target_source_indices.empty() &&
+                    target_source_indices[target] ==
+                        static_cast<int>(source);
+                const CuboidSize source_size = source_sizes.empty()
+                    ? CuboidSize{}
+                    : source_sizes[source_sizes.size() == 1 ? 0 : source];
+                const CuboidSize target_size = target_sizes.empty()
+                    ? CuboidSize{}
+                    : target_sizes[target_sizes.size() == 1 ? 0 : target];
+                const PairTensor tensor = build_pair_tensor(
+                    target_positions[target], source_positions[source],
+                    source_geometry, target_geometry, source_size, target_size,
+                    identity &&
+                        source_geometry == SourceGeometry::PointDipole &&
+                        target_geometry == TargetGeometry::Point);
                 matrices[0][index] = static_cast<Scalar>(tensor.xx);
                 matrices[1][index] = static_cast<Scalar>(tensor.xy);
                 matrices[2][index] = static_cast<Scalar>(tensor.xz);
                 matrices[3][index] = static_cast<Scalar>(tensor.yy);
                 matrices[4][index] = static_cast<Scalar>(tensor.yz);
                 matrices[5][index] = static_cast<Scalar>(tensor.zz);
-            }, matrices_);
+            } catch (...) {
+#pragma omp critical(cdfmm_dense_direct_construction_error)
+                {
+                    if (!construction_error) {
+                        construction_error = std::current_exception();
+                    }
+                }
+            }
         }
+    }, matrices_);
+    if (construction_error) {
+        std::rethrow_exception(construction_error);
     }
 }
 

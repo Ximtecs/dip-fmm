@@ -199,28 +199,34 @@ TEST_CASE("CUDA dense cuboid direct plan agrees with portable CPU",
         {-0.3, -0.5, 0.9}
     };
     const std::array<CuboidSize, 1> cube{{{0.5, 0.5, 0.5}}};
-    const DenseDirectPlan cpu(
-        positions, positions, SourceGeometry::UniformCuboid,
-        TargetGeometry::Point, cube, {}, {}, StaticPrecision::Float64);
-    CudaDenseDirectPlan cuda(
-        positions, positions, SourceGeometry::UniformCuboid,
-        TargetGeometry::Point, cube);
+    for (const StaticPrecision precision : {
+             StaticPrecision::Float32, StaticPrecision::Float64}) {
+        const DenseDirectPlan cpu(
+            positions, positions, SourceGeometry::UniformCuboid,
+            TargetGeometry::Point, cube, {}, {}, precision);
+        CudaDenseDirectPlan cuda(
+            positions, positions, SourceGeometry::UniformCuboid,
+            TargetGeometry::Point, cube, {}, {}, precision);
 
-    const auto expected = cpu.evaluate(
-        moments, DenseDirectBackend::Portable);
-    const auto actual = cuda.evaluate(moments);
+        const auto expected = cpu.evaluate(
+            moments, DenseDirectBackend::Portable);
+        const auto actual = cuda.evaluate(moments);
+        const double tolerance = precision == StaticPrecision::Float32
+            ? 2.0e-5 : 2.0e-13;
 
-    REQUIRE(cuda.source_count() == positions.size());
-    REQUIRE(cuda.target_count() == positions.size());
-    REQUIRE(cuda.tensor_memory_bytes() == cpu.tensor_memory_bytes());
-    REQUIRE(cuda.persistent_device_bytes() >= cuda.tensor_memory_bytes());
-    for (std::size_t index = 0; index < positions.size(); ++index) {
-        REQUIRE(actual[index].x ==
-                Catch::Approx(expected[index].x).epsilon(2.0e-13));
-        REQUIRE(actual[index].y ==
-                Catch::Approx(expected[index].y).epsilon(2.0e-13));
-        REQUIRE(actual[index].z ==
-                Catch::Approx(expected[index].z).epsilon(2.0e-13));
+        REQUIRE(cuda.source_count() == positions.size());
+        REQUIRE(cuda.target_count() == positions.size());
+        REQUIRE(cuda.static_precision() == precision);
+        REQUIRE(cuda.tensor_memory_bytes() == cpu.tensor_memory_bytes());
+        REQUIRE(cuda.persistent_device_bytes() >= cuda.tensor_memory_bytes());
+        for (std::size_t index = 0; index < positions.size(); ++index) {
+            REQUIRE(actual[index].x ==
+                    Catch::Approx(expected[index].x).epsilon(tolerance));
+            REQUIRE(actual[index].y ==
+                    Catch::Approx(expected[index].y).epsilon(tolerance));
+            REQUIRE(actual[index].z ==
+                    Catch::Approx(expected[index].z).epsilon(tolerance));
+        }
     }
 }
 

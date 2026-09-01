@@ -60,6 +60,17 @@ py::dict evaluation_timings_to_dict(const EvaluationTimings& timings)
   add("l2p", timings.l2p);
   add("p2p", timings.p2p);
   add("result_unpermutation", timings.result_unpermutation);
+  // Preserve the independent CUDA lanes as diagnostics. These durations may
+  // overlap and must not be summed as a sequential critical path.
+  add("cuda_h2d", timings.cuda_h2d);
+  add("cuda_kernel", timings.cuda_kernel);
+  add("cuda_d2h", timings.cuda_d2h);
+  add("cuda_m2l_h2d", timings.cuda_m2l_h2d);
+  add("cuda_m2l_d2h", timings.cuda_m2l_d2h);
+  add("cuda_p2p_h2d", timings.cuda_p2p_h2d);
+  add("cuda_p2p_kernel", timings.cuda_p2p_kernel);
+  add("cuda_p2p_d2h", timings.cuda_p2p_d2h);
+  add("cuda_p2p_wait", timings.cuda_p2p_wait);
   add("total", timings.total);
   result["evaluations"] = timings.evaluations;
   return result;
@@ -1269,7 +1280,8 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
                          TargetGeometry target_geometry,
                          const std::vector<CuboidSize>& source_sizes,
                          const std::vector<CuboidSize>& target_sizes,
-                         const std::vector<int>& identities) {
+                         const std::vector<int>& identities,
+                         const std::string& static_precision) {
             const std::vector<Vec3> parsed_sources =
                 parse_vec3_array(sources, "source_positions");
             const std::vector<Vec3> parsed_targets =
@@ -1279,7 +1291,8 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
                 py::gil_scoped_release release;
                 plan = std::make_unique<CudaDenseDirectPlan>(
                     parsed_sources, parsed_targets, source_geometry,
-                    target_geometry, source_sizes, target_sizes, identities);
+                    target_geometry, source_sizes, target_sizes, identities,
+                    parse_static_precision(static_precision));
             }
             return plan;
         }), py::arg("source_positions"), py::arg("target_positions"),
@@ -1287,7 +1300,8 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
             py::arg("target_geometry") = TargetGeometry::Point,
             py::arg("source_sizes") = std::vector<CuboidSize>{},
             py::arg("target_sizes") = std::vector<CuboidSize>{},
-            py::arg("target_source_indices") = std::vector<int>{})
+            py::arg("target_source_indices") = std::vector<int>{},
+            py::arg("static_precision") = "float64")
         .def("evaluate", [](CudaDenseDirectPlan& plan, py::object moments) {
             const std::vector<Vec3> parsed_moments =
                 parse_vec3_array(moments, "total_moments");
@@ -1305,5 +1319,7 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
         .def_property_readonly("tensor_memory_bytes",
                                &CudaDenseDirectPlan::tensor_memory_bytes)
         .def_property_readonly("persistent_device_bytes",
-                               &CudaDenseDirectPlan::persistent_device_bytes);
+                               &CudaDenseDirectPlan::persistent_device_bytes)
+        .def_property_readonly("static_precision",
+                               &CudaDenseDirectPlan::static_precision);
 }

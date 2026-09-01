@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <numbers>
 #include <stdexcept>
+#include <vector>
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
 #include "cdfmm/cuboid.hpp"
 #include "cdfmm/static_operators.hpp"
+
+#ifdef CDFMM_USE_OPENMP
+#include <omp.h>
+#endif
 
 using namespace cdfmm;
 
@@ -127,3 +133,41 @@ TEST_CASE("dense and static P2P store the same canonical cuboid tensor") {
   REQUIRE(block.yz == matrices[4][0]);
   REQUIRE(block.zz == matrices[5][0]);
 }
+
+#ifdef CDFMM_USE_OPENMP
+TEST_CASE("parallel dense cuboid construction preserves every tensor entry",
+          "[cuboid][openmp]") {
+  std::vector<Vec3> positions(20);
+  for (std::size_t index = 0; index < positions.size(); ++index) {
+    const double coordinate = static_cast<double>(index);
+    positions[index] = {
+        0.7 * coordinate,
+        0.2 * static_cast<double>(index % 3),
+        -0.3 * static_cast<double>(index % 5),
+    };
+  }
+  const std::array<CuboidSize, 1> sizes{{{0.8, 0.9, 1.1}}};
+  omp_set_num_threads(std::min(4, omp_get_num_procs()));
+  const DenseDirectPlan plan(
+      positions, positions, SourceGeometry::UniformCuboid,
+      TargetGeometry::VolumeAveragedCuboid, sizes, sizes, {},
+      StaticPrecision::Float64);
+
+  const auto& matrices = plan.matrices();
+  for (std::size_t target = 0; target < positions.size(); ++target) {
+    for (std::size_t source = 0; source < positions.size(); ++source) {
+      const PairTensor expected = build_pair_tensor(
+          positions[target], positions[source],
+          SourceGeometry::UniformCuboid,
+          TargetGeometry::VolumeAveragedCuboid, sizes[0], sizes[0]);
+      const std::size_t matrix_index = target * positions.size() + source;
+      REQUIRE(matrices[0][matrix_index] == expected.xx);
+      REQUIRE(matrices[1][matrix_index] == expected.xy);
+      REQUIRE(matrices[2][matrix_index] == expected.xz);
+      REQUIRE(matrices[3][matrix_index] == expected.yy);
+      REQUIRE(matrices[4][matrix_index] == expected.yz);
+      REQUIRE(matrices[5][matrix_index] == expected.zz);
+    }
+  }
+}
+#endif

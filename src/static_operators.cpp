@@ -798,6 +798,22 @@ StaticP2POperator build_static_p2p_operator(
         throw std::invalid_argument(
             "static cuboid P2P target sizes must be common or per target");
     }
+    if (source_geometry == SourceGeometry::UniformCuboid) {
+        for (const CuboidSize& size : source_sizes) {
+            if (!(size.hx > 0.0 && size.hy > 0.0 && size.hz > 0.0)) {
+                throw std::invalid_argument(
+                    "source cuboid dimensions must be positive");
+            }
+        }
+    }
+    if (target_geometry == TargetGeometry::VolumeAveragedCuboid) {
+        for (const CuboidSize& size : target_sizes) {
+            if (!(size.hx > 0.0 && size.hy > 0.0 && size.hz > 0.0)) {
+                throw std::invalid_argument(
+                    "target cuboid dimensions must be positive");
+            }
+        }
+    }
     StaticP2POperator result;
     result.source_count = static_cast<int>(source_positions.size());
     result.target_count = static_cast<int>(target_positions.size());
@@ -812,7 +828,10 @@ StaticP2POperator build_static_p2p_operator(
             std::tie(right.target, right.source, right.source_shift.x,
                      right.source_shift.y, right.source_shift.z);
     });
-    result.blocks.reserve(sorted.size());
+
+    // Validate indices and construct the target-row metadata before entering
+    // the parallel region. This keeps exception handling outside OpenMP and
+    // makes every subsequent iteration own exactly one output block.
     for (const StaticP2PInteraction& interaction : sorted) {
         const int target = interaction.target;
         const int source = interaction.source;
@@ -821,6 +840,21 @@ StaticP2POperator build_static_p2p_operator(
             throw std::invalid_argument(
                 "static P2P interaction index is invalid");
         }
+        ++result.row_offsets[static_cast<std::size_t>(target) + 1];
+    }
+    for (std::size_t row = 1; row < result.row_offsets.size(); ++row) {
+        result.row_offsets[row] += result.row_offsets[row - 1];
+    }
+
+    result.blocks.resize(sorted.size());
+    const std::ptrdiff_t interaction_count =
+        static_cast<std::ptrdiff_t>(sorted.size());
+#pragma omp parallel for schedule(static) if (interaction_count >= 256)
+    for (std::ptrdiff_t index = 0; index < interaction_count; ++index) {
+        const StaticP2PInteraction& interaction =
+            sorted[static_cast<std::size_t>(index)];
+        const int target = interaction.target;
+        const int source = interaction.source;
         const Vec3 shifted_source =
             source_positions[static_cast<std::size_t>(source)] +
             interaction.source_shift;
@@ -832,11 +866,10 @@ StaticP2POperator build_static_p2p_operator(
             // it is not a self pair, NaNs deliberately expose the same
             // undefined point-dipole singularity as the reference operator.
             const double undefined = std::numeric_limits<double>::quiet_NaN();
-            result.blocks.push_back(
+            result.blocks[static_cast<std::size_t>(index)] =
                 {target, source, undefined, undefined, undefined,
                  undefined, undefined, undefined, undefined, undefined,
-                 undefined, interaction.skip_for_identity ? 1 : 0});
-            ++result.row_offsets[static_cast<std::size_t>(target) + 1];
+                 undefined, interaction.skip_for_identity ? 1 : 0};
             continue;
         }
         const CuboidSize source_size =
@@ -855,15 +888,11 @@ StaticP2POperator build_static_p2p_operator(
                 ? 0.0
                 : 1.0 / (4.0 * std::numbers::pi * radius_squared *
                          std::sqrt(radius_squared));
-        result.blocks.push_back(
+        result.blocks[static_cast<std::size_t>(index)] =
             {target, source, potential_scale * r.x, potential_scale * r.y,
              potential_scale * r.z, tensor.xx, tensor.xy, tensor.xz,
              tensor.yy, tensor.yz, tensor.zz,
-             interaction.skip_for_identity ? 1 : 0});
-        ++result.row_offsets[static_cast<std::size_t>(target) + 1];
-    }
-    for (std::size_t row = 1; row < result.row_offsets.size(); ++row) {
-        result.row_offsets[row] += result.row_offsets[row - 1];
+             interaction.skip_for_identity ? 1 : 0};
     }
     return result;
 }

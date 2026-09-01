@@ -145,6 +145,11 @@ public:
     {
         return std::get<DoubleMatrices>(matrices_);
     }
+    /** @brief Returns matrices for an explicitly selected FP32 plan. */
+    [[nodiscard]] const std::array<std::vector<float>, 6>& float_matrices() const
+    {
+        return std::get<FloatMatrices>(matrices_);
+    }
 
 private:
     std::size_t ns_{0};

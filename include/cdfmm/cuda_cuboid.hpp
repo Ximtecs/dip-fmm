@@ -21,8 +21,9 @@ namespace cdfmm {
  *
  * Geometry tensors are constructed once on the host and uploaded in
  * target-major order. Repeated evaluations transfer only the total source
- * moments and resulting magnetic fields; nine cuBLAS GEMVs perform the direct
- * all-to-all contraction.
+ * moments and resulting magnetic fields; nine precision-matched cuBLAS GEMVs
+ * perform the direct all-to-all contraction. FP64 remains the default for
+ * backward compatibility; callers may explicitly select FP32 storage.
  */
 class CudaDenseDirectPlan {
 public:
@@ -33,7 +34,8 @@ public:
         TargetGeometry target_geometry = TargetGeometry::Point,
         std::span<const CuboidSize> source_sizes = {},
         std::span<const CuboidSize> target_sizes = {},
-        std::span<const int> target_source_indices = {}
+        std::span<const int> target_source_indices = {},
+        StaticPrecision static_precision = StaticPrecision::Float64
     );
 
     ~CudaDenseDirectPlan();
@@ -55,6 +57,7 @@ public:
     [[nodiscard]] std::size_t target_count() const noexcept;
     [[nodiscard]] std::size_t tensor_memory_bytes() const noexcept;
     [[nodiscard]] std::size_t persistent_device_bytes() const noexcept;
+    [[nodiscard]] StaticPrecision static_precision() const noexcept;
 
 private:
     struct Implementation;
