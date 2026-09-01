@@ -39,6 +39,21 @@ public:
   /** @brief Builds a persistent cuSPARSE BSR(3) CUDA plan. */
   explicit CudaP2PPlan(const StaticP2PBsrPlan &plan);
 
+  /**
+   * @brief Builds a target-tiled regular-grid CUDA P2P plan.
+   *
+   * A point grid uses on-the-fly arithmetic when `point_on_the_fly` is true;
+   * otherwise both point and cuboid plans read the compact Tensor6 table.
+   * Target tile sizes 64, 128, and 256 and one, two, or four targets per
+   * thread are supported for isolated tuning.
+   */
+  explicit CudaP2PPlan(
+      const StaticP2PGridStencilPlan &plan,
+      std::span<const int> fixed_self_indices = {},
+      bool point_on_the_fly = false,
+      int target_tile_size = 128,
+      int targets_per_thread = 1);
+
   /** @brief Builds the canonical FP32 CUDA baseline. */
   explicit CudaP2PPlan(const FloatStaticP2POperator &operator_map,
                        std::span<const int> fixed_self_indices = {});

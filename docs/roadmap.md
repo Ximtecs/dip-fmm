@@ -135,3 +135,23 @@ integration API.
 
 These items are research and productisation directions, not current API
 promises.
+## Profiling-driven kernel priorities
+
+The following are possible future optimisations, not current API commitments.
+They will be undertaken only when profiling at relevant orders and occupancy
+shows that the affected phase remains material.
+
+4. **Generic CUDA P2P:** benchmark modern cuSPARSE generic SpMV/BSR APIs and
+   preprocessing against the existing legacy BSR execution.
+5. **CUDA target-cooperative M2L:** map a target node to warp/block-sized
+   coefficient groups, particularly for spherical orders 4--8.
+6. **Uniform-tree M2L metadata compression:** derive sources and matrix IDs
+   from target integer coordinates and fixed child-octant templates.
+7. **CPU M2L:** replace serial class-group scatter with a target-owned parallel
+   reduction.
+8. **GPU class-grouped M2L:** investigate gather, SGEMM or custom tiled
+   matrix-class translation, and scatter.
+9. **Spherical M2L:** investigate rotation/axial-translation O(p^3) methods
+   only if dense M2L remains important at relevant order.
+10. **Plane-wave/exponential M2L:** investigate FMM3D-style diagonalised
+    translations only after profiling demonstrates sufficient benefit.

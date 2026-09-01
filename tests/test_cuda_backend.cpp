@@ -326,6 +326,64 @@ TEST_CASE("CUDA static P2P packings agree with canonical CPU rows",
                     std::invalid_argument);
 }
 
+TEST_CASE("CUDA regular-grid target tiles agree with canonical P2P",
+          "[cuda][manual]") {
+  if (!cuda_m2l_p2p_available()) {
+    SUCCEED("CUDA static P2P is unavailable");
+    return;
+  }
+  std::vector<Vec3> positions;
+  for (int z = 0; z < 3; ++z) {
+    for (int y = 0; y < 3; ++y) {
+      for (int x = 0; x < 3; ++x) {
+        positions.push_back({0.25 * x, 0.25 * y, 0.25 * z});
+      }
+    }
+  }
+  std::vector<std::array<int, 2>> interactions;
+  for (int target = 0; target < static_cast<int>(positions.size()); ++target) {
+    for (int source = 0; source < static_cast<int>(positions.size()); ++source) {
+      interactions.push_back({target, source});
+    }
+  }
+  const StaticP2POperator canonical =
+      build_static_p2p_operator(positions, positions, interactions);
+  const auto grid =
+      build_static_p2p_grid_stencil_plan(canonical, positions, true);
+  REQUIRE(grid.has_value());
+  std::vector<int> identities(positions.size());
+  std::iota(identities.begin(), identities.end(), 0);
+  std::vector<Vec3> moments(positions.size());
+  for (std::size_t index = 0; index < moments.size(); ++index) {
+    moments[index] = {std::sin(index + 0.5), std::cos(index + 0.25),
+                      std::sin(index * 0.3)};
+  }
+  std::vector<Vec3> expected(positions.size());
+  apply_static_p2p_operator(canonical, moments, expected, identities);
+
+  for (const int target_tile : {64, 128, 256}) {
+    for (const int targets_per_thread : {1, 2, 4}) {
+      for (const bool on_the_fly : {false, true}) {
+        CAPTURE(target_tile, targets_per_thread, on_the_fly);
+        CudaP2PPlan cuda(*grid, identities, on_the_fly, target_tile,
+                         targets_per_thread);
+        std::vector<Vec3> actual(positions.size());
+        cuda.evaluate(moments, identities, actual);
+        for (std::size_t target = 0; target < actual.size(); ++target) {
+          REQUIRE(actual[target].x ==
+                  Catch::Approx(expected[target].x).margin(3.0e-11));
+          REQUIRE(actual[target].y ==
+                  Catch::Approx(expected[target].y).margin(3.0e-11));
+          REQUIRE(actual[target].z ==
+                  Catch::Approx(expected[target].z).margin(3.0e-11));
+        }
+        REQUIRE(cuda.statistics().p2p_threads_per_block ==
+                target_tile / targets_per_thread);
+      }
+    }
+  }
+}
+
 TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
 {
     if (!cuda_m2l_p2p_available()) {

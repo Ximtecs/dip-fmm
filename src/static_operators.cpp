@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <numbers>
 #include <set>
 #include <stdexcept>
@@ -758,6 +759,158 @@ StaticP2PMemory StaticP2PBsrPlan::memory() const noexcept {
   return result;
 }
 
+StaticP2PMemory StaticP2PGridStencilPlan::memory() const noexcept {
+  StaticP2PMemory result;
+  result.tensor_bytes = tensors[0].size() * 6 * sizeof(double);
+  result.index_bytes =
+      (source_indices.size() + displacement_indices.size()) * sizeof(int) +
+      skip_for_identity.size() * sizeof(unsigned char);
+  result.row_metadata_bytes = row_offsets.size() * sizeof(int);
+  result.leaf_metadata_bytes =
+      coordinates.size() * sizeof(std::array<int, 3>) +
+      displacements.size() * sizeof(std::array<int, 3>) +
+      sizeof(StaticP2PGridDescriptor);
+  return result;
+}
+
+std::optional<StaticP2PGridStencilPlan>
+build_static_p2p_grid_stencil_plan(const StaticP2POperator &operator_map,
+                                   const std::span<const Vec3> positions,
+                                   const bool point_dipoles) {
+  if (operator_map.source_count != operator_map.target_count ||
+      positions.size() != static_cast<std::size_t>(operator_map.source_count) ||
+      positions.empty()) {
+    return std::nullopt;
+  }
+
+  std::array<std::vector<double>, 3> axes;
+  for (const Vec3 &position : positions) {
+    axes[0].push_back(position.x);
+    axes[1].push_back(position.y);
+    axes[2].push_back(position.z);
+  }
+  double coordinate_scale = 1.0;
+  for (const Vec3 &position : positions) {
+    coordinate_scale = std::max({coordinate_scale, std::abs(position.x),
+                                 std::abs(position.y), std::abs(position.z)});
+  }
+  const double tolerance =
+      64.0 * std::numeric_limits<double>::epsilon() * coordinate_scale;
+  for (std::vector<double> &axis : axes) {
+    std::sort(axis.begin(), axis.end());
+    axis.erase(std::unique(axis.begin(), axis.end(),
+                           [&](double a, double b) {
+                             return std::abs(a - b) <= tolerance;
+                           }),
+               axis.end());
+    if (axis.empty()) {
+      return std::nullopt;
+    }
+    if (axis.size() > 1) {
+      const double spacing = axis[1] - axis[0];
+      if (!(spacing > tolerance)) {
+        return std::nullopt;
+      }
+      for (std::size_t index = 1; index < axis.size(); ++index) {
+        const double expected = axis[0] + spacing * index;
+        if (std::abs(axis[index] - expected) >
+            tolerance * std::max(1.0, std::abs(expected))) {
+          return std::nullopt;
+        }
+      }
+    }
+  }
+  if (axes[0].size() * axes[1].size() * axes[2].size() != positions.size()) {
+    return std::nullopt;
+  }
+
+  StaticP2PGridStencilPlan result;
+  result.source_count = operator_map.source_count;
+  result.target_count = operator_map.target_count;
+  result.point_dipoles = point_dipoles;
+  result.grid.dimensions = {static_cast<int>(axes[0].size()),
+                            static_cast<int>(axes[1].size()),
+                            static_cast<int>(axes[2].size())};
+  result.grid.origin = {axes[0][0], axes[1][0], axes[2][0]};
+  result.grid.spacing = {axes[0].size() > 1 ? axes[0][1] - axes[0][0] : 0.0,
+                         axes[1].size() > 1 ? axes[1][1] - axes[1][0] : 0.0,
+                         axes[2].size() > 1 ? axes[2][1] - axes[2][0] : 0.0};
+  result.coordinates.reserve(positions.size());
+  std::set<std::array<int, 3>> occupied;
+  for (const Vec3 &position : positions) {
+    std::array<int, 3> coordinate{};
+    const std::array<double, 3> values{position.x, position.y, position.z};
+    for (int component = 0; component < 3; ++component) {
+      const auto &axis = axes[static_cast<std::size_t>(component)];
+      const auto found = std::lower_bound(axis.begin(), axis.end(),
+                                          values[component] - tolerance);
+      if (found == axis.end() ||
+          std::abs(*found - values[component]) > tolerance) {
+        return std::nullopt;
+      }
+      coordinate[component] = static_cast<int>(found - axis.begin());
+    }
+    if (!occupied.insert(coordinate).second) {
+      return std::nullopt;
+    }
+    result.coordinates.push_back(coordinate);
+  }
+
+  result.row_offsets = operator_map.row_offsets;
+  result.source_indices.reserve(operator_map.blocks.size());
+  result.displacement_indices.reserve(operator_map.blocks.size());
+  result.skip_for_identity.reserve(operator_map.blocks.size());
+  std::map<std::array<int, 3>, int> displacement_map;
+  for (const StaticDipoleBlock &block : operator_map.blocks) {
+    if (block.target < 0 || block.source < 0 ||
+        block.target >= result.target_count ||
+        block.source >= result.source_count) {
+      return std::nullopt;
+    }
+    std::array<int, 3> displacement{};
+    for (int component = 0; component < 3; ++component) {
+      displacement[component] =
+          result
+              .coordinates[static_cast<std::size_t>(block.source)][component] -
+          result.coordinates[static_cast<std::size_t>(block.target)][component];
+    }
+    auto [iterator, inserted] = displacement_map.try_emplace(
+        displacement, static_cast<int>(displacement_map.size()));
+    if (inserted) {
+      result.displacements.push_back(displacement);
+      const std::array<double, 6> tensor{block.xx, block.xy, block.xz,
+                                         block.yy, block.yz, block.zz};
+      for (int component = 0; component < 6; ++component) {
+        result.tensors[component].push_back(tensor[component]);
+      }
+    } else {
+      const std::size_t tensor_index =
+          static_cast<std::size_t>(iterator->second);
+      const std::array<double, 6> tensor{block.xx, block.xy, block.xz,
+                                         block.yy, block.yz, block.zz};
+      for (int component = 0; component < 6; ++component) {
+        const double reference = result.tensors[component][tensor_index];
+        const bool both_nan =
+            std::isnan(reference) && std::isnan(tensor[component]);
+        const double scale =
+            std::max({1.0, std::abs(reference), std::abs(tensor[component])});
+        if (!both_nan &&
+            std::abs(reference - tensor[component]) >
+                256.0 * std::numeric_limits<double>::epsilon() * scale) {
+          // Equal lattice offsets must represent the same physical
+          // source/target shape before table compression is valid.
+          return std::nullopt;
+        }
+      }
+    }
+    result.source_indices.push_back(block.source);
+    result.displacement_indices.push_back(iterator->second);
+    result.skip_for_identity.push_back(
+        static_cast<unsigned char>(block.skip_for_identity));
+  }
+  return result;
+}
+
 StaticP2POperator build_static_p2p_operator(
     const std::span<const Vec3> target_positions,
     const std::span<const Vec3> source_positions,
@@ -1100,9 +1253,11 @@ build_static_p2p_bsr_plan(const StaticP2POperator &operator_map,
 
   for (const StaticDipoleBlock &block : operator_map.blocks) {
     result.source_indices.push_back(block.source);
-    const bool self = block.skip_for_identity != 0 &&
+    const bool self =
+        block.skip_for_identity != 0 &&
         block.source ==
-        result.target_source_indices[static_cast<std::size_t>(block.target)];
+            result
+                .target_source_indices[static_cast<std::size_t>(block.target)];
     const double xx = self ? 0.0 : block.xx;
     const double xy = self ? 0.0 : block.xy;
     const double xz = self ? 0.0 : block.xz;
@@ -1140,9 +1295,11 @@ build_static_p2p_bsr_plan(
 
   for (const FloatStaticDipoleBlock &block : operator_map.blocks) {
     result.source_indices.push_back(block.source);
-    const bool self = block.skip_for_identity != 0 &&
+    const bool self =
+        block.skip_for_identity != 0 &&
         block.source ==
-            result.target_source_indices[static_cast<std::size_t>(block.target)];
+            result
+                .target_source_indices[static_cast<std::size_t>(block.target)];
     const float xx = self ? 0.0F : block.xx;
     const float xy = self ? 0.0F : block.xy;
     const float xz = self ? 0.0F : block.xz;
@@ -1261,6 +1418,103 @@ void apply_static_p2p_operator(
         H[static_cast<std::size_t>(target)] += field;
     }
 }
+
+void apply_static_p2p_grid_stencil_plan(
+    const StaticP2PGridStencilPlan &plan,
+    const std::span<const Vec3> dipole_moments, const std::span<Vec3> H,
+    const std::span<const int> target_source_indices) {
+  if (dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
+      H.size() != static_cast<std::size_t>(plan.target_count) ||
+      (!target_source_indices.empty() &&
+       target_source_indices.size() != H.size())) {
+    throw std::invalid_argument("grid-stencil P2P dimensions are inconsistent");
+  }
+#pragma omp parallel for schedule(static) if (plan.target_count >= 64)
+  for (int target = 0; target < plan.target_count; ++target) {
+    double Hx = 0.0;
+    double Hy = 0.0;
+    double Hz = 0.0;
+    const int self =
+        target_source_indices.empty()
+            ? -1
+            : target_source_indices[static_cast<std::size_t>(target)];
+    const int begin = plan.row_offsets[static_cast<std::size_t>(target)];
+    const int end = plan.row_offsets[static_cast<std::size_t>(target) + 1];
+#pragma omp simd reduction(+ : Hx, Hy, Hz)
+    for (int entry = begin; entry < end; ++entry) {
+      const std::size_t interaction = static_cast<std::size_t>(entry);
+      const int source = plan.source_indices[interaction];
+      if (plan.skip_for_identity[interaction] != 0 && source == self) {
+        continue;
+      }
+      const std::size_t tensor =
+          static_cast<std::size_t>(plan.displacement_indices[interaction]);
+      const Vec3 m = dipole_moments[static_cast<std::size_t>(source)];
+      Hx += plan.tensors[0][tensor] * m.x + plan.tensors[1][tensor] * m.y +
+            plan.tensors[2][tensor] * m.z;
+      Hy += plan.tensors[1][tensor] * m.x + plan.tensors[3][tensor] * m.y +
+            plan.tensors[4][tensor] * m.z;
+      Hz += plan.tensors[2][tensor] * m.x + plan.tensors[4][tensor] * m.y +
+            plan.tensors[5][tensor] * m.z;
+    }
+    H[static_cast<std::size_t>(target)] += Vec3{Hx, Hy, Hz};
+  }
+}
+
+void apply_static_p2p_grid_point_onthefly(
+    const StaticP2PGridStencilPlan &plan,
+    const std::span<const Vec3> dipole_moments, const std::span<Vec3> H,
+    const std::span<const int> target_source_indices) {
+  if (!plan.point_dipoles ||
+      dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
+      H.size() != static_cast<std::size_t>(plan.target_count) ||
+      (!target_source_indices.empty() &&
+       target_source_indices.size() != H.size())) {
+    throw std::invalid_argument(
+        "on-the-fly grid P2P dimensions are inconsistent");
+  }
+  constexpr double green_factor = 1.0 / (4.0 * std::numbers::pi);
+#pragma omp parallel for schedule(static) if (plan.target_count >= 64)
+  for (int target = 0; target < plan.target_count; ++target) {
+    double Hx = 0.0;
+    double Hy = 0.0;
+    double Hz = 0.0;
+    const int self =
+        target_source_indices.empty()
+            ? -1
+            : target_source_indices[static_cast<std::size_t>(target)];
+    const int begin = plan.row_offsets[static_cast<std::size_t>(target)];
+    const int end = plan.row_offsets[static_cast<std::size_t>(target) + 1];
+#pragma omp simd reduction(+ : Hx, Hy, Hz)
+    for (int entry = begin; entry < end; ++entry) {
+      const std::size_t interaction = static_cast<std::size_t>(entry);
+      const int source = plan.source_indices[interaction];
+      if (plan.skip_for_identity[interaction] != 0 && source == self) {
+        continue;
+      }
+      const auto displacement = plan.displacements[static_cast<std::size_t>(
+          plan.displacement_indices[interaction])];
+      const double rx = -displacement[0] * plan.grid.spacing.x;
+      const double ry = -displacement[1] * plan.grid.spacing.y;
+      const double rz = -displacement[2] * plan.grid.spacing.z;
+      const double radius_squared = rx * rx + ry * ry + rz * rz;
+      if (radius_squared == 0.0) {
+        continue;
+      }
+      const double inverse_radius = 1.0 / std::sqrt(radius_squared);
+      const double inverse_radius3 = inverse_radius / radius_squared;
+      const double inverse_radius5 = inverse_radius3 / radius_squared;
+      const Vec3 m = dipole_moments[static_cast<std::size_t>(source)];
+      const double moment_dot_r = m.x * rx + m.y * ry + m.z * rz;
+      const double radial = 3.0 * moment_dot_r * inverse_radius5;
+      Hx += green_factor * (radial * rx - m.x * inverse_radius3);
+      Hy += green_factor * (radial * ry - m.y * inverse_radius3);
+      Hz += green_factor * (radial * rz - m.z * inverse_radius3);
+    }
+    H[static_cast<std::size_t>(target)] += Vec3{Hx, Hy, Hz};
+  }
+}
+
 
 void apply_static_p2p_leaf_plan(
     const FloatStaticP2PLeafPlan& plan,
