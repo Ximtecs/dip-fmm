@@ -76,6 +76,47 @@ ncu --set full --kernel-name regex:grid_p2p_kernel \
   --cuda-target-tile 128 --cuda-targets-per-thread 2
 ```
 
+## High-occupancy complete-FMM study
+
+`run_high_occupancy_p2p.py` prepares the fixed 8-case `(N, depth)` matrix for
+`N=8192, 16384, 32768, 65536` and depths two and three, independently for the
+CPU production backend and CUDA-full. Every command uses spherical order six,
+FP32, a regular grid, exact cuboid list1 P2P, point P2M, and point L2P. Raw
+per-repetition CSV files and a JSON-lines manifest are retained; pairwise cases
+whose conservative storage estimate exceeds the configured limit are recorded
+as `SKIPPED_MEMORY` before construction.
+
+```console
+python benchmarks/run_high_occupancy_p2p.py --dry-run
+
+OMP_PROC_BIND=close OMP_PLACES=cores \
+python benchmarks/run_high_occupancy_p2p.py \
+  --evaluations 20 --cpu-threads 16 --resume \
+  --output-dir Article1/results/raw/high_occupancy_p2p
+```
+
+When `Article1` is not present, use the default
+`high_occupancy_p2p_results/raw`. The runner writes `repetitions.jsonl`, the
+individual benchmark CSV files, `all_repetitions.csv`, `processed.csv`, and
+regenerable figures in the parent result directory. CPU and GPU preferred
+depths must be interpreted separately; the runner never assumes depth two or
+an occupancy near one thousand is optimal.
+
+Representative profiling commands are deliberately not launched by the
+runner:
+
+```console
+perf stat -e cycles,instructions,cache-misses,LLC-load-misses \
+  ./build-profile-all/benchmarks/benchmark_uniform_fmm --regular-grid \
+  --exact-cuboid-p2p --sources 16384 --targets 16384 --depth 3 --order 6 \
+  --precision float32 --backend cpu-static-matrix --threads 16 --profile
+
+ncu --set full --kernel-name regex:grid_p2p_kernel \
+  ./build-bench-all/benchmarks/benchmark_p2p --cuda --depth 2 \
+  --occupancy 512 --regular-grid-s 8 --evaluations 2 \
+  --cuda-target-tile 128 --cuda-targets-per-thread 2
+```
+
 ## Existing representation
 
 `UniformTree` constructs `list1` as the clipped, sorted 3 x 3 x 3

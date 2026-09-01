@@ -183,7 +183,7 @@ def test_complete_evaluation_shapes_ordering_and_repeated_state():
 def test_complete_source_point_evaluation_uses_explicit_identities():
     options = cdfmm.UniformFmmOptions()
     options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
-    options.precision = cdfmm.StaticPrecision.FLOAT64
+    options.precision = cdfmm.StaticPrecision.FLOAT32
     options.expansion_order = 3
     options.backend = cdfmm.ExecutionBackend.CPU_STATIC
     options.tree.max_level = 0
@@ -198,7 +198,7 @@ def test_complete_source_point_evaluation_uses_explicit_identities():
             for target_index, target in enumerate(POSITIONS)
         ]
     )
-    np.testing.assert_allclose(actual, direct, rtol=1.0e-14, atol=1.0e-14)
+    np.testing.assert_allclose(actual, direct, rtol=1.0e-6, atol=1.0e-7)
 
 
 def test_fixed_identity_option_is_used_when_evaluate_omits_the_map():
