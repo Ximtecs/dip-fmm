@@ -154,6 +154,8 @@ std::string_view name(const P2PExecutionPacking value) {
     return "canonical_aos";
   case P2PExecutionPacking::ParticleRowSoa:
     return "particle_row_soa";
+  case P2PExecutionPacking::TensorDictionary:
+    return "tensor_dictionary";
   case P2PExecutionPacking::CudaBsr3:
     return "cuda_bsr3";
   }
@@ -762,6 +764,7 @@ void UniformFmm::print_initialisation_summary(
 
 void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
   cuda_p2p_bsr_max_bytes_ = options.cuda_p2p_bsr_max_bytes;
+  use_reduced_symmetry_p2p_ = options.use_reduced_symmetry_p2p;
   if (!options.fixed_target_source_indices.has_value()) {
     return;
   }
@@ -790,6 +793,47 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
   fixed_target_source_indices_ = identities;
   prepare_self_indices(identities);
   fixed_sorted_self_indices_ = sorted_self_indices_;
+}
+
+void UniformFmm::build_reduced_symmetry_p2p_packing() {
+  if (!use_reduced_symmetry_p2p_ || periodic_.enabled) {
+    return;
+  }
+
+  std::vector<StaticP2PLeafPair> leaf_pairs;
+  const auto nodes = tree_.nodes();
+  for (const int leaf_index : tree_.occupied_target_leaves()) {
+    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+    for (const int neighbour_index : leaf.list1) {
+      const TreeNode &neighbour = nodes[static_cast<std::size_t>(neighbour_index)];
+      if (neighbour.source_begin == neighbour.source_end) {
+        continue;
+      }
+      leaf_pairs.push_back({static_cast<int>(leaf.target_begin),
+                            static_cast<int>(leaf.target_end - leaf.target_begin),
+                            static_cast<int>(neighbour.source_begin),
+                            static_cast<int>(neighbour.source_end - neighbour.source_begin)});
+    }
+  }
+
+  if (geometry_cache_loaded_direct_float_) {
+    StaticP2POperator promoted;
+    promoted.source_count = p2p_operator_float_.source_count;
+    promoted.target_count = p2p_operator_float_.target_count;
+    promoted.row_offsets = p2p_operator_float_.row_offsets;
+    promoted.blocks.reserve(p2p_operator_float_.blocks.size());
+    for (const FloatStaticDipoleBlock &block : p2p_operator_float_.blocks) {
+      promoted.blocks.push_back({block.target, block.source, block.px, block.py,
+                                 block.pz, block.xx, block.xy, block.xz,
+                                 block.yy, block.yz, block.zz,
+                                 block.skip_for_identity});
+    }
+    p2p_tensor_dictionary_plan_ = build_static_p2p_tensor_dictionary_plan(
+        promoted, leaf_pairs);
+    return;
+  }
+  p2p_tensor_dictionary_plan_ = build_static_p2p_tensor_dictionary_plan(
+      p2p_operator_, leaf_pairs);
 }
 
 void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
@@ -1083,8 +1127,37 @@ void UniformFmm::build_static_plan() {
         tree_.nodes().empty() ? 0 : tree_.nodes().size() - 1;
     static_plan_statistics_.l2l_theoretical_interactions =
         static_plan_statistics_.m2m_theoretical_interactions;
+    try {
+      build_reduced_symmetry_p2p_packing();
+    } catch (const std::invalid_argument &error) {
+      throw std::runtime_error(
+          std::string("reduced-symmetry P2P topology is not representable: ") +
+          error.what());
+    }
+    if (precision_ == StaticPrecision::Float64) {
+      static_plan_statistics_.p2p_value_bytes =
+          p2p_operator_.blocks.size() * 6 * sizeof(double);
+      static_plan_statistics_.p2p_index_bytes =
+          p2p_compact_plan_.row_offsets.size() * sizeof(int) +
+          p2p_compact_plan_.source_indices.size() * sizeof(int) +
+          p2p_compact_plan_.skip_for_identity.size() * sizeof(unsigned char);
+      static_plan_statistics_.p2p_canonical_total_bytes =
+          p2p_compact_plan_.memory().total_bytes();
+      if (p2p_tensor_dictionary_plan_.has_value()) {
+        static_plan_statistics_.p2p_unique_tensors =
+            p2p_tensor_dictionary_plan_->tensors[0].size();
+        static_plan_statistics_.p2p_dictionary_token_bytes =
+            p2p_tensor_dictionary_plan_->tokens.size() * sizeof(std::uint32_t);
+        static_plan_statistics_.p2p_dictionary_tensor_bytes =
+            p2p_tensor_dictionary_plan_->tensors[0].size() * 6 * sizeof(double);
+        static_plan_statistics_.p2p_dictionary_total_bytes =
+            p2p_tensor_dictionary_plan_->memory().total_bytes();
+      }
+    }
     if (backend_ == ExecutionBackend::CpuStatic) {
-      p2p_execution_packing_ = P2PExecutionPacking::ParticleRowSoa;
+      p2p_execution_packing_ = p2p_tensor_dictionary_plan_.has_value()
+          ? P2PExecutionPacking::TensorDictionary
+          : P2PExecutionPacking::ParticleRowSoa;
     }
     if (precision_ == StaticPrecision::Float32) {
       quantise_static_plan_to_float();
@@ -1503,8 +1576,17 @@ void UniformFmm::build_static_plan() {
         source_sizes, target_geometry_, target_sizes);
   }
   p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
+  try {
+    build_reduced_symmetry_p2p_packing();
+  } catch (const std::invalid_argument &error) {
+    throw std::runtime_error(
+        std::string("reduced-symmetry P2P topology is not representable: ") +
+        error.what());
+  }
   if (backend_ == ExecutionBackend::CpuStatic) {
-    p2p_execution_packing_ = P2PExecutionPacking::ParticleRowSoa;
+    p2p_execution_packing_ = p2p_tensor_dictionary_plan_
+        ? P2PExecutionPacking::TensorDictionary
+        : P2PExecutionPacking::ParticleRowSoa;
   }
   static_plan_statistics_.p2p_interactions = p2p_operator_.blocks.size();
   static_plan_statistics_.p2p_value_bytes =
@@ -1513,6 +1595,18 @@ void UniformFmm::build_static_plan() {
       p2p_compact_plan_.row_offsets.size() * sizeof(int) +
       p2p_compact_plan_.source_indices.size() * sizeof(int) +
       p2p_compact_plan_.skip_for_identity.size() * sizeof(unsigned char);
+  static_plan_statistics_.p2p_canonical_total_bytes =
+      p2p_compact_plan_.memory().total_bytes();
+  if (p2p_tensor_dictionary_plan_.has_value()) {
+    static_plan_statistics_.p2p_unique_tensors =
+        p2p_tensor_dictionary_plan_->tensors[0].size();
+    static_plan_statistics_.p2p_dictionary_token_bytes =
+        p2p_tensor_dictionary_plan_->tokens.size() * sizeof(std::uint32_t);
+    static_plan_statistics_.p2p_dictionary_tensor_bytes =
+        p2p_tensor_dictionary_plan_->tensors[0].size() * 6 * sizeof(double);
+    static_plan_statistics_.p2p_dictionary_total_bytes =
+        p2p_tensor_dictionary_plan_->memory().total_bytes();
+  }
   static_plan_statistics_.operator_bytes +=
       p2p_operator_.memory_bytes() + p2p_compact_plan_.memory().total_bytes();
   static_plan_statistics_.near_field_operator_bytes =
@@ -1570,6 +1664,12 @@ void UniformFmm::quantise_static_plan_to_float() {
   } else {
     p2p_compact_plan_float_ =
         build_static_p2p_compact_plan(p2p_operator_float_);
+    if (p2p_tensor_dictionary_plan_.has_value()) {
+      auto dictionary = quantise_static_p2p_tensor_dictionary_plan(
+          *p2p_tensor_dictionary_plan_);
+      p2p_tensor_dictionary_plan_float_ = std::move(dictionary);
+      p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
+    }
   }
   if (!periodic_.enabled && fixed_target_source_indices_.has_value()) {
     p2p_bsr_plan_float_ = build_static_p2p_bsr_plan(
@@ -1627,6 +1727,20 @@ void UniformFmm::quantise_static_plan_to_float() {
       p2p_compact_plan_float_.source_indices.size() * sizeof(int) +
       p2p_compact_plan_float_.skip_for_identity.size() *
           sizeof(unsigned char);
+  static_plan_statistics_.p2p_canonical_total_bytes =
+      p2p_compact_plan_float_.memory().total_bytes();
+  if (p2p_tensor_dictionary_plan_float_.has_value()) {
+    static_plan_statistics_.p2p_unique_tensors =
+        p2p_tensor_dictionary_plan_float_->tensors[0].size();
+    static_plan_statistics_.p2p_dictionary_token_bytes =
+        p2p_tensor_dictionary_plan_float_->tokens.size() *
+        sizeof(std::uint32_t);
+    static_plan_statistics_.p2p_dictionary_tensor_bytes =
+        p2p_tensor_dictionary_plan_float_->tensors[0].size() * 6 *
+        sizeof(float);
+    static_plan_statistics_.p2p_dictionary_total_bytes =
+        p2p_tensor_dictionary_plan_float_->memory().total_bytes();
+  }
   static_plan_statistics_.scratch_bytes = 0;
   for (const FloatM2LGroup &group : m2l_groups_float_) {
     static_plan_statistics_.scratch_bytes +=
@@ -1643,6 +1757,7 @@ void UniformFmm::quantise_static_plan_to_float() {
   l2p_evaluators_.shrink_to_fit();
   p2p_operator_ = {};
   p2p_compact_plan_ = {};
+  p2p_tensor_dictionary_plan_.reset();
   m2l_plan_ = {};
   m2l_groups_.clear();
   m2l_groups_.shrink_to_fit();
@@ -2053,9 +2168,15 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     } else {
       detail::ProfileRange p2p_range{"cdfmm/near_field/p2p"};
       const auto p2p_start = Clock::now();
-      detail::evaluate_static_near_field(p2p_compact_plan_,
-                                         sorted_dipole_moments_, near_fields_,
-                                         sorted_self_indices_);
+      if (p2p_tensor_dictionary_plan_.has_value()) {
+        apply_static_p2p_tensor_dictionary_plan(
+            *p2p_tensor_dictionary_plan_, sorted_dipole_moments_,
+            near_fields_, sorted_self_indices_);
+      } else {
+        detail::evaluate_static_near_field(p2p_compact_plan_,
+                                           sorted_dipole_moments_, near_fields_,
+                                           sorted_self_indices_);
+      }
       last_timings_.p2p.add(elapsed_seconds(p2p_start));
     }
     for (std::size_t target = 0; target < target_count; ++target) {
@@ -2288,9 +2409,15 @@ void UniformFmm::evaluate_into_float32_impl(
       last_timings_.cuda_p2p_kernel.add(device.kernel_seconds);
       last_timings_.cuda_p2p_d2h.add(device.d2h_seconds);
     } else {
-      apply_static_p2p_compact_plan(p2p_compact_plan_float_,
-                                    sorted_dipole_moments_float_,
-          near_fields_float_, sorted_self_indices_);
+      if (p2p_tensor_dictionary_plan_float_.has_value()) {
+        apply_static_p2p_tensor_dictionary_plan(
+            *p2p_tensor_dictionary_plan_float_, sorted_dipole_moments_float_,
+            near_fields_float_, sorted_self_indices_);
+      } else {
+        apply_static_p2p_compact_plan(p2p_compact_plan_float_,
+                                      sorted_dipole_moments_float_,
+                                      near_fields_float_, sorted_self_indices_);
+      }
     }
     for (std::size_t target = 0; target < target_count; ++target) {
       sorted_results_float_[target].H += near_fields_float_[target];

@@ -71,6 +71,7 @@ enum class P2PExecutionPacking {
   Reference,
   CanonicalAos,
   ParticleRowSoa,
+  TensorDictionary,
   CudaBsr3
 };
 
@@ -181,6 +182,13 @@ struct UniformFmmOptions {
   std::optional<std::vector<int>> fixed_target_source_indices{};
   /// @brief Maximum persistent bytes permitted for an automatic CUDA BSR plan.
   std::size_t cuda_p2p_bsr_max_bytes{20ULL * 1024ULL * 1024ULL * 1024ULL};
+  /**
+   * @brief Explicitly enables the experimental reduced-symmetry P2P packing.
+   *
+   * The default retains particle-row SoA so benchmark comparisons are
+   * intentional rather than selected by an implicit policy.
+   */
+  bool use_reduced_symmetry_p2p{false};
   /// @brief Enables validated persistent operator and geometry-plan caches.
   bool enable_cache{true};
 };
@@ -449,6 +457,7 @@ private:
   void initialise_source_geometry(const UniformFmmOptions &options);
   void initialise_target_geometry(const UniformFmmOptions &options);
   void initialise_p2p_policy(const UniformFmmOptions &options);
+  void build_reduced_symmetry_p2p_packing();
   void print_initialisation_summary(const UniformFmmOptions &options) const;
   void build_cuda_p2p_plan();
   void build_cuda_full_plan();
@@ -524,6 +533,7 @@ private:
   std::vector<CuboidSize> sorted_target_sizes_{};
   P2PExecutionPacking p2p_execution_packing_{P2PExecutionPacking::Reference};
   std::size_t cuda_p2p_bsr_max_bytes_{20ULL * 1024ULL * 1024ULL * 1024ULL};
+  bool use_reduced_symmetry_p2p_{false};
   mutable CudaPlanStatistics empty_cuda_statistics_{};
   std::unique_ptr<CudaM2LPlanOwner> cuda_m2l_plan_{};
   std::unique_ptr<CudaP2PPlanOwner> cuda_p2p_plan_{};
@@ -537,12 +547,15 @@ private:
   std::vector<StaticL2PEvaluator> l2p_evaluators_{};
   StaticP2POperator p2p_operator_{};
   StaticP2PCompactPlan p2p_compact_plan_{};
+  std::optional<StaticP2PTensorDictionaryPlan> p2p_tensor_dictionary_plan_{};
   StaticM2LPlan m2l_plan_{};
   std::array<FloatStaticCoefficientOperator, 8> m2m_operators_float_{};
   std::array<FloatStaticCoefficientOperator, 8> l2l_operators_float_{};
   std::vector<FloatStaticL2PEvaluator> l2p_evaluators_float_{};
   FloatStaticP2POperator p2p_operator_float_{};
   FloatStaticP2PCompactPlan p2p_compact_plan_float_{};
+  std::optional<FloatStaticP2PTensorDictionaryPlan>
+      p2p_tensor_dictionary_plan_float_{};
   FloatStaticP2PBsrPlan p2p_bsr_plan_float_{};
   FloatStaticM2LPlan m2l_plan_float_{};
   StaticPlanStatistics static_plan_statistics_{};

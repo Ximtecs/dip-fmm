@@ -1146,6 +1146,10 @@ void UniformFmm::initialise_cache_keys(const UniformFmmOptions& options) {
   hash_value(hash, static_cast<std::uint32_t>(target_geometry_));
   hash_value(hash, use_cuboid_p2m_);
   hash_value(hash, use_cuboid_l2p_);
+  // Derived P2P execution packing is part of the plan identity. The cached
+  // canonical operator remains reusable, while the cache key prevents a
+  // reduced-symmetry request from being reported as a default packing.
+  hash_value(hash, use_reduced_symmetry_p2p_);
   hash_value(hash, periodic_.enabled);
   hash_value(hash, periodic_.axes);
   hash_value(hash, static_cast<std::uint32_t>(periodic_.convention));
@@ -1209,7 +1213,9 @@ void UniformFmm::initialise_cache_keys(const UniformFmmOptions& options) {
   plan << "plan_" << basis_name(expansion_basis_) << "_p" << std::setw(2)
        << std::setfill('0') << expansion_order() << "_d" << std::setw(2)
        << tree_.leaf_level() << '_' << precision_name(precision_) << "_N_"
-       << tree_.sorted_source_positions().size() << '_' << digest << "_v02.bin";
+       << tree_.sorted_source_positions().size() << "_p2p_"
+       << (use_reduced_symmetry_p2p_ ? "reduced_symmetry" : "canonical")
+       << '_' << digest << "_v02.bin";
   geometry_cache_key_ = plan.str();
   static_plan_statistics_.geometry_hash.add(
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start)

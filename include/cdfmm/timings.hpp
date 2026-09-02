@@ -237,6 +237,16 @@ struct StaticPlanStatistics {
     std::size_t p2p_value_bytes{0};
     /// @brief Row and source/target index storage.
     std::size_t p2p_index_bytes{0};
+    /// @brief Complete persistent bytes of the canonical particle-row packing.
+    std::size_t p2p_canonical_total_bytes{0};
+    /// @brief Number of retained magnitude Tensor6 dictionary entries.
+    std::size_t p2p_unique_tensors{0};
+    /// @brief Bytes occupied by packed Tensor6 interaction tokens.
+    std::size_t p2p_dictionary_token_bytes{0};
+    /// @brief Bytes occupied by unique Tensor6 dictionary values.
+    std::size_t p2p_dictionary_tensor_bytes{0};
+    /// @brief Complete persistent bytes of the selected dictionary packing.
+    std::size_t p2p_dictionary_total_bytes{0};
     /// @brief Number of times the immutable plan has been constructed.
     std::uint64_t construction_count{0};
 
