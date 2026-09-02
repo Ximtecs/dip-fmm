@@ -156,6 +156,62 @@ TEST_CASE("static cuboid P2P reuses exact pair tensors", "[cuboid][p2p]")
     REQUIRE(sparse.blocks[0].zz == exact.zz);
 }
 
+TEST_CASE("reduced-symmetry P2P supports cuboid near fields",
+          "[uniform_fmm][cuboid][p2p]") {
+  std::vector<Vec3> positions;
+  std::vector<Vec3> moments;
+  for (int z = 0; z < 2; ++z) {
+    for (int y = 0; y < 2; ++y) {
+      for (int x = 0; x < 2; ++x) {
+        positions.push_back({0.3 * x, 0.3 * y, 0.3 * z});
+        moments.push_back({0.01 * (x + 1), -0.02 * (y + 1),
+                           0.03 * (z + 1)});
+      }
+    }
+  }
+  const CuboidSize cube{0.1, 0.1, 0.1};
+
+  const auto compare = [&](const TargetGeometry target_geometry,
+                           const std::vector<CuboidSize> &target_sizes) {
+    UniformFmmOptions options;
+    options.precision = StaticPrecision::Float64;
+    options.expansion_basis = ExpansionBasis::Cartesian;
+    options.expansion_order = 5;
+    options.tree.max_level = 1;
+    options.tree.root_centre = {0.15, 0.15, 0.15};
+    options.tree.root_half_width = 0.25;
+    options.source_geometry = SourceGeometry::UniformCuboid;
+    options.source_sizes = {cube};
+    options.target_geometry = target_geometry;
+    options.target_sizes = target_sizes;
+
+    UniformFmm canonical(positions, positions, options);
+    options.use_reduced_symmetry_p2p = true;
+    UniformFmm reduced(positions, positions, options);
+    REQUIRE(canonical.p2p_execution_packing() ==
+            P2PExecutionPacking::ParticleRowSoa);
+    REQUIRE(reduced.p2p_execution_packing() ==
+            P2PExecutionPacking::TensorDictionary);
+
+    const auto reference = canonical.evaluate(moments);
+    const auto candidate = reduced.evaluate(moments);
+    REQUIRE(reduced.static_plan_statistics().p2p_unique_tensors > 0);
+    REQUIRE(reduced.static_plan_statistics().p2p_unique_tensors <=
+            reduced.static_plan_statistics().p2p_interactions);
+    for (std::size_t target = 0; target < positions.size(); ++target) {
+      REQUIRE(candidate[target].H.x ==
+              Catch::Approx(reference[target].H.x).margin(2.0e-12));
+      REQUIRE(candidate[target].H.y ==
+              Catch::Approx(reference[target].H.y).margin(2.0e-12));
+      REQUIRE(candidate[target].H.z ==
+              Catch::Approx(reference[target].H.z).margin(2.0e-12));
+    }
+  };
+
+  compare(TargetGeometry::Point, {});
+  compare(TargetGeometry::VolumeAveragedCuboid, {cube});
+}
+
 TEST_CASE("fixed P2P identities are optional and immutable",
           "[uniform_fmm][p2p]") {
   const std::vector<Vec3> positions{

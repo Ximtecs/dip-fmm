@@ -1216,14 +1216,6 @@ build_static_p2p_signed_tensor_dictionary_plan(
       target_source_indices.size() != static_cast<std::size_t>(operator_map.target_count)) {
     throw std::invalid_argument("signed Tensor6 dictionary identity dimensions are inconsistent");
   }
-  const bool requires_identity = std::any_of(
-      operator_map.blocks.begin(), operator_map.blocks.end(),
-      [](const StaticDipoleBlock &block) { return block.skip_for_identity != 0; });
-  if (requires_identity && target_source_indices.empty()) {
-    throw std::invalid_argument(
-        "signed Tensor6 dictionary requires fixed point-dipole identities");
-  }
-
   const StaticP2PLeafPlan leaf =
       build_static_p2p_leaf_plan(operator_map, leaf_pairs);
   StaticP2PSignedTensorDictionaryPlan result;
