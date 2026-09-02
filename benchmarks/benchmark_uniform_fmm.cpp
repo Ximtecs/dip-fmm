@@ -473,6 +473,8 @@ std::string_view p2p_packing_name(const cdfmm::P2PExecutionPacking packing) {
     return "canonical-aos";
   case cdfmm::P2PExecutionPacking::ParticleRowSoa:
     return "particle-row-soa";
+  case cdfmm::P2PExecutionPacking::TensorDictionary:
+    return "tensor-dictionary";
   case cdfmm::P2PExecutionPacking::CudaBsr3:
     return "cuda-bsr3";
   }

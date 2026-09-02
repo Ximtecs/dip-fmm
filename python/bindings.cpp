@@ -468,6 +468,7 @@ PYBIND11_MODULE(cdfmm, module) {
         .value("REFERENCE", P2PExecutionPacking::Reference)
         .value("CANONICAL_AOS", P2PExecutionPacking::CanonicalAos)
         .value("PARTICLE_ROW_SOA", P2PExecutionPacking::ParticleRowSoa)
+        .value("TENSOR_DICTIONARY", P2PExecutionPacking::TensorDictionary)
         .value("CUDA_BSR3", P2PExecutionPacking::CudaBsr3);
 
     module.def("cuda_compiled", &cuda_compiled);
@@ -682,6 +683,8 @@ PYBIND11_MODULE(cdfmm, module) {
                        &UniformFmmOptions::fixed_target_source_indices)
         .def_readwrite("cuda_p2p_bsr_max_bytes",
                        &UniformFmmOptions::cuda_p2p_bsr_max_bytes)
+        .def_readwrite("use_reduced_symmetry_p2p",
+                       &UniformFmmOptions::use_reduced_symmetry_p2p)
         .def_readwrite("enable_cache", &UniformFmmOptions::enable_cache);
 
     py::class_<UniformFmm>(module, "UniformFmm")
@@ -843,8 +846,18 @@ PYBIND11_MODULE(cdfmm, module) {
               result["l2p_operator_bytes"] = statistics.l2p_operator_bytes;
               result["near_field_operator_bytes"] =
                   statistics.near_field_operator_bytes;
+              result["p2p_interactions"] = statistics.p2p_interactions;
               result["p2p_value_bytes"] = statistics.p2p_value_bytes;
               result["p2p_index_bytes"] = statistics.p2p_index_bytes;
+              result["p2p_canonical_total_bytes"] =
+                  statistics.p2p_canonical_total_bytes;
+              result["p2p_unique_tensors"] = statistics.p2p_unique_tensors;
+              result["p2p_dictionary_token_bytes"] =
+                  statistics.p2p_dictionary_token_bytes;
+              result["p2p_dictionary_tensor_bytes"] =
+                  statistics.p2p_dictionary_tensor_bytes;
+              result["p2p_dictionary_total_bytes"] =
+                  statistics.p2p_dictionary_total_bytes;
               result["tree_bytes"] = statistics.tree_bytes;
               result["translation_operator_bytes"] =
                   statistics.translation_operator_bytes();
