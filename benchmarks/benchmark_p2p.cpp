@@ -17,7 +17,6 @@
 #include <iostream>
 #include <limits>
 #include <memory>
-#include <optional>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -119,8 +118,8 @@ struct GeometryPlan {
   cdfmm::StaticP2POperator canonical;
   cdfmm::StaticP2PCompactPlan compact;
   cdfmm::StaticP2PLeafPlan leaf;
+  cdfmm::StaticP2PTensorDictionaryPlan tensor_dictionary;
   cdfmm::StaticP2PBsrPlan bsr;
-  std::optional<cdfmm::StaticP2PGridStencilPlan> grid;
 #if defined(CDFMM_USE_MKL)
   std::unique_ptr<MklBsrPlan> mkl_bsr;
 #endif
@@ -129,9 +128,9 @@ struct GeometryPlan {
   double canonical_setup_seconds{0.0};
   double compact_setup_seconds{0.0};
   double leaf_setup_seconds{0.0};
+  double tensor_dictionary_setup_seconds{0.0};
   double bsr_setup_seconds{0.0};
   double mkl_setup_seconds{0.0};
-  double grid_setup_seconds{0.0};
 };
 
 struct Result {
@@ -312,6 +311,10 @@ make_positions(const int depth, const int occupancy,
   start = Clock::now();
   result.leaf = cdfmm::build_static_p2p_leaf_plan(result.canonical, leaf_pairs);
   result.leaf_setup_seconds = elapsed(start);
+  start = Clock::now();
+  result.tensor_dictionary = cdfmm::build_static_p2p_tensor_dictionary_plan(
+      result.canonical, leaf_pairs);
+  result.tensor_dictionary_setup_seconds = elapsed(start);
   result.identities.resize(positions.size());
   for (std::size_t index = 0; index < positions.size(); ++index) {
     result.identities[index] = static_cast<int>(index);
@@ -320,10 +323,6 @@ make_positions(const int depth, const int occupancy,
   result.bsr =
       cdfmm::build_static_p2p_bsr_plan(result.canonical, result.identities);
   result.bsr_setup_seconds = elapsed(start);
-  start = Clock::now();
-  result.grid = cdfmm::build_static_p2p_grid_stencil_plan(
-      result.canonical, result.tree.sorted_source_positions(), true);
-  result.grid_setup_seconds = elapsed(start);
 #if defined(CDFMM_USE_MKL)
   start = Clock::now();
   result.mkl_bsr = std::make_unique<MklBsrPlan>(
@@ -467,22 +466,6 @@ void run_cuda_case(GeometryPlan &geometry, const Options &options,
       measure_cuda("cuda-cusparse-bsr3", geometry, options.evaluations, [&] {
         return std::make_unique<cdfmm::CudaP2PPlan>(geometry.bsr);
       });
-  std::optional<CudaResult> grid_table;
-  std::optional<CudaResult> grid_onthefly;
-  if (geometry.grid) {
-    grid_table = measure_cuda(
-        "cuda-grid-stencil", geometry, options.evaluations, [&] {
-          return std::make_unique<cdfmm::CudaP2PPlan>(
-              *geometry.grid, geometry.identities, false,
-              options.cuda_target_tile, options.cuda_targets_per_thread);
-        });
-    grid_onthefly = measure_cuda(
-        "cuda-grid-point-onthefly", geometry, options.evaluations, [&] {
-          return std::make_unique<cdfmm::CudaP2PPlan>(
-              *geometry.grid, geometry.identities, true,
-              options.cuda_target_tile, options.cuda_targets_per_thread);
-        });
-  }
 
   const auto require_matching_checksum = [&](const CudaResult &candidate) {
     const double scale = std::max(1.0, std::abs(expected_checksum));
@@ -495,10 +478,6 @@ void run_cuda_case(GeometryPlan &geometry, const Options &options,
   require_matching_checksum(compact);
   require_matching_checksum(leaf);
   require_matching_checksum(bsr);
-  if (grid_table) {
-    require_matching_checksum(*grid_table);
-    require_matching_checksum(*grid_onthefly);
-  }
 
   std::cout << "cuda_implementation,setup_s,h2d_s,kernel_s,d2h_s,"
                "device_total_s,host_total_s,kernel_speedup,total_speedup,"
@@ -511,10 +490,6 @@ void run_cuda_case(GeometryPlan &geometry, const Options &options,
   print_cuda_result(compact, interactions, canonical);
   print_cuda_result(leaf, interactions, canonical);
   print_cuda_result(bsr, interactions, canonical);
-  if (grid_table) {
-    print_cuda_result(*grid_table, interactions, canonical);
-    print_cuda_result(*grid_onthefly, interactions, canonical);
-  }
 }
 #endif
 
@@ -554,22 +529,13 @@ void run_case(const Options &options, const int occupancy) {
                 cdfmm::apply_static_p2p_bsr_plan(geometry.bsr, geometry.moments,
                                                  fields, geometry.identities);
               });
-  std::optional<Result> grid_table;
-  std::optional<Result> grid_onthefly;
-  if (geometry.grid) {
-    grid_table = measure(
-        "grid-stencil", geometry.grid->memory(), geometry, options.evaluations,
-        [&](const std::span<cdfmm::Vec3> fields) {
-          cdfmm::apply_static_p2p_grid_stencil_plan(
-              *geometry.grid, geometry.moments, fields, geometry.identities);
-        });
-    grid_onthefly = measure(
-        "grid-point-onthefly", geometry.grid->memory(), geometry,
-        options.evaluations, [&](const std::span<cdfmm::Vec3> fields) {
-          cdfmm::apply_static_p2p_grid_point_onthefly(
-              *geometry.grid, geometry.moments, fields, geometry.identities);
-        });
-  }
+  const Result tensor_dictionary = measure(
+      "tensor-dictionary", geometry.tensor_dictionary.memory(), geometry,
+      options.evaluations, [&](const std::span<cdfmm::Vec3> fields) {
+        cdfmm::apply_static_p2p_tensor_dictionary_plan(
+            geometry.tensor_dictionary, geometry.moments, fields,
+            geometry.identities);
+      });
 #if defined(CDFMM_USE_MKL)
   const Result mkl_bsr =
       measure("onemkl-bsr3", geometry.mkl_bsr->memory(), geometry,
@@ -587,10 +553,7 @@ void run_case(const Options &options, const int occupancy) {
   require_matching_checksum(compact);
   require_matching_checksum(leaf);
   require_matching_checksum(bsr);
-  if (grid_table) {
-    require_matching_checksum(*grid_table);
-    require_matching_checksum(*grid_onthefly);
-  }
+  require_matching_checksum(tensor_dictionary);
 #if defined(CDFMM_USE_MKL)
   require_matching_checksum(mkl_bsr);
 #endif
@@ -607,12 +570,9 @@ void run_case(const Options &options, const int occupancy) {
             << ",canonical_setup_s=" << geometry.canonical_setup_seconds
             << ",compact_setup_s=" << geometry.compact_setup_seconds
             << ",leaf_setup_s=" << geometry.leaf_setup_seconds;
+  std::cout << ",tensor_dictionary_setup_s="
+            << geometry.tensor_dictionary_setup_seconds;
   std::cout << ",bsr_setup_s=" << geometry.bsr_setup_seconds;
-  std::cout << ",grid_setup_s=" << geometry.grid_setup_seconds;
-  if (geometry.grid) {
-    std::cout << ",unique_displacements="
-              << geometry.grid->displacements.size();
-  }
 #if defined(CDFMM_USE_MKL)
   std::cout << ",mkl_setup_s=" << geometry.mkl_setup_seconds;
 #endif
@@ -628,13 +588,9 @@ void run_case(const Options &options, const int occupancy) {
   print_result(canonical, geometry.canonical.blocks.size(), canonical.seconds);
   print_result(compact, geometry.canonical.blocks.size(), canonical.seconds);
   print_result(leaf, geometry.canonical.blocks.size(), canonical.seconds);
+  print_result(tensor_dictionary, geometry.canonical.blocks.size(),
+               canonical.seconds);
   print_result(bsr, geometry.canonical.blocks.size(), canonical.seconds);
-  if (grid_table) {
-    print_result(*grid_table, geometry.canonical.blocks.size(),
-                 canonical.seconds);
-    print_result(*grid_onthefly, geometry.canonical.blocks.size(),
-                 canonical.seconds);
-  }
 #if defined(CDFMM_USE_MKL)
   print_result(mkl_bsr, geometry.canonical.blocks.size(), canonical.seconds);
 #endif
