@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "cdfmm/periodic.hpp"
 #include "cdfmm/precision.hpp"
 #include "cdfmm/spherical_harmonics.hpp"
+#include "cdfmm/tensor_dictionary.hpp"
 
 namespace cdfmm {
 
@@ -163,6 +165,26 @@ struct StaticP2PLeafBlock {
 };
 
 /**
+ * @brief Leaf-topology P2P packing with one packed Tensor6 token per pair.
+ *
+ * A token stores a dictionary ID and six independent component sign bits.
+ * Source and target particle indices remain implied by dense leaf blocks.
+ */
+struct StaticP2PTensorDictionaryPlan {
+  int source_count{0};
+  int target_count{0};
+  std::vector<int> target_begins{};
+  std::vector<int> target_counts{};
+  std::vector<int> leaf_row_offsets{};
+  std::vector<StaticP2PLeafBlock> blocks{};
+  std::array<std::vector<double>, 6> tensors{};
+  std::vector<std::uint32_t> tokens{};
+  bool skip_for_identity{false};
+
+  [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
+/**
  * @brief Compact leaf-grouped execution packing of the canonical P2P tensor.
  *
  * One row describes each occupied target leaf. Leaf blocks are dense in
@@ -203,39 +225,6 @@ struct StaticP2PBsrPlan {
   std::vector<int> target_source_indices{};
 
   /// @brief Returns known BSR value and index storage.
-  [[nodiscard]] StaticP2PMemory memory() const noexcept;
-};
-
-/** @brief Integer descriptor for a coincident Cartesian particle lattice. */
-struct StaticP2PGridDescriptor {
-  std::array<int, 3> dimensions{};
-  Vec3 origin{};
-  Vec3 spacing{};
-};
-
-/**
- * @brief Displacement-table execution plan for regular-grid list1 P2P.
- *
- * Particle coordinates are retained once as integer lattice coordinates.
- * Every list1 entry stores only its source particle and a compact index into
- * the unique six-component tensor table; no pair tensor is duplicated.
- * `point_dipoles` permits the same interaction rows to be evaluated directly
- * from integer displacements instead of reading the tensor table.
- */
-struct StaticP2PGridStencilPlan {
-  int source_count{0};
-  int target_count{0};
-  StaticP2PGridDescriptor grid{};
-  std::vector<std::array<int, 3>> coordinates{};
-  std::vector<int> row_offsets{};
-  std::vector<int> source_indices{};
-  std::vector<int> displacement_indices{};
-  std::vector<unsigned char> skip_for_identity{};
-  std::vector<std::array<int, 3>> displacements{};
-  std::array<std::vector<double>, 6> tensors{};
-  bool point_dipoles{false};
-
-  /// @brief Returns the compact table and grid-metadata storage.
   [[nodiscard]] StaticP2PMemory memory() const noexcept;
 };
 
@@ -368,6 +357,21 @@ struct FloatStaticP2PLeafPlan {
     [[nodiscard]] StaticP2PMemory memory() const noexcept;
 };
 
+/** @brief FP32 counterpart of the leaf-topology Tensor6 dictionary packing. */
+struct FloatStaticP2PTensorDictionaryPlan {
+  int source_count{0};
+  int target_count{0};
+  std::vector<int> target_begins{};
+  std::vector<int> target_counts{};
+  std::vector<int> leaf_row_offsets{};
+  std::vector<StaticP2PLeafBlock> blocks{};
+  std::array<std::vector<float>, 6> tensors{};
+  std::vector<std::uint32_t> tokens{};
+  bool skip_for_identity{false};
+
+  [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
 /** @brief Full FP32 BSR(3) near-field packing. */
 struct FloatStaticP2PBsrPlan {
     int source_count{0};
@@ -406,6 +410,9 @@ struct FloatStaticM2LPlan {
     const StaticP2PCompactPlan& source);
 [[nodiscard]] FloatStaticP2PLeafPlan quantise_static_p2p_leaf_plan(
     const StaticP2PLeafPlan& source);
+[[nodiscard]] FloatStaticP2PTensorDictionaryPlan
+quantise_static_p2p_tensor_dictionary_plan(
+    const StaticP2PTensorDictionaryPlan &source);
 [[nodiscard]] FloatStaticP2PBsrPlan quantise_static_p2p_bsr_plan(
     const StaticP2PBsrPlan& source);
 [[nodiscard]] FloatStaticM2LPlan quantise_static_m2l_plan(
@@ -603,6 +610,12 @@ build_static_p2p_compact_plan(const FloatStaticP2POperator &operator_map);
 build_static_p2p_leaf_plan(const StaticP2POperator &operator_map,
                            std::span<const StaticP2PLeafPair> leaf_pairs);
 
+/** @brief Packs dense leaf blocks into an exact-bit Tensor6 dictionary. */
+[[nodiscard]] StaticP2PTensorDictionaryPlan
+build_static_p2p_tensor_dictionary_plan(
+    const StaticP2POperator &operator_map,
+    std::span<const StaticP2PLeafPair> leaf_pairs);
+
 /** @brief Expands canonical tensors into full BSR(3) blocks. */
 [[nodiscard]] StaticP2PBsrPlan
 build_static_p2p_bsr_plan(const StaticP2POperator &operator_map,
@@ -612,18 +625,6 @@ build_static_p2p_bsr_plan(const StaticP2POperator &operator_map,
 [[nodiscard]] FloatStaticP2PBsrPlan
 build_static_p2p_bsr_plan(const FloatStaticP2POperator &operator_map,
                           std::span<const int> target_source_indices = {});
-
-/**
- * @brief Detects a coincident regular grid and compresses canonical tensors.
- *
- * Detection is deterministic setup work. Empty optional results indicate that
- * the positions are not one complete, axis-aligned Cartesian product or that
- * canonical rows do not describe those particles consistently.
- */
-[[nodiscard]] std::optional<StaticP2PGridStencilPlan>
-build_static_p2p_grid_stencil_plan(const StaticP2POperator &operator_map,
-                                   std::span<const Vec3> positions,
-                                   bool point_dipoles);
 
 /**
  * @brief Applies the compact static near-field tensor additively.
@@ -649,25 +650,17 @@ void apply_static_p2p_leaf_plan(
     const StaticP2PLeafPlan &plan, std::span<const Vec3> dipole_moments,
     std::span<Vec3> H, std::span<const int> target_source_indices = {});
 
+/** @brief Applies the leaf-topology Tensor6 dictionary packing additively. */
+void apply_static_p2p_tensor_dictionary_plan(
+    const StaticP2PTensorDictionaryPlan &plan,
+    std::span<const Vec3> dipole_moments, std::span<Vec3> H,
+    std::span<const int> target_source_indices = {});
+
 /** @brief Applies the portable full BSR(3) reference packing additively. */
 void apply_static_p2p_bsr_plan(const StaticP2PBsrPlan &plan,
                                std::span<const Vec3> dipole_moments,
                                std::span<Vec3> H,
                                std::span<const int> target_source_indices = {});
-
-/** @brief Applies the regular-grid displacement tensor table additively. */
-void apply_static_p2p_grid_stencil_plan(
-    const StaticP2PGridStencilPlan &plan,
-    std::span<const Vec3> dipole_moments,
-    std::span<Vec3> H,
-    std::span<const int> target_source_indices = {});
-
-/** @brief Applies regular-grid point P2P by recomputing its tensor on demand. */
-void apply_static_p2p_grid_point_onthefly(
-    const StaticP2PGridStencilPlan &plan,
-    std::span<const Vec3> dipole_moments,
-    std::span<Vec3> H,
-    std::span<const int> target_source_indices = {});
 
 /** @brief Applies a compact static operator additively to an output vector. */
 void apply_static_operator(
@@ -722,6 +715,12 @@ void apply_static_p2p_leaf_plan(
     std::span<FloatVec3> H,
     std::span<const int> target_source_indices = {}
 );
+
+/** @brief Applies the FP32 leaf-topology Tensor6 dictionary packing. */
+void apply_static_p2p_tensor_dictionary_plan(
+    const FloatStaticP2PTensorDictionaryPlan &plan,
+    std::span<const FloatVec3> dipole_moments, std::span<FloatVec3> H,
+    std::span<const int> target_source_indices = {});
 
 void apply_static_p2p_bsr_plan(
     const FloatStaticP2PBsrPlan& plan,

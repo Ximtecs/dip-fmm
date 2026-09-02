@@ -6,10 +6,12 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <numeric>
 #include <numbers>
 #include <set>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_map>
 
 #include "cdfmm/laplace_derivatives.hpp"
 
@@ -750,164 +752,23 @@ StaticP2PMemory StaticP2PLeafPlan::memory() const noexcept {
   return result;
 }
 
+StaticP2PMemory StaticP2PTensorDictionaryPlan::memory() const noexcept {
+  StaticP2PMemory result;
+  result.tensor_bytes = tensors[0].size() * 6 * sizeof(double);
+  result.index_bytes = tokens.size() * sizeof(std::uint32_t);
+  result.row_metadata_bytes = leaf_row_offsets.size() * sizeof(int);
+  result.leaf_metadata_bytes =
+      (target_begins.size() + target_counts.size()) * sizeof(int) +
+      blocks.size() * sizeof(StaticP2PLeafBlock);
+  return result;
+}
+
 StaticP2PMemory StaticP2PBsrPlan::memory() const noexcept {
   StaticP2PMemory result;
   result.tensor_bytes = values.size() * sizeof(double);
   result.index_bytes = source_indices.size() * sizeof(int);
   result.row_metadata_bytes =
       (row_offsets.size() + target_source_indices.size()) * sizeof(int);
-  return result;
-}
-
-StaticP2PMemory StaticP2PGridStencilPlan::memory() const noexcept {
-  StaticP2PMemory result;
-  result.tensor_bytes = tensors[0].size() * 6 * sizeof(double);
-  result.index_bytes =
-      (source_indices.size() + displacement_indices.size()) * sizeof(int) +
-      skip_for_identity.size() * sizeof(unsigned char);
-  result.row_metadata_bytes = row_offsets.size() * sizeof(int);
-  result.leaf_metadata_bytes =
-      coordinates.size() * sizeof(std::array<int, 3>) +
-      displacements.size() * sizeof(std::array<int, 3>) +
-      sizeof(StaticP2PGridDescriptor);
-  return result;
-}
-
-std::optional<StaticP2PGridStencilPlan>
-build_static_p2p_grid_stencil_plan(const StaticP2POperator &operator_map,
-                                   const std::span<const Vec3> positions,
-                                   const bool point_dipoles) {
-  if (operator_map.source_count != operator_map.target_count ||
-      positions.size() != static_cast<std::size_t>(operator_map.source_count) ||
-      positions.empty()) {
-    return std::nullopt;
-  }
-
-  std::array<std::vector<double>, 3> axes;
-  for (const Vec3 &position : positions) {
-    axes[0].push_back(position.x);
-    axes[1].push_back(position.y);
-    axes[2].push_back(position.z);
-  }
-  double coordinate_scale = 1.0;
-  for (const Vec3 &position : positions) {
-    coordinate_scale = std::max({coordinate_scale, std::abs(position.x),
-                                 std::abs(position.y), std::abs(position.z)});
-  }
-  const double tolerance =
-      64.0 * std::numeric_limits<double>::epsilon() * coordinate_scale;
-  for (std::vector<double> &axis : axes) {
-    std::sort(axis.begin(), axis.end());
-    axis.erase(std::unique(axis.begin(), axis.end(),
-                           [&](double a, double b) {
-                             return std::abs(a - b) <= tolerance;
-                           }),
-               axis.end());
-    if (axis.empty()) {
-      return std::nullopt;
-    }
-    if (axis.size() > 1) {
-      const double spacing = axis[1] - axis[0];
-      if (!(spacing > tolerance)) {
-        return std::nullopt;
-      }
-      for (std::size_t index = 1; index < axis.size(); ++index) {
-        const double expected = axis[0] + spacing * index;
-        if (std::abs(axis[index] - expected) >
-            tolerance * std::max(1.0, std::abs(expected))) {
-          return std::nullopt;
-        }
-      }
-    }
-  }
-  if (axes[0].size() * axes[1].size() * axes[2].size() != positions.size()) {
-    return std::nullopt;
-  }
-
-  StaticP2PGridStencilPlan result;
-  result.source_count = operator_map.source_count;
-  result.target_count = operator_map.target_count;
-  result.point_dipoles = point_dipoles;
-  result.grid.dimensions = {static_cast<int>(axes[0].size()),
-                            static_cast<int>(axes[1].size()),
-                            static_cast<int>(axes[2].size())};
-  result.grid.origin = {axes[0][0], axes[1][0], axes[2][0]};
-  result.grid.spacing = {axes[0].size() > 1 ? axes[0][1] - axes[0][0] : 0.0,
-                         axes[1].size() > 1 ? axes[1][1] - axes[1][0] : 0.0,
-                         axes[2].size() > 1 ? axes[2][1] - axes[2][0] : 0.0};
-  result.coordinates.reserve(positions.size());
-  std::set<std::array<int, 3>> occupied;
-  for (const Vec3 &position : positions) {
-    std::array<int, 3> coordinate{};
-    const std::array<double, 3> values{position.x, position.y, position.z};
-    for (int component = 0; component < 3; ++component) {
-      const auto &axis = axes[static_cast<std::size_t>(component)];
-      const auto found = std::lower_bound(axis.begin(), axis.end(),
-                                          values[component] - tolerance);
-      if (found == axis.end() ||
-          std::abs(*found - values[component]) > tolerance) {
-        return std::nullopt;
-      }
-      coordinate[component] = static_cast<int>(found - axis.begin());
-    }
-    if (!occupied.insert(coordinate).second) {
-      return std::nullopt;
-    }
-    result.coordinates.push_back(coordinate);
-  }
-
-  result.row_offsets = operator_map.row_offsets;
-  result.source_indices.reserve(operator_map.blocks.size());
-  result.displacement_indices.reserve(operator_map.blocks.size());
-  result.skip_for_identity.reserve(operator_map.blocks.size());
-  std::map<std::array<int, 3>, int> displacement_map;
-  for (const StaticDipoleBlock &block : operator_map.blocks) {
-    if (block.target < 0 || block.source < 0 ||
-        block.target >= result.target_count ||
-        block.source >= result.source_count) {
-      return std::nullopt;
-    }
-    std::array<int, 3> displacement{};
-    for (int component = 0; component < 3; ++component) {
-      displacement[component] =
-          result
-              .coordinates[static_cast<std::size_t>(block.source)][component] -
-          result.coordinates[static_cast<std::size_t>(block.target)][component];
-    }
-    auto [iterator, inserted] = displacement_map.try_emplace(
-        displacement, static_cast<int>(displacement_map.size()));
-    if (inserted) {
-      result.displacements.push_back(displacement);
-      const std::array<double, 6> tensor{block.xx, block.xy, block.xz,
-                                         block.yy, block.yz, block.zz};
-      for (int component = 0; component < 6; ++component) {
-        result.tensors[component].push_back(tensor[component]);
-      }
-    } else {
-      const std::size_t tensor_index =
-          static_cast<std::size_t>(iterator->second);
-      const std::array<double, 6> tensor{block.xx, block.xy, block.xz,
-                                         block.yy, block.yz, block.zz};
-      for (int component = 0; component < 6; ++component) {
-        const double reference = result.tensors[component][tensor_index];
-        const bool both_nan =
-            std::isnan(reference) && std::isnan(tensor[component]);
-        const double scale =
-            std::max({1.0, std::abs(reference), std::abs(tensor[component])});
-        if (!both_nan &&
-            std::abs(reference - tensor[component]) >
-                256.0 * std::numeric_limits<double>::epsilon() * scale) {
-          // Equal lattice offsets must represent the same physical
-          // source/target shape before table compression is valid.
-          return std::nullopt;
-        }
-      }
-    }
-    result.source_indices.push_back(block.source);
-    result.displacement_indices.push_back(iterator->second);
-    result.skip_for_identity.push_back(
-        static_cast<unsigned char>(block.skip_for_identity));
-  }
   return result;
 }
 
@@ -1125,19 +986,15 @@ StaticP2PLeafPlan build_static_p2p_leaf_plan(
     return result;
   }
 
-  std::vector<StaticP2PLeafPair> sorted(leaf_pairs.begin(), leaf_pairs.end());
-  std::sort(sorted.begin(), sorted.end(),
-            [](const auto &left, const auto &right) {
-              return std::tie(left.target_begin, left.source_begin) <
-                     std::tie(right.target_begin, right.source_begin);
-            });
-
   std::vector<unsigned char> covered(operator_map.blocks.size(), 0);
   std::set<std::pair<int, int>> occupied_target_ranges;
   std::set<std::pair<int, int>> occupied_source_ranges;
   int previous_target_begin = -1;
   int previous_target_count = -1;
-  for (const StaticP2PLeafPair &pair : sorted) {
+  // The canonical operator retains `list1` neighbour order in each target
+  // row. Preserve the supplied leaf-pair order so dense rectangles validate
+  // against that exact interaction order rather than a reordered topology.
+  for (const StaticP2PLeafPair &pair : leaf_pairs) {
     if (pair.target_begin < 0 || pair.target_count <= 0 ||
         pair.target_begin + pair.target_count > operator_map.target_count ||
         pair.source_begin < 0 || pair.source_count <= 0 ||
@@ -1227,6 +1084,110 @@ StaticP2PLeafPlan build_static_p2p_leaf_plan(
   result.unique_occupancies = static_cast<int>(occupancies.size());
   result.uniform_occupancy = occupancies.size() == 1;
   return result;
+}
+
+namespace {
+
+template <typename Scalar> struct Tensor6BitKeyHash {
+  std::size_t operator()(const Tensor6BitKey<Scalar> &key) const noexcept {
+    std::size_t hash = 0;
+    for (const auto value : key.values) {
+      hash ^= std::hash<typename Tensor6BitKey<Scalar>::Bits>{}(value) +
+          0x9e3779b97f4a7c15ULL + (hash << 6U) + (hash >> 2U);
+    }
+    return hash;
+  }
+};
+
+template <typename Scalar, typename DictionaryPlan, typename LeafPlan>
+DictionaryPlan build_tensor_dictionary_from_leaf(const LeafPlan &leaf,
+                                                 const bool skip_for_identity) {
+  DictionaryPlan result;
+  result.source_count = leaf.source_count;
+  result.target_count = leaf.target_count;
+  result.target_begins = leaf.target_begins;
+  result.target_counts = leaf.target_counts;
+  result.leaf_row_offsets = leaf.leaf_row_offsets;
+  result.blocks = leaf.blocks;
+  result.skip_for_identity = skip_for_identity;
+  result.tokens.reserve(leaf.tensors[0].size());
+
+  std::unordered_map<Tensor6BitKey<Scalar>, std::uint32_t,
+                     Tensor6BitKeyHash<Scalar>> dictionary_ids;
+  dictionary_ids.reserve(leaf.tensors[0].size());
+  std::vector<std::size_t> frequencies;
+  for (std::size_t interaction = 0; interaction < leaf.tensors[0].size();
+       ++interaction) {
+    const std::array<Scalar, 6> tensor{
+        leaf.tensors[0][interaction], leaf.tensors[1][interaction],
+        leaf.tensors[2][interaction], leaf.tensors[3][interaction],
+        leaf.tensors[4][interaction], leaf.tensors[5][interaction]};
+    const auto canonical = canonicalise_tensor6(tensor);
+    const auto key = tensor6_bit_key(canonical.values);
+    const auto [iterator, inserted] = dictionary_ids.try_emplace(
+        key, static_cast<std::uint32_t>(dictionary_ids.size()));
+    if (inserted) {
+      if (iterator->second >= (1U << 26U)) {
+        throw std::overflow_error("Tensor6 dictionary exceeds packed token IDs");
+      }
+      for (int component = 0; component < 6; ++component) {
+        result.tensors[static_cast<std::size_t>(component)].push_back(
+            canonical.values[static_cast<std::size_t>(component)]);
+      }
+      frequencies.push_back(0);
+    }
+    ++frequencies[iterator->second];
+    result.tokens.push_back(pack_tensor6_token(iterator->second,
+                                                canonical.sign_mask));
+  }
+
+  // Hot dictionary entries receive low IDs, improving cache locality without
+  // changing the interaction order or floating-point accumulation order.
+  std::vector<std::uint32_t> order(frequencies.size());
+  std::iota(order.begin(), order.end(), 0U);
+  std::stable_sort(order.begin(), order.end(), [&](const auto left,
+                                                   const auto right) {
+    return frequencies[left] > frequencies[right];
+  });
+  std::vector<std::uint32_t> remap(order.size());
+  std::array<std::vector<Scalar>, 6> reordered;
+  for (std::uint32_t new_id = 0; new_id < order.size(); ++new_id) {
+    const std::uint32_t old_id = order[new_id];
+    remap[old_id] = new_id;
+    for (int component = 0; component < 6; ++component) {
+      reordered[static_cast<std::size_t>(component)].push_back(
+          result.tensors[static_cast<std::size_t>(component)][old_id]);
+    }
+  }
+  result.tensors = std::move(reordered);
+  for (std::uint32_t &token : result.tokens) {
+    token = pack_tensor6_token(remap[tensor6_token_id(token)],
+                               tensor6_token_sign_mask(token));
+  }
+  return result;
+}
+
+} // namespace
+
+StaticP2PTensorDictionaryPlan build_static_p2p_tensor_dictionary_plan(
+    const StaticP2POperator &operator_map,
+    const std::span<const StaticP2PLeafPair> leaf_pairs) {
+  const StaticP2PLeafPlan leaf =
+      build_static_p2p_leaf_plan(operator_map, leaf_pairs);
+  bool skip_for_identity = false;
+  bool first = true;
+  for (const StaticDipoleBlock &block : operator_map.blocks) {
+    const bool current = block.skip_for_identity != 0;
+    if (!first && current != skip_for_identity) {
+      throw std::invalid_argument(
+          "Tensor6 dictionary requires a uniform self-identity policy");
+    }
+    skip_for_identity = current;
+    first = false;
+  }
+  return build_tensor_dictionary_from_leaf<double,
+                                           StaticP2PTensorDictionaryPlan>(
+      leaf, skip_for_identity);
 }
 
 StaticP2PBsrPlan
@@ -1419,103 +1380,6 @@ void apply_static_p2p_operator(
     }
 }
 
-void apply_static_p2p_grid_stencil_plan(
-    const StaticP2PGridStencilPlan &plan,
-    const std::span<const Vec3> dipole_moments, const std::span<Vec3> H,
-    const std::span<const int> target_source_indices) {
-  if (dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
-      H.size() != static_cast<std::size_t>(plan.target_count) ||
-      (!target_source_indices.empty() &&
-       target_source_indices.size() != H.size())) {
-    throw std::invalid_argument("grid-stencil P2P dimensions are inconsistent");
-  }
-#pragma omp parallel for schedule(static) if (plan.target_count >= 64)
-  for (int target = 0; target < plan.target_count; ++target) {
-    double Hx = 0.0;
-    double Hy = 0.0;
-    double Hz = 0.0;
-    const int self =
-        target_source_indices.empty()
-            ? -1
-            : target_source_indices[static_cast<std::size_t>(target)];
-    const int begin = plan.row_offsets[static_cast<std::size_t>(target)];
-    const int end = plan.row_offsets[static_cast<std::size_t>(target) + 1];
-#pragma omp simd reduction(+ : Hx, Hy, Hz)
-    for (int entry = begin; entry < end; ++entry) {
-      const std::size_t interaction = static_cast<std::size_t>(entry);
-      const int source = plan.source_indices[interaction];
-      if (plan.skip_for_identity[interaction] != 0 && source == self) {
-        continue;
-      }
-      const std::size_t tensor =
-          static_cast<std::size_t>(plan.displacement_indices[interaction]);
-      const Vec3 m = dipole_moments[static_cast<std::size_t>(source)];
-      Hx += plan.tensors[0][tensor] * m.x + plan.tensors[1][tensor] * m.y +
-            plan.tensors[2][tensor] * m.z;
-      Hy += plan.tensors[1][tensor] * m.x + plan.tensors[3][tensor] * m.y +
-            plan.tensors[4][tensor] * m.z;
-      Hz += plan.tensors[2][tensor] * m.x + plan.tensors[4][tensor] * m.y +
-            plan.tensors[5][tensor] * m.z;
-    }
-    H[static_cast<std::size_t>(target)] += Vec3{Hx, Hy, Hz};
-  }
-}
-
-void apply_static_p2p_grid_point_onthefly(
-    const StaticP2PGridStencilPlan &plan,
-    const std::span<const Vec3> dipole_moments, const std::span<Vec3> H,
-    const std::span<const int> target_source_indices) {
-  if (!plan.point_dipoles ||
-      dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
-      H.size() != static_cast<std::size_t>(plan.target_count) ||
-      (!target_source_indices.empty() &&
-       target_source_indices.size() != H.size())) {
-    throw std::invalid_argument(
-        "on-the-fly grid P2P dimensions are inconsistent");
-  }
-  constexpr double green_factor = 1.0 / (4.0 * std::numbers::pi);
-#pragma omp parallel for schedule(static) if (plan.target_count >= 64)
-  for (int target = 0; target < plan.target_count; ++target) {
-    double Hx = 0.0;
-    double Hy = 0.0;
-    double Hz = 0.0;
-    const int self =
-        target_source_indices.empty()
-            ? -1
-            : target_source_indices[static_cast<std::size_t>(target)];
-    const int begin = plan.row_offsets[static_cast<std::size_t>(target)];
-    const int end = plan.row_offsets[static_cast<std::size_t>(target) + 1];
-#pragma omp simd reduction(+ : Hx, Hy, Hz)
-    for (int entry = begin; entry < end; ++entry) {
-      const std::size_t interaction = static_cast<std::size_t>(entry);
-      const int source = plan.source_indices[interaction];
-      if (plan.skip_for_identity[interaction] != 0 && source == self) {
-        continue;
-      }
-      const auto displacement = plan.displacements[static_cast<std::size_t>(
-          plan.displacement_indices[interaction])];
-      const double rx = -displacement[0] * plan.grid.spacing.x;
-      const double ry = -displacement[1] * plan.grid.spacing.y;
-      const double rz = -displacement[2] * plan.grid.spacing.z;
-      const double radius_squared = rx * rx + ry * ry + rz * rz;
-      if (radius_squared == 0.0) {
-        continue;
-      }
-      const double inverse_radius = 1.0 / std::sqrt(radius_squared);
-      const double inverse_radius3 = inverse_radius / radius_squared;
-      const double inverse_radius5 = inverse_radius3 / radius_squared;
-      const Vec3 m = dipole_moments[static_cast<std::size_t>(source)];
-      const double moment_dot_r = m.x * rx + m.y * ry + m.z * rz;
-      const double radial = 3.0 * moment_dot_r * inverse_radius5;
-      Hx += green_factor * (radial * rx - m.x * inverse_radius3);
-      Hy += green_factor * (radial * ry - m.y * inverse_radius3);
-      Hz += green_factor * (radial * rz - m.z * inverse_radius3);
-    }
-    H[static_cast<std::size_t>(target)] += Vec3{Hx, Hy, Hz};
-  }
-}
-
-
 void apply_static_p2p_leaf_plan(
     const FloatStaticP2PLeafPlan& plan,
     const std::span<const FloatVec3> dipole_moments,
@@ -1572,6 +1436,52 @@ void apply_static_p2p_leaf_plan(
             H[static_cast<std::size_t>(target)] += field;
         }
     }
+}
+
+void apply_static_p2p_tensor_dictionary_plan(
+    const FloatStaticP2PTensorDictionaryPlan &plan,
+    const std::span<const FloatVec3> dipole_moments,
+    const std::span<FloatVec3> H,
+    const std::span<const int> target_source_indices) {
+  if (dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
+      H.size() != static_cast<std::size_t>(plan.target_count) ||
+      (!target_source_indices.empty() && target_source_indices.size() != H.size())) {
+    throw std::invalid_argument("FP32 Tensor6 dictionary P2P dimensions are inconsistent");
+  }
+#pragma omp parallel for schedule(static) if (plan.target_begins.size() >= 8)
+  for (int target_leaf = 0;
+       target_leaf < static_cast<int>(plan.target_begins.size()); ++target_leaf) {
+    const int target_begin = plan.target_begins[static_cast<std::size_t>(target_leaf)];
+    const int target_count = plan.target_counts[static_cast<std::size_t>(target_leaf)];
+    for (int local_target = 0; local_target < target_count; ++local_target) {
+      const int target = target_begin + local_target;
+      const int self = target_source_indices.empty() ? -1 : target_source_indices[static_cast<std::size_t>(target)];
+      FloatVec3 field{};
+      for (int block_index = plan.leaf_row_offsets[static_cast<std::size_t>(target_leaf)];
+           block_index < plan.leaf_row_offsets[static_cast<std::size_t>(target_leaf) + 1]; ++block_index) {
+        const StaticP2PLeafBlock &block = plan.blocks[static_cast<std::size_t>(block_index)];
+        const std::size_t begin = block.tensor_offset + static_cast<std::size_t>(local_target) * block.source_count;
+        for (int local_source = 0; local_source < block.source_count; ++local_source) {
+          const int source = block.source_begin + local_source;
+          if (plan.skip_for_identity && source == self) continue;
+          const std::uint32_t token = plan.tokens[begin + local_source];
+          const auto id = tensor6_token_id(token);
+          const auto signs = tensor6_token_sign_mask(token);
+          const auto value = [&](int component) {
+            const float coefficient = plan.tensors[static_cast<std::size_t>(component)][id];
+            return (signs & (1U << component)) != 0U ? -coefficient : coefficient;
+          };
+          const auto moment = dipole_moments[static_cast<std::size_t>(source)];
+          const float xx = value(0), xy = value(1), xz = value(2),
+                      yy = value(3), yz = value(4), zz = value(5);
+          field.x += xx * moment.x + xy * moment.y + xz * moment.z;
+          field.y += xy * moment.x + yy * moment.y + yz * moment.z;
+          field.z += xz * moment.x + yz * moment.y + zz * moment.z;
+        }
+      }
+      H[static_cast<std::size_t>(target)] += field;
+    }
+  }
 }
 
 void apply_static_p2p_bsr_plan(
@@ -1664,6 +1574,57 @@ void apply_static_p2p_leaf_plan(
         }
       }
       H[static_cast<std::size_t>(target)] += Vec3{Hx, Hy, Hz};
+    }
+  }
+}
+
+void apply_static_p2p_tensor_dictionary_plan(
+    const StaticP2PTensorDictionaryPlan &plan,
+    const std::span<const Vec3> dipole_moments, const std::span<Vec3> H,
+    const std::span<const int> target_source_indices) {
+  if (dipole_moments.size() != static_cast<std::size_t>(plan.source_count) ||
+      H.size() != static_cast<std::size_t>(plan.target_count) ||
+      (!target_source_indices.empty() && target_source_indices.size() != H.size())) {
+    throw std::invalid_argument("Tensor6 dictionary P2P dimensions are inconsistent");
+  }
+#pragma omp parallel for schedule(static) if (plan.target_begins.size() >= 8)
+  for (int target_leaf = 0;
+       target_leaf < static_cast<int>(plan.target_begins.size()); ++target_leaf) {
+    const int target_begin = plan.target_begins[static_cast<std::size_t>(target_leaf)];
+    const int target_count = plan.target_counts[static_cast<std::size_t>(target_leaf)];
+    for (int local_target = 0; local_target < target_count; ++local_target) {
+      const int target = target_begin + local_target;
+      const int self = target_source_indices.empty() ? -1 :
+          target_source_indices[static_cast<std::size_t>(target)];
+      Vec3 field{};
+      for (int block_index = plan.leaf_row_offsets[static_cast<std::size_t>(target_leaf)];
+           block_index < plan.leaf_row_offsets[static_cast<std::size_t>(target_leaf) + 1];
+           ++block_index) {
+        const StaticP2PLeafBlock &block = plan.blocks[static_cast<std::size_t>(block_index)];
+        const std::size_t begin = block.tensor_offset +
+            static_cast<std::size_t>(local_target) * block.source_count;
+        for (int local_source = 0; local_source < block.source_count; ++local_source) {
+          const int source = block.source_begin + local_source;
+          if (plan.skip_for_identity && source == self) {
+            continue;
+          }
+          const std::uint32_t token = plan.tokens[begin + local_source];
+          const std::uint32_t id = tensor6_token_id(token);
+          const std::uint8_t signs = tensor6_token_sign_mask(token);
+          const auto signed_value = [&](const int component) {
+            const double value = plan.tensors[static_cast<std::size_t>(component)][id];
+            return (signs & (1U << component)) != 0U ? -value : value;
+          };
+          const Vec3 moment = dipole_moments[static_cast<std::size_t>(source)];
+          const double xx = signed_value(0), xy = signed_value(1),
+                       xz = signed_value(2), yy = signed_value(3),
+                       yz = signed_value(4), zz = signed_value(5);
+          field.x += xx * moment.x + xy * moment.y + xz * moment.z;
+          field.y += xy * moment.x + yy * moment.y + yz * moment.z;
+          field.z += xz * moment.x + yz * moment.y + zz * moment.z;
+        }
+      }
+      H[static_cast<std::size_t>(target)] += field;
     }
   }
 }
@@ -1842,6 +1803,50 @@ quantise_static_p2p_leaf_plan(const StaticP2PLeafPlan &source) {
     return result;
 }
 
+FloatStaticP2PTensorDictionaryPlan
+quantise_static_p2p_tensor_dictionary_plan(
+    const StaticP2PTensorDictionaryPlan &source) {
+  FloatStaticP2PTensorDictionaryPlan result;
+  result.source_count = source.source_count;
+  result.target_count = source.target_count;
+  result.target_begins = source.target_begins;
+  result.target_counts = source.target_counts;
+  result.leaf_row_offsets = source.leaf_row_offsets;
+  result.blocks = source.blocks;
+  result.skip_for_identity = source.skip_for_identity;
+  result.tokens.reserve(source.tokens.size());
+  std::unordered_map<Tensor6BitKey<float>, std::uint32_t,
+                     Tensor6BitKeyHash<float>> dictionary_ids;
+  dictionary_ids.reserve(source.tokens.size());
+  for (const std::uint32_t source_token : source.tokens) {
+    const std::uint32_t source_id = tensor6_token_id(source_token);
+    const std::uint8_t source_signs = tensor6_token_sign_mask(source_token);
+    std::array<float, 6> tensor{};
+    for (int component = 0; component < 6; ++component) {
+      const float magnitude = static_cast<float>(
+          source.tensors[static_cast<std::size_t>(component)][source_id]);
+      tensor[static_cast<std::size_t>(component)] =
+          (source_signs & (1U << component)) != 0U ? -magnitude : magnitude;
+    }
+    const auto canonical = canonicalise_tensor6(tensor);
+    const auto key = tensor6_bit_key(canonical.values);
+    const auto [iterator, inserted] = dictionary_ids.try_emplace(
+        key, static_cast<std::uint32_t>(dictionary_ids.size()));
+    if (inserted) {
+      if (iterator->second >= (1U << 26U)) {
+        throw std::overflow_error("FP32 Tensor6 dictionary exceeds packed token IDs");
+      }
+      for (int component = 0; component < 6; ++component) {
+        result.tensors[static_cast<std::size_t>(component)].push_back(
+            canonical.values[static_cast<std::size_t>(component)]);
+      }
+    }
+    result.tokens.push_back(pack_tensor6_token(iterator->second,
+                                                canonical.sign_mask));
+  }
+  return result;
+}
+
 FloatStaticP2PBsrPlan
 quantise_static_p2p_bsr_plan(const StaticP2PBsrPlan &source) {
     FloatStaticP2PBsrPlan result;
@@ -1895,6 +1900,17 @@ StaticP2PMemory FloatStaticP2PLeafPlan::memory() const noexcept {
         (target_begins.size() + target_counts.size()) * sizeof(int) +
         blocks.size() * sizeof(StaticP2PLeafBlock);
     return result;
+}
+
+StaticP2PMemory FloatStaticP2PTensorDictionaryPlan::memory() const noexcept {
+  StaticP2PMemory result;
+  result.tensor_bytes = tensors[0].size() * 6 * sizeof(float);
+  result.index_bytes = tokens.size() * sizeof(std::uint32_t);
+  result.row_metadata_bytes = leaf_row_offsets.size() * sizeof(int);
+  result.leaf_metadata_bytes =
+      (target_begins.size() + target_counts.size()) * sizeof(int) +
+      blocks.size() * sizeof(StaticP2PLeafBlock);
+  return result;
 }
 
 StaticP2PMemory FloatStaticP2PBsrPlan::memory() const noexcept {
