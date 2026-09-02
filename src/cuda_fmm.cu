@@ -1696,96 +1696,6 @@ struct CudaBsrP2PDeviceView {
   cusparseMatDescr_t descriptor{nullptr};
 };
 
-struct CudaGridP2PDeviceView {
-  int target_count{0};
-  int target_tile_size{128};
-  int targets_per_thread{1};
-  std::size_t displacement_count{0};
-  int *row_offsets{nullptr};
-  int *source_indices{nullptr};
-  int *displacement_indices{nullptr};
-  unsigned char *skip_for_identity{nullptr};
-  int3 *displacements{nullptr};
-  double *tensors{nullptr};
-  Vec3 spacing{};
-  bool point_on_the_fly{false};
-};
-
-__global__ void grid_p2p_kernel(const CudaGridP2PDeviceView plan,
-                                const Vec3 *moments,
-                                const int *self_indices, Vec3 *fields) {
-  const int tile_begin = blockIdx.x * plan.target_tile_size;
-  const int thread_target_begin =
-      tile_begin + threadIdx.x * plan.targets_per_thread;
-  for (int owned_target = 0; owned_target < plan.targets_per_thread;
-       ++owned_target) {
-    const int target = thread_target_begin + owned_target;
-    if (target >= min(tile_begin + plan.target_tile_size, plan.target_count)) {
-      continue;
-    }
-    Vec3 field{};
-    const int self = self_indices[target];
-    for (int entry = plan.row_offsets[target];
-         entry < plan.row_offsets[target + 1]; ++entry) {
-      const int source = plan.source_indices[entry];
-      if (plan.skip_for_identity[entry] != 0 && source == self) {
-        continue;
-      }
-      const int displacement_index = plan.displacement_indices[entry];
-      const Vec3 moment = moments[source];
-      if (plan.point_on_the_fly) {
-        const int3 d = plan.displacements[displacement_index];
-        const double rx = -static_cast<double>(d.x) * plan.spacing.x;
-        const double ry = -static_cast<double>(d.y) * plan.spacing.y;
-        const double rz = -static_cast<double>(d.z) * plan.spacing.z;
-        const double radius_squared = rx * rx + ry * ry + rz * rz;
-        if (radius_squared == 0.0) {
-          continue;
-        }
-        const double inverse_radius = 1.0 / sqrt(radius_squared);
-        const double inverse_radius3 = inverse_radius / radius_squared;
-        const double inverse_radius5 = inverse_radius3 / radius_squared;
-        const double moment_dot_r =
-            moment.x * rx + moment.y * ry + moment.z * rz;
-        const double radial = 3.0 * moment_dot_r * inverse_radius5;
-        constexpr double green_factor =
-            0.079577471545947667884441881686257181;
-        field.x += green_factor * (radial * rx - moment.x * inverse_radius3);
-        field.y += green_factor * (radial * ry - moment.y * inverse_radius3);
-        field.z += green_factor * (radial * rz - moment.z * inverse_radius3);
-      } else {
-        const std::size_t index = static_cast<std::size_t>(displacement_index);
-        const double xx = plan.tensors[index];
-        const double xy = plan.tensors[plan.displacement_count + index];
-        const double xz = plan.tensors[2 * plan.displacement_count + index];
-        const double yy = plan.tensors[3 * plan.displacement_count + index];
-        const double yz = plan.tensors[4 * plan.displacement_count + index];
-        const double zz = plan.tensors[5 * plan.displacement_count + index];
-        field.x += xx * moment.x + xy * moment.y + xz * moment.z;
-        field.y += xy * moment.x + yy * moment.y + yz * moment.z;
-        field.z += xz * moment.x + yz * moment.y + zz * moment.z;
-      }
-    }
-    fields[target] = field;
-  }
-}
-
-void launch_grid_p2p(const CudaGridP2PDeviceView &plan, const Vec3 *moments,
-                     const int *self_indices, Vec3 *fields,
-                     cudaStream_t stream) {
-  if (plan.target_count == 0) {
-    return;
-  }
-  const int threads =
-      (plan.target_tile_size + plan.targets_per_thread - 1) /
-      plan.targets_per_thread;
-  const int blocks =
-      (plan.target_count + plan.target_tile_size - 1) / plan.target_tile_size;
-  grid_p2p_kernel<<<blocks, threads, 0, stream>>>(plan, moments, self_indices,
-                                                 fields);
-  check_cuda(cudaGetLastError(), "launch grid-stencil static P2P kernel");
-}
-
 void launch_bsr_p2p(
     const CudaBsrP2PDeviceView<double>& plan,
     const Vec3* moments,
@@ -1860,8 +1770,7 @@ struct CudaP2PPlan::Implementation {
     Canonical,
     Compact,
     Leaf,
-    Bsr,
-    Grid
+    Bsr
   };
 
   int source_count{0};
@@ -1872,7 +1781,6 @@ struct CudaP2PPlan::Implementation {
   CudaCompactP2PDeviceView<double> compact{};
   CudaLeafP2PDeviceView<double> leaf{};
   CudaBsrP2PDeviceView<double> bsr{};
-  CudaGridP2PDeviceView grid{};
   CudaP2PDeviceView<FloatStaticDipoleBlock> canonical_float{};
   CudaCompactP2PDeviceView<float> compact_float{};
   CudaLeafP2PDeviceView<float> leaf_float{};
@@ -2529,119 +2437,6 @@ CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PBsrPlan &bsr)
   plan.statistics.p2p_threads_per_block = 0;
 }
 
-CudaP2PPlan::CudaP2PPlan(
-    const StaticP2PGridStencilPlan &grid,
-    const std::span<const int> fixed_self_indices,
-    const bool point_on_the_fly,
-    const int target_tile_size,
-    const int targets_per_thread)
-    : CudaP2PPlan(grid.source_count, grid.target_count, fixed_self_indices, true) {
-  if ((target_tile_size != 64 && target_tile_size != 128 &&
-       target_tile_size != 256) ||
-      (targets_per_thread != 1 && targets_per_thread != 2 &&
-       targets_per_thread != 4)) {
-    throw std::invalid_argument(
-        "CUDA grid P2P requires tile size 64, 128, or 256 and one, two, or "
-        "four targets per thread");
-  }
-  if (point_on_the_fly && !grid.point_dipoles) {
-    throw std::invalid_argument(
-        "CUDA on-the-fly grid P2P requires point-dipole geometry");
-  }
-  const std::size_t interaction_count = grid.source_indices.size();
-  if (grid.displacement_indices.size() != interaction_count ||
-      grid.skip_for_identity.size() != interaction_count ||
-      grid.row_offsets.size() != static_cast<std::size_t>(grid.target_count) + 1 ||
-      grid.displacements.size() != grid.tensors[0].size()) {
-    throw std::invalid_argument("CUDA grid P2P plan dimensions are inconsistent");
-  }
-
-  auto &plan = *implementation_;
-  plan.kind = Implementation::Kind::Grid;
-  plan.grid.target_count = grid.target_count;
-  plan.grid.target_tile_size = target_tile_size;
-  plan.grid.targets_per_thread = targets_per_thread;
-  plan.grid.displacement_count = grid.displacements.size();
-  plan.grid.spacing = grid.grid.spacing;
-  plan.grid.point_on_the_fly = point_on_the_fly;
-
-  const std::size_t row_bytes = grid.row_offsets.size() * sizeof(int);
-  const std::size_t source_bytes = interaction_count * sizeof(int);
-  const std::size_t displacement_index_bytes = interaction_count * sizeof(int);
-  const std::size_t skip_bytes = interaction_count * sizeof(unsigned char);
-  const std::size_t displacement_bytes = grid.displacements.size() * sizeof(int3);
-  const std::size_t tensor_bytes = point_on_the_fly
-      ? 0 : grid.displacements.size() * 6 * sizeof(double);
-  check_cuda(cudaMalloc(&plan.grid.row_offsets, std::max(row_bytes, sizeof(int))),
-             "allocate grid P2P rows");
-  check_cuda(cudaMalloc(&plan.grid.source_indices,
-                        std::max(source_bytes, sizeof(int))),
-             "allocate grid P2P sources");
-  check_cuda(cudaMalloc(&plan.grid.displacement_indices,
-                        std::max(displacement_index_bytes, sizeof(int))),
-             "allocate grid P2P displacement indices");
-  check_cuda(cudaMalloc(&plan.grid.skip_for_identity,
-                        std::max(skip_bytes, sizeof(unsigned char))),
-             "allocate grid P2P identity markers");
-  check_cuda(cudaMalloc(&plan.grid.displacements,
-                        std::max(displacement_bytes, sizeof(int3))),
-             "allocate grid P2P displacements");
-  if (!point_on_the_fly) {
-    check_cuda(cudaMalloc(&plan.grid.tensors,
-                          std::max(tensor_bytes, sizeof(double))),
-               "allocate grid P2P tensor table");
-  }
-  check_cuda(cudaMemcpy(plan.grid.row_offsets, grid.row_offsets.data(), row_bytes,
-                        cudaMemcpyHostToDevice),
-             "upload grid P2P rows");
-  if (interaction_count != 0) {
-    check_cuda(cudaMemcpy(plan.grid.source_indices, grid.source_indices.data(),
-                          source_bytes, cudaMemcpyHostToDevice),
-               "upload grid P2P sources");
-    check_cuda(cudaMemcpy(plan.grid.displacement_indices,
-                          grid.displacement_indices.data(),
-                          displacement_index_bytes, cudaMemcpyHostToDevice),
-               "upload grid P2P displacement indices");
-    check_cuda(cudaMemcpy(plan.grid.skip_for_identity,
-                          grid.skip_for_identity.data(), skip_bytes,
-                          cudaMemcpyHostToDevice),
-               "upload grid P2P identity markers");
-  }
-  std::vector<int3> displacements;
-  displacements.reserve(grid.displacements.size());
-  for (const auto &d : grid.displacements) {
-    displacements.push_back(make_int3(d[0], d[1], d[2]));
-  }
-  if (!displacements.empty()) {
-    check_cuda(cudaMemcpy(plan.grid.displacements, displacements.data(),
-                          displacement_bytes, cudaMemcpyHostToDevice),
-               "upload grid P2P displacements");
-  }
-  if (!point_on_the_fly && tensor_bytes != 0) {
-    for (std::size_t component = 0; component < 6; ++component) {
-      check_cuda(cudaMemcpy(
-                     plan.grid.tensors + component * grid.displacements.size(),
-                     grid.tensors[component].data(),
-                     grid.displacements.size() * sizeof(double),
-                     cudaMemcpyHostToDevice),
-                 "upload grid P2P tensor table");
-    }
-  }
-  const std::size_t index_bytes = source_bytes + displacement_index_bytes +
-                                  skip_bytes + displacement_bytes;
-  plan.statistics.setup_h2d_bytes += row_bytes + index_bytes + tensor_bytes;
-  plan.statistics.persistent_device_bytes +=
-      row_bytes + index_bytes + tensor_bytes;
-  plan.statistics.p2p_interaction_count = interaction_count;
-  plan.statistics.p2p_tensor_bytes = tensor_bytes;
-  plan.statistics.p2p_index_bytes =
-      source_bytes + displacement_index_bytes + skip_bytes;
-  plan.statistics.p2p_row_metadata_bytes = row_bytes;
-  plan.statistics.p2p_leaf_metadata_bytes = displacement_bytes;
-  plan.statistics.p2p_threads_per_block =
-      (target_tile_size + targets_per_thread - 1) / targets_per_thread;
-}
-
 CudaP2PPlan::~CudaP2PPlan() {
   if (implementation_ == nullptr) {
     return;
@@ -2667,12 +2462,6 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaFree(plan.bsr.row_offsets);
   cudaFree(plan.bsr.source_indices);
   cudaFree(plan.bsr.values);
-  cudaFree(plan.grid.row_offsets);
-  cudaFree(plan.grid.source_indices);
-  cudaFree(plan.grid.displacement_indices);
-  cudaFree(plan.grid.skip_for_identity);
-  cudaFree(plan.grid.displacements);
-  cudaFree(plan.grid.tensors);
   cudaFree(plan.canonical_float.row_offsets);
   cudaFree(plan.canonical_float.blocks);
   cudaFree(plan.compact_float.row_offsets);
@@ -2764,10 +2553,6 @@ void CudaP2PPlan::begin_evaluate(
       break;
     case Implementation::Kind::Bsr:
       launch_bsr_p2p(plan.bsr, plan.moments, plan.fields, plan.stream);
-      break;
-    case Implementation::Kind::Grid:
-      launch_grid_p2p(plan.grid, plan.moments, plan.self_indices, plan.fields,
-                      plan.stream);
       break;
     }
     check_cuda(cudaEventRecord(plan.kernel, plan.stream), "record P2P kernel");
@@ -2873,8 +2658,6 @@ void CudaP2PPlan::begin_evaluate(
       launch_bsr_p2p(plan.bsr_float, plan.moments_float, plan.fields_float,
                      plan.stream);
       break;
-    case Implementation::Kind::Grid:
-      throw std::logic_error("FP32 grid P2P plan is not initialised");
     }
     check_cuda(cudaEventRecord(plan.kernel, plan.stream),
                "record FP32 P2P kernel");

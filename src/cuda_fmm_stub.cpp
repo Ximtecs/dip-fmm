@@ -165,11 +165,6 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan &) {
   throw std::runtime_error("CUDA BSR P2P is unavailable in this build");
 }
 
-CudaP2PPlan::CudaP2PPlan(const StaticP2PGridStencilPlan &,
-                         std::span<const int>, bool, int, int) {
-  throw std::runtime_error("CUDA grid-stencil P2P is unavailable in this build");
-}
-
 CudaP2PPlan::CudaP2PPlan(const FloatStaticP2POperator &,
                          std::span<const int>) {
   throw std::runtime_error("CUDA static P2P is unavailable in this build");
