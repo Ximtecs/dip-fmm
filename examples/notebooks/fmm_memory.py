@@ -89,6 +89,8 @@ def estimate_source_point_storage(
     positions: np.ndarray,
     order: int,
     depth: int,
+    *,
+    universal_translation_bank: bool = False,
 ) -> StorageEstimate:
     """Estimate current host and CUDA storage without constructing an FMM plan.
 
@@ -158,7 +160,8 @@ def estimate_source_point_storage(
         p2p_pairs * P2P_SOA_INTERACTION_BYTES
         + (particle_count + 1) * INT_BYTES
     )
-    cached_matrix_bytes = len(groups) * coefficients**2 * DOUBLE_BYTES
+    matrix_count = 316 if universal_translation_bank else len(groups)
+    cached_matrix_bytes = matrix_count * coefficients**2 * DOUBLE_BYTES
     # The canonical target-row plan stores one row offset per tree node;
     # source, matrix-class, and level indices for every interaction; and two
     # node-index bounds for every level. The latter let portable M2L visit only
@@ -175,6 +178,7 @@ def estimate_source_point_storage(
         "CPU SoA P2P packing": p2p_soa_bytes,
         "P2M maps": particle_entries * particle_count * STATIC_ENTRY_BYTES,
         "shared M2M/L2L maps": (
+            0 if universal_translation_bank else
             2 * depth * 8 * translation_entries * STATIC_ENTRY_BYTES
         ),
         "cached M2L matrices": cached_matrix_bytes + level_scaling_bytes,

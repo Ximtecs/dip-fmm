@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include <span>
 #include <array>
+#include <optional>
+#include <span>
 #include <vector>
 
-#include "cdfmm/operators.hpp"
 #include "cdfmm/cuboid.hpp"
+#include "cdfmm/operators.hpp"
 #include "cdfmm/periodic.hpp"
 #include "cdfmm/precision.hpp"
 #include "cdfmm/spherical_harmonics.hpp"
@@ -202,6 +203,39 @@ struct StaticP2PBsrPlan {
   std::vector<int> target_source_indices{};
 
   /// @brief Returns known BSR value and index storage.
+  [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
+/** @brief Integer descriptor for a coincident Cartesian particle lattice. */
+struct StaticP2PGridDescriptor {
+  std::array<int, 3> dimensions{};
+  Vec3 origin{};
+  Vec3 spacing{};
+};
+
+/**
+ * @brief Displacement-table execution plan for regular-grid list1 P2P.
+ *
+ * Particle coordinates are retained once as integer lattice coordinates.
+ * Every list1 entry stores only its source particle and a compact index into
+ * the unique six-component tensor table; no pair tensor is duplicated.
+ * `point_dipoles` permits the same interaction rows to be evaluated directly
+ * from integer displacements instead of reading the tensor table.
+ */
+struct StaticP2PGridStencilPlan {
+  int source_count{0};
+  int target_count{0};
+  StaticP2PGridDescriptor grid{};
+  std::vector<std::array<int, 3>> coordinates{};
+  std::vector<int> row_offsets{};
+  std::vector<int> source_indices{};
+  std::vector<int> displacement_indices{};
+  std::vector<unsigned char> skip_for_identity{};
+  std::vector<std::array<int, 3>> displacements{};
+  std::array<std::vector<double>, 6> tensors{};
+  bool point_dipoles{false};
+
+  /// @brief Returns the compact table and grid-metadata storage.
   [[nodiscard]] StaticP2PMemory memory() const noexcept;
 };
 
@@ -509,12 +543,10 @@ void apply_static_m2l_plan(
  * The evaluator stores only potential and field rows of spherical width; no
  * Cartesian coefficients or conversion maps are retained at evaluation time.
  */
-[[nodiscard]] StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
-    const SphericalHarmonicBasis& basis,
-    const Vec3& centre,
-    const Vec3& target,
-    const CuboidSize& target_size
-);
+[[nodiscard]] StaticL2PEvaluator
+build_static_cuboid_l2p_evaluator(const SphericalHarmonicBasis &basis,
+                                  const Vec3 &centre, const Vec3 &target,
+                                  const CuboidSize &target_size);
 
 /**
  * @brief Builds the exact sparse dipole tensor for an explicit interaction set.
@@ -530,8 +562,7 @@ void apply_static_m2l_plan(
     SourceGeometry source_geometry = SourceGeometry::PointDipole,
     std::span<const CuboidSize> source_sizes = {},
     TargetGeometry target_geometry = TargetGeometry::Point,
-    std::span<const CuboidSize> target_sizes = {}
-);
+    std::span<const CuboidSize> target_sizes = {});
 
 /** @brief Builds exact P2P rows from image-aware periodic interactions. */
 [[nodiscard]] StaticP2POperator build_static_p2p_operator(
@@ -541,20 +572,17 @@ void apply_static_m2l_plan(
     SourceGeometry source_geometry = SourceGeometry::PointDipole,
     std::span<const CuboidSize> source_sizes = {},
     TargetGeometry target_geometry = TargetGeometry::Point,
-    std::span<const CuboidSize> target_sizes = {}
-);
+    std::span<const CuboidSize> target_sizes = {});
 
 /** @brief Builds the normalised Cartesian zero-k0 root periodiser matrix. */
-[[nodiscard]] std::vector<double> build_static_periodic_m2l_matrix(
-    const MultiIndexSet& basis,
-    const PeriodicCellOptions& options
-);
+[[nodiscard]] std::vector<double>
+build_static_periodic_m2l_matrix(const MultiIndexSet &basis,
+                                 const PeriodicCellOptions &options);
 
 /** @brief Builds the normalised spherical zero-k0 root periodiser matrix. */
-[[nodiscard]] std::vector<double> build_static_periodic_m2l_matrix(
-    const SphericalHarmonicBasis& basis,
-    const PeriodicCellOptions& options
-);
+[[nodiscard]] std::vector<double>
+build_static_periodic_m2l_matrix(const SphericalHarmonicBasis &basis,
+                                 const PeriodicCellOptions &options);
 
 /** @brief Packs canonical particle rows into six contiguous tensor streams. */
 [[nodiscard]] StaticP2PCompactPlan
@@ -586,6 +614,18 @@ build_static_p2p_bsr_plan(const FloatStaticP2POperator &operator_map,
                           std::span<const int> target_source_indices = {});
 
 /**
+ * @brief Detects a coincident regular grid and compresses canonical tensors.
+ *
+ * Detection is deterministic setup work. Empty optional results indicate that
+ * the positions are not one complete, axis-aligned Cartesian product or that
+ * canonical rows do not describe those particles consistently.
+ */
+[[nodiscard]] std::optional<StaticP2PGridStencilPlan>
+build_static_p2p_grid_stencil_plan(const StaticP2POperator &operator_map,
+                                   std::span<const Vec3> positions,
+                                   bool point_dipoles);
+
+/**
  * @brief Applies the compact static near-field tensor additively.
  *
  * `target_source_indices` is in the same sorted indexing as the operator. An
@@ -614,6 +654,20 @@ void apply_static_p2p_bsr_plan(const StaticP2PBsrPlan &plan,
                                std::span<const Vec3> dipole_moments,
                                std::span<Vec3> H,
                                std::span<const int> target_source_indices = {});
+
+/** @brief Applies the regular-grid displacement tensor table additively. */
+void apply_static_p2p_grid_stencil_plan(
+    const StaticP2PGridStencilPlan &plan,
+    std::span<const Vec3> dipole_moments,
+    std::span<Vec3> H,
+    std::span<const int> target_source_indices = {});
+
+/** @brief Applies regular-grid point P2P by recomputing its tensor on demand. */
+void apply_static_p2p_grid_point_onthefly(
+    const StaticP2PGridStencilPlan &plan,
+    std::span<const Vec3> dipole_moments,
+    std::span<Vec3> H,
+    std::span<const int> target_source_indices = {});
 
 /** @brief Applies a compact static operator additively to an output vector. */
 void apply_static_operator(

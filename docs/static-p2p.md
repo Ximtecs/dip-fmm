@@ -1,5 +1,122 @@
 # Static P2P execution study
 
+## Regular-grid displacement experiments
+
+High leaf occupancy makes the pairwise tensor stream grow approximately as
+`27 N q`.  On a complete Cartesian lattice with coincident sources and targets,
+however, the tensor depends only on the integer source-minus-target offset.
+The experimental `StaticP2PGridStencilPlan` therefore retains one Tensor6 per
+unique offset and makes interaction rows refer to that compact table.  For an
+`s x s x s` leaf, a complete 3 x 3 x 3 list1 neighbourhood needs at most
+`(4s - 1)^3` offsets: `s=10` needs 59,319 tensors, or 1,423,656 bytes in FP32.
+
+Eligibility detection is deterministic construction-time work.  It currently
+requires a complete axis-aligned Cartesian product, constant spacing on every
+non-singleton axis, coincident source and target counts, a fixed identity map,
+and canonical rows whose indices address that grid.  An irregular, incomplete,
+duplicated, rotated, or non-coincident geometry is rejected; production callers
+must retain the particle-row SoA or resolved CUDA fallback.  Detection is not
+performed during evaluation.
+
+The CPU table executor assigns one target row to an OpenMP iteration and uses
+an SIMD reduction over sources.  A second point-only executor obtains physical
+displacements from integer offsets and evaluates
+`H = [3 r (m.r)/|r|^5 - m/|r|^3]/(4 pi)` on demand.  It avoids coordinate and
+Tensor6 traffic and provides the requested table-versus-arithmetic experiment.
+Both are derived execution representations; the canonical operator remains the
+mathematical reference.
+
+The CUDA experiment uploads the same compact displacement table and launches
+one block for each target tile rather than one block for a complete target
+leaf. Tile sizes 64, 128, and 256 are supported. Each thread may own one, two,
+or four consecutive targets, retaining separate field accumulators while it
+walks their rows. Point plans can select either Tensor6 lookup or on-the-fly
+integer-displacement arithmetic. The constructor rejects unsupported tuning
+values and cuboid use of the point-only arithmetic path. These variants are
+available through the isolated benchmark and are not yet production dispatch
+defaults.
+
+The current experiment deliberately does **not** claim a performance winner.
+In particular, `q=1000` is a useful stress point rather than a target optimum.
+The total balance should be interpreted using
+`T(q) ~ N [C_p2p q + C_far/q]`, and the optimum must be measured on the target
+CPU and GPU. CUDA target tiles and targets-per-thread remain benchmark
+parameters to validate before production dispatch; no unmeasured
+occupancy-dependent policy is encoded.
+
+The compact-table memory report separates unique tensor bytes, interaction
+indices, row metadata, and grid/displacement metadata.  The present portable
+prototype still has per-interaction source and displacement indices.  Removing
+those indices by deriving them from complete-tree leaf coordinates is the next
+required step before the representation can construct the largest occupancy
+cases without first materialising canonical rows.
+
+For a small correctness run and a bounded tuning sweep:
+
+```console
+./build-cuda/benchmarks/benchmark_p2p --cuda --depth 2 \
+  --occupancy 125 --regular-grid-s 5 --evaluations 20 \
+  --cuda-target-tile 128 --cuda-targets-per-thread 2
+
+for tile in 64 128 256; do
+  for targets in 1 2 4; do
+    ./build-cuda/benchmarks/benchmark_p2p --cuda --depth 2 \
+      --occupancy 125 --regular-grid-s 5 --evaluations 20 \
+      --cuda-target-tile "${tile}" --cuda-targets-per-thread "${targets}"
+  done
+done
+```
+
+Representative Nsight Compute collection can use the same command line:
+
+```console
+ncu --set full --kernel-name regex:grid_p2p_kernel \
+  ./build-cuda/benchmarks/benchmark_p2p --cuda --depth 2 \
+  --occupancy 125 --regular-grid-s 5 --evaluations 2 \
+  --cuda-target-tile 128 --cuda-targets-per-thread 2
+```
+
+## High-occupancy complete-FMM study
+
+`run_high_occupancy_p2p.py` prepares the fixed 8-case `(N, depth)` matrix for
+`N=8192, 16384, 32768, 65536` and depths two and three, independently for the
+CPU production backend and CUDA-full. Every command uses spherical order six,
+FP32, a regular grid, exact cuboid list1 P2P, point P2M, and point L2P. Raw
+per-repetition CSV files and a JSON-lines manifest are retained; pairwise cases
+whose conservative storage estimate exceeds the configured limit are recorded
+as `SKIPPED_MEMORY` before construction.
+
+```console
+python benchmarks/run_high_occupancy_p2p.py --dry-run
+
+OMP_PROC_BIND=close OMP_PLACES=cores \
+python benchmarks/run_high_occupancy_p2p.py \
+  --evaluations 20 --cpu-threads 16 --resume \
+  --output-dir Article1/results/raw/high_occupancy_p2p
+```
+
+When `Article1` is not present, use the default
+`high_occupancy_p2p_results/raw`. The runner writes `repetitions.jsonl`, the
+individual benchmark CSV files, `all_repetitions.csv`, `processed.csv`, and
+regenerable figures in the parent result directory. CPU and GPU preferred
+depths must be interpreted separately; the runner never assumes depth two or
+an occupancy near one thousand is optimal.
+
+Representative profiling commands are deliberately not launched by the
+runner:
+
+```console
+perf stat -e cycles,instructions,cache-misses,LLC-load-misses \
+  ./build-profile-all/benchmarks/benchmark_uniform_fmm --regular-grid \
+  --exact-cuboid-p2p --sources 16384 --targets 16384 --depth 3 --order 6 \
+  --precision float32 --backend cpu-static-matrix --threads 16 --profile
+
+ncu --set full --kernel-name regex:grid_p2p_kernel \
+  ./build-bench-all/benchmarks/benchmark_p2p --cuda --depth 2 \
+  --occupancy 512 --regular-grid-s 8 --evaluations 2 \
+  --cuda-target-tile 128 --cuda-targets-per-thread 2
+```
+
 ## Existing representation
 
 `UniformTree` constructs `list1` as the clipped, sorted 3 x 3 x 3

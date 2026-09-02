@@ -48,6 +48,9 @@ struct Options {
     bool workload_comparison{true};
     bool cuda_status{false};
     bool profile{false};
+    bool regular_grid{false};
+    bool exact_cuboid_p2p{false};
+    std::string precision{"float32"};
     std::string backend{"cpu-static-matrix"};
     std::string expansion_basis{"spherical"};
     std::string output{};
@@ -107,6 +110,14 @@ Options parse_options(const int argc, char** argv)
             options.cuda_status = true;
             continue;
         }
+        if (key == "--regular-grid") {
+            options.regular_grid = true;
+            continue;
+        }
+        if (key == "--exact-cuboid-p2p") {
+            options.exact_cuboid_p2p = true;
+            continue;
+        }
         if (index + 1 >= argc) {
             throw std::invalid_argument("Missing value for " + key);
         }
@@ -126,6 +137,7 @@ Options parse_options(const int argc, char** argv)
             static_cast<unsigned int>(std::stoul(value));
         else if (key == "--backend") options.backend = value;
         else if (key == "--expansion-basis") options.expansion_basis = value;
+        else if (key == "--precision") options.precision = value;
         else if (key == "--output") options.output = value;
         else throw std::invalid_argument("Unknown option: " + key);
     }
@@ -143,6 +155,9 @@ Options parse_options(const int argc, char** argv)
         options.expansion_basis != "spherical") {
         throw std::invalid_argument(
             "--expansion-basis must be cartesian or spherical");
+    }
+    if (options.precision != "float32" && options.precision != "float64") {
+        throw std::invalid_argument("--precision must be float32 or float64");
     }
     return options;
 }
@@ -597,9 +612,35 @@ int main(int argc, char** argv)
         std::vector<Vec3> source_positions(
             static_cast<std::size_t>(options.sources)
         );
-        for (Vec3& position : source_positions) {
-            position = {distribution(generator), distribution(generator),
-                        distribution(generator)};
+        std::array<int, 3> grid_dimensions{1, 1, 1};
+        if (options.regular_grid) {
+            int remaining = options.sources;
+            int axis = 2;
+            while (remaining > 1 && remaining % 2 == 0) {
+                grid_dimensions[static_cast<std::size_t>(axis)] *= 2;
+                remaining /= 2;
+                axis = (axis + 2) % 3;
+            }
+            if (remaining != 1) {
+                throw std::invalid_argument(
+                    "--regular-grid currently requires a power-of-two count");
+            }
+            std::size_t particle = 0;
+            for (int iz = 0; iz < grid_dimensions[2]; ++iz) {
+                for (int iy = 0; iy < grid_dimensions[1]; ++iy) {
+                    for (int ix = 0; ix < grid_dimensions[0]; ++ix) {
+                        source_positions[particle++] = {
+                            -1.0 + (ix + 0.5) * 2.0 / grid_dimensions[0],
+                            -1.0 + (iy + 0.5) * 2.0 / grid_dimensions[1],
+                            -1.0 + (iz + 0.5) * 2.0 / grid_dimensions[2]};
+                    }
+                }
+            }
+        } else {
+            for (Vec3& position : source_positions) {
+                position = {distribution(generator), distribution(generator),
+                            distribution(generator)};
+            }
         }
 
         // Benchmark source-point evaluation: every particle is both a source
@@ -625,6 +666,8 @@ int main(int argc, char** argv)
         }
 
         UniformFmmOptions fmm_options;
+        fmm_options.precision = options.precision == "float32"
+            ? StaticPrecision::Float32 : StaticPrecision::Float64;
         fmm_options.expansion_order = options.order;
         fmm_options.expansion_basis = options.expansion_basis == "spherical"
             ? cdfmm::ExpansionBasis::Spherical
@@ -632,6 +675,22 @@ int main(int argc, char** argv)
         fmm_options.tree.max_level = options.depth;
         fmm_options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
         fmm_options.tree.root_half_width = 1.0;
+        if (options.exact_cuboid_p2p) {
+            if (!options.regular_grid) {
+                throw std::invalid_argument(
+                    "--exact-cuboid-p2p requires --regular-grid");
+            }
+            const CuboidSize size{
+                0.9 / grid_dimensions[0], 0.9 / grid_dimensions[1],
+                0.9 / grid_dimensions[2]};
+            fmm_options.source_geometry = SourceGeometry::UniformCuboid;
+            fmm_options.target_geometry =
+                TargetGeometry::VolumeAveragedCuboid;
+            fmm_options.source_sizes = {size};
+            fmm_options.target_sizes = {size};
+            fmm_options.use_cuboid_p2m = false;
+            fmm_options.use_cuboid_l2p = false;
+        }
 
         UniformFmmOptions selected_options = fmm_options;
         if (selected_backend == BenchmarkBackend::CpuReference ||
