@@ -40,6 +40,7 @@ struct Options {
   int occupancy{8};
   int particles{0};
   int evaluations{20};
+  int signed_target_tile{64};
   bool irregular{false};
   bool sweep{false};
   bool cuda{false};
@@ -119,6 +120,7 @@ struct GeometryPlan {
   cdfmm::StaticP2PCompactPlan compact;
   cdfmm::StaticP2PLeafPlan leaf;
   cdfmm::StaticP2PTensorDictionaryPlan tensor_dictionary;
+  cdfmm::StaticP2PSignedTensorDictionaryPlan signed_tensor_dictionary;
   cdfmm::StaticP2PBsrPlan bsr;
 #if defined(CDFMM_USE_MKL)
   std::unique_ptr<MklBsrPlan> mkl_bsr;
@@ -129,6 +131,7 @@ struct GeometryPlan {
   double compact_setup_seconds{0.0};
   double leaf_setup_seconds{0.0};
   double tensor_dictionary_setup_seconds{0.0};
+  double signed_tensor_dictionary_setup_seconds{0.0};
   double bsr_setup_seconds{0.0};
   double mkl_setup_seconds{0.0};
 };
@@ -170,6 +173,9 @@ struct Result {
       options.particles = parse_integer(argv[++argument], "--particles");
     } else if (argument + 1 < argc && option == "--evaluations") {
       options.evaluations = parse_integer(argv[++argument], "--evaluations");
+    } else if (argument + 1 < argc && option == "--signed-target-tile") {
+      options.signed_target_tile =
+          parse_integer(argv[++argument], "--signed-target-tile");
     } else if (argument + 1 < argc && option == "--regular-grid-s") {
       options.regular_grid_s =
           parse_integer(argv[++argument], "--regular-grid-s");
@@ -265,7 +271,8 @@ make_positions(const int depth, const int occupancy,
 [[nodiscard]] GeometryPlan build_geometry(const int depth, const int occupancy,
                                           const int particle_count,
                                           const bool irregular,
-                                          const int regular_grid_s) {
+                                          const int regular_grid_s,
+                                          const int signed_target_tile) {
   const std::vector<cdfmm::Vec3> positions = make_positions(
       depth, occupancy, particle_count, irregular, regular_grid_s);
   cdfmm::UniformTreeOptions tree_options;
@@ -311,14 +318,19 @@ make_positions(const int depth, const int occupancy,
   start = Clock::now();
   result.leaf = cdfmm::build_static_p2p_leaf_plan(result.canonical, leaf_pairs);
   result.leaf_setup_seconds = elapsed(start);
-  start = Clock::now();
-  result.tensor_dictionary = cdfmm::build_static_p2p_tensor_dictionary_plan(
-      result.canonical, leaf_pairs);
-  result.tensor_dictionary_setup_seconds = elapsed(start);
   result.identities.resize(positions.size());
   for (std::size_t index = 0; index < positions.size(); ++index) {
     result.identities[index] = static_cast<int>(index);
   }
+  start = Clock::now();
+  result.tensor_dictionary = cdfmm::build_static_p2p_tensor_dictionary_plan(
+      result.canonical, leaf_pairs);
+  result.tensor_dictionary_setup_seconds = elapsed(start);
+  start = Clock::now();
+  result.signed_tensor_dictionary =
+      cdfmm::build_static_p2p_signed_tensor_dictionary_plan(
+          result.canonical, leaf_pairs, result.identities, signed_target_tile);
+  result.signed_tensor_dictionary_setup_seconds = elapsed(start);
   start = Clock::now();
   result.bsr =
       cdfmm::build_static_p2p_bsr_plan(result.canonical, result.identities);
@@ -496,7 +508,8 @@ void run_cuda_case(GeometryPlan &geometry, const Options &options,
 void run_case(const Options &options, const int occupancy) {
   GeometryPlan geometry =
       build_geometry(options.depth, occupancy, options.particles,
-                     options.irregular, options.regular_grid_s);
+                     options.irregular, options.regular_grid_s,
+                     options.signed_target_tile);
   cdfmm::StaticP2PMemory canonical_memory;
   canonical_memory.tensor_bytes =
       geometry.canonical.blocks.size() * 6 * sizeof(double);
@@ -530,11 +543,17 @@ void run_case(const Options &options, const int occupancy) {
                                                  fields, geometry.identities);
               });
   const Result tensor_dictionary = measure(
-      "tensor-dictionary", geometry.tensor_dictionary.memory(), geometry,
+      "tensor-dictionary-legacy", geometry.tensor_dictionary.memory(), geometry,
       options.evaluations, [&](const std::span<cdfmm::Vec3> fields) {
         cdfmm::apply_static_p2p_tensor_dictionary_plan(
             geometry.tensor_dictionary, geometry.moments, fields,
             geometry.identities);
+      });
+  const Result signed_tensor_dictionary = measure(
+      "tensor-dictionary-signed-tiled", geometry.signed_tensor_dictionary.memory(),
+      geometry, options.evaluations, [&](const std::span<cdfmm::Vec3> fields) {
+        cdfmm::apply_static_p2p_signed_tensor_dictionary_plan(
+            geometry.signed_tensor_dictionary, geometry.moments, fields);
       });
 #if defined(CDFMM_USE_MKL)
   const Result mkl_bsr =
@@ -554,6 +573,7 @@ void run_case(const Options &options, const int occupancy) {
   require_matching_checksum(leaf);
   require_matching_checksum(bsr);
   require_matching_checksum(tensor_dictionary);
+  require_matching_checksum(signed_tensor_dictionary);
 #if defined(CDFMM_USE_MKL)
   require_matching_checksum(mkl_bsr);
 #endif
@@ -572,6 +592,17 @@ void run_case(const Options &options, const int occupancy) {
             << ",leaf_setup_s=" << geometry.leaf_setup_seconds;
   std::cout << ",tensor_dictionary_setup_s="
             << geometry.tensor_dictionary_setup_seconds;
+  std::cout << ",signed_tensor_dictionary_setup_s="
+            << geometry.signed_tensor_dictionary_setup_seconds
+            << ",signed_variant_count="
+            << geometry.signed_tensor_dictionary.variant_count()
+            << ",signed_token_width_bytes="
+            << static_cast<int>(geometry.signed_tensor_dictionary.token_width_bytes)
+            << ",signed_target_tile="
+            << geometry.signed_tensor_dictionary.target_tile_size
+            << ",legacy_variant_count="
+            << geometry.tensor_dictionary.tensors[0].size()
+            << ",legacy_token_width_bytes=4";
   std::cout << ",bsr_setup_s=" << geometry.bsr_setup_seconds;
 #if defined(CDFMM_USE_MKL)
   std::cout << ",mkl_setup_s=" << geometry.mkl_setup_seconds;
@@ -589,6 +620,8 @@ void run_case(const Options &options, const int occupancy) {
   print_result(compact, geometry.canonical.blocks.size(), canonical.seconds);
   print_result(leaf, geometry.canonical.blocks.size(), canonical.seconds);
   print_result(tensor_dictionary, geometry.canonical.blocks.size(),
+               canonical.seconds);
+  print_result(signed_tensor_dictionary, geometry.canonical.blocks.size(),
                canonical.seconds);
   print_result(bsr, geometry.canonical.blocks.size(), canonical.seconds);
 #if defined(CDFMM_USE_MKL)

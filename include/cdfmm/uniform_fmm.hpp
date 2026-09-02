@@ -547,14 +547,14 @@ private:
   std::vector<StaticL2PEvaluator> l2p_evaluators_{};
   StaticP2POperator p2p_operator_{};
   StaticP2PCompactPlan p2p_compact_plan_{};
-  std::optional<StaticP2PTensorDictionaryPlan> p2p_tensor_dictionary_plan_{};
+  std::optional<StaticP2PSignedTensorDictionaryPlan> p2p_tensor_dictionary_plan_{};
   StaticM2LPlan m2l_plan_{};
   std::array<FloatStaticCoefficientOperator, 8> m2m_operators_float_{};
   std::array<FloatStaticCoefficientOperator, 8> l2l_operators_float_{};
   std::vector<FloatStaticL2PEvaluator> l2p_evaluators_float_{};
   FloatStaticP2POperator p2p_operator_float_{};
   FloatStaticP2PCompactPlan p2p_compact_plan_float_{};
-  std::optional<FloatStaticP2PTensorDictionaryPlan>
+  std::optional<FloatStaticP2PSignedTensorDictionaryPlan>
       p2p_tensor_dictionary_plan_float_{};
   FloatStaticP2PBsrPlan p2p_bsr_plan_float_{};
   FloatStaticM2LPlan m2l_plan_float_{};

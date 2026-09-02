@@ -185,6 +185,40 @@ struct StaticP2PTensorDictionaryPlan {
 };
 
 /**
+ * @brief CPU-oriented signed Tensor6 dictionary execution packing.
+ *
+ * Tensor entries are already signed and token streams are source-major within
+ * a dense leaf pair.  The execution loop therefore performs only a token
+ * lookup followed by six SoA dictionary gathers.  `zero_variant` represents
+ * point-dipole self interactions when fixed identities were supplied while
+ * building the plan.
+ */
+struct StaticP2PSignedTensorDictionaryPlan {
+  int source_count{0};
+  int target_count{0};
+  std::vector<int> target_begins{};
+  std::vector<int> target_counts{};
+  std::vector<int> leaf_row_offsets{};
+  std::vector<StaticP2PLeafBlock> blocks{};
+  std::vector<int> tile_leaf_indices{};
+  std::vector<int> tile_target_offsets{};
+  std::array<std::vector<double>, 6> tensors{};
+  std::vector<std::uint8_t> tokens8{};
+  std::vector<std::uint16_t> tokens16{};
+  std::vector<std::uint32_t> tokens32{};
+  std::uint8_t token_width_bytes{1};
+  int target_tile_size{64};
+
+  [[nodiscard]] std::size_t variant_count() const noexcept {
+    return tensors[0].size();
+  }
+  [[nodiscard]] std::size_t token_count() const noexcept {
+    return tokens8.size() + tokens16.size() + tokens32.size();
+  }
+  [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
+/**
  * @brief Compact leaf-grouped execution packing of the canonical P2P tensor.
  *
  * One row describes each occupied target leaf. Leaf blocks are dense in
@@ -372,6 +406,32 @@ struct FloatStaticP2PTensorDictionaryPlan {
   [[nodiscard]] StaticP2PMemory memory() const noexcept;
 };
 
+/** @brief FP32 counterpart of the CPU signed Tensor6 dictionary packing. */
+struct FloatStaticP2PSignedTensorDictionaryPlan {
+  int source_count{0};
+  int target_count{0};
+  std::vector<int> target_begins{};
+  std::vector<int> target_counts{};
+  std::vector<int> leaf_row_offsets{};
+  std::vector<StaticP2PLeafBlock> blocks{};
+  std::vector<int> tile_leaf_indices{};
+  std::vector<int> tile_target_offsets{};
+  std::array<std::vector<float>, 6> tensors{};
+  std::vector<std::uint8_t> tokens8{};
+  std::vector<std::uint16_t> tokens16{};
+  std::vector<std::uint32_t> tokens32{};
+  std::uint8_t token_width_bytes{1};
+  int target_tile_size{64};
+
+  [[nodiscard]] std::size_t variant_count() const noexcept {
+    return tensors[0].size();
+  }
+  [[nodiscard]] std::size_t token_count() const noexcept {
+    return tokens8.size() + tokens16.size() + tokens32.size();
+  }
+  [[nodiscard]] StaticP2PMemory memory() const noexcept;
+};
+
 /** @brief Full FP32 BSR(3) near-field packing. */
 struct FloatStaticP2PBsrPlan {
     int source_count{0};
@@ -413,6 +473,9 @@ struct FloatStaticM2LPlan {
 [[nodiscard]] FloatStaticP2PTensorDictionaryPlan
 quantise_static_p2p_tensor_dictionary_plan(
     const StaticP2PTensorDictionaryPlan &source);
+[[nodiscard]] FloatStaticP2PSignedTensorDictionaryPlan
+quantise_static_p2p_signed_tensor_dictionary_plan(
+    const StaticP2PSignedTensorDictionaryPlan &source);
 [[nodiscard]] FloatStaticP2PBsrPlan quantise_static_p2p_bsr_plan(
     const StaticP2PBsrPlan& source);
 [[nodiscard]] FloatStaticM2LPlan quantise_static_m2l_plan(
@@ -616,6 +679,19 @@ build_static_p2p_tensor_dictionary_plan(
     const StaticP2POperator &operator_map,
     std::span<const StaticP2PLeafPair> leaf_pairs);
 
+/**
+ * @brief Builds source-major, signed Tensor6 CPU execution packing.
+ *
+ * Point-dipole fixed identities are encoded as the zero variant.  Leave
+ * `target_source_indices` empty for cuboid interactions, whose self tensors
+ * are physical and must remain in the dictionary.
+ */
+[[nodiscard]] StaticP2PSignedTensorDictionaryPlan
+build_static_p2p_signed_tensor_dictionary_plan(
+    const StaticP2POperator &operator_map,
+    std::span<const StaticP2PLeafPair> leaf_pairs,
+    std::span<const int> target_source_indices = {}, int target_tile_size = 64);
+
 /** @brief Expands canonical tensors into full BSR(3) blocks. */
 [[nodiscard]] StaticP2PBsrPlan
 build_static_p2p_bsr_plan(const StaticP2POperator &operator_map,
@@ -655,6 +731,11 @@ void apply_static_p2p_tensor_dictionary_plan(
     const StaticP2PTensorDictionaryPlan &plan,
     std::span<const Vec3> dipole_moments, std::span<Vec3> H,
     std::span<const int> target_source_indices = {});
+
+/** @brief Applies the CPU source-major signed Tensor6 dictionary packing. */
+void apply_static_p2p_signed_tensor_dictionary_plan(
+    const StaticP2PSignedTensorDictionaryPlan &plan,
+    std::span<const Vec3> dipole_moments, std::span<Vec3> H);
 
 /** @brief Applies the portable full BSR(3) reference packing additively. */
 void apply_static_p2p_bsr_plan(const StaticP2PBsrPlan &plan,
@@ -721,6 +802,11 @@ void apply_static_p2p_tensor_dictionary_plan(
     const FloatStaticP2PTensorDictionaryPlan &plan,
     std::span<const FloatVec3> dipole_moments, std::span<FloatVec3> H,
     std::span<const int> target_source_indices = {});
+
+/** @brief Applies the FP32 CPU source-major signed Tensor6 dictionary. */
+void apply_static_p2p_signed_tensor_dictionary_plan(
+    const FloatStaticP2PSignedTensorDictionaryPlan &plan,
+    std::span<const FloatVec3> dipole_moments, std::span<FloatVec3> H);
 
 void apply_static_p2p_bsr_plan(
     const FloatStaticP2PBsrPlan& plan,

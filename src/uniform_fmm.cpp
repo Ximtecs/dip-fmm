@@ -799,6 +799,13 @@ void UniformFmm::build_reduced_symmetry_p2p_packing() {
   if (!use_reduced_symmetry_p2p_ || periodic_.enabled) {
     return;
   }
+  // The branch-free point-dipole executor encodes fixed self pairs as the
+  // zero variant.  Dynamic identity maps retain the production SoA path.
+  if (source_geometry_ == SourceGeometry::PointDipole &&
+      !fixed_target_source_indices_.has_value()) {
+    p2p_tensor_dictionary_plan_.reset();
+    return;
+  }
 
   std::vector<StaticP2PLeafPair> leaf_pairs;
   const auto nodes = tree_.nodes();
@@ -828,12 +835,12 @@ void UniformFmm::build_reduced_symmetry_p2p_packing() {
                                  block.yy, block.yz, block.zz,
                                  block.skip_for_identity});
     }
-    p2p_tensor_dictionary_plan_ = build_static_p2p_tensor_dictionary_plan(
-        promoted, leaf_pairs);
+    p2p_tensor_dictionary_plan_ = build_static_p2p_signed_tensor_dictionary_plan(
+        promoted, leaf_pairs, fixed_sorted_self_indices_);
     return;
   }
-  p2p_tensor_dictionary_plan_ = build_static_p2p_tensor_dictionary_plan(
-      p2p_operator_, leaf_pairs);
+  p2p_tensor_dictionary_plan_ = build_static_p2p_signed_tensor_dictionary_plan(
+      p2p_operator_, leaf_pairs, fixed_sorted_self_indices_);
 }
 
 void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
@@ -1147,7 +1154,8 @@ void UniformFmm::build_static_plan() {
         static_plan_statistics_.p2p_unique_tensors =
             p2p_tensor_dictionary_plan_->tensors[0].size();
         static_plan_statistics_.p2p_dictionary_token_bytes =
-            p2p_tensor_dictionary_plan_->tokens.size() * sizeof(std::uint32_t);
+            p2p_tensor_dictionary_plan_->token_count() *
+            p2p_tensor_dictionary_plan_->token_width_bytes;
         static_plan_statistics_.p2p_dictionary_tensor_bytes =
             p2p_tensor_dictionary_plan_->tensors[0].size() * 6 * sizeof(double);
         static_plan_statistics_.p2p_dictionary_total_bytes =
@@ -1601,7 +1609,8 @@ void UniformFmm::build_static_plan() {
     static_plan_statistics_.p2p_unique_tensors =
         p2p_tensor_dictionary_plan_->tensors[0].size();
     static_plan_statistics_.p2p_dictionary_token_bytes =
-        p2p_tensor_dictionary_plan_->tokens.size() * sizeof(std::uint32_t);
+        p2p_tensor_dictionary_plan_->token_count() *
+        p2p_tensor_dictionary_plan_->token_width_bytes;
     static_plan_statistics_.p2p_dictionary_tensor_bytes =
         p2p_tensor_dictionary_plan_->tensors[0].size() * 6 * sizeof(double);
     static_plan_statistics_.p2p_dictionary_total_bytes =
@@ -1665,7 +1674,7 @@ void UniformFmm::quantise_static_plan_to_float() {
     p2p_compact_plan_float_ =
         build_static_p2p_compact_plan(p2p_operator_float_);
     if (p2p_tensor_dictionary_plan_.has_value()) {
-      auto dictionary = quantise_static_p2p_tensor_dictionary_plan(
+      auto dictionary = quantise_static_p2p_signed_tensor_dictionary_plan(
           *p2p_tensor_dictionary_plan_);
       p2p_tensor_dictionary_plan_float_ = std::move(dictionary);
       p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
@@ -1733,8 +1742,8 @@ void UniformFmm::quantise_static_plan_to_float() {
     static_plan_statistics_.p2p_unique_tensors =
         p2p_tensor_dictionary_plan_float_->tensors[0].size();
     static_plan_statistics_.p2p_dictionary_token_bytes =
-        p2p_tensor_dictionary_plan_float_->tokens.size() *
-        sizeof(std::uint32_t);
+        p2p_tensor_dictionary_plan_float_->token_count() *
+        p2p_tensor_dictionary_plan_float_->token_width_bytes;
     static_plan_statistics_.p2p_dictionary_tensor_bytes =
         p2p_tensor_dictionary_plan_float_->tensors[0].size() * 6 *
         sizeof(float);
@@ -2169,9 +2178,9 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
       detail::ProfileRange p2p_range{"cdfmm/near_field/p2p"};
       const auto p2p_start = Clock::now();
       if (p2p_tensor_dictionary_plan_.has_value()) {
-        apply_static_p2p_tensor_dictionary_plan(
+        apply_static_p2p_signed_tensor_dictionary_plan(
             *p2p_tensor_dictionary_plan_, sorted_dipole_moments_,
-            near_fields_, sorted_self_indices_);
+            near_fields_);
       } else {
         detail::evaluate_static_near_field(p2p_compact_plan_,
                                            sorted_dipole_moments_, near_fields_,
@@ -2410,9 +2419,9 @@ void UniformFmm::evaluate_into_float32_impl(
       last_timings_.cuda_p2p_d2h.add(device.d2h_seconds);
     } else {
       if (p2p_tensor_dictionary_plan_float_.has_value()) {
-        apply_static_p2p_tensor_dictionary_plan(
+        apply_static_p2p_signed_tensor_dictionary_plan(
             *p2p_tensor_dictionary_plan_float_, sorted_dipole_moments_float_,
-            near_fields_float_, sorted_self_indices_);
+            near_fields_float_);
       } else {
         apply_static_p2p_compact_plan(p2p_compact_plan_float_,
                                       sorted_dipole_moments_float_,
