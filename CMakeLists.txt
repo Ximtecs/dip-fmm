@@ -28,6 +28,8 @@ option(CDFMM_ENABLE_MKL
 option(CDFMM_ENABLE_CUDA "Enable optional NVIDIA CUDA execution backends" OFF)
 option(CDFMM_ENABLE_PROFILING
        "Enable NVTX ranges for perf and NVIDIA Nsight captures" OFF)
+option(CDFMM_ENABLE_VECTORIZATION_REPORTS
+       "Emit compiler vectorization diagnostics for static_operators.cpp" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -101,6 +103,28 @@ endif()
 if(CDFMM_EXTRA_COMPILE_OPTIONS)
   target_compile_options(cdfmm_core PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:${CDFMM_EXTRA_COMPILE_OPTIONS}>)
+endif()
+
+if(CDFMM_ENABLE_VECTORIZATION_REPORTS)
+  set(CDFMM_VECTORIZATION_REPORT
+      "${CMAKE_CURRENT_BINARY_DIR}/cdfmm-static-operators.vec")
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set_property(SOURCE src/static_operators.cpp APPEND PROPERTY COMPILE_OPTIONS
+      "-fopt-info-vec-optimized-missed=${CDFMM_VECTORIZATION_REPORT}")
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+    set_property(SOURCE src/static_operators.cpp APPEND PROPERTY COMPILE_OPTIONS
+      "-qopt-report=3"
+      "-qopt-report-phase=vec"
+      "-qopt-report-file=${CDFMM_VECTORIZATION_REPORT}")
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set_property(SOURCE src/static_operators.cpp APPEND PROPERTY COMPILE_OPTIONS
+      "-Rpass=loop-vectorize"
+      "-Rpass-missed=loop-vectorize"
+      "-Rpass-analysis=loop-vectorize")
+  else()
+    message(WARNING "Vectorization reports are unsupported by ${CMAKE_CXX_COMPILER_ID}")
+  endif()
+  message(STATUS "  Vector report:       ${CDFMM_VECTORIZATION_REPORT}")
 endif()
 
 if(CDFMM_ENABLE_MKL)

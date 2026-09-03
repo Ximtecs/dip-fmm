@@ -207,7 +207,8 @@ struct StaticP2PSignedTensorDictionaryPlan {
   std::vector<std::uint16_t> tokens16{};
   std::vector<std::uint32_t> tokens32{};
   std::uint8_t token_width_bytes{1};
-  int target_tile_size{64};
+  std::uint32_t zero_variant_id{0};
+  int target_tile_size{32};
 
   [[nodiscard]] std::size_t variant_count() const noexcept {
     return tensors[0].size();
@@ -421,7 +422,8 @@ struct FloatStaticP2PSignedTensorDictionaryPlan {
   std::vector<std::uint16_t> tokens16{};
   std::vector<std::uint32_t> tokens32{};
   std::uint8_t token_width_bytes{1};
-  int target_tile_size{64};
+  std::uint32_t zero_variant_id{0};
+  int target_tile_size{32};
 
   [[nodiscard]] std::size_t variant_count() const noexcept {
     return tensors[0].size();
@@ -690,7 +692,7 @@ build_static_p2p_tensor_dictionary_plan(
 build_static_p2p_signed_tensor_dictionary_plan(
     const StaticP2POperator &operator_map,
     std::span<const StaticP2PLeafPair> leaf_pairs,
-    std::span<const int> target_source_indices = {}, int target_tile_size = 64);
+    std::span<const int> target_source_indices = {}, int target_tile_size = 32);
 
 /** @brief Expands canonical tensors into full BSR(3) blocks. */
 [[nodiscard]] StaticP2PBsrPlan
@@ -736,6 +738,17 @@ void apply_static_p2p_tensor_dictionary_plan(
 void apply_static_p2p_signed_tensor_dictionary_plan(
     const StaticP2PSignedTensorDictionaryPlan &plan,
     std::span<const Vec3> dipole_moments, std::span<Vec3> H);
+
+/** @brief Applies the pre-microtile signed executor for benchmark comparison. */
+void apply_static_p2p_signed_tensor_dictionary_plan_whole_tile(
+    const StaticP2PSignedTensorDictionaryPlan &plan,
+    std::span<const Vec3> dipole_moments, std::span<Vec3> H);
+
+/** @brief Reports the compiled CPU SIMD path used by the signed executor. */
+[[nodiscard]] const char *static_p2p_signed_simd_path() noexcept;
+
+/** @brief Reports the signed executor microtile width for FP32 or FP64. */
+[[nodiscard]] int static_p2p_signed_simd_width(bool single_precision) noexcept;
 
 /** @brief Applies the portable full BSR(3) reference packing additively. */
 void apply_static_p2p_bsr_plan(const StaticP2PBsrPlan &plan,
@@ -805,6 +818,11 @@ void apply_static_p2p_tensor_dictionary_plan(
 
 /** @brief Applies the FP32 CPU source-major signed Tensor6 dictionary. */
 void apply_static_p2p_signed_tensor_dictionary_plan(
+    const FloatStaticP2PSignedTensorDictionaryPlan &plan,
+    std::span<const FloatVec3> dipole_moments, std::span<FloatVec3> H);
+
+/** @brief Applies the pre-microtile FP32 executor for benchmark comparison. */
+void apply_static_p2p_signed_tensor_dictionary_plan_whole_tile(
     const FloatStaticP2PSignedTensorDictionaryPlan &plan,
     std::span<const FloatVec3> dipole_moments, std::span<FloatVec3> H);
 
