@@ -1,24 +1,39 @@
 # Static P2P execution study
 
-## Tensor6 dictionary packing
+## Signed Tensor6 dictionary packing
 
 The P2P execution plan retains the exact canonical interaction topology as
-dense target/source leaf blocks. Each interaction stores one four-byte token:
-a 26-bit Tensor6 dictionary ID and six independent sign bits for
-`xx, xy, xz, yy, yz, zz`. The dictionary stores the component-wise absolute
-Tensor6 entries once, using exact bit patterns at the selected execution
-precision. FP32 is quantised before its dictionary is deduplicated.
+dense target/source leaf blocks. Each interaction stores a direct ID into an
+already-signed Tensor6 execution dictionary. IDs use one, two, or four bytes
+according to the signed variant count; no sign reconstruction occurs during
+execution. Tokens remain source-major within each leaf pair, and signed
+variants are ordered by descending use frequency without changing interaction
+or source order. The dictionary is six structure-of-arrays component vectors.
+FP32 is quantised and deduplicated independently.
 
 This packing does not inspect particle coordinates or attempt to detect a
-regular grid. It applies to point and finite cuboid P2P operators alike. A
-point self interaction is skipped only when its canonical block requests it;
-finite cuboid centre interactions are retained.
+regular grid. It applies to point and finite cuboid P2P operators alike.
+Fixed point self interactions use an exact zero dictionary variant; finite
+cuboid centre interactions are retained.
 
 The dictionary is experimental and is selected only when
 `use_reduced_symmetry_p2p` is explicitly enabled. The reported plan statistics
 include tensor counts and canonical/dictionary persistent-memory fields for
-benchmark inspection.
-interactions), leaf blocking was 1.21x, and oneMKL BSR was 0.80x.
+benchmark inspection. Its CPU executor owns disjoint target tiles with static
+OpenMP scheduling and traverses sources using register-resident SIMD
+microtiles. The OpenMP tile defaults to 32 targets and is runtime-configurable;
+the SIMD width is independent of that tile.
+
+When reduced symmetry is explicitly requested for `cuda_m2l_p2p` or
+`cuda_full`, the same signed host dictionary is uploaded as six contiguous SoA
+component ranges followed by the active one-, two-, or four-byte token stream.
+CUDA builds their own 128-target tiles rather than reusing the CPU tile size.
+One 128-thread block owns each `(target leaf, target tile)` item, one thread
+owns one target, and source moments are staged in shared memory in batches of
+128. The dictionary kernel consumes the already-encoded point-self zero
+variant (or physical cuboid self tensor), so it has no runtime identity or
+geometry branch. Without the explicit reduced-symmetry option, the existing
+CUDA BSR/canonical selection policy is unchanged.
 
 ## Sweep-based recommendation
 
