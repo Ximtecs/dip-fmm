@@ -17,6 +17,7 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <numeric>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -40,7 +41,7 @@ struct Options {
   int occupancy{8};
   int particles{0};
   int evaluations{20};
-  int signed_target_tile{64};
+  int signed_target_tile{32};
   bool irregular{false};
   bool sweep{false};
   bool cuda{false};
@@ -121,11 +122,14 @@ struct GeometryPlan {
   cdfmm::StaticP2PLeafPlan leaf;
   cdfmm::StaticP2PTensorDictionaryPlan tensor_dictionary;
   cdfmm::StaticP2PSignedTensorDictionaryPlan signed_tensor_dictionary;
+  cdfmm::FloatStaticP2PCompactPlan compact_float;
+  cdfmm::FloatStaticP2PSignedTensorDictionaryPlan signed_tensor_dictionary_float;
   cdfmm::StaticP2PBsrPlan bsr;
 #if defined(CDFMM_USE_MKL)
   std::unique_ptr<MklBsrPlan> mkl_bsr;
 #endif
   std::vector<cdfmm::Vec3> moments;
+  std::vector<cdfmm::FloatVec3> moments_float;
   std::vector<int> identities;
   double canonical_setup_seconds{0.0};
   double compact_setup_seconds{0.0};
@@ -142,6 +146,50 @@ struct Result {
   cdfmm::StaticP2PMemory memory{};
   double checksum{0.0};
 };
+
+[[nodiscard]] std::array<double, 2> signed_work_balance(
+    const cdfmm::StaticP2PSignedTensorDictionaryPlan &plan,
+    const int thread_count) {
+  std::vector<double> costs(plan.tile_leaf_indices.size());
+  for (std::size_t work = 0; work < costs.size(); ++work) {
+    const int leaf = plan.tile_leaf_indices[work];
+    const int local_begin = plan.tile_target_offsets[work];
+    const int lanes = std::min(
+        plan.target_tile_size,
+        plan.target_counts[static_cast<std::size_t>(leaf)] - local_begin);
+    std::size_t sources = 0;
+    for (int block = plan.leaf_row_offsets[static_cast<std::size_t>(leaf)];
+         block < plan.leaf_row_offsets[static_cast<std::size_t>(leaf) + 1];
+         ++block) {
+      sources += static_cast<std::size_t>(
+          plan.blocks[static_cast<std::size_t>(block)].source_count);
+    }
+    costs[work] = static_cast<double>(lanes) * sources;
+  }
+  const double total = std::accumulate(costs.begin(), costs.end(), 0.0);
+  const double mean = costs.empty() ? 0.0 : total / costs.size();
+  const double item_ratio = mean == 0.0
+      ? 0.0
+      : *std::max_element(costs.begin(), costs.end()) / mean;
+  const int workers = std::max(1, std::min(thread_count,
+                                           static_cast<int>(costs.size())));
+  std::vector<double> thread_costs(static_cast<std::size_t>(workers));
+  const int quotient = static_cast<int>(costs.size()) / workers;
+  const int remainder = static_cast<int>(costs.size()) % workers;
+  int begin = 0;
+  for (int worker = 0; worker < workers; ++worker) {
+    const int count = quotient + (worker < remainder ? 1 : 0);
+    thread_costs[static_cast<std::size_t>(worker)] = std::accumulate(
+        costs.begin() + begin, costs.begin() + begin + count, 0.0);
+    begin += count;
+  }
+  const double thread_mean = total / workers;
+  const double thread_ratio = thread_mean == 0.0
+      ? 0.0
+      : *std::max_element(thread_costs.begin(), thread_costs.end()) /
+            thread_mean;
+  return {item_ratio, thread_ratio};
+}
 
 [[nodiscard]] double elapsed(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
@@ -331,6 +379,10 @@ make_positions(const int depth, const int occupancy,
       cdfmm::build_static_p2p_signed_tensor_dictionary_plan(
           result.canonical, leaf_pairs, result.identities, signed_target_tile);
   result.signed_tensor_dictionary_setup_seconds = elapsed(start);
+  result.compact_float = cdfmm::quantise_static_p2p_compact_plan(result.compact);
+  result.signed_tensor_dictionary_float =
+      cdfmm::quantise_static_p2p_signed_tensor_dictionary_plan(
+          result.signed_tensor_dictionary);
   start = Clock::now();
   result.bsr =
       cdfmm::build_static_p2p_bsr_plan(result.canonical, result.identities);
@@ -349,6 +401,12 @@ make_positions(const int depth, const int occupancy,
     result.moments[index] = {component(generator), component(generator),
                              component(generator)};
   }
+  result.moments_float.reserve(result.moments.size());
+  for (const cdfmm::Vec3 moment : result.moments) {
+    result.moments_float.push_back(
+        {static_cast<float>(moment.x), static_cast<float>(moment.y),
+         static_cast<float>(moment.z)});
+  }
   return result;
 }
 
@@ -360,7 +418,6 @@ measure(std::string name, const cdfmm::StaticP2PMemory memory,
   apply(fields);
   double best = std::numeric_limits<double>::max();
   for (int evaluation = 0; evaluation < evaluations; ++evaluation) {
-    geometry.moments[0].x += std::numeric_limits<double>::epsilon();
     std::fill(fields.begin(), fields.end(), cdfmm::Vec3{});
     const auto start = Clock::now();
     apply(fields);
@@ -369,6 +426,26 @@ measure(std::string name, const cdfmm::StaticP2PMemory memory,
   double checksum = 0.0;
   for (const cdfmm::Vec3 field : fields) {
     checksum += field.x + field.y + field.z;
+  }
+  return {std::move(name), best, memory, checksum};
+}
+
+template <typename Apply>
+[[nodiscard]] Result
+measure_float(std::string name, const cdfmm::StaticP2PMemory memory,
+              GeometryPlan &geometry, const int evaluations, Apply apply) {
+  std::vector<cdfmm::FloatVec3> fields(geometry.moments_float.size());
+  apply(fields);
+  double best = std::numeric_limits<double>::max();
+  for (int evaluation = 0; evaluation < evaluations; ++evaluation) {
+    std::fill(fields.begin(), fields.end(), cdfmm::FloatVec3{});
+    const auto start = Clock::now();
+    apply(fields);
+    best = std::min(best, elapsed(start));
+  }
+  double checksum = 0.0;
+  for (const cdfmm::FloatVec3 field : fields) {
+    checksum += static_cast<double>(field.x) + field.y + field.z;
   }
   return {std::move(name), best, memory, checksum};
 }
@@ -511,6 +588,13 @@ void run_case(const Options &options, const int occupancy) {
                      options.irregular, options.regular_grid_s,
                      options.signed_target_tile);
   cdfmm::StaticP2PMemory canonical_memory;
+#if defined(CDFMM_USE_OPENMP)
+  const int signed_threads = omp_get_max_threads();
+#else
+  const int signed_threads = 1;
+#endif
+  const auto balance = signed_work_balance(
+      geometry.signed_tensor_dictionary, signed_threads);
   canonical_memory.tensor_bytes =
       geometry.canonical.blocks.size() * 6 * sizeof(double);
   canonical_memory.index_bytes =
@@ -549,11 +633,45 @@ void run_case(const Options &options, const int occupancy) {
             geometry.tensor_dictionary, geometry.moments, fields,
             geometry.identities);
       });
+  const Result signed_tensor_dictionary_current = measure(
+      "tensor-dictionary-signed-whole-tile-fp64",
+      geometry.signed_tensor_dictionary.memory(),
+      geometry, options.evaluations, [&](const std::span<cdfmm::Vec3> fields) {
+        cdfmm::apply_static_p2p_signed_tensor_dictionary_plan_whole_tile(
+            geometry.signed_tensor_dictionary, geometry.moments, fields);
+      });
   const Result signed_tensor_dictionary = measure(
-      "tensor-dictionary-signed-tiled", geometry.signed_tensor_dictionary.memory(),
+      "tensor-dictionary-signed-microtile-fp64",
+      geometry.signed_tensor_dictionary.memory(),
       geometry, options.evaluations, [&](const std::span<cdfmm::Vec3> fields) {
         cdfmm::apply_static_p2p_signed_tensor_dictionary_plan(
             geometry.signed_tensor_dictionary, geometry.moments, fields);
+      });
+  const Result compact_float = measure_float(
+      "particle-row-soa-fp32", geometry.compact_float.memory(), geometry,
+      options.evaluations,
+      [&](const std::span<cdfmm::FloatVec3> fields) {
+        cdfmm::apply_static_p2p_compact_plan(
+            geometry.compact_float, geometry.moments_float, fields,
+            geometry.identities);
+      });
+  const Result signed_tensor_dictionary_float_current = measure_float(
+      "tensor-dictionary-signed-whole-tile-fp32",
+      geometry.signed_tensor_dictionary_float.memory(), geometry,
+      options.evaluations,
+      [&](const std::span<cdfmm::FloatVec3> fields) {
+        cdfmm::apply_static_p2p_signed_tensor_dictionary_plan_whole_tile(
+            geometry.signed_tensor_dictionary_float, geometry.moments_float,
+            fields);
+      });
+  const Result signed_tensor_dictionary_float = measure_float(
+      "tensor-dictionary-signed-microtile-fp32",
+      geometry.signed_tensor_dictionary_float.memory(), geometry,
+      options.evaluations,
+      [&](const std::span<cdfmm::FloatVec3> fields) {
+        cdfmm::apply_static_p2p_signed_tensor_dictionary_plan(
+            geometry.signed_tensor_dictionary_float, geometry.moments_float,
+            fields);
       });
 #if defined(CDFMM_USE_MKL)
   const Result mkl_bsr =
@@ -573,7 +691,17 @@ void run_case(const Options &options, const int occupancy) {
   require_matching_checksum(leaf);
   require_matching_checksum(bsr);
   require_matching_checksum(tensor_dictionary);
+  require_matching_checksum(signed_tensor_dictionary_current);
   require_matching_checksum(signed_tensor_dictionary);
+  const auto require_matching_float_checksum = [&](const Result &candidate) {
+    const double scale = std::max(1.0, std::abs(compact_float.checksum));
+    if (std::abs(candidate.checksum - compact_float.checksum) > 2.0e-5 * scale) {
+      throw std::runtime_error(candidate.name +
+                               " does not match the FP32 particle-row checksum");
+    }
+  };
+  require_matching_float_checksum(signed_tensor_dictionary_float_current);
+  require_matching_float_checksum(signed_tensor_dictionary_float);
 #if defined(CDFMM_USE_MKL)
   require_matching_checksum(mkl_bsr);
 #endif
@@ -600,6 +728,13 @@ void run_case(const Options &options, const int occupancy) {
             << static_cast<int>(geometry.signed_tensor_dictionary.token_width_bytes)
             << ",signed_target_tile="
             << geometry.signed_tensor_dictionary.target_tile_size
+            << ",signed_simd_path=" << cdfmm::static_p2p_signed_simd_path()
+            << ",signed_simd_width_fp64="
+            << cdfmm::static_p2p_signed_simd_width(false)
+            << ",signed_simd_width_fp32="
+            << cdfmm::static_p2p_signed_simd_width(true)
+            << ",signed_work_max_over_mean=" << balance[0]
+            << ",signed_static_thread_max_over_mean=" << balance[1]
             << ",legacy_variant_count="
             << geometry.tensor_dictionary.tensors[0].size()
             << ",legacy_token_width_bytes=4";
@@ -621,8 +756,16 @@ void run_case(const Options &options, const int occupancy) {
   print_result(leaf, geometry.canonical.blocks.size(), canonical.seconds);
   print_result(tensor_dictionary, geometry.canonical.blocks.size(),
                canonical.seconds);
+  print_result(signed_tensor_dictionary_current,
+               geometry.canonical.blocks.size(), canonical.seconds);
   print_result(signed_tensor_dictionary, geometry.canonical.blocks.size(),
                canonical.seconds);
+  print_result(compact_float, geometry.canonical.blocks.size(),
+               compact_float.seconds);
+  print_result(signed_tensor_dictionary_float_current,
+               geometry.canonical.blocks.size(), compact_float.seconds);
+  print_result(signed_tensor_dictionary_float,
+               geometry.canonical.blocks.size(), compact_float.seconds);
   print_result(bsr, geometry.canonical.blocks.size(), canonical.seconds);
 #if defined(CDFMM_USE_MKL)
   print_result(mkl_bsr, geometry.canonical.blocks.size(), canonical.seconds);

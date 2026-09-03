@@ -685,6 +685,8 @@ PYBIND11_MODULE(cdfmm, module) {
                        &UniformFmmOptions::cuda_p2p_bsr_max_bytes)
         .def_readwrite("use_reduced_symmetry_p2p",
                        &UniformFmmOptions::use_reduced_symmetry_p2p)
+        .def_readwrite("signed_p2p_target_tile_size",
+                       &UniformFmmOptions::signed_p2p_target_tile_size)
         .def_readwrite("enable_cache", &UniformFmmOptions::enable_cache);
 
     py::class_<UniformFmm>(module, "UniformFmm")

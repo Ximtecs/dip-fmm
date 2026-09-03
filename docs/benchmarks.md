@@ -261,6 +261,48 @@ OMP_NUM_THREADS=16 ./build-bench/benchmarks/benchmark_uniform_fmm \
   --output result.csv
 ```
 
+### Signed tensor-dictionary CPU P2P
+
+The experimental signed tensor-dictionary path is selected explicitly with
+`UniformFmmOptions::use_reduced_symmetry_p2p`; it is not the default. Its
+OpenMP target tile is independently configurable with
+`signed_p2p_target_tile_size` (valid range 1--128, default 32). The inner SIMD
+microtile remains fixed at the compiled native width (eight FP32 or four FP64
+targets for AVX2), while OpenMP statically owns disjoint `(target leaf, target
+tile)` work items. Recommended runtime affinity is:
+
+```console
+OMP_PROC_BIND=close OMP_PLACES=cores OMP_NUM_THREADS=8 \
+  ./build-bench-all/benchmarks/benchmark_p2p --depth 2 --occupancy 32 \
+  --evaluations 10 --signed-target-tile 32
+```
+
+The benchmark reports particle-row SoA, the former whole-target-tile signed
+kernel, and the production SIMD-microtile signed kernel in both FP64 and FP32.
+Generate GCC vectorization diagnostics and retain inspectable non-LTO object
+code with:
+
+```console
+cmake -S . -B build-p2p-vector -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCDFMM_BUILD_TESTS=OFF -DCDFMM_BUILD_EXAMPLES=OFF \
+  -DCDFMM_BUILD_PYTHON=OFF -DCDFMM_BUILD_BENCHMARKS=ON \
+  -DCDFMM_ENABLE_CUDA=OFF -DCDFMM_ENABLE_MKL=OFF \
+  -DCDFMM_ENABLE_LTO=OFF -DCDFMM_ENABLE_VECTORIZATION_REPORTS=ON
+cmake --build build-p2p-vector --target benchmark_p2p -j
+less build-p2p-vector/cdfmm-static-operators.vec
+objdump -dC build-p2p-vector/libcdfmm_core.a | \
+  grep -E 'apply_signed_microtile_avx2|vgather|vfmadd'
+```
+
+The `magtense` preset deliberately has `CDFMM_ENABLE_OPENMP=OFF`: consequently
+the signed P2P executor is SIMD-vectorized but single-threaded in that build.
+MagTense itself uses Intel OpenMP and MKL's Intel threading layer, whereas the
+inherited cdfmm notebook build uses GNU C++; simply turning cdfmm OpenMP on
+would mix `libgomp` and `libiomp5` in one process. A parallel integration
+should therefore be configured only as a separate, fully IntelLLVM/libiomp5
+build after validating the complete MagTense link, rather than by overriding
+the existing preset.
+
 The runner sets `OMP_NUM_THREADS` to each case's thread count,
 `MKL_NUM_THREADS=1`, and configures the OpenMP runtime directly with
 `--threads`. The
