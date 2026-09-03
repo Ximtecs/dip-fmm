@@ -61,8 +61,10 @@ struct CudaFullPlanData {
   std::vector<StaticOperatorEntry> l2p{};
   StaticP2POperator p2p{};
   StaticP2PBsrPlan p2p_bsr{};
+  StaticP2PSignedTensorDictionaryPlan p2p_dictionary{};
   std::vector<int> fixed_self_indices{};
   bool use_p2p_bsr{false};
+  bool use_p2p_dictionary{false};
   bool has_fixed_self_indices{false};
 };
 
@@ -82,8 +84,10 @@ struct FloatCudaFullPlanData {
   std::vector<FloatStaticOperatorEntry> l2p{};
   FloatStaticP2POperator p2p{};
   FloatStaticP2PBsrPlan p2p_bsr{};
+  FloatStaticP2PSignedTensorDictionaryPlan p2p_dictionary{};
   std::vector<int> fixed_self_indices{};
   bool use_p2p_bsr{false};
+  bool use_p2p_dictionary{false};
   bool has_fixed_self_indices{false};
 };
 

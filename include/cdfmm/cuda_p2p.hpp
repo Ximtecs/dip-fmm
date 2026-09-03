@@ -19,8 +19,8 @@ namespace cdfmm {
  * transfers changing moments and result fields. A self-identity map supplied
  * at construction is uploaded once; omitting it retains the dynamic identity
  * behaviour required by the existing hybrid FMM path. The constructors select
- * canonical AoS rows, source-only SoA rows, compact leaf blocks, or cuSPARSE
- * BSR(3), respectively.
+ * canonical AoS rows, source-only SoA rows, compact leaf blocks, signed
+ * Tensor6 dictionaries, or cuSPARSE BSR(3), respectively.
  */
 class CudaP2PPlan {
 public:
@@ -36,6 +36,10 @@ public:
   explicit CudaP2PPlan(const StaticP2PLeafPlan &plan,
                        std::span<const int> fixed_self_indices = {});
 
+  /** @brief Builds the source-major signed Tensor6 dictionary CUDA plan. */
+  explicit CudaP2PPlan(
+      const StaticP2PSignedTensorDictionaryPlan &plan);
+
   /** @brief Builds a persistent cuSPARSE BSR(3) CUDA plan. */
   explicit CudaP2PPlan(const StaticP2PBsrPlan &plan);
 
@@ -48,6 +52,9 @@ public:
   /** @brief Builds the shared-memory FP32 leaf CUDA plan. */
   explicit CudaP2PPlan(const FloatStaticP2PLeafPlan &plan,
                        std::span<const int> fixed_self_indices = {});
+  /** @brief Builds the source-major signed FP32 dictionary CUDA plan. */
+  explicit CudaP2PPlan(
+      const FloatStaticP2PSignedTensorDictionaryPlan &plan);
   /** @brief Builds a persistent FP32 cuSPARSE BSR(3) plan. */
   explicit CudaP2PPlan(const FloatStaticP2PBsrPlan &plan);
 

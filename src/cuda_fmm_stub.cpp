@@ -161,6 +161,12 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2PLeafPlan &, std::span<const int>) {
   throw std::runtime_error("CUDA leaf P2P is unavailable in this build");
 }
 
+CudaP2PPlan::CudaP2PPlan(
+    const StaticP2PSignedTensorDictionaryPlan &) {
+  throw std::runtime_error(
+      "CUDA signed tensor-dictionary P2P is unavailable in this build");
+}
+
 CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan &) {
   throw std::runtime_error("CUDA BSR P2P is unavailable in this build");
 }
@@ -178,6 +184,12 @@ CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PCompactPlan &,
 CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PLeafPlan &,
                          std::span<const int>) {
   throw std::runtime_error("CUDA leaf P2P is unavailable in this build");
+}
+
+CudaP2PPlan::CudaP2PPlan(
+    const FloatStaticP2PSignedTensorDictionaryPlan &) {
+  throw std::runtime_error(
+      "CUDA signed tensor-dictionary P2P is unavailable in this build");
 }
 
 CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PBsrPlan &) {

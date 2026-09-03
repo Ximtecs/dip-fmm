@@ -12,6 +12,7 @@
 #include <cusparse.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
@@ -1656,6 +1657,48 @@ struct CudaLeafP2PDeviceView {
   Scalar* tensors{nullptr};
 };
 
+constexpr int cuda_dictionary_target_tile_size = 128;
+constexpr int cuda_dictionary_threads_per_block = 128;
+constexpr int cuda_dictionary_source_batch_size = 128;
+
+template <typename Scalar>
+struct CudaSignedDictionaryP2PDeviceView {
+  int target_count{0};
+  int tile_count{0};
+  int threads_per_block{cuda_dictionary_threads_per_block};
+  int source_batch_size{cuda_dictionary_source_batch_size};
+  std::size_t variant_count{0};
+  int *target_begins{nullptr};
+  int *target_counts{nullptr};
+  int *leaf_row_offsets{nullptr};
+  StaticP2PLeafBlock *leaf_blocks{nullptr};
+  int *tile_leaf_indices{nullptr};
+  int *tile_target_offsets{nullptr};
+  Scalar *tensors{nullptr};
+  void *tokens{nullptr};
+  std::uint8_t token_width_bytes{0};
+};
+
+static void build_cuda_dictionary_tiles(
+    const std::span<const int> target_counts, const int target_tile_size,
+    std::vector<int> &tile_leaf_indices,
+    std::vector<int> &tile_target_offsets) {
+  if (target_tile_size <= 0) {
+    throw std::invalid_argument(
+        "CUDA signed dictionary target tile must be positive");
+  }
+  tile_leaf_indices.clear();
+  tile_target_offsets.clear();
+  for (int leaf = 0; leaf < static_cast<int>(target_counts.size()); ++leaf) {
+    const int target_count = target_counts[static_cast<std::size_t>(leaf)];
+    for (int target_offset = 0; target_offset < target_count;
+         target_offset += target_tile_size) {
+      tile_leaf_indices.push_back(leaf);
+      tile_target_offsets.push_back(target_offset);
+    }
+  }
+}
+
 template <typename Scalar, typename Vector>
 void launch_leaf_p2p(
     const CudaLeafP2PDeviceView<Scalar>& plan,
@@ -1682,6 +1725,251 @@ void launch_leaf_p2p(
       plan.leaf_blocks, plan.tensors, plan.interaction_count, moments,
       self_indices, fields);
   check_cuda(cudaGetLastError(), "launch leaf-block static P2P kernel");
+}
+
+template <typename Scalar, typename Vector, typename Token>
+__global__ void signed_dictionary_p2p_kernel(
+    const int *__restrict__ target_begins,
+    const int *__restrict__ target_counts,
+    const int *__restrict__ leaf_row_offsets,
+    const StaticP2PLeafBlock *__restrict__ leaf_blocks,
+    const int *__restrict__ tile_leaf_indices,
+    const int *__restrict__ tile_target_offsets,
+    const Token *__restrict__ tokens, const Scalar *__restrict__ tensors,
+    const std::size_t variant_count, const int source_batch_size,
+    const Vector *__restrict__ moments, Vector *__restrict__ fields) {
+  extern __shared__ unsigned char shared_storage[];
+  Vector *shared_moments = reinterpret_cast<Vector *>(shared_storage);
+
+  const int work = blockIdx.x;
+  const int target_leaf = tile_leaf_indices[work];
+  const int tile_offset = tile_target_offsets[work];
+  const int target_begin = target_begins[target_leaf];
+  const int target_count = target_counts[target_leaf];
+  const int local_target = tile_offset + threadIdx.x;
+  const bool active = local_target < target_count;
+  const int target = target_begin + local_target;
+
+  Scalar Hx = Scalar{0};
+  Scalar Hy = Scalar{0};
+  Scalar Hz = Scalar{0};
+  const Scalar *const xx = tensors;
+  const Scalar *const xy = xx + variant_count;
+  const Scalar *const xz = xy + variant_count;
+  const Scalar *const yy = xz + variant_count;
+  const Scalar *const yz = yy + variant_count;
+  const Scalar *const zz = yz + variant_count;
+
+  for (int block_index = leaf_row_offsets[target_leaf];
+       block_index < leaf_row_offsets[target_leaf + 1]; ++block_index) {
+    const StaticP2PLeafBlock block = leaf_blocks[block_index];
+    for (int source_base = 0; source_base < block.source_count;
+         source_base += source_batch_size) {
+      const int batch_count =
+          min(source_batch_size, block.source_count - source_base);
+      for (int source = threadIdx.x; source < batch_count;
+           source += blockDim.x) {
+        shared_moments[source] =
+            moments[block.source_begin + source_base + source];
+      }
+      __syncthreads();
+
+      if (active) {
+        std::size_t token_index = block.tensor_offset +
+            static_cast<std::size_t>(source_base) * target_count +
+            local_target;
+        for (int source = 0; source < batch_count; ++source) {
+          const std::size_t variant =
+              static_cast<std::size_t>(tokens[token_index]);
+          const Vector moment = shared_moments[source];
+          Hx += xx[variant] * moment.x + xy[variant] * moment.y +
+                xz[variant] * moment.z;
+          Hy += xy[variant] * moment.x + yy[variant] * moment.y +
+                yz[variant] * moment.z;
+          Hz += xz[variant] * moment.x + yz[variant] * moment.y +
+                zz[variant] * moment.z;
+          token_index += target_count;
+        }
+      }
+      __syncthreads();
+    }
+  }
+
+  if (active) {
+    fields[target].x = Hx;
+    fields[target].y = Hy;
+    fields[target].z = Hz;
+  }
+}
+
+template <typename Scalar, typename Vector, typename Token>
+void launch_signed_dictionary_p2p_typed(
+    const CudaSignedDictionaryP2PDeviceView<Scalar> &plan,
+    const Vector *moments, Vector *fields, cudaStream_t stream) {
+  if (plan.target_count == 0 || plan.tile_count == 0) {
+    return;
+  }
+  const std::size_t shared_bytes =
+      static_cast<std::size_t>(plan.source_batch_size) * sizeof(Vector);
+  signed_dictionary_p2p_kernel<Scalar, Vector, Token>
+      <<<plan.tile_count, plan.threads_per_block, shared_bytes, stream>>>(
+          plan.target_begins, plan.target_counts, plan.leaf_row_offsets,
+          plan.leaf_blocks, plan.tile_leaf_indices, plan.tile_target_offsets,
+          static_cast<const Token *>(plan.tokens), plan.tensors,
+          plan.variant_count, plan.source_batch_size, moments, fields);
+  check_cuda(cudaGetLastError(),
+             "launch signed tensor-dictionary P2P kernel");
+}
+
+template <typename Scalar, typename Vector>
+void launch_signed_dictionary_p2p(
+    const CudaSignedDictionaryP2PDeviceView<Scalar> &plan,
+    const Vector *moments, Vector *fields, cudaStream_t stream) {
+  switch (plan.token_width_bytes) {
+  case 1:
+    launch_signed_dictionary_p2p_typed<Scalar, Vector, std::uint8_t>(
+        plan, moments, fields, stream);
+    break;
+  case 2:
+    launch_signed_dictionary_p2p_typed<Scalar, Vector, std::uint16_t>(
+        plan, moments, fields, stream);
+    break;
+  case 4:
+    launch_signed_dictionary_p2p_typed<Scalar, Vector, std::uint32_t>(
+        plan, moments, fields, stream);
+    break;
+  default:
+    throw std::invalid_argument(
+        "invalid CUDA tensor-dictionary token width");
+  }
+}
+
+template <typename Scalar, typename Vector, typename HostPlan>
+void upload_cuda_signed_dictionary(
+    const HostPlan &host,
+    CudaSignedDictionaryP2PDeviceView<Scalar> &device,
+    CudaPlanStatistics &statistics) {
+  device.target_count = host.target_count;
+  device.threads_per_block = cuda_dictionary_threads_per_block;
+  device.source_batch_size = cuda_dictionary_source_batch_size;
+  device.variant_count = host.variant_count();
+  device.token_width_bytes = host.token_width_bytes;
+
+  std::vector<int> tile_leaf_indices;
+  std::vector<int> tile_target_offsets;
+  build_cuda_dictionary_tiles(std::span<const int>(host.target_counts),
+                              cuda_dictionary_target_tile_size,
+                              tile_leaf_indices, tile_target_offsets);
+  device.tile_count = static_cast<int>(tile_leaf_indices.size());
+
+  const void *token_source = nullptr;
+  std::size_t token_bytes = 0;
+  switch (host.token_width_bytes) {
+  case 1:
+    token_source = host.tokens8.data();
+    token_bytes = host.tokens8.size() * sizeof(std::uint8_t);
+    break;
+  case 2:
+    token_source = host.tokens16.data();
+    token_bytes = host.tokens16.size() * sizeof(std::uint16_t);
+    break;
+  case 4:
+    token_source = host.tokens32.data();
+    token_bytes = host.tokens32.size() * sizeof(std::uint32_t);
+    break;
+  default:
+    throw std::invalid_argument(
+        "invalid CUDA tensor-dictionary token width");
+  }
+
+  std::vector<Scalar> flattened_tensors;
+  flattened_tensors.reserve(6 * device.variant_count);
+  for (const auto &component : host.tensors) {
+    if (component.size() != device.variant_count) {
+      throw std::invalid_argument(
+          "CUDA signed tensor-dictionary components are inconsistent");
+    }
+    flattened_tensors.insert(flattened_tensors.end(), component.begin(),
+                             component.end());
+  }
+
+  const std::size_t target_begin_bytes =
+      host.target_begins.size() * sizeof(int);
+  const std::size_t target_count_bytes =
+      host.target_counts.size() * sizeof(int);
+  const std::size_t row_bytes = host.leaf_row_offsets.size() * sizeof(int);
+  const std::size_t block_bytes =
+      host.blocks.size() * sizeof(StaticP2PLeafBlock);
+  const std::size_t tile_leaf_bytes =
+      tile_leaf_indices.size() * sizeof(int);
+  const std::size_t tile_offset_bytes =
+      tile_target_offsets.size() * sizeof(int);
+  const std::size_t tensor_bytes =
+      flattened_tensors.size() * sizeof(Scalar);
+
+  const auto allocate = [](auto **pointer, const std::size_t bytes,
+                           const char *operation) {
+    check_cuda(cudaMalloc(reinterpret_cast<void **>(pointer),
+                          std::max(bytes, std::size_t{1})),
+               operation);
+  };
+  allocate(&device.target_begins, target_begin_bytes,
+           "allocate signed dictionary target begins");
+  allocate(&device.target_counts, target_count_bytes,
+           "allocate signed dictionary target counts");
+  allocate(&device.leaf_row_offsets, row_bytes,
+           "allocate signed dictionary leaf rows");
+  allocate(&device.leaf_blocks, block_bytes,
+           "allocate signed dictionary leaf blocks");
+  allocate(&device.tile_leaf_indices, tile_leaf_bytes,
+           "allocate signed dictionary tile leaves");
+  allocate(&device.tile_target_offsets, tile_offset_bytes,
+           "allocate signed dictionary tile offsets");
+  allocate(&device.tensors, tensor_bytes,
+           "allocate signed dictionary tensors");
+  allocate(&device.tokens, token_bytes,
+           "allocate signed dictionary tokens");
+
+  const auto upload = [](void *destination, const void *source,
+                         const std::size_t bytes, const char *operation) {
+    if (bytes != 0) {
+      check_cuda(cudaMemcpy(destination, source, bytes,
+                            cudaMemcpyHostToDevice),
+                 operation);
+    }
+  };
+  upload(device.target_begins, host.target_begins.data(), target_begin_bytes,
+         "upload signed dictionary target begins");
+  upload(device.target_counts, host.target_counts.data(), target_count_bytes,
+         "upload signed dictionary target counts");
+  upload(device.leaf_row_offsets, host.leaf_row_offsets.data(), row_bytes,
+         "upload signed dictionary leaf rows");
+  upload(device.leaf_blocks, host.blocks.data(), block_bytes,
+         "upload signed dictionary leaf blocks");
+  upload(device.tile_leaf_indices, tile_leaf_indices.data(), tile_leaf_bytes,
+         "upload signed dictionary tile leaves");
+  upload(device.tile_target_offsets, tile_target_offsets.data(),
+         tile_offset_bytes, "upload signed dictionary tile offsets");
+  upload(device.tensors, flattened_tensors.data(), tensor_bytes,
+         "upload signed dictionary tensors");
+  upload(device.tokens, token_source, token_bytes,
+         "upload signed dictionary tokens");
+
+  const std::size_t leaf_metadata_bytes = target_begin_bytes +
+      target_count_bytes + block_bytes + tile_leaf_bytes + tile_offset_bytes;
+  const std::size_t total_bytes = row_bytes + leaf_metadata_bytes +
+      tensor_bytes + token_bytes;
+  statistics.setup_h2d_bytes += total_bytes;
+  statistics.persistent_device_bytes += total_bytes;
+  statistics.p2p_interaction_count = host.token_count();
+  statistics.p2p_tensor_bytes = tensor_bytes;
+  statistics.p2p_index_bytes = token_bytes;
+  statistics.p2p_row_metadata_bytes = row_bytes;
+  statistics.p2p_leaf_metadata_bytes = leaf_metadata_bytes;
+  statistics.p2p_identity_bytes = 0;
+  statistics.p2p_scratch_bytes =
+      cuda_dictionary_source_batch_size * sizeof(Vector);
+  statistics.p2p_threads_per_block = cuda_dictionary_threads_per_block;
 }
 
 template <typename Scalar>
@@ -1770,6 +2058,7 @@ struct CudaP2PPlan::Implementation {
     Canonical,
     Compact,
     Leaf,
+    TensorDictionary,
     Bsr
   };
 
@@ -1780,10 +2069,12 @@ struct CudaP2PPlan::Implementation {
   CudaP2PDeviceView<StaticDipoleBlock> canonical{};
   CudaCompactP2PDeviceView<double> compact{};
   CudaLeafP2PDeviceView<double> leaf{};
+  CudaSignedDictionaryP2PDeviceView<double> dictionary{};
   CudaBsrP2PDeviceView<double> bsr{};
   CudaP2PDeviceView<FloatStaticDipoleBlock> canonical_float{};
   CudaCompactP2PDeviceView<float> compact_float{};
   CudaLeafP2PDeviceView<float> leaf_float{};
+  CudaSignedDictionaryP2PDeviceView<float> dictionary_float{};
   CudaBsrP2PDeviceView<float> bsr_float{};
   Vec3* moments{nullptr};
   int* self_indices{nullptr};
@@ -2324,6 +2615,27 @@ CudaP2PPlan::CudaP2PPlan(
       plan.leaf_float.threads_per_block;
 }
 
+CudaP2PPlan::CudaP2PPlan(
+    const StaticP2PSignedTensorDictionaryPlan &dictionary)
+    : CudaP2PPlan(dictionary.source_count, dictionary.target_count, {}, false) {
+  auto &plan = *implementation_;
+  plan.kind = Implementation::Kind::TensorDictionary;
+  plan.dynamic_self_identities = false;
+  upload_cuda_signed_dictionary<double, Vec3>(
+      dictionary, plan.dictionary, plan.statistics);
+}
+
+CudaP2PPlan::CudaP2PPlan(
+    const FloatStaticP2PSignedTensorDictionaryPlan &dictionary)
+    : CudaP2PPlan(dictionary.source_count, dictionary.target_count, {}, false,
+                  StaticPrecision::Float32) {
+  auto &plan = *implementation_;
+  plan.kind = Implementation::Kind::TensorDictionary;
+  plan.dynamic_self_identities = false;
+  upload_cuda_signed_dictionary<float, FloatVec3>(
+      dictionary, plan.dictionary_float, plan.statistics);
+}
+
 CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan& bsr)
     : CudaP2PPlan(
           bsr.source_count, bsr.target_count, bsr.target_source_indices, false)
@@ -2453,6 +2765,14 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaFree(plan.leaf.leaf_row_offsets);
   cudaFree(plan.leaf.leaf_blocks);
   cudaFree(plan.leaf.tensors);
+  cudaFree(plan.dictionary.target_begins);
+  cudaFree(plan.dictionary.target_counts);
+  cudaFree(plan.dictionary.leaf_row_offsets);
+  cudaFree(plan.dictionary.leaf_blocks);
+  cudaFree(plan.dictionary.tile_leaf_indices);
+  cudaFree(plan.dictionary.tile_target_offsets);
+  cudaFree(plan.dictionary.tensors);
+  cudaFree(plan.dictionary.tokens);
   if (plan.bsr.descriptor != nullptr) {
     cusparseDestroyMatDescr(plan.bsr.descriptor);
   }
@@ -2472,6 +2792,14 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaFree(plan.leaf_float.leaf_row_offsets);
   cudaFree(plan.leaf_float.leaf_blocks);
   cudaFree(plan.leaf_float.tensors);
+  cudaFree(plan.dictionary_float.target_begins);
+  cudaFree(plan.dictionary_float.target_counts);
+  cudaFree(plan.dictionary_float.leaf_row_offsets);
+  cudaFree(plan.dictionary_float.leaf_blocks);
+  cudaFree(plan.dictionary_float.tile_leaf_indices);
+  cudaFree(plan.dictionary_float.tile_target_offsets);
+  cudaFree(plan.dictionary_float.tensors);
+  cudaFree(plan.dictionary_float.tokens);
   if (plan.bsr_float.descriptor != nullptr) {
     cusparseDestroyMatDescr(plan.bsr_float.descriptor);
   }
@@ -2508,7 +2836,9 @@ void CudaP2PPlan::begin_evaluate(
           static_cast<std::size_t>(plan.target_count)) {
     throw std::invalid_argument("CUDA static P2P dimensions are inconsistent");
   }
-  if (!plan.dynamic_self_identities &&
+  const bool uses_self_identities =
+      plan.kind != Implementation::Kind::TensorDictionary;
+  if (uses_self_identities && !plan.dynamic_self_identities &&
       !std::equal(target_source_indices.begin(), target_source_indices.end(),
                   plan.fixed_self_indices.begin(),
                   plan.fixed_self_indices.end())) {
@@ -2519,7 +2849,7 @@ void CudaP2PPlan::begin_evaluate(
     throw std::logic_error("CUDA static P2P evaluation is already pending");
   }
   std::copy(moments.begin(), moments.end(), plan.pinned_moments);
-  if (plan.dynamic_self_identities) {
+  if (uses_self_identities && plan.dynamic_self_identities) {
     std::copy(target_source_indices.begin(), target_source_indices.end(),
               plan.pinned_self_indices);
   }
@@ -2530,7 +2860,7 @@ void CudaP2PPlan::begin_evaluate(
                                moments.size_bytes(), cudaMemcpyHostToDevice,
                                plan.stream),
                "upload P2P moments");
-    if (plan.dynamic_self_identities) {
+    if (uses_self_identities && plan.dynamic_self_identities) {
       check_cuda(cudaMemcpyAsync(
                      plan.self_indices, plan.pinned_self_indices,
                      target_source_indices.size_bytes(),
@@ -2551,6 +2881,10 @@ void CudaP2PPlan::begin_evaluate(
       launch_leaf_p2p(plan.leaf, plan.moments, plan.self_indices,
                       plan.fields, plan.stream);
       break;
+    case Implementation::Kind::TensorDictionary:
+      launch_signed_dictionary_p2p(plan.dictionary, plan.moments, plan.fields,
+                                   plan.stream);
+      break;
     case Implementation::Kind::Bsr:
       launch_bsr_p2p(plan.bsr, plan.moments, plan.fields, plan.stream);
       break;
@@ -2567,7 +2901,9 @@ void CudaP2PPlan::begin_evaluate(
     throw;
   }
   plan.statistics.evaluation_h2d_bytes = moments.size_bytes() +
-      (plan.dynamic_self_identities ? target_source_indices.size_bytes() : 0);
+      (uses_self_identities && plan.dynamic_self_identities
+           ? target_source_indices.size_bytes()
+           : 0);
   plan.statistics.evaluation_d2h_bytes =
       static_cast<std::size_t>(plan.target_count) * sizeof(Vec3);
   ++plan.statistics.evaluation_h2d_calls;
@@ -2611,7 +2947,9 @@ void CudaP2PPlan::begin_evaluate(
           static_cast<std::size_t>(plan.target_count)) {
     throw std::invalid_argument("CUDA FP32 P2P dimensions are inconsistent");
   }
-  if (!plan.dynamic_self_identities &&
+  const bool uses_self_identities =
+      plan.kind != Implementation::Kind::TensorDictionary;
+  if (uses_self_identities && !plan.dynamic_self_identities &&
       !std::equal(target_source_indices.begin(), target_source_indices.end(),
                   plan.fixed_self_indices.begin(),
                   plan.fixed_self_indices.end())) {
@@ -2622,7 +2960,7 @@ void CudaP2PPlan::begin_evaluate(
     throw std::logic_error("CUDA FP32 P2P evaluation is already pending");
   }
   std::copy(moments.begin(), moments.end(), plan.pinned_moments_float);
-  if (plan.dynamic_self_identities) {
+  if (uses_self_identities && plan.dynamic_self_identities) {
     std::copy(target_source_indices.begin(), target_source_indices.end(),
               plan.pinned_self_indices);
   }
@@ -2633,7 +2971,7 @@ void CudaP2PPlan::begin_evaluate(
                                moments.size_bytes(), cudaMemcpyHostToDevice,
                                plan.stream),
                "upload FP32 P2P moments");
-    if (plan.dynamic_self_identities) {
+    if (uses_self_identities && plan.dynamic_self_identities) {
       check_cuda(cudaMemcpyAsync(
                      plan.self_indices, plan.pinned_self_indices,
                      target_source_indices.size_bytes(),
@@ -2653,6 +2991,10 @@ void CudaP2PPlan::begin_evaluate(
     case Implementation::Kind::Leaf:
       launch_leaf_p2p(plan.leaf_float, plan.moments_float, plan.self_indices,
                       plan.fields_float, plan.stream);
+      break;
+    case Implementation::Kind::TensorDictionary:
+      launch_signed_dictionary_p2p(plan.dictionary_float, plan.moments_float,
+                                   plan.fields_float, plan.stream);
       break;
     case Implementation::Kind::Bsr:
       launch_bsr_p2p(plan.bsr_float, plan.moments_float, plan.fields_float,
@@ -2674,7 +3016,9 @@ void CudaP2PPlan::begin_evaluate(
     throw;
   }
   plan.statistics.evaluation_h2d_bytes = moments.size_bytes() +
-      (plan.dynamic_self_identities ? target_source_indices.size_bytes() : 0);
+      (uses_self_identities && plan.dynamic_self_identities
+           ? target_source_indices.size_bytes()
+           : 0);
   plan.statistics.evaluation_d2h_bytes =
       static_cast<std::size_t>(plan.target_count) * sizeof(FloatVec3);
   ++plan.statistics.evaluation_h2d_calls;
@@ -2765,9 +3109,12 @@ struct CudaFullPlan::Implementation {
     int* self_indices{nullptr};
     CudaP2PDeviceView<StaticDipoleBlock> p2p{};
     CudaBsrP2PDeviceView<double> p2p_bsr{};
+    CudaSignedDictionaryP2PDeviceView<double> p2p_dictionary{};
     CudaP2PDeviceView<FloatStaticDipoleBlock> p2p_float{};
     CudaBsrP2PDeviceView<float> p2p_bsr_float{};
+    CudaSignedDictionaryP2PDeviceView<float> p2p_dictionary_float{};
   bool use_p2p_bsr{false};
+  bool use_p2p_dictionary{false};
   StaticOperatorEntry *entries{nullptr};
   StaticOperatorEntry *m2m_matrices{nullptr};
   StaticOperatorEntry *l2l_matrices{nullptr};
@@ -2835,14 +3182,20 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
     plan.source_count = data.source_count;
   plan.target_count = data.target_count;
   plan.use_p2p_bsr = data.use_p2p_bsr;
+  plan.use_p2p_dictionary = data.use_p2p_dictionary;
+  if (plan.use_p2p_bsr && plan.use_p2p_dictionary) {
+    throw std::invalid_argument(
+        "full CUDA P2P cannot select BSR and tensor dictionary together");
+  }
   plan.p2p.target_count = plan.target_count;
   plan.p2p_bsr.target_count = plan.target_count;
   plan.p2p_bsr.source_count = plan.source_count;
   plan.p2p_bsr.interaction_count =
       static_cast<int>(data.p2p_bsr.source_indices.size());
-  plan.p2p_block_count = data.use_p2p_bsr
-                             ? data.p2p_bsr.source_indices.size()
-                             : data.p2p.blocks.size();
+  plan.p2p_block_count = data.use_p2p_dictionary
+      ? data.p2p_dictionary.token_count()
+      : (data.use_p2p_bsr ? data.p2p_bsr.source_indices.size()
+                          : data.p2p.blocks.size());
     std::vector<StaticOperatorEntry> entries;
     const auto append_stage = [&](const auto& stage_entries) {
         plan.offsets.push_back(entries.size());
@@ -2900,7 +3253,10 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
            data.target_permutation.size() * sizeof(int));
   allocate(&plan.coefficient_degrees,
            data.coefficient_degrees.size() * sizeof(int));
-  if (!plan.use_p2p_bsr) {
+  if (plan.use_p2p_dictionary) {
+    upload_cuda_signed_dictionary<double, Vec3>(
+        data.p2p_dictionary, plan.p2p_dictionary, plan.statistics);
+  } else if (!plan.use_p2p_bsr) {
     allocate(&plan.self_indices,
              static_cast<std::size_t>(plan.target_count) * sizeof(int));
     allocate(&plan.p2p.row_offsets, data.p2p.row_offsets.size() * sizeof(int));
@@ -2964,7 +3320,9 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
            data.target_permutation.size() * sizeof(int));
     upload(plan.coefficient_degrees, data.coefficient_degrees.data(),
            data.coefficient_degrees.size() * sizeof(int));
-  if (!plan.use_p2p_bsr) {
+  if (plan.use_p2p_dictionary) {
+    // The dictionary metadata and values were uploaded together above.
+  } else if (!plan.use_p2p_bsr) {
     upload(plan.p2p.row_offsets, data.p2p.row_offsets.data(),
            data.p2p.row_offsets.size() * sizeof(int));
     upload(plan.p2p.blocks, data.p2p.blocks.data(),
@@ -2990,7 +3348,8 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   if (data.has_fixed_self_indices) {
     plan.fixed_self_indices = data.fixed_self_indices;
     plan.identity_initialised = true;
-    if (!plan.use_p2p_bsr && !data.fixed_self_indices.empty()) {
+    if (!plan.use_p2p_bsr && !plan.use_p2p_dictionary &&
+        !data.fixed_self_indices.empty()) {
       upload(plan.self_indices, data.fixed_self_indices.data(),
              data.fixed_self_indices.size() * sizeof(int));
     }
@@ -3022,7 +3381,8 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   plan.statistics.persistent_device_bytes =
       plan.statistics.setup_h2d_bytes + 2 * source_bytes + 3 * target_bytes +
       2 * coefficient_bytes +
-      (plan.use_p2p_bsr || data.has_fixed_self_indices
+      (plan.use_p2p_bsr || plan.use_p2p_dictionary ||
+               data.has_fixed_self_indices
            ? 0
            : static_cast<std::size_t>(plan.target_count) * sizeof(int)) +
       plan.statistics.m2l_scratch_bytes;
@@ -3031,7 +3391,11 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
     plan.statistics.static_m2l_upload_count = 1;
     plan.statistics.static_p2p_upload_count = 1;
   plan.statistics.p2p_interaction_count = plan.p2p_block_count;
-  if (plan.use_p2p_bsr) {
+  if (plan.use_p2p_dictionary) {
+    plan.statistics.p2p_interaction_count =
+        data.p2p_dictionary.token_count();
+    plan.statistics.p2p_identity_bytes = 0;
+  } else if (plan.use_p2p_bsr) {
     plan.statistics.p2p_tensor_bytes =
         data.p2p_bsr.values.size() * sizeof(double);
     plan.statistics.p2p_index_bytes =
@@ -3063,14 +3427,20 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
   plan.source_count = data.source_count;
   plan.target_count = data.target_count;
   plan.use_p2p_bsr = data.use_p2p_bsr;
+  plan.use_p2p_dictionary = data.use_p2p_dictionary;
+  if (plan.use_p2p_bsr && plan.use_p2p_dictionary) {
+    throw std::invalid_argument(
+        "FP32 full CUDA P2P cannot select BSR and tensor dictionary together");
+  }
   plan.p2p_float.target_count = plan.target_count;
   plan.p2p_bsr_float.target_count = plan.target_count;
   plan.p2p_bsr_float.source_count = plan.source_count;
   plan.p2p_bsr_float.interaction_count =
       static_cast<int>(data.p2p_bsr.source_indices.size());
-  plan.p2p_block_count = data.use_p2p_bsr
-      ? data.p2p_bsr.source_indices.size()
-      : data.p2p.blocks.size();
+  plan.p2p_block_count = data.use_p2p_dictionary
+      ? data.p2p_dictionary.token_count()
+      : (data.use_p2p_bsr ? data.p2p_bsr.source_indices.size()
+                          : data.p2p.blocks.size());
 
   std::vector<FloatStaticOperatorEntry> entries;
   const auto append_stage = [&](const auto &stage_entries) {
@@ -3120,7 +3490,10 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
            data.target_permutation.size() * sizeof(int));
   allocate(&plan.coefficient_degrees,
            data.coefficient_degrees.size() * sizeof(int));
-  if (!plan.use_p2p_bsr) {
+  if (plan.use_p2p_dictionary) {
+    upload_cuda_signed_dictionary<float, FloatVec3>(
+        data.p2p_dictionary, plan.p2p_dictionary_float, plan.statistics);
+  } else if (!plan.use_p2p_bsr) {
     allocate(&plan.self_indices,
              static_cast<std::size_t>(plan.target_count) * sizeof(int));
     allocate(&plan.p2p_float.row_offsets,
@@ -3185,7 +3558,9 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
          data.target_permutation.size() * sizeof(int));
   upload(plan.coefficient_degrees, data.coefficient_degrees.data(),
          data.coefficient_degrees.size() * sizeof(int));
-  if (!plan.use_p2p_bsr) {
+  if (plan.use_p2p_dictionary) {
+    // The dictionary metadata and values were uploaded together above.
+  } else if (!plan.use_p2p_bsr) {
     upload(plan.p2p_float.row_offsets, data.p2p.row_offsets.data(),
            data.p2p.row_offsets.size() * sizeof(int));
     upload(plan.p2p_float.blocks, data.p2p.blocks.data(),
@@ -3212,7 +3587,8 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
   if (data.has_fixed_self_indices) {
     plan.fixed_self_indices = data.fixed_self_indices;
     plan.identity_initialised = true;
-    if (!plan.use_p2p_bsr && !data.fixed_self_indices.empty()) {
+    if (!plan.use_p2p_bsr && !plan.use_p2p_dictionary &&
+        !data.fixed_self_indices.empty()) {
       upload(plan.self_indices, data.fixed_self_indices.data(),
              data.fixed_self_indices.size() * sizeof(int));
     }
@@ -3247,7 +3623,8 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
   plan.statistics.persistent_device_bytes =
       plan.statistics.setup_h2d_bytes + 2 * source_bytes + 3 * target_bytes +
       2 * coefficient_bytes +
-      (plan.use_p2p_bsr || data.has_fixed_self_indices
+      (plan.use_p2p_bsr || plan.use_p2p_dictionary ||
+               data.has_fixed_self_indices
            ? 0
            : static_cast<std::size_t>(plan.target_count) * sizeof(int)) +
       plan.statistics.m2l_scratch_bytes;
@@ -3256,7 +3633,11 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
   plan.statistics.static_m2l_upload_count = 1;
   plan.statistics.static_p2p_upload_count = 1;
   plan.statistics.p2p_interaction_count = plan.p2p_block_count;
-  if (plan.use_p2p_bsr) {
+  if (plan.use_p2p_dictionary) {
+    plan.statistics.p2p_interaction_count =
+        data.p2p_dictionary.token_count();
+    plan.statistics.p2p_identity_bytes = 0;
+  } else if (plan.use_p2p_bsr) {
     plan.statistics.p2p_tensor_bytes =
         data.p2p_bsr.values.size() * sizeof(float);
     plan.statistics.p2p_index_bytes =
@@ -3297,6 +3678,14 @@ CudaFullPlan::~CudaFullPlan() {
   cudaFree(plan.p2p_bsr.row_offsets);
   cudaFree(plan.p2p_bsr.source_indices);
   cudaFree(plan.p2p_bsr.values);
+  cudaFree(plan.p2p_dictionary.target_begins);
+  cudaFree(plan.p2p_dictionary.target_counts);
+  cudaFree(plan.p2p_dictionary.leaf_row_offsets);
+  cudaFree(plan.p2p_dictionary.leaf_blocks);
+  cudaFree(plan.p2p_dictionary.tile_leaf_indices);
+  cudaFree(plan.p2p_dictionary.tile_target_offsets);
+  cudaFree(plan.p2p_dictionary.tensors);
+  cudaFree(plan.p2p_dictionary.tokens);
   cudaFree(plan.p2p_float.row_offsets);
   cudaFree(plan.p2p_float.blocks);
   if (plan.p2p_bsr_float.descriptor != nullptr) {
@@ -3308,6 +3697,14 @@ CudaFullPlan::~CudaFullPlan() {
   cudaFree(plan.p2p_bsr_float.row_offsets);
   cudaFree(plan.p2p_bsr_float.source_indices);
   cudaFree(plan.p2p_bsr_float.values);
+  cudaFree(plan.p2p_dictionary_float.target_begins);
+  cudaFree(plan.p2p_dictionary_float.target_counts);
+  cudaFree(plan.p2p_dictionary_float.leaf_row_offsets);
+  cudaFree(plan.p2p_dictionary_float.leaf_blocks);
+  cudaFree(plan.p2p_dictionary_float.tile_leaf_indices);
+  cudaFree(plan.p2p_dictionary_float.tile_target_offsets);
+  cudaFree(plan.p2p_dictionary_float.tensors);
+  cudaFree(plan.p2p_dictionary_float.tokens);
   cudaFree(plan.entries);
   cudaFree(plan.coefficient_degrees);
   cudaFree(plan.m2m_matrices);
@@ -3373,7 +3770,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   if (!plan.identity_initialised) {
     plan.fixed_self_indices.assign(sorted_self_indices.begin(),
                                    sorted_self_indices.end());
-    if (!sorted_self_indices.empty()) {
+    if (!plan.use_p2p_bsr && !plan.use_p2p_dictionary &&
+        !sorted_self_indices.empty()) {
       check_cuda(cudaMemcpy(plan.self_indices, sorted_self_indices.data(),
                             sorted_self_indices.size_bytes(),
                             cudaMemcpyHostToDevice),
@@ -3426,7 +3824,11 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
              "record full FMM P2P start");
   {
     detail::ProfileRange p2p_range{"cdfmm/near_field/p2p"};
-    if (plan.use_p2p_bsr) {
+    if (plan.use_p2p_dictionary) {
+      launch_signed_dictionary_p2p(
+          plan.p2p_dictionary, plan.sorted_moments, plan.near_fields,
+          plan.near_field_stream);
+    } else if (plan.use_p2p_bsr) {
       launch_bsr_p2p(plan.p2p_bsr, plan.sorted_moments, plan.near_fields,
                      plan.near_field_stream);
     } else {
@@ -3595,7 +3997,8 @@ void CudaFullPlan::evaluate(
   if (!plan.identity_initialised) {
     plan.fixed_self_indices.assign(sorted_self_indices.begin(),
                                    sorted_self_indices.end());
-    if (!sorted_self_indices.empty()) {
+    if (!plan.use_p2p_bsr && !plan.use_p2p_dictionary &&
+        !sorted_self_indices.empty()) {
       check_cuda(cudaMemcpy(plan.self_indices, sorted_self_indices.data(),
                             sorted_self_indices.size_bytes(),
                             cudaMemcpyHostToDevice),
@@ -3641,7 +4044,11 @@ void CudaFullPlan::evaluate(
              "wait for FP32 full FMM moments on P2P stream");
   check_cuda(cudaEventRecord(plan.p2p_start, plan.near_field_stream),
              "record FP32 full FMM P2P start");
-  if (plan.use_p2p_bsr) {
+  if (plan.use_p2p_dictionary) {
+    launch_signed_dictionary_p2p(
+        plan.p2p_dictionary_float, plan.sorted_moments_float,
+        plan.near_fields_float, plan.near_field_stream);
+  } else if (plan.use_p2p_bsr) {
     launch_bsr_p2p(plan.p2p_bsr_float, plan.sorted_moments_float,
                    plan.near_fields_float, plan.near_field_stream);
   } else {
