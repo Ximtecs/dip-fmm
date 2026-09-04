@@ -684,8 +684,11 @@ PYBIND11_MODULE(cdfmm, module) {
         .def_readwrite("cuda_p2p_bsr_max_bytes",
                        &UniformFmmOptions::cuda_p2p_bsr_max_bytes)
         .def_readwrite("use_reduced_symmetry_p2p",
-                       &UniformFmmOptions::use_reduced_symmetry_p2p)
+                    &UniformFmmOptions::use_reduced_symmetry_p2p)
+        .def_readwrite("cuda_dictionary_target_owned",
+                    &UniformFmmOptions::cuda_dictionary_target_owned)
         .def_readwrite("signed_p2p_target_tile_size",
+                    &UniformFmmOptions::signed_p2p_target_tile_size)
                        &UniformFmmOptions::signed_p2p_target_tile_size)
         .def_readwrite("enable_cache", &UniformFmmOptions::enable_cache);
 

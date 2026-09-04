@@ -38,7 +38,8 @@ public:
 
   /** @brief Builds the source-major signed Tensor6 dictionary CUDA plan. */
   explicit CudaP2PPlan(
-      const StaticP2PSignedTensorDictionaryPlan &plan);
+      const StaticP2PSignedTensorDictionaryPlan &plan,
+      bool target_owned = false);
 
   /** @brief Builds a persistent cuSPARSE BSR(3) CUDA plan. */
   explicit CudaP2PPlan(const StaticP2PBsrPlan &plan);
@@ -53,8 +54,9 @@ public:
   explicit CudaP2PPlan(const FloatStaticP2PLeafPlan &plan,
                        std::span<const int> fixed_self_indices = {});
   /** @brief Builds the source-major signed FP32 dictionary CUDA plan. */
-  explicit CudaP2PPlan(
-      const FloatStaticP2PSignedTensorDictionaryPlan &plan);
+explicit CudaP2PPlan(
+    const FloatStaticP2PSignedTensorDictionaryPlan &plan,
+    bool target_owned = false);
   /** @brief Builds a persistent FP32 cuSPARSE BSR(3) plan. */
   explicit CudaP2PPlan(const FloatStaticP2PBsrPlan &plan);
 

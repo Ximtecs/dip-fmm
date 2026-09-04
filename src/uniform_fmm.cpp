@@ -769,6 +769,8 @@ void UniformFmm::print_initialisation_summary(
 void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
   cuda_p2p_bsr_max_bytes_ = options.cuda_p2p_bsr_max_bytes;
   use_reduced_symmetry_p2p_ = options.use_reduced_symmetry_p2p;
+  cuda_dictionary_target_owned_ =
+      options.cuda_dictionary_target_owned;
   signed_p2p_target_tile_size_ = options.signed_p2p_target_tile_size;
   if (signed_p2p_target_tile_size_ <= 0 ||
       signed_p2p_target_tile_size_ > 128) {
@@ -926,10 +928,11 @@ void UniformFmm::build_cuda_p2p_plan() {
   if (precision_ == StaticPrecision::Float32) {
     if (use_reduced_symmetry_p2p_ &&
         p2p_tensor_dictionary_plan_float_.has_value()) {
-      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-          std::make_unique<CudaP2PPlan>(
-              *p2p_tensor_dictionary_plan_float_));
-      p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
+        cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+            std::make_unique<CudaP2PPlan>(
+                *p2p_tensor_dictionary_plan_float_,
+                cuda_dictionary_target_owned_));
+        p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
       return;
     }
     if (!periodic_.enabled && fixed_target_source_indices_.has_value() &&
@@ -950,9 +953,11 @@ void UniformFmm::build_cuda_p2p_plan() {
   }
   if (use_reduced_symmetry_p2p_ &&
       p2p_tensor_dictionary_plan_.has_value()) {
-    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-        std::make_unique<CudaP2PPlan>(*p2p_tensor_dictionary_plan_));
-    p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
+      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+          std::make_unique<CudaP2PPlan>(
+              *p2p_tensor_dictionary_plan_,
+              cuda_dictionary_target_owned_));
+      p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     return;
   }
   if (!periodic_.enabled && fixed_target_source_indices_.has_value()) {
@@ -1895,11 +1900,13 @@ void UniformFmm::build_cuda_full_plan() {
         }
       }
     }
-    if (use_reduced_symmetry_p2p_ &&
-        p2p_tensor_dictionary_plan_float_.has_value()) {
-      data.use_p2p_dictionary = true;
-      data.p2p_dictionary =
-          std::move(*p2p_tensor_dictionary_plan_float_);
+  if (use_reduced_symmetry_p2p_ &&
+      p2p_tensor_dictionary_plan_float_.has_value()) {
+    data.use_p2p_dictionary = true;
+    data.p2p_dictionary_target_owned =
+        cuda_dictionary_target_owned_;
+    data.p2p_dictionary =
+        std::move(*p2p_tensor_dictionary_plan_float_);
     } else if (fixed_target_source_indices_.has_value()) {
       data.has_fixed_self_indices = true;
       data.fixed_self_indices = fixed_sorted_self_indices_;
@@ -2009,6 +2016,7 @@ void UniformFmm::build_cuda_full_plan() {
   if (use_reduced_symmetry_p2p_ &&
       p2p_tensor_dictionary_plan_.has_value()) {
     data.use_p2p_dictionary = true;
+    data.p2p_dictionary_target_owned = cuda_dictionary_target_owned_;
     data.p2p_dictionary = std::move(*p2p_tensor_dictionary_plan_);
     if (fixed_target_source_indices_.has_value()) {
       data.has_fixed_self_indices = true;

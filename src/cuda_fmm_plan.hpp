@@ -65,6 +65,7 @@ struct CudaFullPlanData {
   std::vector<int> fixed_self_indices{};
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
+  bool p2p_dictionary_target_owned{false};
   bool has_fixed_self_indices{false};
 };
 
@@ -88,6 +89,7 @@ struct FloatCudaFullPlanData {
   std::vector<int> fixed_self_indices{};
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
+  bool p2p_dictionary_target_owned{false};
   bool has_fixed_self_indices{false};
 };
 

@@ -162,7 +162,8 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2PLeafPlan &, std::span<const int>) {
 }
 
 CudaP2PPlan::CudaP2PPlan(
-    const StaticP2PSignedTensorDictionaryPlan &) {
+    const StaticP2PSignedTensorDictionaryPlan &,
+    bool) {
   throw std::runtime_error(
       "CUDA signed tensor-dictionary P2P is unavailable in this build");
 }
@@ -187,7 +188,8 @@ CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PLeafPlan &,
 }
 
 CudaP2PPlan::CudaP2PPlan(
-    const FloatStaticP2PSignedTensorDictionaryPlan &) {
+    const FloatStaticP2PSignedTensorDictionaryPlan &,
+    bool) {
   throw std::runtime_error(
       "CUDA signed tensor-dictionary P2P is unavailable in this build");
 }

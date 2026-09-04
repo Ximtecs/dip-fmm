@@ -188,9 +188,20 @@ struct UniformFmmOptions {
    * The default retains particle-row SoA so benchmark comparisons are
    * intentional rather than selected by an implicit policy.
    */
-  bool use_reduced_symmetry_p2p{false};
-  /** @brief OpenMP work-tile size for the signed dictionary CPU executor. */
-  int signed_p2p_target_tile_size{32};
+    bool use_reduced_symmetry_p2p{false};
+
+    /**
+     * @brief Explicitly selects the global one-thread-per-target CUDA
+     * tensor-dictionary executor.
+     *
+     * False retains the existing warp-tiled/source-parallel CUDA dictionary
+     * executor. This is an experimental explicit selector; no occupancy-based
+     * switching is performed.
+     */
+    bool cuda_dictionary_target_owned{false};
+
+    /** @brief OpenMP work-tile size for the signed dictionary CPU executor. */
+    int signed_p2p_target_tile_size{32};
   /// @brief Enables validated persistent operator and geometry-plan caches.
   bool enable_cache{true};
 };
@@ -536,6 +547,7 @@ private:
   P2PExecutionPacking p2p_execution_packing_{P2PExecutionPacking::Reference};
   std::size_t cuda_p2p_bsr_max_bytes_{20ULL * 1024ULL * 1024ULL * 1024ULL};
   bool use_reduced_symmetry_p2p_{false};
+  bool cuda_dictionary_target_owned_{false};
   int signed_p2p_target_tile_size_{32};
   mutable CudaPlanStatistics empty_cuda_statistics_{};
   std::unique_ptr<CudaM2LPlanOwner> cuda_m2l_plan_{};
