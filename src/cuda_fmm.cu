@@ -1657,24 +1657,84 @@ struct CudaLeafP2PDeviceView {
   Scalar* tensors{nullptr};
 };
 
-constexpr int cuda_dictionary_target_tile_size = 128;
-constexpr int cuda_dictionary_threads_per_block = 128;
-constexpr int cuda_dictionary_source_batch_size = 128;
+constexpr int cuda_dictionary_warp_size = 32;
+constexpr int cuda_dictionary_target_tile_size = 32;
+constexpr int cuda_dictionary_max_source_warps = 8;
+constexpr int cuda_dictionary_max_threads_per_block = cuda_dictionary_warp_size * cuda_dictionary_max_source_warps;
+
+/*
+ * CUDA-specific Tensor6 layout.
+ *
+ * The host/CPU plan remains SoA. CUDA packs the six coefficients belonging
+ * to one dictionary variant together to reduce independent dictionary
+ * accesses in the interaction loop.
+ */
+template <typename Scalar>
+struct CudaPackedTensor6;
+
+template <>
+struct alignas(16) CudaPackedTensor6<float> {
+  float4 a;  // xx, xy, xz, yy
+  float2 b;  // yz, zz
+};
+
+template <>
+struct alignas(16) CudaPackedTensor6<double> {
+  double4 a;  // xx, xy, xz, yy
+  double2 b;  // yz, zz
+};
+
+static CudaPackedTensor6<float> make_cuda_packed_tensor6(
+    const float xx,
+    const float xy,
+    const float xz,
+    const float yy,
+    const float yz,
+    const float zz) {
+
+  CudaPackedTensor6<float> result{};
+  result.a = make_float4(xx, xy, xz, yy);
+  result.b = make_float2(yz, zz);
+  return result;
+}
+
+static CudaPackedTensor6<double> make_cuda_packed_tensor6(
+    const double xx,
+    const double xy,
+    const double xz,
+    const double yy,
+    const double yz,
+    const double zz) {
+
+  CudaPackedTensor6<double> result{};
+  result.a = make_double4(xx, xy, xz, yy);
+  result.b = make_double2(yz, zz);
+  return result;
+}
 
 template <typename Scalar>
 struct CudaSignedDictionaryP2PDeviceView {
   int target_count{0};
   int tile_count{0};
-  int threads_per_block{cuda_dictionary_threads_per_block};
-  int source_batch_size{cuda_dictionary_source_batch_size};
+
+  /*
+   * 1, 2, 4 or 8 source warps cooperate on each 32-target tile.
+   */
+  int threads_per_block{cuda_dictionary_warp_size};
+
   std::size_t variant_count{0};
+
   int *target_begins{nullptr};
   int *target_counts{nullptr};
   int *leaf_row_offsets{nullptr};
+
   StaticP2PLeafBlock *leaf_blocks{nullptr};
+
   int *tile_leaf_indices{nullptr};
   int *tile_target_offsets{nullptr};
-  Scalar *tensors{nullptr};
+
+  CudaPackedTensor6<Scalar> *tensors{nullptr};
+
   void *tokens{nullptr};
   std::uint8_t token_width_bytes{0};
 };
@@ -1735,90 +1795,274 @@ __global__ void signed_dictionary_p2p_kernel(
     const StaticP2PLeafBlock *__restrict__ leaf_blocks,
     const int *__restrict__ tile_leaf_indices,
     const int *__restrict__ tile_target_offsets,
-    const Token *__restrict__ tokens, const Scalar *__restrict__ tensors,
-    const std::size_t variant_count, const int source_batch_size,
-    const Vector *__restrict__ moments, Vector *__restrict__ fields) {
-  extern __shared__ unsigned char shared_storage[];
-  Vector *shared_moments = reinterpret_cast<Vector *>(shared_storage);
+    const Token *__restrict__ tokens,
+    const CudaPackedTensor6<Scalar> *__restrict__ tensors,
+    const Vector *__restrict__ moments,
+    Vector *__restrict__ fields) {
 
-  const int work = blockIdx.x;
-  const int target_leaf = tile_leaf_indices[work];
-  const int tile_offset = tile_target_offsets[work];
-  const int target_begin = target_begins[target_leaf];
-  const int target_count = target_counts[target_leaf];
-  const int local_target = tile_offset + threadIdx.x;
-  const bool active = local_target < target_count;
-  const int target = target_begin + local_target;
+  constexpr unsigned full_warp_mask = 0xffffffffu;
+
+  const int lane =
+      static_cast<int>(threadIdx.x) &
+      (cuda_dictionary_warp_size - 1);
+
+  const int warp =
+      static_cast<int>(threadIdx.x) /
+      cuda_dictionary_warp_size;
+
+  const int warp_count =
+      static_cast<int>(blockDim.x) /
+      cuda_dictionary_warp_size;
+
+  /*
+   * Every warp works on the same 32 target lanes.
+   * Different warps own different subsets of the sources.
+   */
+  const int work =
+      static_cast<int>(blockIdx.x);
+
+  const int target_leaf =
+      tile_leaf_indices[work];
+
+  const int tile_offset =
+      tile_target_offsets[work];
+
+  const int target_begin =
+      target_begins[target_leaf];
+
+  const int target_count =
+      target_counts[target_leaf];
+
+  const int local_target =
+      tile_offset + lane;
+
+  const bool active_target =
+      local_target < target_count;
+
+  const int target =
+      target_begin + local_target;
 
   Scalar Hx = Scalar{0};
   Scalar Hy = Scalar{0};
   Scalar Hz = Scalar{0};
-  const Scalar *const xx = tensors;
-  const Scalar *const xy = xx + variant_count;
-  const Scalar *const xz = xy + variant_count;
-  const Scalar *const yy = xz + variant_count;
-  const Scalar *const yz = yy + variant_count;
-  const Scalar *const zz = yz + variant_count;
+
+  /*
+   * Each source group contains 32 sources per participating warp.
+   */
+  const int sources_per_group =
+      warp_count * cuda_dictionary_warp_size;
 
   for (int block_index = leaf_row_offsets[target_leaf];
-       block_index < leaf_row_offsets[target_leaf + 1]; ++block_index) {
-    const StaticP2PLeafBlock block = leaf_blocks[block_index];
-    for (int source_base = 0; source_base < block.source_count;
-         source_base += source_batch_size) {
-      const int batch_count =
-          min(source_batch_size, block.source_count - source_base);
-      for (int source = threadIdx.x; source < batch_count;
-           source += blockDim.x) {
-        shared_moments[source] =
-            moments[block.source_begin + source_base + source];
-      }
-      __syncthreads();
+       block_index < leaf_row_offsets[target_leaf + 1];
+       ++block_index) {
 
-      if (active) {
-        std::size_t token_index = block.tensor_offset +
-            static_cast<std::size_t>(source_base) * target_count +
-            local_target;
-        for (int source = 0; source < batch_count; ++source) {
+    const StaticP2PLeafBlock block =
+        leaf_blocks[block_index];
+
+    for (int group_base = 0;
+         group_base < block.source_count;
+         group_base += sources_per_group) {
+
+      const int warp_source_base =
+          group_base +
+          warp * cuda_dictionary_warp_size;
+
+      const int remaining =
+          block.source_count - warp_source_base;
+
+      const int warp_source_count =
+          remaining <= 0
+              ? 0
+              : min(cuda_dictionary_warp_size, remaining);
+
+      /*
+       * Each lane loads one source moment.
+       * The warp therefore performs a coalesced 32-moment global load.
+       */
+      Scalar lane_mx = Scalar{0};
+      Scalar lane_my = Scalar{0};
+      Scalar lane_mz = Scalar{0};
+
+      if (lane < warp_source_count) {
+        const Vector moment =
+            moments[
+                block.source_begin +
+                warp_source_base +
+                lane];
+
+        lane_mx = static_cast<Scalar>(moment.x);
+        lane_my = static_cast<Scalar>(moment.y);
+        lane_mz = static_cast<Scalar>(moment.z);
+      }
+
+      /*
+       * Broadcast each source through warp shuffles.
+       * For a given source, the 32 lanes read consecutive source-major tokens.
+       */
+      for (int source_lane = 0;
+           source_lane < warp_source_count;
+           ++source_lane) {
+
+        const Scalar mx =
+            __shfl_sync(
+                full_warp_mask,
+                lane_mx,
+                source_lane);
+
+        const Scalar my =
+            __shfl_sync(
+                full_warp_mask,
+                lane_my,
+                source_lane);
+
+        const Scalar mz =
+            __shfl_sync(
+                full_warp_mask,
+                lane_mz,
+                source_lane);
+
+        if (active_target) {
+          const int local_source =
+              warp_source_base + source_lane;
+
+          const std::size_t token_index =
+              block.tensor_offset +
+              static_cast<std::size_t>(local_source) *
+                  static_cast<std::size_t>(target_count) +
+              static_cast<std::size_t>(local_target);
+
           const std::size_t variant =
-              static_cast<std::size_t>(tokens[token_index]);
-          const Vector moment = shared_moments[source];
-          Hx += xx[variant] * moment.x + xy[variant] * moment.y +
-                xz[variant] * moment.z;
-          Hy += xy[variant] * moment.x + yy[variant] * moment.y +
-                yz[variant] * moment.z;
-          Hz += xz[variant] * moment.x + yz[variant] * moment.y +
-                zz[variant] * moment.z;
-          token_index += target_count;
+              static_cast<std::size_t>(
+                  tokens[token_index]);
+
+          const CudaPackedTensor6<Scalar> tensor =
+              tensors[variant];
+
+          const Scalar xx = tensor.a.x;
+          const Scalar xy = tensor.a.y;
+          const Scalar xz = tensor.a.z;
+          const Scalar yy = tensor.a.w;
+          const Scalar yz = tensor.b.x;
+          const Scalar zz = tensor.b.y;
+
+          Hx += xx * mx + xy * my + xz * mz;
+          Hy += xy * mx + yy * my + yz * mz;
+          Hz += xz * mx + yz * my + zz * mz;
         }
       }
-      __syncthreads();
     }
   }
 
-  if (active) {
-    fields[target].x = Hx;
-    fields[target].y = Hy;
-    fields[target].z = Hz;
+  /*
+   * With one source warp, no cross-warp reduction is required.
+   */
+  if (warp_count == 1) {
+    if (active_target) {
+      fields[target].x = Hx;
+      fields[target].y = Hy;
+      fields[target].z = Hz;
+    }
+    return;
+  }
+
+  /*
+   * Store one partial H per source warp / target lane.
+   */
+  extern __shared__ unsigned char shared_storage[];
+
+  Scalar *partial_hx =
+      reinterpret_cast<Scalar *>(shared_storage);
+
+  Scalar *partial_hy =
+      partial_hx + blockDim.x;
+
+  Scalar *partial_hz =
+      partial_hy + blockDim.x;
+
+  const int thread =
+      static_cast<int>(threadIdx.x);
+
+  partial_hx[thread] = Hx;
+  partial_hy[thread] = Hy;
+  partial_hz[thread] = Hz;
+
+  __syncthreads();
+
+  /*
+   * Warp 0 reduces the source-warp partial sums for its corresponding
+   * 32 target lanes.
+   */
+  if (warp == 0 && active_target) {
+    Scalar total_x = Scalar{0};
+    Scalar total_y = Scalar{0};
+    Scalar total_z = Scalar{0};
+
+#pragma unroll
+    for (int source_warp = 0;
+         source_warp < cuda_dictionary_max_source_warps;
+         ++source_warp) {
+
+      if (source_warp < warp_count) {
+        const int index =
+            source_warp *
+                cuda_dictionary_warp_size +
+            lane;
+
+        total_x += partial_hx[index];
+        total_y += partial_hy[index];
+        total_z += partial_hz[index];
+      }
+    }
+
+    fields[target].x = total_x;
+    fields[target].y = total_y;
+    fields[target].z = total_z;
   }
 }
 
 template <typename Scalar, typename Vector, typename Token>
 void launch_signed_dictionary_p2p_typed(
     const CudaSignedDictionaryP2PDeviceView<Scalar> &plan,
-    const Vector *moments, Vector *fields, cudaStream_t stream) {
+    const Vector *moments,
+    Vector *fields,
+    cudaStream_t stream) {
+
   if (plan.target_count == 0 || plan.tile_count == 0) {
     return;
   }
+
+  /*
+   * One source warp needs no partial-result scratch.
+   * Multiple source warps store Hx/Hy/Hz for each thread before the final
+   * cross-warp reduction.
+   */
   const std::size_t shared_bytes =
-      static_cast<std::size_t>(plan.source_batch_size) * sizeof(Vector);
+      plan.threads_per_block == cuda_dictionary_warp_size
+          ? 0
+          : 3 *
+                static_cast<std::size_t>(
+                    plan.threads_per_block) *
+                sizeof(Scalar);
+
   signed_dictionary_p2p_kernel<Scalar, Vector, Token>
-      <<<plan.tile_count, plan.threads_per_block, shared_bytes, stream>>>(
-          plan.target_begins, plan.target_counts, plan.leaf_row_offsets,
-          plan.leaf_blocks, plan.tile_leaf_indices, plan.tile_target_offsets,
-          static_cast<const Token *>(plan.tokens), plan.tensors,
-          plan.variant_count, plan.source_batch_size, moments, fields);
-  check_cuda(cudaGetLastError(),
-             "launch signed tensor-dictionary P2P kernel");
+      <<<plan.tile_count,
+         plan.threads_per_block,
+         shared_bytes,
+         stream>>>(
+          plan.target_begins,
+          plan.target_counts,
+          plan.leaf_row_offsets,
+          plan.leaf_blocks,
+          plan.tile_leaf_indices,
+          plan.tile_target_offsets,
+          static_cast<const Token *>(plan.tokens),
+          plan.tensors,
+          moments,
+          fields);
+
+  check_cuda(
+      cudaGetLastError(),
+      "launch source-parallel signed tensor-dictionary P2P kernel");
 }
 
 template <typename Scalar, typename Vector>
@@ -1849,127 +2093,291 @@ void upload_cuda_signed_dictionary(
     const HostPlan &host,
     CudaSignedDictionaryP2PDeviceView<Scalar> &device,
     CudaPlanStatistics &statistics) {
+
   device.target_count = host.target_count;
-  device.threads_per_block = cuda_dictionary_threads_per_block;
-  device.source_batch_size = cuda_dictionary_source_batch_size;
   device.variant_count = host.variant_count();
   device.token_width_bytes = host.token_width_bytes;
 
+  /*
+   * Select source parallelism from the largest source-leaf occupancy.
+   *
+   * <=  32 sources/leaf -> 1 warp  /  32 threads
+   * <=  64              -> 2 warps /  64 threads
+   * <= 128              -> 4 warps / 128 threads
+   * >  128              -> 8 warps / 256 threads
+   */
+  int maximum_source_count = 0;
+
+  for (const StaticP2PLeafBlock &block : host.blocks) {
+    maximum_source_count =
+        std::max(maximum_source_count, block.source_count);
+  }
+
+  int source_warps = 1;
+
+  while (source_warps < cuda_dictionary_max_source_warps &&
+         source_warps * cuda_dictionary_warp_size <
+             maximum_source_count) {
+    source_warps *= 2;
+  }
+
+  device.threads_per_block =
+      source_warps * cuda_dictionary_warp_size;
+
+  /*
+   * One target warp = 32 targets per CUDA work item.
+   */
   std::vector<int> tile_leaf_indices;
   std::vector<int> tile_target_offsets;
-  build_cuda_dictionary_tiles(std::span<const int>(host.target_counts),
-                              cuda_dictionary_target_tile_size,
-                              tile_leaf_indices, tile_target_offsets);
-  device.tile_count = static_cast<int>(tile_leaf_indices.size());
 
+  build_cuda_dictionary_tiles(
+      std::span<const int>(host.target_counts),
+      cuda_dictionary_target_tile_size,
+      tile_leaf_indices,
+      tile_target_offsets);
+
+  device.tile_count =
+      static_cast<int>(tile_leaf_indices.size());
+
+  /*
+   * Select the already-compressed token stream.
+   */
   const void *token_source = nullptr;
   std::size_t token_bytes = 0;
+
   switch (host.token_width_bytes) {
   case 1:
     token_source = host.tokens8.data();
-    token_bytes = host.tokens8.size() * sizeof(std::uint8_t);
+    token_bytes =
+        host.tokens8.size() * sizeof(std::uint8_t);
     break;
+
   case 2:
     token_source = host.tokens16.data();
-    token_bytes = host.tokens16.size() * sizeof(std::uint16_t);
+    token_bytes =
+        host.tokens16.size() * sizeof(std::uint16_t);
     break;
+
   case 4:
     token_source = host.tokens32.data();
-    token_bytes = host.tokens32.size() * sizeof(std::uint32_t);
+    token_bytes =
+        host.tokens32.size() * sizeof(std::uint32_t);
     break;
+
   default:
     throw std::invalid_argument(
         "invalid CUDA tensor-dictionary token width");
   }
 
-  std::vector<Scalar> flattened_tensors;
-  flattened_tensors.reserve(6 * device.variant_count);
+  /*
+   * Convert the CPU SoA dictionary into a CUDA-specific packed dictionary.
+   */
   for (const auto &component : host.tensors) {
     if (component.size() != device.variant_count) {
       throw std::invalid_argument(
           "CUDA signed tensor-dictionary components are inconsistent");
     }
-    flattened_tensors.insert(flattened_tensors.end(), component.begin(),
-                             component.end());
+  }
+
+  std::vector<CudaPackedTensor6<Scalar>> packed_tensors(
+      device.variant_count);
+
+  for (std::size_t variant = 0;
+       variant < device.variant_count;
+       ++variant) {
+
+    packed_tensors[variant] =
+        make_cuda_packed_tensor6(
+            static_cast<Scalar>(host.tensors[0][variant]),
+            static_cast<Scalar>(host.tensors[1][variant]),
+            static_cast<Scalar>(host.tensors[2][variant]),
+            static_cast<Scalar>(host.tensors[3][variant]),
+            static_cast<Scalar>(host.tensors[4][variant]),
+            static_cast<Scalar>(host.tensors[5][variant]));
   }
 
   const std::size_t target_begin_bytes =
       host.target_begins.size() * sizeof(int);
+
   const std::size_t target_count_bytes =
       host.target_counts.size() * sizeof(int);
-  const std::size_t row_bytes = host.leaf_row_offsets.size() * sizeof(int);
+
+  const std::size_t row_bytes =
+      host.leaf_row_offsets.size() * sizeof(int);
+
   const std::size_t block_bytes =
       host.blocks.size() * sizeof(StaticP2PLeafBlock);
+
   const std::size_t tile_leaf_bytes =
       tile_leaf_indices.size() * sizeof(int);
+
   const std::size_t tile_offset_bytes =
       tile_target_offsets.size() * sizeof(int);
+
   const std::size_t tensor_bytes =
-      flattened_tensors.size() * sizeof(Scalar);
+      packed_tensors.size() *
+      sizeof(CudaPackedTensor6<Scalar>);
 
-  const auto allocate = [](auto **pointer, const std::size_t bytes,
-                           const char *operation) {
-    check_cuda(cudaMalloc(reinterpret_cast<void **>(pointer),
-                          std::max(bytes, std::size_t{1})),
-               operation);
-  };
-  allocate(&device.target_begins, target_begin_bytes,
-           "allocate signed dictionary target begins");
-  allocate(&device.target_counts, target_count_bytes,
-           "allocate signed dictionary target counts");
-  allocate(&device.leaf_row_offsets, row_bytes,
-           "allocate signed dictionary leaf rows");
-  allocate(&device.leaf_blocks, block_bytes,
-           "allocate signed dictionary leaf blocks");
-  allocate(&device.tile_leaf_indices, tile_leaf_bytes,
-           "allocate signed dictionary tile leaves");
-  allocate(&device.tile_target_offsets, tile_offset_bytes,
-           "allocate signed dictionary tile offsets");
-  allocate(&device.tensors, tensor_bytes,
-           "allocate signed dictionary tensors");
-  allocate(&device.tokens, token_bytes,
-           "allocate signed dictionary tokens");
+  const auto allocate =
+      [](auto **pointer,
+         const std::size_t bytes,
+         const char *operation) {
 
-  const auto upload = [](void *destination, const void *source,
-                         const std::size_t bytes, const char *operation) {
-    if (bytes != 0) {
-      check_cuda(cudaMemcpy(destination, source, bytes,
-                            cudaMemcpyHostToDevice),
-                 operation);
-    }
-  };
-  upload(device.target_begins, host.target_begins.data(), target_begin_bytes,
-         "upload signed dictionary target begins");
-  upload(device.target_counts, host.target_counts.data(), target_count_bytes,
-         "upload signed dictionary target counts");
-  upload(device.leaf_row_offsets, host.leaf_row_offsets.data(), row_bytes,
-         "upload signed dictionary leaf rows");
-  upload(device.leaf_blocks, host.blocks.data(), block_bytes,
-         "upload signed dictionary leaf blocks");
-  upload(device.tile_leaf_indices, tile_leaf_indices.data(), tile_leaf_bytes,
-         "upload signed dictionary tile leaves");
-  upload(device.tile_target_offsets, tile_target_offsets.data(),
-         tile_offset_bytes, "upload signed dictionary tile offsets");
-  upload(device.tensors, flattened_tensors.data(), tensor_bytes,
-         "upload signed dictionary tensors");
-  upload(device.tokens, token_source, token_bytes,
-         "upload signed dictionary tokens");
+        check_cuda(
+            cudaMalloc(
+                reinterpret_cast<void **>(pointer),
+                std::max(bytes, std::size_t{1})),
+            operation);
+      };
 
-  const std::size_t leaf_metadata_bytes = target_begin_bytes +
-      target_count_bytes + block_bytes + tile_leaf_bytes + tile_offset_bytes;
-  const std::size_t total_bytes = row_bytes + leaf_metadata_bytes +
-      tensor_bytes + token_bytes;
+  allocate(
+      &device.target_begins,
+      target_begin_bytes,
+      "allocate signed dictionary target begins");
+
+  allocate(
+      &device.target_counts,
+      target_count_bytes,
+      "allocate signed dictionary target counts");
+
+  allocate(
+      &device.leaf_row_offsets,
+      row_bytes,
+      "allocate signed dictionary leaf rows");
+
+  allocate(
+      &device.leaf_blocks,
+      block_bytes,
+      "allocate signed dictionary leaf blocks");
+
+  allocate(
+      &device.tile_leaf_indices,
+      tile_leaf_bytes,
+      "allocate signed dictionary tile leaves");
+
+  allocate(
+      &device.tile_target_offsets,
+      tile_offset_bytes,
+      "allocate signed dictionary tile offsets");
+
+  allocate(
+      &device.tensors,
+      tensor_bytes,
+      "allocate packed signed dictionary tensors");
+
+  allocate(
+      &device.tokens,
+      token_bytes,
+      "allocate signed dictionary tokens");
+
+  const auto upload =
+      [](void *destination,
+         const void *source,
+         const std::size_t bytes,
+         const char *operation) {
+
+        if (bytes != 0) {
+          check_cuda(
+              cudaMemcpy(
+                  destination,
+                  source,
+                  bytes,
+                  cudaMemcpyHostToDevice),
+              operation);
+        }
+      };
+
+  upload(
+      device.target_begins,
+      host.target_begins.data(),
+      target_begin_bytes,
+      "upload signed dictionary target begins");
+
+  upload(
+      device.target_counts,
+      host.target_counts.data(),
+      target_count_bytes,
+      "upload signed dictionary target counts");
+
+  upload(
+      device.leaf_row_offsets,
+      host.leaf_row_offsets.data(),
+      row_bytes,
+      "upload signed dictionary leaf rows");
+
+  upload(
+      device.leaf_blocks,
+      host.blocks.data(),
+      block_bytes,
+      "upload signed dictionary leaf blocks");
+
+  upload(
+      device.tile_leaf_indices,
+      tile_leaf_indices.data(),
+      tile_leaf_bytes,
+      "upload signed dictionary tile leaves");
+
+  upload(
+      device.tile_target_offsets,
+      tile_target_offsets.data(),
+      tile_offset_bytes,
+      "upload signed dictionary tile offsets");
+
+  upload(
+      device.tensors,
+      packed_tensors.data(),
+      tensor_bytes,
+      "upload packed signed dictionary tensors");
+
+  upload(
+      device.tokens,
+      token_source,
+      token_bytes,
+      "upload signed dictionary tokens");
+
+  const std::size_t leaf_metadata_bytes =
+      target_begin_bytes +
+      target_count_bytes +
+      block_bytes +
+      tile_leaf_bytes +
+      tile_offset_bytes;
+
+  const std::size_t total_bytes =
+      row_bytes +
+      leaf_metadata_bytes +
+      tensor_bytes +
+      token_bytes;
+
   statistics.setup_h2d_bytes += total_bytes;
   statistics.persistent_device_bytes += total_bytes;
-  statistics.p2p_interaction_count = host.token_count();
-  statistics.p2p_tensor_bytes = tensor_bytes;
-  statistics.p2p_index_bytes = token_bytes;
-  statistics.p2p_row_metadata_bytes = row_bytes;
-  statistics.p2p_leaf_metadata_bytes = leaf_metadata_bytes;
+
+  statistics.p2p_interaction_count =
+      host.token_count();
+
+  statistics.p2p_tensor_bytes =
+      tensor_bytes;
+
+  statistics.p2p_index_bytes =
+      token_bytes;
+
+  statistics.p2p_row_metadata_bytes =
+      row_bytes;
+
+  statistics.p2p_leaf_metadata_bytes =
+      leaf_metadata_bytes;
+
   statistics.p2p_identity_bytes = 0;
+
   statistics.p2p_scratch_bytes =
-      cuda_dictionary_source_batch_size * sizeof(Vector);
-  statistics.p2p_threads_per_block = cuda_dictionary_threads_per_block;
+      device.threads_per_block == cuda_dictionary_warp_size
+          ? 0
+          : 3 *
+                static_cast<std::size_t>(
+                    device.threads_per_block) *
+                sizeof(Scalar);
+
+  statistics.p2p_threads_per_block =
+      device.threads_per_block;
 }
 
 template <typename Scalar>
