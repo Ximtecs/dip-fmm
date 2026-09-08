@@ -573,27 +573,42 @@ def comparison_ratios(summary):
                     p2p_storage_ratio=(adaptive[storage_field] /
                                        max(1, uniform[storage_field])),
                 ))
+        dictionary_executors = sorted({
+            row["dictionary_executor"] for row in summary
+            if row["interaction_mode"] == mode and
+            row["p2p_mode"] == "dictionary"
+        })
         for tree in sorted({row["tree"] for row in summary}):
-            ordinary = by_key.get((tree, mode, "canonical", "source_warp"))
-            reduced = by_key.get((tree, mode, "dictionary", "source_warp"))
-            if ordinary and reduced:
-                rows.append(dict(
-                    comparison="ordinary / reduced speedup", interaction_mode=mode,
-                    tree=tree,
-                    p2p_mode="dictionary", dictionary_executor="source_warp",
-                    evaluation_ratio=(ordinary["evaluation_median_seconds"] /
-                                      reduced["evaluation_median_seconds"]),
-                    p2p_phase_ratio=ratio(
-                        ordinary, reduced, "phase_p2p_median_seconds"),
-                    cuda_p2p_kernel_ratio=ratio(
-                        ordinary, reduced,
-                        "phase_cuda_p2p_kernel_median_seconds"),
-                    plan_setup_ratio=(ordinary["plan_setup_seconds"] /
-                                      reduced["plan_setup_seconds"]),
-                    p2p_interaction_ratio=1.0,
-                    p2p_storage_ratio=(reduced["p2p_dictionary_total_bytes"] /
-                                       max(1, ordinary["p2p_canonical_total_bytes"])),
-                ))
+            for ordinary_mode in ("canonical", "bsr"):
+                ordinary = by_key.get(
+                    (tree, mode, ordinary_mode, "source_warp"))
+                for dictionary_executor in dictionary_executors:
+                    reduced = by_key.get(
+                        (tree, mode, "dictionary", dictionary_executor))
+                    if ordinary and reduced:
+                        rows.append(dict(
+                            comparison=f"{ordinary_mode} / reduced speedup",
+                            interaction_mode=mode, tree=tree,
+                            p2p_mode="dictionary",
+                            dictionary_executor=dictionary_executor,
+                            evaluation_ratio=(
+                                ordinary["evaluation_median_seconds"] /
+                                reduced["evaluation_median_seconds"]),
+                            p2p_phase_ratio=ratio(
+                                ordinary, reduced,
+                                "phase_p2p_median_seconds"),
+                            cuda_p2p_kernel_ratio=ratio(
+                                ordinary, reduced,
+                                "phase_cuda_p2p_kernel_median_seconds"),
+                            plan_setup_ratio=(
+                                ordinary["plan_setup_seconds"] /
+                                reduced["plan_setup_seconds"]),
+                            p2p_interaction_ratio=1.0,
+                            p2p_storage_ratio=(
+                                reduced["p2p_dictionary_total_bytes"] /
+                                max(1, ordinary[
+                                    "p2p_canonical_total_bytes"])),
+                        ))
     return rows
 
 
