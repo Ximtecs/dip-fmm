@@ -804,11 +804,11 @@ TEST_CASE("CUDA BSR supports finite cuboid point and cuboid self fields",
     const auto actual = fmm.evaluate(moments, OutputFlags::Field);
     for (std::size_t target = 0; target < actual.size(); ++target) {
       REQUIRE(actual[target].H.x ==
-              Catch::Approx(expected[target].H.x).margin(3.0e-11));
+              Catch::Approx(expected[target].x).margin(3.0e-11));
       REQUIRE(actual[target].H.y ==
-              Catch::Approx(expected[target].H.y).margin(3.0e-11));
+              Catch::Approx(expected[target].y).margin(3.0e-11));
       REQUIRE(actual[target].H.z ==
-              Catch::Approx(expected[target].H.z).margin(3.0e-11));
+              Catch::Approx(expected[target].z).margin(3.0e-11));
     }
     REQUIRE(std::abs(actual[0].H.x) + std::abs(actual[0].H.y) +
                 std::abs(actual[0].H.z) >
