@@ -36,10 +36,18 @@ public:
   explicit CudaP2PPlan(const StaticP2PLeafPlan &plan,
                        std::span<const int> fixed_self_indices = {});
 
-  /** @brief Builds the source-major signed Tensor6 dictionary CUDA plan. */
+  /**
+   * @brief Builds the source-major signed Tensor6 dictionary CUDA plan.
+   *
+   * `target_owned` selects the one-thread-per-target executor and takes
+   * precedence. When both selectors are false, the existing source-warp
+   * executor is used; `power2_microtiles` selects the experimental
+   * power-of-two warp microtiles.
+   */
   explicit CudaP2PPlan(
       const StaticP2PSignedTensorDictionaryPlan &plan,
-      bool target_owned = false);
+      bool target_owned = false,
+      bool power2_microtiles = false);
 
   /** @brief Builds a persistent cuSPARSE BSR(3) CUDA plan. */
   explicit CudaP2PPlan(const StaticP2PBsrPlan &plan);
@@ -56,7 +64,8 @@ public:
   /** @brief Builds the source-major signed FP32 dictionary CUDA plan. */
 explicit CudaP2PPlan(
     const FloatStaticP2PSignedTensorDictionaryPlan &plan,
-    bool target_owned = false);
+    bool target_owned = false,
+    bool power2_microtiles = false);
   /** @brief Builds a persistent FP32 cuSPARSE BSR(3) plan. */
   explicit CudaP2PPlan(const FloatStaticP2PBsrPlan &plan);
 

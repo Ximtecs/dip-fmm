@@ -284,6 +284,9 @@ TEST_CASE("CUDA static P2P packings agree with canonical CPU rows",
       build_static_p2p_leaf_plan(canonical, leaf_pairs);
   std::vector<int> identities(positions.size());
   std::iota(identities.begin(), identities.end(), 0);
+  const StaticP2PSignedTensorDictionaryPlan dictionary =
+      build_static_p2p_signed_tensor_dictionary_plan(
+          canonical, leaf_pairs, identities);
   const StaticP2PBsrPlan bsr = build_static_p2p_bsr_plan(canonical, identities);
   std::vector<Vec3> moments(positions.size());
   for (std::size_t index = 0; index < moments.size(); ++index) {
@@ -320,6 +323,32 @@ TEST_CASE("CUDA static P2P packings agree with canonical CPU rows",
   REQUIRE(leaf_cuda.statistics().p2p_leaf_metadata_bytes > 0);
   CudaP2PPlan bsr_cuda(bsr);
   verify(bsr_cuda);
+  const auto verify_dictionary = [&](CudaP2PPlan &plan) {
+    std::vector<Vec3> actual(positions.size());
+    plan.evaluate(moments, identities, actual);
+    for (std::size_t target = 0; target < actual.size(); ++target) {
+      REQUIRE(actual[target].x ==
+              Catch::Approx(expected[target].x).margin(3.0e-11));
+      REQUIRE(actual[target].y ==
+              Catch::Approx(expected[target].y).margin(3.0e-11));
+      REQUIRE(actual[target].z ==
+              Catch::Approx(expected[target].z).margin(3.0e-11));
+    }
+    REQUIRE(plan.timings().kernel_seconds > 0.0);
+    REQUIRE(plan.statistics().p2p_interaction_count ==
+            dictionary.token_count());
+  };
+  CudaP2PPlan dictionary_source_warp(dictionary);
+  verify_dictionary(dictionary_source_warp);
+  CudaP2PPlan dictionary_target_owned(dictionary, true, false);
+  verify_dictionary(dictionary_target_owned);
+  REQUIRE(dictionary_target_owned.statistics().p2p_scratch_bytes == 0);
+  CudaP2PPlan dictionary_power2(dictionary, false, true);
+  verify_dictionary(dictionary_power2);
+  REQUIRE(dictionary_power2.statistics().p2p_threads_per_block == 128);
+  CudaP2PPlan dictionary_both(dictionary, true, true);
+  verify_dictionary(dictionary_both);
+  REQUIRE(dictionary_both.statistics().p2p_threads_per_block == 256);
   std::vector<int> changed_identities(identities.size(), -1);
   std::vector<Vec3> rejected(positions.size());
   REQUIRE_THROWS_AS(bsr_cuda.evaluate(moments, changed_identities, rejected),
@@ -419,6 +448,116 @@ TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
     ).margin(2.0e-12));
     REQUIRE(cuda.cuda_plan_statistics().static_m2l_upload_count == 1);
     REQUIRE(cuda.cuda_plan_statistics().static_p2p_upload_count == 1);
+}
+
+TEST_CASE("CUDA power-of-two dictionary covers every microtile class",
+          "[cuda][manual]")
+{
+    if (!cuda_m2l_p2p_available()) {
+        SUCCEED("CUDA signed tensor-dictionary P2P is unavailable");
+        return;
+    }
+
+    // These leaves exercise the requested irregular occupancies, including
+    // 31 = 16 + 8 + 4 + 2 + 1 and 33 = 32 + 1.
+    std::vector<Vec3> sources;
+    std::vector<Vec3> targets;
+    for (int source = 0; source < 9; ++source) {
+        sources.push_back({-0.8 + 0.03 * source,
+                           -0.4 + 0.02 * source,
+                           0.1 + 0.01 * source});
+    }
+    constexpr std::array<int, 9> occupancies{{1, 2, 3, 5, 7,
+                                                10, 17, 31, 33}};
+    int target_count = 0;
+    for (const int occupancy : occupancies) {
+        target_count += occupancy;
+    }
+    for (int target = 0; target < target_count; ++target) {
+        targets.push_back({0.2 + 0.01 * target,
+                           -0.7 + 0.005 * target,
+                           -0.3 + 0.004 * target});
+    }
+
+    std::vector<std::array<int, 2>> interactions;
+    interactions.reserve(targets.size() * sources.size());
+    for (int target = 0; target < static_cast<int>(targets.size()); ++target) {
+        for (int source = 0; source < static_cast<int>(sources.size());
+             ++source) {
+            interactions.push_back({target, source});
+        }
+    }
+    std::vector<StaticP2PLeafPair> leaf_pairs;
+    leaf_pairs.reserve(occupancies.size());
+    int target_begin = 0;
+    for (const int occupancy : occupancies) {
+        leaf_pairs.push_back({target_begin, occupancy, 0, 9});
+        target_begin += occupancy;
+    }
+    const StaticP2POperator canonical = build_static_p2p_operator(
+        targets, sources, interactions);
+    const StaticP2PSignedTensorDictionaryPlan dictionary =
+        build_static_p2p_signed_tensor_dictionary_plan(
+            canonical, leaf_pairs);
+
+    std::vector<Vec3> moments(sources.size());
+    for (std::size_t source = 0; source < moments.size(); ++source) {
+        const double value = static_cast<double>(source);
+        moments[source] = {std::sin(value), std::cos(value),
+                           std::sin(0.3 * value)};
+    }
+    const std::vector<int> no_identities(targets.size(), -1);
+    std::vector<Vec3> expected(targets.size());
+    apply_static_p2p_operator(canonical, moments, expected, no_identities);
+
+    CudaP2PPlan source_warp(dictionary);
+    CudaP2PPlan power2(dictionary, false, true);
+    std::vector<Vec3> source_values(targets.size());
+    std::vector<Vec3> power2_values(targets.size());
+    source_warp.evaluate(moments, no_identities, source_values);
+    power2.evaluate(moments, no_identities, power2_values);
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+        REQUIRE(power2_values[target].x ==
+                Catch::Approx(expected[target].x).margin(3.0e-11));
+        REQUIRE(power2_values[target].y ==
+                Catch::Approx(expected[target].y).margin(3.0e-11));
+        REQUIRE(power2_values[target].z ==
+                Catch::Approx(expected[target].z).margin(3.0e-11));
+        REQUIRE(power2_values[target].x ==
+                Catch::Approx(source_values[target].x).margin(3.0e-11));
+        REQUIRE(power2_values[target].y ==
+                Catch::Approx(source_values[target].y).margin(3.0e-11));
+        REQUIRE(power2_values[target].z ==
+                Catch::Approx(source_values[target].z).margin(3.0e-11));
+    }
+    REQUIRE(power2.statistics().p2p_threads_per_block == 128);
+    REQUIRE(power2.statistics().p2p_scratch_bytes == 0);
+
+    const FloatStaticP2PSignedTensorDictionaryPlan dictionary_float =
+        quantise_static_p2p_signed_tensor_dictionary_plan(dictionary);
+    CudaP2PPlan source_warp_float(dictionary_float);
+    CudaP2PPlan power2_float(dictionary_float, false, true);
+    std::vector<FloatVec3> float_moments(moments.size());
+    for (std::size_t source = 0; source < moments.size(); ++source) {
+        float_moments[source] = {
+            static_cast<float>(moments[source].x),
+            static_cast<float>(moments[source].y),
+            static_cast<float>(moments[source].z)};
+    }
+    std::vector<FloatVec3> source_float_values(targets.size());
+    std::vector<FloatVec3> power2_float_values(targets.size());
+    source_warp_float.evaluate(float_moments, no_identities,
+                               source_float_values);
+    power2_float.evaluate(float_moments, no_identities,
+                          power2_float_values);
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+        REQUIRE(power2_float_values[target].x == Catch::Approx(
+            source_float_values[target].x).margin(4.0e-5));
+        REQUIRE(power2_float_values[target].y == Catch::Approx(
+            source_float_values[target].y).margin(4.0e-5));
+        REQUIRE(power2_float_values[target].z == Catch::Approx(
+            source_float_values[target].z).margin(4.0e-5));
+    }
 }
 
 TEST_CASE("CUDA partial and full share canonical static plan behaviour",

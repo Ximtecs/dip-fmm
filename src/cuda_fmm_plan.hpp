@@ -65,7 +65,10 @@ struct CudaFullPlanData {
   std::vector<int> fixed_self_indices{};
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
+  /** @brief Selects one-thread-per-target dictionary P2P execution. */
   bool p2p_dictionary_target_owned{false};
+  /** @brief Selects power-of-two target microtiles for dictionary P2P. */
+  bool p2p_dictionary_power2_microtiles{false};
   bool has_fixed_self_indices{false};
 };
 
@@ -89,7 +92,10 @@ struct FloatCudaFullPlanData {
   std::vector<int> fixed_self_indices{};
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
+  /** @brief Selects one-thread-per-target dictionary P2P execution. */
   bool p2p_dictionary_target_owned{false};
+  /** @brief Selects power-of-two target microtiles for dictionary P2P. */
+  bool p2p_dictionary_power2_microtiles{false};
   bool has_fixed_self_indices{false};
 };
 

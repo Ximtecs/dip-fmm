@@ -800,6 +800,10 @@ void UniformFmm::print_initialisation_summary(
            << options.fixed_target_source_indices->size() << '\n';
   }
   stream << "  cuda_p2p_bsr_max_bytes: " << cuda_p2p_bsr_max_bytes_ << '\n';
+  stream << "  cuda_dictionary_target_owned: "
+         << cuda_dictionary_target_owned_ << '\n';
+  stream << "  cuda_dictionary_power2_microtiles: "
+         << cuda_dictionary_power2_microtiles_ << '\n';
   stream << "  cache.enabled: " << cache_enabled_ << '\n';
   stream << "  cache.directory: " << cache_directory_ << '\n';
   stream << "  cache.universal.key: " << universal_cache_key_ << '\n';
@@ -894,6 +898,8 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
   use_reduced_symmetry_p2p_ = options.use_reduced_symmetry_p2p;
   cuda_dictionary_target_owned_ =
       options.cuda_dictionary_target_owned;
+  cuda_dictionary_power2_microtiles_ =
+      options.cuda_dictionary_power2_microtiles;
   signed_p2p_target_tile_size_ = options.signed_p2p_target_tile_size;
   if (signed_p2p_target_tile_size_ <= 0 ||
       signed_p2p_target_tile_size_ > 128) {
@@ -1045,7 +1051,8 @@ void UniformFmm::build_cuda_p2p_plan() {
         cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
             std::make_unique<CudaP2PPlan>(
                 *p2p_tensor_dictionary_plan_float_,
-                cuda_dictionary_target_owned_));
+                cuda_dictionary_target_owned_,
+                cuda_dictionary_power2_microtiles_));
         p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
       return;
     }
@@ -1071,7 +1078,8 @@ void UniformFmm::build_cuda_p2p_plan() {
       cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
           std::make_unique<CudaP2PPlan>(
               *p2p_tensor_dictionary_plan_,
-              cuda_dictionary_target_owned_));
+              cuda_dictionary_target_owned_,
+              cuda_dictionary_power2_microtiles_));
       p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     return;
   }
@@ -2141,6 +2149,8 @@ void UniformFmm::build_cuda_full_plan() {
     data.use_p2p_dictionary = true;
     data.p2p_dictionary_target_owned =
         cuda_dictionary_target_owned_;
+    data.p2p_dictionary_power2_microtiles =
+        cuda_dictionary_power2_microtiles_;
     data.p2p_dictionary =
         std::move(*p2p_tensor_dictionary_plan_float_);
     } else {
@@ -2248,6 +2258,8 @@ void UniformFmm::build_cuda_full_plan() {
       p2p_tensor_dictionary_plan_.has_value()) {
     data.use_p2p_dictionary = true;
     data.p2p_dictionary_target_owned = cuda_dictionary_target_owned_;
+    data.p2p_dictionary_power2_microtiles =
+        cuda_dictionary_power2_microtiles_;
     data.p2p_dictionary = std::move(*p2p_tensor_dictionary_plan_);
     if (fixed_target_source_indices_.has_value()) {
       data.has_fixed_self_indices = true;

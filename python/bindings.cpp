@@ -702,6 +702,8 @@ PYBIND11_MODULE(cdfmm, module) {
                     &UniformFmmOptions::use_reduced_symmetry_p2p)
         .def_readwrite("cuda_dictionary_target_owned",
                     &UniformFmmOptions::cuda_dictionary_target_owned)
+        .def_readwrite("cuda_dictionary_power2_microtiles",
+                    &UniformFmmOptions::cuda_dictionary_power2_microtiles)
         .def_readwrite("signed_p2p_target_tile_size",
                     &UniformFmmOptions::signed_p2p_target_tile_size)
         .def_readwrite("enable_cache",

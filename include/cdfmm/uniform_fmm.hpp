@@ -203,6 +203,15 @@ struct UniformFmmOptions {
      */
     bool cuda_dictionary_target_owned{false};
 
+    /**
+     * @brief Selects the power-of-two target/source warp microtile CUDA
+     * dictionary executor.
+     *
+     * The target-owned selector takes precedence when both are true. When
+     * both are false, the existing source-warp executor is used.
+     */
+    bool cuda_dictionary_power2_microtiles{false};
+
     /** @brief OpenMP work-tile size for the signed dictionary CPU executor. */
     int signed_p2p_target_tile_size{32};
   /// @brief Enables validated persistent operator and geometry-plan caches.
@@ -582,6 +591,7 @@ private:
   std::size_t cuda_p2p_bsr_max_bytes_{20ULL * 1024ULL * 1024ULL * 1024ULL};
   bool use_reduced_symmetry_p2p_{false};
   bool cuda_dictionary_target_owned_{false};
+  bool cuda_dictionary_power2_microtiles_{false};
   int signed_p2p_target_tile_size_{32};
   mutable CudaPlanStatistics empty_cuda_statistics_{};
   std::unique_ptr<CudaM2LPlanOwner> cuda_m2l_plan_{};

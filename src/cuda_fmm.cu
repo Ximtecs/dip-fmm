@@ -12,6 +12,7 @@
 #include <cusparse.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <numbers>
@@ -1742,9 +1743,11 @@ template <typename Scalar>
 struct CudaSignedDictionaryP2PDeviceView {
   int target_count{0};
   int tile_count{0};
+  int microtile_count{0};
   int threads_per_block{cuda_dictionary_warp_size};
 
   bool target_owned{false};
+  bool power2_microtiles{false};
 
   std::size_t variant_count{0};
 
@@ -1759,6 +1762,11 @@ struct CudaSignedDictionaryP2PDeviceView {
 
   int *tile_leaf_indices{nullptr};
   int *tile_target_offsets{nullptr};
+
+  int *microtile_leaf_indices{nullptr};
+  int *microtile_target_offsets{nullptr};
+  // Host-side launch boundaries for widths 32, 16, 8, 4, 2, and 1.
+  std::array<int, 7> microtile_class_offsets{};
 
   CudaPackedTensor6<Scalar> *tensors{nullptr};
 
@@ -1784,6 +1792,62 @@ static void build_cuda_dictionary_tiles(
       tile_target_offsets.push_back(target_offset);
     }
   }
+}
+
+/** @brief Host schedule for power-of-two target microtiles. */
+struct CudaDictionaryMicrotileSchedule {
+  std::vector<int> leaf_indices{};
+  std::vector<int> target_offsets{};
+  // [begin32, begin16, begin8, begin4, begin2, begin1, end].
+  std::array<int, 7> class_offsets{};
+};
+
+/**
+ * @brief Decomposes each leaf's target range into power-of-two microtiles.
+ *
+ * Tiles are emitted in width-class order so each class can use one compile-time
+ * warp layout. Within a leaf, greedy descending widths produce an exact binary
+ * decomposition and cover every target exactly once.
+ */
+static CudaDictionaryMicrotileSchedule build_cuda_dictionary_microtiles(
+    const std::span<const int> target_counts) {
+  constexpr std::array<int, 6> widths{32, 16, 8, 4, 2, 1};
+  std::array<std::vector<int>, widths.size()> leaves;
+  std::array<std::vector<int>, widths.size()> offsets;
+
+  for (int leaf = 0; leaf < static_cast<int>(target_counts.size()); ++leaf) {
+    int target_offset = 0;
+    int remaining = target_counts[static_cast<std::size_t>(leaf)];
+    for (std::size_t class_index = 0; class_index < widths.size();
+         ++class_index) {
+      const int width = widths[class_index];
+      while (remaining >= width) {
+        leaves[class_index].push_back(leaf);
+        offsets[class_index].push_back(target_offset);
+        target_offset += width;
+        remaining -= width;
+      }
+    }
+    if (remaining != 0) {
+      throw std::logic_error(
+          "power-of-two CUDA dictionary decomposition failed");
+    }
+  }
+
+  CudaDictionaryMicrotileSchedule result;
+  result.class_offsets[0] = 0;
+  for (std::size_t class_index = 0; class_index < widths.size();
+       ++class_index) {
+    result.leaf_indices.insert(result.leaf_indices.end(),
+                               leaves[class_index].begin(),
+                               leaves[class_index].end());
+    result.target_offsets.insert(result.target_offsets.end(),
+                                 offsets[class_index].begin(),
+                                 offsets[class_index].end());
+    result.class_offsets[class_index + 1] =
+        static_cast<int>(result.leaf_indices.size());
+  }
+  return result;
 }
 
 template <typename Scalar, typename Vector>
@@ -2132,6 +2196,163 @@ __global__ void signed_dictionary_target_owned_p2p_kernel(
   fields[target].z = Hz;
 }
 
+/**
+ * @brief Executes one power-of-two target microtile per warp.
+ *
+ * A width-T microtile assigns T lanes to each target and reuses each source
+ * moment across those T lanes. The source-major token layout remains unchanged
+ * from the source-warp dictionary executor.
+ */
+template <int T, typename Scalar, typename Vector, typename Token>
+__global__ void signed_dictionary_microtile_p2p_kernel(
+    const int *__restrict__ target_begins,
+    const int *__restrict__ target_counts,
+    const int *__restrict__ leaf_row_offsets,
+    const StaticP2PLeafBlock *__restrict__ leaf_blocks,
+    const int *__restrict__ work_leaf_indices,
+    const int *__restrict__ work_target_offsets,
+    const int work_count,
+    const Token *__restrict__ tokens,
+    const CudaPackedTensor6<Scalar> *__restrict__ tensors,
+    const Vector *__restrict__ moments,
+    Vector *__restrict__ fields) {
+  static_assert(T == 1 || T == 2 || T == 4 || T == 8 || T == 16 || T == 32);
+  constexpr int warp_size = cuda_dictionary_warp_size;
+  constexpr int source_lanes = warp_size / T;
+  constexpr unsigned full_mask = 0xffffffffu;
+
+  const int lane = static_cast<int>(threadIdx.x) & (warp_size - 1);
+  const int warp_in_block = static_cast<int>(threadIdx.x) >> 5;
+  const int warps_per_block = static_cast<int>(blockDim.x) >> 5;
+  const int work = static_cast<int>(blockIdx.x) * warps_per_block +
+                  warp_in_block;
+  if (work >= work_count) {
+    return;
+  }
+
+  const int target_leaf = work_leaf_indices[work];
+  const int microtile_offset = work_target_offsets[work];
+  const int target_begin = target_begins[target_leaf];
+  const int target_count = target_counts[target_leaf];
+  const int target_slot = lane % T;
+  const int source_slot = lane / T;
+  const int local_target = microtile_offset + target_slot;
+  const bool target_active = local_target < target_count;
+  const int target = target_begin + local_target;
+
+  Scalar Hx = Scalar{0};
+  Scalar Hy = Scalar{0};
+  Scalar Hz = Scalar{0};
+  const int row_begin = leaf_row_offsets[target_leaf];
+  const int row_end = leaf_row_offsets[target_leaf + 1];
+
+  for (int block_index = row_begin; block_index < row_end; ++block_index) {
+    const StaticP2PLeafBlock block = leaf_blocks[block_index];
+    for (int source_base = 0; source_base < block.source_count;
+         source_base += source_lanes) {
+      const int local_source = source_base + source_slot;
+      const bool source_active = local_source < block.source_count;
+      Scalar mx = Scalar{0};
+      Scalar my = Scalar{0};
+      Scalar mz = Scalar{0};
+      const int subgroup_leader = source_slot * T;
+      if (target_slot == 0 && source_active) {
+        const Vector moment = moments[block.source_begin + local_source];
+        mx = static_cast<Scalar>(moment.x);
+        my = static_cast<Scalar>(moment.y);
+        mz = static_cast<Scalar>(moment.z);
+      }
+
+      // Every lane participates in the full-mask shuffle. Inactive source
+      // slots retain zero moments, while inactive target slots retain zero
+      // partial fields; this keeps the mask valid for partial source groups.
+      mx = __shfl_sync(full_mask, mx, subgroup_leader);
+      my = __shfl_sync(full_mask, my, subgroup_leader);
+      mz = __shfl_sync(full_mask, mz, subgroup_leader);
+
+      if (source_active && target_active) {
+        const std::size_t token_index =
+            block.tensor_offset +
+            static_cast<std::size_t>(local_source) *
+                static_cast<std::size_t>(target_count) +
+            static_cast<std::size_t>(local_target);
+        const std::size_t variant = static_cast<std::size_t>(
+            tokens[token_index]);
+        const CudaPackedTensor6<Scalar> tensor = tensors[variant];
+        const Scalar xx = tensor.a.x;
+        const Scalar xy = tensor.a.y;
+        const Scalar xz = tensor.a.z;
+        const Scalar yy = tensor.a.w;
+        const Scalar yz = tensor.b.x;
+        const Scalar zz = tensor.b.y;
+        Hx += xx * mx + xy * my + xz * mz;
+        Hy += xy * mx + yy * my + yz * mz;
+        Hz += xz * mx + yz * my + zz * mz;
+      }
+    }
+  }
+
+  // Reduce source-slot partials within each T-lane target subgroup.
+  for (int delta = T; delta < warp_size; delta *= 2) {
+    Hx += __shfl_xor_sync(full_mask, Hx, delta);
+    Hy += __shfl_xor_sync(full_mask, Hy, delta);
+    Hz += __shfl_xor_sync(full_mask, Hz, delta);
+  }
+
+  // The schedule is an exact decomposition, so every active target is owned
+  // by one microtile. Assignment is therefore race-free and starts fresh.
+  if (source_slot == 0 && target_active) {
+    fields[target].x = Hx;
+    fields[target].y = Hy;
+    fields[target].z = Hz;
+  }
+}
+
+template <int T, typename Scalar, typename Vector, typename Token>
+void launch_dictionary_microtile_class(
+    const CudaSignedDictionaryP2PDeviceView<Scalar> &plan,
+    const int class_index, const Vector *moments, Vector *fields,
+    cudaStream_t stream) {
+  constexpr int threads = 128;
+  constexpr int warps_per_block = threads / cuda_dictionary_warp_size;
+  const int begin = plan.microtile_class_offsets[
+      static_cast<std::size_t>(class_index)];
+  const int end = plan.microtile_class_offsets[
+      static_cast<std::size_t>(class_index + 1)];
+  const int count = end - begin;
+  if (count == 0) {
+    return;
+  }
+  const int blocks = (count + warps_per_block - 1) / warps_per_block;
+  signed_dictionary_microtile_p2p_kernel<T, Scalar, Vector, Token>
+      <<<blocks, threads, 0, stream>>>(
+          plan.target_begins, plan.target_counts, plan.leaf_row_offsets,
+          plan.leaf_blocks, plan.microtile_leaf_indices + begin,
+          plan.microtile_target_offsets + begin, count,
+          static_cast<const Token *>(plan.tokens), plan.tensors, moments,
+          fields);
+  check_cuda(cudaGetLastError(),
+             "launch power-of-two dictionary P2P kernel");
+}
+
+template <typename Scalar, typename Vector, typename Token>
+void launch_dictionary_power2_microtiles(
+    const CudaSignedDictionaryP2PDeviceView<Scalar> &plan,
+    const Vector *moments, Vector *fields, cudaStream_t stream) {
+  launch_dictionary_microtile_class<32, Scalar, Vector, Token>(
+      plan, 0, moments, fields, stream);
+  launch_dictionary_microtile_class<16, Scalar, Vector, Token>(
+      plan, 1, moments, fields, stream);
+  launch_dictionary_microtile_class<8, Scalar, Vector, Token>(
+      plan, 2, moments, fields, stream);
+  launch_dictionary_microtile_class<4, Scalar, Vector, Token>(
+      plan, 3, moments, fields, stream);
+  launch_dictionary_microtile_class<2, Scalar, Vector, Token>(
+      plan, 4, moments, fields, stream);
+  launch_dictionary_microtile_class<1, Scalar, Vector, Token>(
+      plan, 5, moments, fields, stream);
+}
+
 template <typename Scalar, typename Vector, typename Token>
 void launch_signed_dictionary_p2p_typed(
     const CudaSignedDictionaryP2PDeviceView<Scalar> &plan,
@@ -2170,6 +2391,12 @@ void launch_signed_dictionary_p2p_typed(
         cudaGetLastError(),
         "launch target-owned signed tensor-dictionary P2P kernel");
 
+    return;
+  }
+
+  if (plan.power2_microtiles) {
+    launch_dictionary_power2_microtiles<Scalar, Vector, Token>(
+        plan, moments, fields, stream);
     return;
   }
 
@@ -2234,26 +2461,40 @@ void upload_cuda_signed_dictionary(
     const HostPlan &host,
     CudaSignedDictionaryP2PDeviceView<Scalar> &device,
     CudaPlanStatistics &statistics,
-    const bool target_owned) {
+    const bool target_owned,
+    const bool power2_microtiles) {
 
   device.target_count = host.target_count;
   device.variant_count = host.variant_count();
   device.token_width_bytes = host.token_width_bytes;
   device.target_owned = target_owned;
+  device.power2_microtiles = power2_microtiles;
 
   std::vector<int> tile_leaf_indices;
   std::vector<int> tile_target_offsets;
+  const CudaDictionaryMicrotileSchedule microtile_schedule =
+      build_cuda_dictionary_microtiles(
+          std::span<const int>(host.target_counts));
   std::vector<int> target_leaf_for_target;
 
-  if (target_owned) {
-    device.threads_per_block =
-        cuda_dictionary_target_owned_threads;
+  if (host.target_begins.size() != host.target_counts.size()) {
+    throw std::invalid_argument(
+        "CUDA signed dictionary target metadata are inconsistent");
+  }
 
-    if (host.target_begins.size() !=
-        host.target_counts.size()) {
-      throw std::invalid_argument(
-          "CUDA signed dictionary target metadata are inconsistent");
-    }
+  build_cuda_dictionary_tiles(
+      std::span<const int>(host.target_counts),
+      cuda_dictionary_target_tile_size,
+      tile_leaf_indices,
+      tile_target_offsets);
+
+  device.tile_count = static_cast<int>(tile_leaf_indices.size());
+  device.microtile_count =
+      static_cast<int>(microtile_schedule.leaf_indices.size());
+  device.microtile_class_offsets = microtile_schedule.class_offsets;
+
+  if (target_owned) {
+    device.threads_per_block = cuda_dictionary_target_owned_threads;
 
     target_leaf_for_target.assign(
         static_cast<std::size_t>(host.target_count),
@@ -2302,9 +2543,8 @@ void upload_cuda_signed_dictionary(
       throw std::invalid_argument(
           "CUDA signed dictionary target leaf map is incomplete");
     }
-
-    device.tile_count = 0;
-
+  } else if (power2_microtiles) {
+    device.threads_per_block = 128;
   } else {
     int maximum_source_count = 0;
 
@@ -2323,15 +2563,6 @@ void upload_cuda_signed_dictionary(
 
     device.threads_per_block =
         source_warps * cuda_dictionary_warp_size;
-
-    build_cuda_dictionary_tiles(
-        std::span<const int>(host.target_counts),
-        cuda_dictionary_target_tile_size,
-        tile_leaf_indices,
-        tile_target_offsets);
-
-    device.tile_count =
-        static_cast<int>(tile_leaf_indices.size());
   }
 
   const void *token_source = nullptr;
@@ -2406,6 +2637,12 @@ void upload_cuda_signed_dictionary(
   const std::size_t tile_offset_bytes =
       tile_target_offsets.size() * sizeof(int);
 
+  const std::size_t microtile_leaf_bytes =
+      microtile_schedule.leaf_indices.size() * sizeof(int);
+
+  const std::size_t microtile_offset_bytes =
+      microtile_schedule.target_offsets.size() * sizeof(int);
+
   const std::size_t tensor_bytes =
       packed_tensors.size() *
       sizeof(CudaPackedTensor6<Scalar>);
@@ -2456,6 +2693,16 @@ void upload_cuda_signed_dictionary(
       &device.tile_target_offsets,
       tile_offset_bytes,
       "allocate signed dictionary tile offsets");
+
+  allocate(
+      &device.microtile_leaf_indices,
+      microtile_leaf_bytes,
+      "allocate signed dictionary microtile leaves");
+
+  allocate(
+      &device.microtile_target_offsets,
+      microtile_offset_bytes,
+      "allocate signed dictionary microtile offsets");
 
   allocate(
       &device.tensors,
@@ -2527,6 +2774,18 @@ void upload_cuda_signed_dictionary(
       "upload signed dictionary tile offsets");
 
   upload(
+      device.microtile_leaf_indices,
+      microtile_schedule.leaf_indices.data(),
+      microtile_leaf_bytes,
+      "upload signed dictionary microtile leaves");
+
+  upload(
+      device.microtile_target_offsets,
+      microtile_schedule.target_offsets.data(),
+      microtile_offset_bytes,
+      "upload signed dictionary microtile offsets");
+
+  upload(
       device.tensors,
       packed_tensors.data(),
       tensor_bytes,
@@ -2544,7 +2803,9 @@ void upload_cuda_signed_dictionary(
       target_leaf_map_bytes +
       block_bytes +
       tile_leaf_bytes +
-      tile_offset_bytes;
+      tile_offset_bytes +
+      microtile_leaf_bytes +
+      microtile_offset_bytes;
 
   const std::size_t total_bytes =
       row_bytes +
@@ -2573,7 +2834,7 @@ void upload_cuda_signed_dictionary(
   statistics.p2p_identity_bytes = 0;
 
   statistics.p2p_scratch_bytes =
-      target_owned ||
+      target_owned || power2_microtiles ||
               device.threads_per_block ==
                   cuda_dictionary_warp_size
           ? 0
@@ -3231,7 +3492,8 @@ CudaP2PPlan::CudaP2PPlan(
 
 CudaP2PPlan::CudaP2PPlan(
     const StaticP2PSignedTensorDictionaryPlan &dictionary,
-    const bool target_owned)
+    const bool target_owned,
+    const bool power2_microtiles)
     : CudaP2PPlan(
           dictionary.source_count,
           dictionary.target_count,
@@ -3246,12 +3508,14 @@ CudaP2PPlan::CudaP2PPlan(
       dictionary,
       plan.dictionary,
       plan.statistics,
-      target_owned);
+      target_owned,
+      power2_microtiles);
 }
 
 CudaP2PPlan::CudaP2PPlan(
     const FloatStaticP2PSignedTensorDictionaryPlan &dictionary,
-    const bool target_owned)
+    const bool target_owned,
+    const bool power2_microtiles)
     : CudaP2PPlan(
           dictionary.source_count,
           dictionary.target_count,
@@ -3267,7 +3531,8 @@ CudaP2PPlan::CudaP2PPlan(
       dictionary,
       plan.dictionary_float,
       plan.statistics,
-      target_owned);
+      target_owned,
+      power2_microtiles);
 }
 
 CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan& bsr)
@@ -3406,6 +3671,8 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaFree(plan.dictionary.leaf_blocks);
   cudaFree(plan.dictionary.tile_leaf_indices);
   cudaFree(plan.dictionary.tile_target_offsets);
+  cudaFree(plan.dictionary.microtile_leaf_indices);
+  cudaFree(plan.dictionary.microtile_target_offsets);
   cudaFree(plan.dictionary.tensors);
   cudaFree(plan.dictionary.tokens);
   if (plan.bsr.descriptor != nullptr) {
@@ -3434,6 +3701,8 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaFree(plan.dictionary_float.leaf_blocks);
   cudaFree(plan.dictionary_float.tile_leaf_indices);
   cudaFree(plan.dictionary_float.tile_target_offsets);
+  cudaFree(plan.dictionary_float.microtile_leaf_indices);
+  cudaFree(plan.dictionary_float.microtile_target_offsets);
   cudaFree(plan.dictionary_float.tensors);
   cudaFree(plan.dictionary_float.tokens);
   if (plan.bsr_float.descriptor != nullptr) {
@@ -3751,6 +4020,7 @@ struct CudaFullPlan::Implementation {
     CudaSignedDictionaryP2PDeviceView<float> p2p_dictionary_float{};
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
+  bool p2p_dictionary_power2_microtiles{false};
   StaticOperatorEntry *entries{nullptr};
   StaticOperatorEntry *m2m_matrices{nullptr};
   StaticOperatorEntry *l2l_matrices{nullptr};
@@ -3819,6 +4089,8 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   plan.target_count = data.target_count;
   plan.use_p2p_bsr = data.use_p2p_bsr;
   plan.use_p2p_dictionary = data.use_p2p_dictionary;
+  plan.p2p_dictionary_power2_microtiles =
+      data.p2p_dictionary_power2_microtiles;
   if (plan.use_p2p_bsr && plan.use_p2p_dictionary) {
     throw std::invalid_argument(
         "full CUDA P2P cannot select BSR and tensor dictionary together");
@@ -3894,7 +4166,8 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
         data.p2p_dictionary,
         plan.p2p_dictionary,
         plan.statistics,
-        data.p2p_dictionary_target_owned);
+        data.p2p_dictionary_target_owned,
+        data.p2p_dictionary_power2_microtiles);
   } else if (!plan.use_p2p_bsr) {
     allocate(&plan.self_indices,
              static_cast<std::size_t>(plan.target_count) * sizeof(int));
@@ -4067,6 +4340,8 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
   plan.target_count = data.target_count;
   plan.use_p2p_bsr = data.use_p2p_bsr;
   plan.use_p2p_dictionary = data.use_p2p_dictionary;
+  plan.p2p_dictionary_power2_microtiles =
+      data.p2p_dictionary_power2_microtiles;
   if (plan.use_p2p_bsr && plan.use_p2p_dictionary) {
     throw std::invalid_argument(
         "FP32 full CUDA P2P cannot select BSR and tensor dictionary together");
@@ -4134,7 +4409,8 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
         data.p2p_dictionary,
         plan.p2p_dictionary_float,
         plan.statistics,
-        data.p2p_dictionary_target_owned);
+        data.p2p_dictionary_target_owned,
+        data.p2p_dictionary_power2_microtiles);
   } else if (!plan.use_p2p_bsr) {
     allocate(&plan.self_indices,
              static_cast<std::size_t>(plan.target_count) * sizeof(int));
@@ -4322,10 +4598,13 @@ CudaFullPlan::~CudaFullPlan() {
   cudaFree(plan.p2p_bsr.values);
   cudaFree(plan.p2p_dictionary.target_begins);
   cudaFree(plan.p2p_dictionary.target_counts);
+  cudaFree(plan.p2p_dictionary.target_leaf_for_target);
   cudaFree(plan.p2p_dictionary.leaf_row_offsets);
   cudaFree(plan.p2p_dictionary.leaf_blocks);
   cudaFree(plan.p2p_dictionary.tile_leaf_indices);
   cudaFree(plan.p2p_dictionary.tile_target_offsets);
+  cudaFree(plan.p2p_dictionary.microtile_leaf_indices);
+  cudaFree(plan.p2p_dictionary.microtile_target_offsets);
   cudaFree(plan.p2p_dictionary.tensors);
   cudaFree(plan.p2p_dictionary.tokens);
   cudaFree(plan.p2p_float.row_offsets);
@@ -4341,10 +4620,13 @@ CudaFullPlan::~CudaFullPlan() {
   cudaFree(plan.p2p_bsr_float.values);
   cudaFree(plan.p2p_dictionary_float.target_begins);
   cudaFree(plan.p2p_dictionary_float.target_counts);
+  cudaFree(plan.p2p_dictionary_float.target_leaf_for_target);
   cudaFree(plan.p2p_dictionary_float.leaf_row_offsets);
   cudaFree(plan.p2p_dictionary_float.leaf_blocks);
   cudaFree(plan.p2p_dictionary_float.tile_leaf_indices);
   cudaFree(plan.p2p_dictionary_float.tile_target_offsets);
+  cudaFree(plan.p2p_dictionary_float.microtile_leaf_indices);
+  cudaFree(plan.p2p_dictionary_float.microtile_target_offsets);
   cudaFree(plan.p2p_dictionary_float.tensors);
   cudaFree(plan.p2p_dictionary_float.tokens);
   cudaFree(plan.entries);
