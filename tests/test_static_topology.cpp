@@ -4,6 +4,7 @@
 #include <catch2/catch_approx.hpp>
 
 #include <algorithm>
+#include <stdexcept>
 
 #include "cdfmm/static_topology.hpp"
 
@@ -114,6 +115,26 @@ TEST_CASE("uniform topology adapter handles empty depth-zero geometry",
   REQUIRE_NOTHROW(topology.validate());
 }
 
+TEST_CASE("static topology rejects malformed geometry ownership",
+          "[static_topology]") {
+  const std::vector<Vec3> positions{{-0.25, 0.0, 0.0},
+                                    {0.25, 0.0, 0.0}};
+  const UniformTree tree(positions, positions,
+                         UniformTreeOptions{.max_level = 1});
+
+  StaticFmmTopology topology = build_uniform_fmm_topology(tree);
+  topology.source_permutation[1] = topology.source_permutation[0];
+  REQUIRE_THROWS_AS(topology.validate(), std::invalid_argument);
+
+  topology = build_uniform_fmm_topology(tree);
+  topology.source_leaves[0].begin += 1;
+  REQUIRE_THROWS_AS(topology.validate(), std::invalid_argument);
+
+  topology = build_uniform_fmm_topology(tree);
+  topology.coordinate_scale = 0.0;
+  REQUIRE_THROWS_AS(topology.validate(), std::invalid_argument);
+}
+
 TEST_CASE("static topology validates compact non-analytical node IDs",
           "[static_topology]") {
   StaticFmmTopology topology;
@@ -154,6 +175,10 @@ TEST_CASE("compact topology schedules leaf operators and unequal P2P rectangles"
                                       {0.2, 0.0, 0.1},
                                       {0.4, -0.2, 0.2},
                                       {0.5, 0.3, -0.1}};
+  topology.source_permutation = {0, 1, 2};
+  topology.source_inverse_permutation = {0, 1, 2};
+  topology.target_permutation = {0, 1, 2, 3};
+  topology.target_inverse_permutation = {0, 1, 2, 3};
   topology.nodes.resize(3);
   topology.nodes[0].index = 0;
   topology.nodes[0].half_width = 1.0;

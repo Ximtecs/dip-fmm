@@ -17,6 +17,50 @@ void StaticFmmTopology::validate() const {
   if (maximum_level < 0) {
     throw std::invalid_argument("static topology maximum level is invalid");
   }
+  const auto finite_vec3 = [](const Vec3& value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+        std::isfinite(value.z);
+  };
+  if (!finite_vec3(coordinate_origin) || !std::isfinite(coordinate_scale) ||
+      coordinate_scale <= 0.0) {
+    throw std::invalid_argument(
+        "static topology coordinate transform is invalid");
+  }
+  for (const Vec3& position : sorted_source_positions) {
+    if (!finite_vec3(position)) {
+      throw std::invalid_argument("static topology source position is invalid");
+    }
+  }
+  for (const Vec3& position : sorted_target_positions) {
+    if (!finite_vec3(position)) {
+      throw std::invalid_argument("static topology target position is invalid");
+    }
+  }
+  const auto check_permutation = [](
+      const std::vector<int>& permutation,
+      const std::vector<int>& inverse_permutation, const std::size_t count,
+      const char* label) {
+    if (permutation.size() != count || inverse_permutation.size() != count) {
+      throw std::invalid_argument(std::string("static topology ") + label +
+                                  " permutation size is invalid");
+    }
+    std::vector<bool> seen(count, false);
+    for (std::size_t sorted = 0; sorted < count; ++sorted) {
+      const int original = permutation[sorted];
+      if (original < 0 || original >= static_cast<int>(count) ||
+          seen[static_cast<std::size_t>(original)] ||
+          inverse_permutation[static_cast<std::size_t>(original)] !=
+              static_cast<int>(sorted)) {
+        throw std::invalid_argument(std::string("static topology ") + label +
+                                    " permutation is invalid");
+      }
+      seen[static_cast<std::size_t>(original)] = true;
+    }
+  };
+  check_permutation(source_permutation, source_inverse_permutation,
+                    sorted_source_positions.size(), "source");
+  check_permutation(target_permutation, target_inverse_permutation,
+                    sorted_target_positions.size(), "target");
   auto check_range = [](std::size_t begin, std::size_t end,
                         std::size_t size, const char* label) {
     if (begin > end || end > size) {
@@ -39,7 +83,8 @@ void StaticFmmTopology::validate() const {
     if (node.level < 0 || node.level > maximum_level) {
       throw std::invalid_argument("static topology node level is invalid");
     }
-    if (!std::isfinite(node.half_width) || node.half_width <= 0.0) {
+    if (!finite_vec3(node.centre) || !std::isfinite(node.half_width) ||
+        node.half_width <= 0.0) {
       throw std::invalid_argument("static topology node geometry is invalid");
     }
     check_range(node.source_begin, node.source_end,
@@ -222,6 +267,12 @@ void StaticFmmTopology::validate() const {
     }
     check_range(leaf.begin, leaf.begin + leaf.count,
                 sorted_source_positions.size(), "source leaf");
+    const Node& node = nodes[static_cast<std::size_t>(leaf.node)];
+    if (leaf.begin != node.source_begin ||
+        leaf.count != node.source_count()) {
+      throw std::invalid_argument(
+          "static topology source leaf does not match its node range");
+    }
   }
   for (const StaticLeafRange& leaf : target_leaves) {
     if (leaf.node < 0 || leaf.node >= static_cast<int>(nodes.size())) {
@@ -229,6 +280,12 @@ void StaticFmmTopology::validate() const {
     }
     check_range(leaf.begin, leaf.begin + leaf.count,
                 sorted_target_positions.size(), "target leaf");
+    const Node& node = nodes[static_cast<std::size_t>(leaf.node)];
+    if (leaf.begin != node.target_begin ||
+        leaf.count != node.target_count()) {
+      throw std::invalid_argument(
+          "static topology target leaf does not match its node range");
+    }
   }
   for (const StaticP2PLeafRecord& record : p2p_leaf_records) {
     if (record.target_leaf < 0 || record.source_leaf < 0 ||
