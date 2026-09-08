@@ -245,6 +245,10 @@ struct StaticPlanStatistics {
     std::size_t p2p_canonical_total_bytes{0};
     /// @brief Number of retained magnitude Tensor6 dictionary entries.
     std::size_t p2p_unique_tensors{0};
+    /// @brief Number of packed Tensor6 interaction tokens.
+    std::size_t p2p_dictionary_tokens{0};
+    /// @brief Bytes used by each packed Tensor6 interaction token.
+    std::size_t p2p_dictionary_token_width_bytes{0};
     /// @brief Bytes occupied by packed Tensor6 interaction tokens.
     std::size_t p2p_dictionary_token_bytes{0};
     /// @brief Bytes occupied by unique Tensor6 dictionary values.

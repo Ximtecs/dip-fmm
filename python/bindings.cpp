@@ -472,6 +472,20 @@ PYBIND11_MODULE(cdfmm, module) {
         .value("TENSOR_DICTIONARY", P2PExecutionPacking::TensorDictionary)
         .value("CUDA_BSR3", P2PExecutionPacking::CudaBsr3);
 
+    py::enum_<StaticOperatorExecutor>(module, "StaticOperatorExecutor")
+        .value("REFERENCE", StaticOperatorExecutor::Reference)
+        .value("PORTABLE", StaticOperatorExecutor::Portable)
+        .value("ONE_MKL", StaticOperatorExecutor::OneMkl)
+        .value("CUDA", StaticOperatorExecutor::Cuda);
+
+    py::class_<StaticExecutionPlan>(module, "StaticExecutionPlan")
+        .def_readonly("p2m", &StaticExecutionPlan::p2m)
+        .def_readonly("m2m", &StaticExecutionPlan::m2m)
+        .def_readonly("m2l", &StaticExecutionPlan::m2l)
+        .def_readonly("l2l", &StaticExecutionPlan::l2l)
+        .def_readonly("l2p", &StaticExecutionPlan::l2p)
+        .def_readonly("p2p", &StaticExecutionPlan::p2p);
+
     module.def("cuda_compiled", &cuda_compiled);
     module.def("one_mkl_available", &one_mkl_available);
     module.def("cuda_available", &cuda_available);
@@ -880,6 +894,7 @@ PYBIND11_MODULE(cdfmm, module) {
             })
         .def_property_readonly("p2p_execution_packing",
                                &UniformFmm::p2p_execution_packing)
+        .def_property_readonly("execution_plan", &UniformFmm::execution_plan)
         .def_property_readonly(
             "cuda_plan_statistics",
             [](const UniformFmm &fmm) {
@@ -904,6 +919,8 @@ PYBIND11_MODULE(cdfmm, module) {
               result["evaluation_d2h_calls"] = statistics.evaluation_d2h_calls;
               result["persistent_device_bytes"] =
                   statistics.persistent_device_bytes;
+              result["p2p_interaction_count"] =
+                  statistics.p2p_interaction_count;
               result["p2p_tensor_bytes"] = statistics.p2p_tensor_bytes;
               result["p2p_index_bytes"] = statistics.p2p_index_bytes;
               result["p2p_row_metadata_bytes"] =
@@ -919,6 +936,10 @@ PYBIND11_MODULE(cdfmm, module) {
               result["static_upload_count"] = statistics.static_upload_count;
               result["static_m2l_upload_count"] =
                   statistics.static_m2l_upload_count;
+              result["static_p2p_upload_count"] =
+                  statistics.static_p2p_upload_count;
+              result["geometry_upload_count"] =
+                  statistics.geometry_upload_count;
               return result;
             })
         .def_property_readonly(
@@ -965,6 +986,10 @@ PYBIND11_MODULE(cdfmm, module) {
               result["p2p_canonical_total_bytes"] =
                   statistics.p2p_canonical_total_bytes;
               result["p2p_unique_tensors"] = statistics.p2p_unique_tensors;
+              result["p2p_dictionary_tokens"] =
+                  statistics.p2p_dictionary_tokens;
+              result["p2p_dictionary_token_width_bytes"] =
+                  statistics.p2p_dictionary_token_width_bytes;
               result["p2p_dictionary_token_bytes"] =
                   statistics.p2p_dictionary_token_bytes;
               result["p2p_dictionary_tensor_bytes"] =

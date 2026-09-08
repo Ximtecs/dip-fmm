@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "cdfmm/operators.hpp"
+#include "cdfmm/adaptive_tree.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
 
@@ -210,6 +211,106 @@ TEST_CASE("reduced-symmetry P2P supports cuboid near fields",
 
   compare(TargetGeometry::Point, {});
   compare(TargetGeometry::VolumeAveragedCuboid, {cube});
+}
+
+TEST_CASE("prebuilt adaptive topology preserves physical cuboid geometry",
+          "[uniform_fmm][adaptive][cuboid][p2p]") {
+  const Vec3 root_centre{2.0, -1.0, 0.5};
+  const std::vector<Vec3> positions{
+      root_centre + Vec3{0.8, 0.8, -0.8},
+      root_centre + Vec3{-0.8, -0.8, 0.8},
+      root_centre + Vec3{0.8, -0.8, 0.8},
+      root_centre + Vec3{-0.8, 0.8, -0.8},
+      root_centre + Vec3{-0.8, -0.8, -0.8},
+      root_centre + Vec3{0.8, 0.8, 0.8},
+      root_centre + Vec3{-0.8, 0.8, 0.8},
+      root_centre + Vec3{0.8, -0.8, -0.8}};
+  std::vector<CuboidSize> sizes;
+  std::vector<Vec3> moments;
+  for (std::size_t index = 0; index < positions.size(); ++index) {
+    const double side = 0.08 + 0.005 * static_cast<double>(index);
+    sizes.push_back({side, 0.9 * side, 0.8 * side});
+    const double volume = sizes.back().volume();
+    moments.push_back({volume * (0.2 + 0.03 * index),
+                       volume * (-0.4 + 0.02 * index),
+                       volume * (0.1 - 0.01 * index)});
+  }
+
+  AdaptiveTreeOptions tree_options;
+  tree_options.max_particles_per_leaf = 1;
+  tree_options.max_depth = 1;
+  tree_options.root_centre = root_centre;
+  tree_options.root_half_width = 2.0;
+  const AdaptiveTree tree(positions, tree_options);
+  REQUIRE(tree.topology().source_permutation !=
+          std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7});
+
+  for (const TargetGeometry target_geometry :
+       {TargetGeometry::Point, TargetGeometry::VolumeAveragedCuboid}) {
+    CAPTURE(target_geometry);
+    const std::vector<CuboidSize> target_sizes =
+        target_geometry == TargetGeometry::VolumeAveragedCuboid
+            ? sizes
+            : std::vector<CuboidSize>{};
+    const DenseDirectPlan direct(
+        positions, positions, SourceGeometry::UniformCuboid, target_geometry,
+        sizes, target_sizes, {}, StaticPrecision::Float64);
+    const std::vector<Vec3> reference = direct.evaluate(moments);
+
+    std::vector<PotentialField> ordinary;
+    for (const bool reduced : {false, true}) {
+      UniformFmmOptions options;
+      options.backend = ExecutionBackend::CpuStatic;
+      options.precision = StaticPrecision::Float64;
+      options.expansion_basis = ExpansionBasis::Spherical;
+      options.expansion_order = 4;
+      options.source_geometry = SourceGeometry::UniformCuboid;
+      options.source_sizes = sizes;
+      options.target_geometry = target_geometry;
+      options.target_sizes = target_sizes;
+      options.fixed_target_source_indices =
+          std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7};
+      options.use_reduced_symmetry_p2p = reduced;
+      options.enable_cache = false;
+      UniformFmm plan(tree.shared_topology(), options);
+      REQUIRE(plan.p2p_execution_packing() ==
+              (reduced ? P2PExecutionPacking::TensorDictionary
+                       : P2PExecutionPacking::ParticleRowSoa));
+      const auto actual = plan.evaluate(moments, OutputFlags::Field);
+      for (std::size_t index = 0; index < actual.size(); ++index) {
+        REQUIRE(actual[index].H.x ==
+                Catch::Approx(reference[index].x).margin(3.0e-12));
+        REQUIRE(actual[index].H.y ==
+                Catch::Approx(reference[index].y).margin(3.0e-12));
+        REQUIRE(actual[index].H.z ==
+                Catch::Approx(reference[index].z).margin(3.0e-12));
+      }
+      if (!reduced) {
+        ordinary = actual;
+      } else {
+        REQUIRE(plan.static_plan_statistics().p2p_dictionary_tokens ==
+                plan.static_plan_statistics().p2p_interactions);
+        REQUIRE(plan.static_plan_statistics()
+                    .p2p_dictionary_token_width_bytes > 0);
+        for (std::size_t index = 0; index < actual.size(); ++index) {
+          REQUIRE(actual[index].H.x ==
+                  Catch::Approx(ordinary[index].H.x).margin(3.0e-12));
+          REQUIRE(actual[index].H.y ==
+                  Catch::Approx(ordinary[index].H.y).margin(3.0e-12));
+          REQUIRE(actual[index].H.z ==
+                  Catch::Approx(ordinary[index].H.z).margin(3.0e-12));
+        }
+      }
+    }
+  }
+
+  UniformFmmOptions invalid;
+  invalid.backend = ExecutionBackend::CpuStatic;
+  invalid.source_geometry = SourceGeometry::UniformCuboid;
+  invalid.source_sizes = sizes;
+  invalid.source_sizes[0].hx = 5.0;
+  REQUIRE_THROWS_AS(UniformFmm(tree.shared_topology(), invalid),
+                    std::invalid_argument);
 }
 
 TEST_CASE("fixed P2P identities are optional and immutable",

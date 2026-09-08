@@ -1,9 +1,11 @@
 """Geometry, plotting and measurement helpers for notebook 15.
 
-Material subdivision and FMM subdivision are independent. All physics in this
-example uses point dipoles with volume-weighted total moments.
+Material subdivision and FMM subdivision are independent. The same material
+cells can be evaluated as point dipoles or finite uniformly magnetised
+cuboids. Runtime inputs are always volume-weighted total moments.
 """
 from time import perf_counter
+import gc
 import numpy as np
 import cdfmm
 
@@ -247,63 +249,436 @@ def moment_states(material, count=10, seed=43):
     return states
 
 
-def make_options(count, backend, order=6):
+INTERACTION_MODES = ("point-point", "cuboid-point", "cuboid-cuboid")
+
+
+def _enum_name(value):
+    """Return a stable display name for a pybind enum or ordinary value."""
+    return getattr(value, "name", str(value).rsplit(".", 1)[-1])
+
+
+def _cuboid_sizes(sides, indices=None):
+    values = np.asarray(sides, dtype=float)
+    if indices is not None:
+        values = values[np.asarray(indices, dtype=int)]
+    return [cdfmm.CuboidSize(float(side), float(side), float(side))
+            for side in values]
+
+
+def interaction_geometry(interaction_mode):
+    """Return source and target geometry enums for a notebook mode."""
+    if interaction_mode == "point-point":
+        return cdfmm.SourceGeometry.POINT_DIPOLE, cdfmm.TargetGeometry.POINT
+    if interaction_mode == "cuboid-point":
+        return cdfmm.SourceGeometry.UNIFORM_CUBOID, cdfmm.TargetGeometry.POINT
+    if interaction_mode == "cuboid-cuboid":
+        return (cdfmm.SourceGeometry.UNIFORM_CUBOID,
+                cdfmm.TargetGeometry.VOLUME_AVERAGED_CUBOID)
+    raise ValueError(f"unknown interaction mode: {interaction_mode!r}")
+
+
+def make_options(material, backend, order=6, interaction_mode="point-point",
+                 reduced=True, precision=None):
+    """Create one static-plan configuration for the material cells.
+
+    Cuboid sizes remain in original particle order; the plan applies topology
+    permutations. Point self interactions are singular and receive explicit
+    identities. Cuboid self fields are finite, so cuboid modes do not.
+    """
+    if np.isscalar(material):
+        count = int(material)
+        sides = None
+    else:
+        count = len(material["positions"])
+        sides = material["sides"]
+    source_geometry, target_geometry = interaction_geometry(interaction_mode)
     options = cdfmm.UniformFmmOptions()
     options.backend = backend
-    options.precision = cdfmm.StaticPrecision.FLOAT64
+    options.precision = precision or cdfmm.StaticPrecision.FLOAT32
     options.expansion_basis = cdfmm.ExpansionBasis.SPHERICAL
     options.expansion_order = order
-    options.use_reduced_symmetry_p2p = True
-    options.fixed_target_source_indices = list(range(count))
+    options.source_geometry = source_geometry
+    options.target_geometry = target_geometry
+    options.use_reduced_symmetry_p2p = bool(reduced)
+    if source_geometry == cdfmm.SourceGeometry.UNIFORM_CUBOID:
+        if sides is None:
+            raise ValueError("cuboid modes require material cell sides")
+        options.source_sizes = _cuboid_sizes(sides)
+        options.use_cuboid_p2m = True
+    if target_geometry == cdfmm.TargetGeometry.VOLUME_AVERAGED_CUBOID:
+        options.target_sizes = _cuboid_sizes(sides)
+        options.use_cuboid_l2p = True
+    if interaction_mode == "point-point":
+        options.fixed_target_source_indices = list(range(count))
     options.enable_cache = False
     return options
 
 
-def benchmark(topologies, states, options):
-    plans, setup, measurements, fields = {}, {}, [], {}
-    for name, topology in topologies.items():
-        start = perf_counter()
-        plans[name] = cdfmm.build_static_fmm(topology, options)
-        setup[name] = perf_counter() - start
-        plan = plans[name]
-        if plan.p2p_execution_packing != cdfmm.P2PExecutionPacking.TENSOR_DICTIONARY:
-            raise RuntimeError("requested reduced Tensor6 packing was not selected")
-        plan.evaluate(states[0])  # Untimed warm-up; evaluate returns synchronised results.
-        fields[name] = []
-        for run, moments in enumerate(states):
-            start = perf_counter()
-            fields[name].append(np.asarray(plan.evaluate(moments)["H"]))
-            elapsed = perf_counter() - start
-            measurements.append(dict(method=name, run=run, seconds=elapsed,
-                                     phases=dict(plan.last_timings)))
-    return plans, setup, measurements, fields
+def _resolved_p2p_executor(plan):
+    """Read the resolved executor across dict- and object-style bindings."""
+    execution = getattr(plan, "execution_plan", None)
+    if callable(execution):
+        execution = execution()
+    if execution is None:
+        return "unavailable"
+    if isinstance(execution, dict):
+        return _enum_name(execution.get("p2p", "unavailable"))
+    return _enum_name(getattr(execution, "p2p", "unavailable"))
+
+
+def p2p_topology_statistics(topology):
+    """Summarise canonical leaf rectangles independently of any backend."""
+    nodes = topology.nodes
+    source_counts = {leaf.node: leaf.count for leaf in topology.source_leaves}
+    target_counts = {leaf.node: leaf.count for leaf in topology.target_leaves}
+    same_records = unequal_records = same_particles = unequal_particles = 0
+    source_occupancies, target_occupancies = [], []
+    target_row_work = {}
+    for record in topology.p2p_leaf_records:
+        source, target = nodes[record.source_leaf], nodes[record.target_leaf]
+        source_count = source_counts[record.source_leaf]
+        target_count = target_counts[record.target_leaf]
+        interactions = source_count * target_count
+        source_occupancies.append(source_count)
+        target_occupancies.append(target_count)
+        target_row_work[record.target_leaf] = (
+            target_row_work.get(record.target_leaf, 0) + interactions)
+        if source.level == target.level:
+            same_records += 1
+            same_particles += interactions
+        else:
+            unequal_records += 1
+            unequal_particles += interactions
+    row_work = np.asarray(list(target_row_work.values()), dtype=float)
+    row_mean = float(np.mean(row_work)) if len(row_work) else 0.0
+    return dict(
+        p2p_leaf_records=len(topology.p2p_leaf_records),
+        p2p_same_level_leaf_records=same_records,
+        p2p_unequal_level_leaf_records=unequal_records,
+        p2p_particle_rectangles=same_particles + unequal_particles,
+        p2p_same_level_particle_rectangles=same_particles,
+        p2p_unequal_level_particle_rectangles=unequal_particles,
+        p2p_source_occupancy_median=(float(np.median(source_occupancies))
+                                     if source_occupancies else 0.0),
+        p2p_source_occupancy_max=max(source_occupancies, default=0),
+        p2p_target_occupancy_median=(float(np.median(target_occupancies))
+                                     if target_occupancies else 0.0),
+        p2p_target_occupancy_max=max(target_occupancies, default=0),
+        p2p_target_row_work_min=int(row_work.min()) if len(row_work) else 0,
+        p2p_target_row_work_median=(float(np.median(row_work))
+                                    if len(row_work) else 0.0),
+        p2p_target_row_work_p90=(float(np.quantile(row_work, 0.9))
+                                 if len(row_work) else 0.0),
+        p2p_target_row_work_max=int(row_work.max()) if len(row_work) else 0,
+        p2p_target_row_work_cv=(float(np.std(row_work) / row_mean)
+                                if row_mean else 0.0),
+    )
+
+
+def plan_diagnostics(plan, topology, tree, interaction_mode, reduced):
+    """Collect topology, packing and memory evidence for one static plan."""
+    statistics = dict(plan.static_plan_statistics)
+    interactions = int(statistics["p2p_interactions"])
+    token_bytes = int(statistics["p2p_dictionary_token_bytes"])
+    token_count = int(statistics.get(
+        "p2p_dictionary_tokens", interactions if token_bytes else 0))
+    token_width = int(statistics.get(
+        "p2p_dictionary_token_width_bytes",
+        token_bytes // token_count if token_count else 0,
+    ))
+    result = dict(
+        tree=tree,
+        interaction_mode=interaction_mode,
+        reduced=bool(reduced),
+        requested_packing="TensorDictionary" if reduced else "ordinary",
+        resolved_packing=_enum_name(plan.p2p_execution_packing),
+        resolved_p2p_executor=_resolved_p2p_executor(plan),
+        p2p_interactions=interactions,
+        p2p_unique_tensors=int(statistics["p2p_unique_tensors"]),
+        p2p_dictionary_tokens=token_count,
+        p2p_dictionary_token_width_bytes=token_width,
+        p2p_value_bytes=int(statistics["p2p_value_bytes"]),
+        p2p_index_bytes=int(statistics["p2p_index_bytes"]),
+        p2p_canonical_total_bytes=int(statistics["p2p_canonical_total_bytes"]),
+        p2p_dictionary_token_bytes=token_bytes,
+        p2p_dictionary_tensor_bytes=int(statistics["p2p_dictionary_tensor_bytes"]),
+        p2p_dictionary_total_bytes=int(statistics["p2p_dictionary_total_bytes"]),
+        retained_bytes=int(statistics["total_persistent_bytes"]),
+        backend_packing_seconds=float(statistics["backend_packing_seconds"]),
+        cuda_upload_seconds=float(statistics["cuda_upload_seconds"]),
+    )
+    result.update(p2p_topology_statistics(topology))
+    try:
+        cuda_statistics = dict(plan.cuda_plan_statistics)
+    except (AttributeError, RuntimeError):
+        cuda_statistics = {}
+    result.update(
+        device_bytes=int(cuda_statistics.get("persistent_device_bytes", 0)),
+        cuda_p2p_tensor_bytes=int(cuda_statistics.get("p2p_tensor_bytes", 0)),
+        cuda_p2p_index_bytes=int(cuda_statistics.get("p2p_index_bytes", 0)),
+        cuda_p2p_row_metadata_bytes=int(cuda_statistics.get("p2p_row_metadata_bytes", 0)),
+        cuda_p2p_leaf_metadata_bytes=int(cuda_statistics.get("p2p_leaf_metadata_bytes", 0)),
+        cuda_p2p_identity_bytes=int(cuda_statistics.get("p2p_identity_bytes", 0)),
+        cuda_p2p_scratch_bytes=int(cuda_statistics.get("p2p_scratch_bytes", 0)),
+    )
+    return result
+
+
+def benchmark(topologies, states, material, backend, order=6,
+              interaction_modes=INTERACTION_MODES, reduced_values=(False, True),
+              precision=None, component_runs=(0, -1)):
+    """Build and time cases sequentially, releasing each static plan.
+
+    Retaining every full-size plan would multiply the dominant immutable P2P
+    storage. Fields and selected diagnostic components are copied before the
+    plan is released, so the full Cartesian product remains memory bounded.
+    """
+    setup, measurements, fields, components, diagnostics = {}, [], {}, {}, []
+    selected_component_runs = sorted({run % len(states) for run in component_runs})
+    for interaction_mode in interaction_modes:
+        for reduced in reduced_values:
+            options = make_options(material, backend, order, interaction_mode,
+                                   reduced, precision)
+            for tree, topology in topologies.items():
+                key = (tree, interaction_mode, bool(reduced))
+                start = perf_counter()
+                plan = cdfmm.build_static_fmm(topology, options)
+                setup[key] = perf_counter() - start
+                if (reduced and plan.p2p_execution_packing !=
+                        cdfmm.P2PExecutionPacking.TENSOR_DICTIONARY):
+                    raise RuntimeError("requested reduced Tensor6 packing was not selected")
+                diagnostics.append(plan_diagnostics(
+                    plan, topology, tree, interaction_mode, reduced))
+                plan.evaluate(states[0])
+                fields[key] = []
+                for run, moments in enumerate(states):
+                    start = perf_counter()
+                    fields[key].append(np.asarray(plan.evaluate(moments)["H"]))
+                    elapsed = perf_counter() - start
+                    measurements.append(dict(
+                        tree=tree, interaction_mode=interaction_mode,
+                        reduced=bool(reduced), run=run, seconds=elapsed,
+                        phases=dict(plan.last_timings),
+                    ))
+                for run in selected_component_runs:
+                    parts = plan.evaluate_components(states[run])
+                    components[key, run] = {
+                        name: np.asarray(value) for name, value in parts.items()
+                    }
+                del plan
+                gc.collect()
+    return setup, measurements, fields, diagnostics, components
+
+
+def benchmark_summary(setup, measurements, diagnostics):
+    """Return one plain record per case, including phase medians."""
+    records = []
+    for diagnostic in diagnostics:
+        key = (diagnostic["tree"], diagnostic["interaction_mode"],
+               diagnostic["reduced"])
+        rows = [row for row in measurements
+                if (row["tree"], row["interaction_mode"], row["reduced"]) == key]
+        seconds = np.asarray([row["seconds"] for row in rows])
+        phase_names = sorted({name for row in rows for name in row["phases"]})
+        record = dict(diagnostic)
+        record.update(
+            plan_setup_seconds=setup[key],
+            evaluation_median_seconds=float(np.median(seconds)),
+            evaluation_min_seconds=float(seconds.min()),
+            evaluation_max_seconds=float(seconds.max()),
+        )
+        for name in phase_names:
+            record[f"phase_{name}_median_seconds"] = float(np.median(
+                [row["phases"].get(name, 0.0) for row in rows]))
+        records.append(record)
+    return records
+
+
+def comparison_ratios(summary):
+    """Calculate adaptive/uniform and reduced/ordinary case ratios."""
+    def ratio(numerator, denominator, field):
+        value = denominator.get(field, 0.0)
+        return numerator.get(field, 0.0) / value if value else float("nan")
+
+    by_key = {(row["tree"], row["interaction_mode"], row["reduced"]): row
+              for row in summary}
+    rows = []
+    for mode in sorted({row["interaction_mode"] for row in summary}):
+        for reduced in sorted({row["reduced"] for row in summary}):
+            adaptive = by_key.get(("adaptive", mode, reduced))
+            uniform = by_key.get(("uniform", mode, reduced))
+            if adaptive and uniform:
+                storage_field = ("p2p_dictionary_total_bytes" if reduced
+                                 else "p2p_canonical_total_bytes")
+                rows.append(dict(
+                    comparison="adaptive / uniform", interaction_mode=mode,
+                    reduced=reduced,
+                    evaluation_ratio=(adaptive["evaluation_median_seconds"] /
+                                      uniform["evaluation_median_seconds"]),
+                    p2p_phase_ratio=ratio(
+                        adaptive, uniform, "phase_p2p_median_seconds"),
+                    cuda_p2p_kernel_ratio=ratio(
+                        adaptive, uniform,
+                        "phase_cuda_p2p_kernel_median_seconds"),
+                    plan_setup_ratio=(adaptive["plan_setup_seconds"] /
+                                      uniform["plan_setup_seconds"]),
+                    p2p_interaction_ratio=(adaptive["p2p_interactions"] /
+                                           uniform["p2p_interactions"]),
+                    p2p_storage_ratio=(adaptive[storage_field] /
+                                       max(1, uniform[storage_field])),
+                ))
+        for tree in sorted({row["tree"] for row in summary}):
+            ordinary = by_key.get((tree, mode, False))
+            reduced = by_key.get((tree, mode, True))
+            if ordinary and reduced:
+                rows.append(dict(
+                    comparison="ordinary / reduced speedup", interaction_mode=mode,
+                    tree=tree,
+                    evaluation_ratio=(ordinary["evaluation_median_seconds"] /
+                                      reduced["evaluation_median_seconds"]),
+                    p2p_phase_ratio=ratio(
+                        ordinary, reduced, "phase_p2p_median_seconds"),
+                    cuda_p2p_kernel_ratio=ratio(
+                        ordinary, reduced,
+                        "phase_cuda_p2p_kernel_median_seconds"),
+                    plan_setup_ratio=(ordinary["plan_setup_seconds"] /
+                                      reduced["plan_setup_seconds"]),
+                    p2p_interaction_ratio=1.0,
+                    p2p_storage_ratio=(reduced["p2p_dictionary_total_bytes"] /
+                                       max(1, ordinary["p2p_canonical_total_bytes"])),
+                ))
+    return rows
 
 
 def direct_field(positions, moments, cuda=True):
+    """Compatibility wrapper for a full point-to-point direct field."""
     if cuda:
         plan = cdfmm.CudaDirectPlan(positions, positions, list(range(len(positions))))
         return np.asarray(plan.evaluate(moments)["H"])
-    return np.array([cdfmm.p2p_dipole_sum(x, positions, moments, self_index=i)["H"]
-                     for i, x in enumerate(positions)])
+    return np.asarray(cdfmm.direct_p2p_reference(
+        positions, positions, moments,
+        target_source_indices=list(range(len(positions))))["H"])
 
 
-def direct_near(topology, positions, moments):
-    """Independent direct sum over exactly this topology's P2P rectangles."""
-    result = np.zeros_like(positions)
+def reference_target_indices(count, sample_size=256, seed=44):
+    """Choose a sorted reproducible target sample without replacement."""
+    if sample_size is None or sample_size >= count:
+        return np.arange(count, dtype=int)
+    if sample_size <= 0:
+        raise ValueError("reference sample size must be positive")
+    return np.sort(np.random.default_rng(seed).choice(count, sample_size, replace=False))
+
+
+def build_direct_reference(material, interaction_mode="point-point",
+                           target_indices=None, cuda=False):
+    """Construct reusable exact geometry for a selected target sample."""
+    positions = np.asarray(material["positions"])
+    if target_indices is None:
+        target_indices = np.arange(len(positions), dtype=int)
+    target_indices = np.asarray(target_indices, dtype=int)
+    source_geometry, target_geometry = interaction_geometry(interaction_mode)
+    targets = positions[target_indices]
+    if interaction_mode == "point-point":
+        identities = target_indices.tolist()
+        if cuda:
+            if not cdfmm.cuda_direct_available():
+                raise RuntimeError("CUDA point direct evaluation is unavailable")
+            plan = cdfmm.CudaDirectPlan(positions, targets, identities)
+        else:
+            # The portable point reference is evaluated without retaining an
+            # N-by-N tensor. Keep its immutable geometry in this small record.
+            plan = None
+        return dict(plan=plan, positions=positions, targets=targets,
+                    target_indices=target_indices, identities=identities,
+                    interaction_mode=interaction_mode, cuda=bool(cuda))
+
+    source_sizes = _cuboid_sizes(material["sides"])
+    target_sizes = (_cuboid_sizes(material["sides"], target_indices)
+                    if interaction_mode == "cuboid-cuboid" else [])
+    arguments = (positions, targets, source_geometry, target_geometry,
+                 source_sizes, target_sizes, [])
+    if cuda:
+        if not cdfmm.cuda_dense_direct_available():
+            raise RuntimeError("CUDA dense cuboid direct evaluation is unavailable")
+        plan = cdfmm.CudaDenseDirectPlan(*arguments, static_precision="float64")
+    else:
+        plan = cdfmm.DenseDirectPlan(*arguments, static_precision="float64")
+    return dict(plan=plan, positions=positions, targets=targets,
+                target_indices=target_indices, identities=[],
+                interaction_mode=interaction_mode, cuda=bool(cuda))
+
+
+def evaluate_direct_reference(reference, moments):
+    """Apply one moment state to reusable exact-reference geometry."""
+    if reference["interaction_mode"] == "point-point":
+        if reference["cuda"]:
+            return np.asarray(reference["plan"].evaluate(moments)["H"])
+        return np.asarray(cdfmm.direct_p2p_reference(
+            reference["positions"], reference["targets"], moments,
+            target_source_indices=reference["identities"])["H"])
+    if reference["cuda"]:
+        return np.asarray(reference["plan"].evaluate(moments))
+    return np.asarray(reference["plan"].evaluate(
+        moments, cdfmm.DenseDirectBackend.PORTABLE))
+
+
+def direct_reference(material, moments, interaction_mode="point-point",
+                     target_indices=None, cuda=False):
+    """Convenience one-shot exact reference; sweeps should reuse the plan."""
+    reference = build_direct_reference(
+        material, interaction_mode, target_indices, cuda)
+    return evaluate_direct_reference(reference, moments)
+
+
+def direct_near(topology, material, moments, interaction_mode="point-point",
+                target_indices=None):
+    """Evaluate this topology's P2P rows directly at selected targets."""
+    positions = np.asarray(material["positions"])
+    if target_indices is None:
+        target_indices = np.arange(len(positions), dtype=int)
+    target_indices = np.asarray(target_indices, dtype=int)
+    output_slot = {int(particle): slot for slot, particle in enumerate(target_indices)}
+    result = np.zeros((len(target_indices), 3), dtype=float)
     nodes = topology.nodes
     sp, tp = np.asarray(topology.source_permutation), np.asarray(topology.target_permutation)
+    records_by_target = {}
     for pair in topology.p2p_leaf_records:
-        source, target = nodes[pair.source_leaf], nodes[pair.target_leaf]
-        source_ids = sp[source.source_begin:source.source_end]
-        for target_id in tp[target.target_begin:target.target_end]:
-            ids = source_ids[source_ids != target_id]
-            if len(ids) == 0:
-                continue
-            displacement = positions[target_id] - positions[ids]
-            radius2 = np.sum(displacement**2, axis=1)
-            projection = np.sum(displacement * moments[ids], axis=1)
-            values = (3 * displacement * (projection / radius2)[:, None] - moments[ids])
-            result[target_id] += np.sum(values / (4 * np.pi * radius2**1.5)[:, None], axis=0)
+        records_by_target.setdefault(pair.target_leaf, []).append(pair.source_leaf)
+    source_geometry, target_geometry = interaction_geometry(interaction_mode)
+    for target_leaf, source_leaves in records_by_target.items():
+        target = nodes[target_leaf]
+        target_ids = [int(item) for item in tp[target.target_begin:target.target_end]
+                      if int(item) in output_slot]
+        if not target_ids:
+            continue
+        source_ids = np.concatenate([
+            sp[nodes[source_leaf].source_begin:nodes[source_leaf].source_end]
+            for source_leaf in source_leaves
+        ]).astype(int, copy=False)
+        if interaction_mode == "point-point":
+            for target_id in target_ids:
+                ids = source_ids[source_ids != target_id]
+                if not len(ids):
+                    continue
+                displacement = positions[target_id] - positions[ids]
+                radius2 = np.sum(displacement**2, axis=1)
+                projection = np.sum(displacement * moments[ids], axis=1)
+                values = (3 * displacement * (projection / radius2)[:, None] - moments[ids])
+                result[output_slot[target_id]] = np.sum(
+                    values / (4 * np.pi * radius2**1.5)[:, None], axis=0)
+            continue
+        target_array = np.asarray(target_ids, dtype=int)
+        source_sizes = _cuboid_sizes(material["sides"], source_ids)
+        target_sizes = (_cuboid_sizes(material["sides"], target_array)
+                        if interaction_mode == "cuboid-cuboid" else [])
+        plan = cdfmm.DenseDirectPlan(
+            positions[source_ids], positions[target_array], source_geometry,
+            target_geometry, source_sizes, target_sizes, [],
+            static_precision="float64")
+        values = np.asarray(plan.evaluate(
+            np.asarray(moments)[source_ids], cdfmm.DenseDirectBackend.PORTABLE))
+        for target_id, value in zip(target_ids, values):
+            result[output_slot[target_id]] = value
     return result
 
 

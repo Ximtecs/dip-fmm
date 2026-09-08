@@ -226,7 +226,14 @@ using M2LBackend = UniformFmmOptions::M2LBackend;
  */
 class UniformFmm {
 public:
-  /** @brief Builds operators from shared normalised geometry without a tree rebuild. */
+  /**
+   * @brief Builds operators from shared normalised geometry without a tree rebuild.
+   *
+   * Cuboid dimensions in `options` remain physical user-unit values. They are
+   * normalised using the topology coordinate transform and must fit inside its
+   * fixed physical root. Persistent geometry caching is disabled for supplied
+   * topologies until their complete connectivity participates in cache keys.
+   */
   UniformFmm(std::shared_ptr<const StaticFmmTopology> topology,
              const UniformFmmOptions& options);
   [[nodiscard]] const StaticFmmTopology& topology() const { return *topology_; }

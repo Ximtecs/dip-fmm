@@ -1,6 +1,5 @@
 """Focused validation for the adaptive-tree showcase helpers and notebook."""
 
-import json
 from pathlib import Path
 import sys
 
@@ -13,14 +12,18 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "examples" / "notebooks"))
 
 from adaptive_showcase import (
+    INTERACTION_MODES,
+    benchmark,
+    benchmark_summary,
     build_trees,
     direct_near,
+    direct_reference,
     generate_material,
     generate_random_grains,
     interaction_categories,
     make_options,
     moment_states,
-    benchmark,
+    reference_target_indices,
 )
 
 
@@ -55,7 +58,10 @@ def test_adaptive_notebook_has_ids_and_compilable_code_cells():
     combined = "\n".join(sources)
     assert "cdfmm.AdaptiveTree" in combined or "build_trees" in combined
     assert "ExecutionBackend.CUDA_FULL" in combined
-    assert "make_options" in combined
+    assert "INTERACTION_MODES" in combined
+    assert "REDUCED_VALUES" in combined
+    assert "reference_target_indices" in combined
+    assert "direct_reference" in combined
     assert "evaluate_components" in combined
     assert "plan.cuda_plan_statistics" in combined
     assert "plan.cuda_statistics" not in combined
@@ -152,34 +158,131 @@ def test_empty_adaptive_tree_is_a_valid_depth_zero_topology():
     assert topology.m2l_interactions == []
 
 
-def test_cpu_showcase_benchmark_reuses_topology_and_matches_explicit_near_field():
-    material = generate_material(300, seed=42, base_grid=4)
+def test_geometry_options_cover_all_modes_without_excluding_cuboid_self():
+    material = generate_random_grains(n_grains=2, base_grid=2, n_refine=0, seed=7)
+    for mode in INTERACTION_MODES:
+        for reduced in (False, True):
+            options = make_options(
+                material, cdfmm.ExecutionBackend.CPU_STATIC, order=2,
+                interaction_mode=mode, reduced=reduced,
+                precision=cdfmm.StaticPrecision.FLOAT64,
+            )
+            assert options.use_reduced_symmetry_p2p is reduced
+            assert bool(options.fixed_target_source_indices) is (mode == "point-point")
+            assert (len(options.source_sizes) == len(material["positions"])) is (
+                mode != "point-point")
+            assert (len(options.target_sizes) == len(material["positions"])) is (
+                mode == "cuboid-cuboid")
+            assert options.use_cuboid_p2m is (mode != "point-point")
+            assert options.use_cuboid_l2p is (mode == "cuboid-cuboid")
+
+
+def test_cpu_showcase_matrix_preserves_topology_and_matches_direct_fields():
+    material = generate_random_grains(n_grains=2, base_grid=2, n_refine=0, seed=7)
     _, _, topologies, _ = build_trees(
-        material["positions"], capacity=10, max_depth=3
+        material["positions"], capacity=1, max_depth=1
     )
-    states = moment_states(material, count=10, seed=43)
-    options = make_options(len(material["positions"]), cdfmm.ExecutionBackend.CPU_STATIC, order=3)
+    fingerprints = {
+        name: (
+            tuple(topology.source_permutation),
+            tuple(topology.target_permutation),
+            len(topology.nodes),
+            len(topology.m2l_interactions),
+            len(topology.p2p_leaf_records),
+        )
+        for name, topology in topologies.items()
+    }
+    states = moment_states(material, count=2, seed=43)
+    setup, measurements, fields, diagnostics, components = benchmark(
+        topologies, states, material, cdfmm.ExecutionBackend.CPU_STATIC,
+        order=3, precision=cdfmm.StaticPrecision.FLOAT64,
+    )
 
-    plans, setup, measurements, fields = benchmark(topologies, states, options)
-
-    assert set(plans) == {"adaptive", "uniform"}
+    case_count = 2 * len(INTERACTION_MODES) * 2
+    assert len(setup) == case_count
     assert all(seconds >= 0.0 for seconds in setup.values())
-    assert len(measurements) == 20
-    assert all(len(values) == 10 for values in fields.values())
+    assert len(measurements) == case_count * len(states)
+    assert all(len(values) == len(states) for values in fields.values())
     assert all(values[0].shape == (len(material["positions"]), 3)
                for values in fields.values())
-    assert all(
-        plan.p2p_execution_packing == cdfmm.P2PExecutionPacking.TENSOR_DICTIONARY
-        for plan in plans.values()
-    )
+    assert all(row["resolved_packing"] == "TENSOR_DICTIONARY"
+               for row in diagnostics if row["reduced"])
+    assert {row["interaction_mode"] for row in diagnostics} == set(INTERACTION_MODES)
+    assert len(benchmark_summary(setup, measurements, diagnostics)) == case_count
+    for name, topology in topologies.items():
+        assert fingerprints[name] == (
+            tuple(topology.source_permutation),
+            tuple(topology.target_permutation),
+            len(topology.nodes),
+            len(topology.m2l_interactions),
+            len(topology.p2p_leaf_records),
+        )
 
-    for name, plan in plans.items():
-        components = plan.evaluate_components(states[0])
-        near = direct_near(topologies[name], material["positions"], states[0])
-        np.testing.assert_allclose(components["H_p2p"], near, rtol=2e-13, atol=2e-13)
+    targets = reference_target_indices(len(material["positions"]), sample_size=4, seed=9)
+    for mode in INTERACTION_MODES:
+        reference = direct_reference(material, states[0], mode, targets, cuda=False)
+        for name in topologies:
+            ordinary = fields[name, mode, False][0][targets]
+            reduced = fields[name, mode, True][0][targets]
+            np.testing.assert_allclose(ordinary, reference, rtol=2e-12, atol=2e-12)
+            np.testing.assert_allclose(reduced, reference, rtol=2e-12, atol=2e-12)
+            np.testing.assert_allclose(reduced, ordinary, rtol=2e-13, atol=2e-13)
+
+    for key in fields:
+        name, mode, reduced = key
+        parts = components[key, 0]
+        near = direct_near(topologies[name], material, states[0], mode)
+        np.testing.assert_allclose(parts["H_p2p"], near, rtol=2e-13, atol=2e-13)
         np.testing.assert_allclose(
-            components["H_far"] + components["H_p2p"],
-            components["H_total"],
+            parts["H_far"] + parts["H_p2p"],
+            parts["H_total"],
             rtol=2e-13,
             atol=2e-13,
         )
+
+
+def test_prebuilt_topology_preserves_per_particle_cuboid_size_association():
+    positions = np.asarray([
+        [-0.31, -0.29, -0.27], [0.33, 0.25, -0.21],
+        [-0.23, 0.31, 0.29], [0.27, -0.33, 0.23],
+        [0.29, 0.27, 0.31], [-0.25, -0.21, 0.33],
+        [0.21, -0.25, -0.31], [-0.33, 0.29, -0.25],
+    ])
+    sides = np.asarray([0.041, 0.053, 0.067, 0.079, 0.083, 0.097, 0.103, 0.109])
+    moments = np.arange(1, 25, dtype=float).reshape(-1, 3) * 1.0e-4
+    material = dict(positions=positions, sides=sides, moments=moments)
+    tree = cdfmm.AdaptiveTree(positions, _adaptive_options(capacity=1, max_depth=1))
+    topology = tree.topology
+    assert tuple(topology.source_permutation) != tuple(range(len(positions)))
+
+    reference = direct_reference(material, moments, "cuboid-cuboid", cuda=False)
+    for reduced in (False, True):
+        options = make_options(
+            material, cdfmm.ExecutionBackend.CPU_STATIC, order=3,
+            interaction_mode="cuboid-cuboid", reduced=reduced,
+            precision=cdfmm.StaticPrecision.FLOAT64,
+        )
+        actual = np.asarray(cdfmm.build_static_fmm(topology, options).evaluate(moments)["H"])
+        np.testing.assert_allclose(actual, reference, rtol=3e-12, atol=3e-12)
+
+
+def test_cuboid_self_field_is_finite_and_not_removed():
+    material = dict(
+        positions=np.asarray([[0.125, -0.0625, 0.25]]),
+        sides=np.asarray([0.2]),
+        moments=np.asarray([[0.003, -0.002, 0.001]]),
+    )
+    tree = cdfmm.AdaptiveTree(material["positions"],
+                              _adaptive_options(capacity=1, max_depth=0))
+    for mode in ("cuboid-point", "cuboid-cuboid"):
+        reference = direct_reference(material, material["moments"], mode, cuda=False)
+        options = make_options(
+            material, cdfmm.ExecutionBackend.CPU_STATIC, order=2,
+            interaction_mode=mode, reduced=True,
+            precision=cdfmm.StaticPrecision.FLOAT64,
+        )
+        actual = np.asarray(cdfmm.build_static_fmm(
+            tree.topology, options).evaluate(material["moments"])["H"])
+        assert np.isfinite(actual).all()
+        assert np.linalg.norm(actual) > 0.0
+        np.testing.assert_allclose(actual, reference, rtol=2e-13, atol=2e-13)

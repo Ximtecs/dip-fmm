@@ -44,6 +44,73 @@ double elapsed_seconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
+double canonicalise_normalised_value(const double value) {
+  // Keep supplied-topology cuboid sizes on the same canonical grid as the
+  // ordinary physical-geometry constructor.
+  constexpr double resolution = 1.0e9;
+  return std::nearbyint(value * resolution) / resolution;
+}
+
+UniformFmmOptions normalise_supplied_topology_options(
+    const StaticFmmTopology& topology, const UniformFmmOptions& options) {
+  UniformFmmOptions normalised = options;
+  const auto& root = topology.nodes[static_cast<std::size_t>(topology.root)];
+  const double inverse_scale = 1.0 / topology.coordinate_scale;
+  const auto normalise_sizes = [&](std::vector<CuboidSize>& sizes,
+                                   const std::vector<Vec3>& positions,
+                                   const std::vector<int>& permutation,
+                                   const char* description) {
+    if (sizes.size() != 1 && sizes.size() != positions.size()) {
+      throw std::invalid_argument(std::string(description) +
+                                  " sizes must contain one or one per object");
+    }
+    for (std::size_t index = 0; index < sizes.size(); ++index) {
+      const CuboidSize physical = sizes[index];
+      if (!std::isfinite(physical.hx) || !std::isfinite(physical.hy) ||
+          !std::isfinite(physical.hz) || physical.hx <= 0.0 ||
+          physical.hy <= 0.0 || physical.hz <= 0.0) {
+        throw std::invalid_argument(std::string(description) +
+                                    " dimensions must be finite and positive");
+      }
+      sizes[index] = {
+          canonicalise_normalised_value(physical.hx * inverse_scale),
+          canonicalise_normalised_value(physical.hy * inverse_scale),
+          canonicalise_normalised_value(physical.hz * inverse_scale)};
+    }
+
+    // The stored coordinates and normalised sizes use a 1e-9 canonical grid.
+    // Permit its worst-case independent rounding at a root face.
+    constexpr double tolerance = 2.0e-9;
+    for (std::size_t sorted = 0; sorted < positions.size(); ++sorted) {
+      const std::size_t size_index = sizes.size() == 1
+          ? 0
+          : static_cast<std::size_t>(permutation[sorted]);
+      const CuboidSize size = sizes[size_index];
+      const Vec3 extent{0.5 * size.hx, 0.5 * size.hy, 0.5 * size.hz};
+      const Vec3 distance = positions[sorted] - root.centre;
+      if (std::abs(distance.x) + extent.x > root.half_width + tolerance ||
+          std::abs(distance.y) + extent.y > root.half_width + tolerance ||
+          std::abs(distance.z) + extent.z > root.half_width + tolerance) {
+        throw std::invalid_argument(std::string(description) +
+                                    " geometry lies outside the supplied "
+                                    "topology root");
+      }
+    }
+  };
+
+  if (normalised.source_geometry == SourceGeometry::UniformCuboid) {
+    normalise_sizes(normalised.source_sizes,
+                    topology.sorted_source_positions,
+                    topology.source_permutation, "source cuboid");
+  }
+  if (normalised.target_geometry == TargetGeometry::VolumeAveragedCuboid) {
+    normalise_sizes(normalised.target_sizes,
+                    topology.sorted_target_positions,
+                    topology.target_permutation, "target cuboid");
+  }
+  return normalised;
+}
+
 void accumulate_phase(PhaseTiming &aggregate, const PhaseTiming &value) {
   aggregate.total_seconds += value.total_seconds;
   aggregate.calls += value.calls;
@@ -373,8 +440,7 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
     // bits during subtraction.  A nanounit grid removes that representation
     // noise so physically translated/rescaled copies have identical canonical
     // coordinates and therefore identical reusable plans.
-    constexpr double resolution = 1.0e9;
-    return std::nearbyint(value * resolution) / resolution;
+    return canonicalise_normalised_value(value);
   };
   const auto physical_positions = [&](const std::vector<Vec3>& positions) {
     std::vector<Vec3> wrapped;
@@ -498,14 +564,20 @@ UniformFmm::UniformFmm(std::shared_ptr<const StaticFmmTopology> topology,
       !std::isfinite(topology_->coordinate_scale) || topology_->coordinate_scale <= 0.0) {
     throw std::invalid_argument("prebuilt topology requires a unit-width normalised root and positive physical scale");
   }
-  if (options.periodic.enabled || options.source_geometry != SourceGeometry::PointDipole ||
-      options.target_geometry != TargetGeometry::Point) {
-    throw std::invalid_argument("prebuilt topology currently supports non-periodic point dipoles");
+  if (options.periodic.enabled) {
+    throw std::invalid_argument(
+        "prebuilt topology currently supports only non-periodic execution");
   }
-  physical_root_centre_ = topology_->coordinate_origin;
+  const auto normalisation_start = Clock::now();
+  const UniformFmmOptions normalised_options =
+      normalise_supplied_topology_options(*topology_, options);
+  static_plan_statistics_.normalisation.add(
+      elapsed_seconds(normalisation_start));
+  physical_root_centre_ = topology_->coordinate_origin +
+      root.centre * topology_->coordinate_scale;
   coordinate_scale_ = topology_->coordinate_scale;
   physical_root_side_length_ = coordinate_scale_;
-  initialise_execution(options);
+  initialise_execution(normalised_options);
   static_plan_statistics_.total_setup.add(elapsed_seconds(start));
 }
 
@@ -835,7 +907,8 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
 
   // Finite cuboid self fields are physical; identity maps only remove
   // singular point-dipole self interactions.
-  if (source_geometry_ == SourceGeometry::UniformCuboid) {
+  if (source_geometry_ != SourceGeometry::PointDipole ||
+      target_geometry_ != TargetGeometry::Point) {
     return;
   }
 
@@ -1297,6 +1370,10 @@ void UniformFmm::build_static_plan() {
       if (p2p_tensor_dictionary_plan_.has_value()) {
         static_plan_statistics_.p2p_unique_tensors =
             p2p_tensor_dictionary_plan_->tensors[0].size();
+        static_plan_statistics_.p2p_dictionary_tokens =
+            p2p_tensor_dictionary_plan_->token_count();
+        static_plan_statistics_.p2p_dictionary_token_width_bytes =
+            p2p_tensor_dictionary_plan_->token_width_bytes;
         static_plan_statistics_.p2p_dictionary_token_bytes =
             p2p_tensor_dictionary_plan_->token_count() *
             p2p_tensor_dictionary_plan_->token_width_bytes;
@@ -1771,6 +1848,10 @@ void UniformFmm::build_static_plan() {
   if (p2p_tensor_dictionary_plan_.has_value()) {
     static_plan_statistics_.p2p_unique_tensors =
         p2p_tensor_dictionary_plan_->tensors[0].size();
+    static_plan_statistics_.p2p_dictionary_tokens =
+        p2p_tensor_dictionary_plan_->token_count();
+    static_plan_statistics_.p2p_dictionary_token_width_bytes =
+        p2p_tensor_dictionary_plan_->token_width_bytes;
     static_plan_statistics_.p2p_dictionary_token_bytes =
         p2p_tensor_dictionary_plan_->token_count() *
         p2p_tensor_dictionary_plan_->token_width_bytes;
@@ -1921,6 +2002,10 @@ void UniformFmm::quantise_static_plan_to_float() {
   if (p2p_tensor_dictionary_plan_float_.has_value()) {
     static_plan_statistics_.p2p_unique_tensors =
         p2p_tensor_dictionary_plan_float_->tensors[0].size();
+    static_plan_statistics_.p2p_dictionary_tokens =
+        p2p_tensor_dictionary_plan_float_->token_count();
+    static_plan_statistics_.p2p_dictionary_token_width_bytes =
+        p2p_tensor_dictionary_plan_float_->token_width_bytes;
     static_plan_statistics_.p2p_dictionary_token_bytes =
         p2p_tensor_dictionary_plan_float_->token_count() *
         p2p_tensor_dictionary_plan_float_->token_width_bytes;
@@ -2199,7 +2284,8 @@ void UniformFmm::prepare_self_indices(
 
 std::span<const int> UniformFmm::resolve_self_indices(
     const std::span<const int> target_source_indices) const {
-  if (source_geometry_ == SourceGeometry::UniformCuboid) {
+  if (source_geometry_ != SourceGeometry::PointDipole ||
+      target_geometry_ != TargetGeometry::Point) {
     return {};
   }
   if (!fixed_target_source_indices_.has_value()) {
