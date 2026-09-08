@@ -32,6 +32,7 @@ The sequence follows the data flow through the implemented operators:
 | `12_cuda_memory_usage.ipynb` | Estimated-versus-measured total and intermediate CPU/CUDA plan storage sweeps |
 | `13_parameter_selection.ipynb` | Empirical depth and order selection for performance and accuracy |
 | `14_periodic_fmm_direct_compare.ipynb` | Periodic versus non-periodic direct and FMM fields, with 3D list1/list2 topology comparisons |
+| `15_adaptive_tree.ipynb` | Seeded Voronoi-style grain geometry, mixed-depth adaptive topology, and uniform comparison |
 
 Focused notebooks outside the numbered teaching sequence have separate roles:
 
@@ -50,6 +51,10 @@ choice without also changing the external library or tolerance convention.
 Notebook 14 contrasts periodic and non-periodic boundary conditions using both
 direct and FMM evaluations, and compares their corner-box interaction lists in
 the same three-dimensional style as notebook 08.
+Notebook 15 defaults to five seeded random grains on a 5 × 5 × 5 base grid;
+boundary cubes are recursively refined by the configurable `N_REFINE` cap, and
+the final dipole positions and leaf cubes are coloured by material refinement
+level.
 
 The persistent-cache notebook uses the portable CPU backend and can be run
 without loading CUDA:
