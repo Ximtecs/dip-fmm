@@ -621,6 +621,62 @@ TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
           positions.size() * sizeof(int));
 }
 
+TEST_CASE("CUDA BSR supports finite cuboid point and cuboid self fields",
+          "[cuda][manual][cuboid]") {
+  if (!cuda_m2l_p2p_available()) {
+    SUCCEED("CUDA M2L/P2P is unavailable");
+    return;
+  }
+
+  const std::vector<Vec3> positions{{-0.2, 0.0, 0.0}, {0.2, 0.0, 0.0}};
+  const std::vector<Vec3> moments{{0.7, -0.4, 0.2}, {-0.3, 0.5, -0.1}};
+  const std::array<CuboidSize, 1> source_sizes{{{0.16, 0.12, 0.10}}};
+  const std::array<CuboidSize, 1> target_sizes{{{0.11, 0.14, 0.09}}};
+
+  for (const TargetGeometry target_geometry :
+       {TargetGeometry::Point, TargetGeometry::VolumeAveragedCuboid}) {
+    const std::span<const CuboidSize> target_geometry_sizes =
+        target_geometry == TargetGeometry::Point
+            ? std::span<const CuboidSize>{}
+            : std::span<const CuboidSize>(target_sizes);
+    const DenseDirectPlan direct(
+        positions, positions, SourceGeometry::UniformCuboid, target_geometry,
+        source_sizes, target_geometry_sizes, {}, StaticPrecision::Float64);
+    const auto expected = direct.evaluate(moments, DenseDirectBackend::Portable);
+
+    UniformFmmOptions options;
+    options.backend = ExecutionBackend::CudaPartial;
+    options.precision = StaticPrecision::Float64;
+    options.expansion_basis = ExpansionBasis::Cartesian;
+    options.expansion_order = 2;
+    options.tree.max_level = 0;
+    options.tree.root_centre = Vec3{};
+    options.tree.root_half_width = 0.5;
+    options.source_geometry = SourceGeometry::UniformCuboid;
+    options.source_sizes = {source_sizes.front()};
+    options.target_geometry = target_geometry;
+    if (target_geometry == TargetGeometry::VolumeAveragedCuboid) {
+      options.target_sizes = {target_sizes.front()};
+    }
+
+    UniformFmm fmm(positions, positions, options);
+    REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::CudaBsr3);
+    REQUIRE(fmm.cuda_plan_statistics().p2p_identity_bytes == 0);
+    const auto actual = fmm.evaluate(moments, OutputFlags::Field);
+    for (std::size_t target = 0; target < actual.size(); ++target) {
+      REQUIRE(actual[target].H.x ==
+              Catch::Approx(expected[target].H.x).margin(3.0e-11));
+      REQUIRE(actual[target].H.y ==
+              Catch::Approx(expected[target].H.y).margin(3.0e-11));
+      REQUIRE(actual[target].H.z ==
+              Catch::Approx(expected[target].H.z).margin(3.0e-11));
+    }
+    REQUIRE(std::abs(actual[0].H.x) + std::abs(actual[0].H.y) +
+                std::abs(actual[0].H.z) >
+            1.0e-12);
+  }
+}
+
 TEST_CASE("CUDA M2L/P2P accepts empty geometry", "[cuda][manual]")
 {
     if (!cuda_m2l_p2p_available()) {

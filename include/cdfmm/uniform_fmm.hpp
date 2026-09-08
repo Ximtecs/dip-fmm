@@ -177,8 +177,9 @@ struct UniformFmmOptions {
    * @brief Optional immutable target-to-source self-identity map.
    *
    * Entries use original user ordering. Supplying the map permits CUDA to
-   * embed self exclusions in a cuSPARSE BSR(3) plan; omitting it retains the
-   * dynamic-identity canonical CUDA path. The map must contain one entry per
+   * embed self exclusions in a cuSPARSE BSR(3) plan. For finite cuboid
+   * interactions, omitting it retains the physical coincident-target tensor
+   * while still allowing a BSR plan. The map must contain one entry per
    * target when present.
    */
   std::optional<std::vector<int>> fixed_target_source_indices{};

@@ -134,6 +134,39 @@ TEST_CASE("dense and static P2P store the same canonical cuboid tensor") {
   REQUIRE(block.zz == matrices[5][0]);
 }
 
+TEST_CASE("empty-identity BSR preserves finite cuboid self fields",
+          "[cuboid][p2p][bsr]") {
+  const std::array<Vec3, 1> positions{{{0.0, 0.0, 0.0}}};
+  const std::array<CuboidSize, 1> source_sizes{{{0.4, 0.3, 0.2}}};
+  const std::array<CuboidSize, 1> target_sizes{{{0.2, 0.25, 0.35}}};
+  const std::array<std::array<int, 2>, 1> interactions{{{0, 0}}};
+  const std::array<Vec3, 1> moments{{{0.7, -0.4, 0.2}}};
+
+  for (const TargetGeometry target_geometry :
+       {TargetGeometry::Point, TargetGeometry::VolumeAveragedCuboid}) {
+    const std::span<const CuboidSize> target_geometry_sizes =
+        target_geometry == TargetGeometry::Point
+            ? std::span<const CuboidSize>{}
+            : std::span<const CuboidSize>(target_sizes);
+    const StaticP2POperator canonical = build_static_p2p_operator(
+        positions, positions, interactions, SourceGeometry::UniformCuboid,
+        source_sizes, target_geometry, target_geometry_sizes);
+    const StaticP2PBsrPlan bsr = build_static_p2p_bsr_plan(canonical, {});
+    std::array<Vec3, 1> expected{};
+    std::array<Vec3, 1> actual{};
+    apply_static_p2p_operator(canonical, moments, expected);
+    apply_static_p2p_bsr_plan(bsr, moments, actual);
+
+    REQUIRE(actual[0].x == Catch::Approx(expected[0].x).margin(2.0e-14));
+    REQUIRE(actual[0].y == Catch::Approx(expected[0].y).margin(2.0e-14));
+    REQUIRE(actual[0].z == Catch::Approx(expected[0].z).margin(2.0e-14));
+    REQUIRE(std::abs(actual[0].x) + std::abs(actual[0].y) +
+                std::abs(actual[0].z) >
+            1.0e-12);
+    REQUIRE(bsr.target_source_indices == std::vector<int>{-1});
+  }
+}
+
 #ifdef CDFMM_USE_OPENMP
 TEST_CASE("parallel dense cuboid construction preserves every tensor entry",
           "[cuboid][openmp]") {

@@ -44,6 +44,20 @@ double elapsed_seconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
+template <typename Operator>
+std::size_t estimate_bsr_bytes(const Operator& p2p,
+                               const std::size_t scalar_bytes) {
+  const std::size_t interactions = p2p.blocks.size();
+  const std::size_t tensor_bytes = 9 * interactions * scalar_bytes;
+  const std::size_t index_bytes = interactions * sizeof(int);
+  // StaticP2PBsrPlan stores one identity entry per target, including -1
+  // entries when no self exclusion is requested.
+  const std::size_t metadata_bytes =
+      (p2p.row_offsets.size() +
+       static_cast<std::size_t>(p2p.target_count)) * sizeof(int);
+  return tensor_bytes + index_bytes + metadata_bytes;
+}
+
 double canonicalise_normalised_value(const double value) {
   // Keep supplied-topology cuboid sizes on the same canonical grid as the
   // ordinary physical-geometry constructor.
@@ -1035,8 +1049,9 @@ void UniformFmm::build_cuda_p2p_plan() {
         p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
       return;
     }
-    if (!periodic_.enabled && fixed_target_source_indices_.has_value() &&
-        p2p_bsr_plan_float_.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_) {
+    if (!periodic_.enabled &&
+        estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
+            cuda_p2p_bsr_max_bytes_) {
       cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
           std::make_unique<CudaP2PPlan>(p2p_bsr_plan_float_));
       p2p_execution_packing_ = P2PExecutionPacking::CudaBsr3;
@@ -1060,15 +1075,19 @@ void UniformFmm::build_cuda_p2p_plan() {
       p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     return;
   }
-  if (!periodic_.enabled && fixed_target_source_indices_.has_value()) {
+  if (!periodic_.enabled &&
+      estimate_bsr_bytes(p2p_operator_, sizeof(double)) <=
+          cuda_p2p_bsr_max_bytes_) {
+    const std::span<const int> bsr_identities =
+        fixed_target_source_indices_.has_value()
+            ? std::span<const int>(fixed_sorted_self_indices_)
+            : std::span<const int>{};
     StaticP2PBsrPlan bsr =
-        build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_);
-    if (bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_) {
-      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-          std::make_unique<CudaP2PPlan>(bsr));
-      p2p_execution_packing_ = P2PExecutionPacking::CudaBsr3;
-      return;
-    }
+        build_static_p2p_bsr_plan(p2p_operator_, bsr_identities);
+    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+        std::make_unique<CudaP2PPlan>(bsr));
+    p2p_execution_packing_ = P2PExecutionPacking::CudaBsr3;
+    return;
   }
 
   const std::span<const int> fixed_identities =
@@ -1931,9 +1950,15 @@ void UniformFmm::quantise_static_plan_to_float() {
       p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     }
   }
-  if (!periodic_.enabled && fixed_target_source_indices_.has_value()) {
+  if (!periodic_.enabled &&
+      estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
+          cuda_p2p_bsr_max_bytes_) {
+    const std::span<const int> bsr_identities =
+        fixed_target_source_indices_.has_value()
+            ? std::span<const int>(fixed_sorted_self_indices_)
+            : std::span<const int>{};
     p2p_bsr_plan_float_ = build_static_p2p_bsr_plan(
-        p2p_operator_float_, fixed_sorted_self_indices_);
+        p2p_operator_float_, bsr_identities);
   }
   static_plan_statistics_.backend_packing.add(
       elapsed_seconds(p2p_packing_start));
@@ -2118,13 +2143,15 @@ void UniformFmm::build_cuda_full_plan() {
         cuda_dictionary_target_owned_;
     data.p2p_dictionary =
         std::move(*p2p_tensor_dictionary_plan_float_);
-    } else if (fixed_target_source_indices_.has_value()) {
-      data.has_fixed_self_indices = true;
-      data.fixed_self_indices = fixed_sorted_self_indices_;
-      if (!periodic_.enabled) {
-        data.use_p2p_bsr =
-            p2p_bsr_plan_float_.memory().total_bytes() <=
-            cuda_p2p_bsr_max_bytes_;
+    } else {
+      if (fixed_target_source_indices_.has_value()) {
+        data.has_fixed_self_indices = true;
+        data.fixed_self_indices = fixed_sorted_self_indices_;
+      }
+      if (!periodic_.enabled &&
+          estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
+              cuda_p2p_bsr_max_bytes_) {
+        data.use_p2p_bsr = true;
       }
     }
     if (data.use_p2p_dictionary) {
@@ -2226,17 +2253,21 @@ void UniformFmm::build_cuda_full_plan() {
       data.has_fixed_self_indices = true;
       data.fixed_self_indices = fixed_sorted_self_indices_;
     }
-  } else if (fixed_target_source_indices_.has_value()) {
-    data.has_fixed_self_indices = true;
-    data.fixed_self_indices = fixed_sorted_self_indices_;
-    if (!periodic_.enabled) {
-      StaticP2PBsrPlan bsr =
-          build_static_p2p_bsr_plan(p2p_operator_, fixed_sorted_self_indices_);
-      data.use_p2p_bsr =
-          bsr.memory().total_bytes() <= cuda_p2p_bsr_max_bytes_;
-      if (data.use_p2p_bsr) {
-        data.p2p_bsr = std::move(bsr);
-      }
+  } else {
+    if (fixed_target_source_indices_.has_value()) {
+      data.has_fixed_self_indices = true;
+      data.fixed_self_indices = fixed_sorted_self_indices_;
+    }
+    if (!periodic_.enabled &&
+        estimate_bsr_bytes(p2p_operator_, sizeof(double)) <=
+            cuda_p2p_bsr_max_bytes_) {
+      const std::span<const int> bsr_identities =
+          fixed_target_source_indices_.has_value()
+              ? std::span<const int>(fixed_sorted_self_indices_)
+              : std::span<const int>{};
+      data.p2p_bsr = build_static_p2p_bsr_plan(
+          p2p_operator_, bsr_identities);
+      data.use_p2p_bsr = true;
     }
   }
   if (!data.use_p2p_dictionary && !data.use_p2p_bsr) {
