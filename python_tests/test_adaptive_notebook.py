@@ -200,6 +200,8 @@ def test_cpu_showcase_matrix_preserves_topology_and_matches_direct_fields():
 
     case_count = 2 * len(INTERACTION_MODES) * 2
     assert len(setup) == case_count
+    assert all(len(key) == 4 for key in fields)
+    assert all(len(key) == 4 for key in components)
     assert all(seconds >= 0.0 for seconds in setup.values())
     assert len(measurements) == case_count * len(states)
     assert all(len(values) == len(states) for values in fields.values())
@@ -221,15 +223,23 @@ def test_cpu_showcase_matrix_preserves_topology_and_matches_direct_fields():
     targets = reference_target_indices(len(material["positions"]), sample_size=4, seed=9)
     for mode in INTERACTION_MODES:
         reference = direct_reference(material, states[0], mode, targets, cuda=False)
-        for name in topologies:
-            ordinary = fields[name, mode, False][0][targets]
-            reduced = fields[name, mode, True][0][targets]
-            np.testing.assert_allclose(ordinary, reference, rtol=2e-12, atol=2e-12)
-            np.testing.assert_allclose(reduced, reference, rtol=2e-12, atol=2e-12)
-            np.testing.assert_allclose(reduced, ordinary, rtol=2e-13, atol=2e-13)
+        mode_diagnostics = [row for row in diagnostics
+                            if row["interaction_mode"] == mode]
+        assert {(row["p2p_mode"], row["dictionary_executor"])
+                for row in mode_diagnostics} == {
+                    ("canonical", "source_warp"),
+                    ("dictionary", "source_warp"),
+                }
+        for row in mode_diagnostics:
+            for name in topologies:
+                key = (name, mode, row["p2p_mode"],
+                       row["dictionary_executor"])
+                actual = fields[key][0][targets]
+                np.testing.assert_allclose(actual, reference,
+                                           rtol=2e-12, atol=2e-12)
 
     for key in fields:
-        name, mode, reduced = key
+        name, mode, p2p_mode, dictionary_executor = key
         parts = components[key, 0]
         near = direct_near(topologies[name], material, states[0], mode)
         np.testing.assert_allclose(parts["H_p2p"], near, rtol=2e-13, atol=2e-13)

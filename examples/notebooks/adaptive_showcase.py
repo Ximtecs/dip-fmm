@@ -250,6 +250,8 @@ def moment_states(material, count=10, seed=43):
 
 
 INTERACTION_MODES = ("point-point", "cuboid-point", "cuboid-cuboid")
+P2P_MODES = ("canonical", "bsr", "dictionary")
+DICTIONARY_EXECUTORS = ("source_warp", "target_owned", "power2")
 
 
 def _enum_name(value):
@@ -278,7 +280,8 @@ def interaction_geometry(interaction_mode):
 
 
 def make_options(material, backend, order=6, interaction_mode="point-point",
-                 reduced=True, precision=None):
+                 reduced=True, precision=None, p2p_mode=None,
+                 dictionary_executor="source_warp"):
     """Create one static-plan configuration for the material cells.
 
     Cuboid sizes remain in original particle order; the plan applies topology
@@ -291,6 +294,12 @@ def make_options(material, backend, order=6, interaction_mode="point-point",
     else:
         count = len(material["positions"])
         sides = material["sides"]
+    if p2p_mode is None:
+        p2p_mode = "dictionary" if reduced else "canonical"
+    if p2p_mode not in P2P_MODES:
+        raise ValueError(f"unknown P2P mode: {p2p_mode!r}")
+    if dictionary_executor not in DICTIONARY_EXECUTORS:
+        raise ValueError(f"unknown dictionary executor: {dictionary_executor!r}")
     source_geometry, target_geometry = interaction_geometry(interaction_mode)
     options = cdfmm.UniformFmmOptions()
     options.backend = backend
@@ -299,7 +308,11 @@ def make_options(material, backend, order=6, interaction_mode="point-point",
     options.expansion_order = order
     options.source_geometry = source_geometry
     options.target_geometry = target_geometry
-    options.use_reduced_symmetry_p2p = bool(reduced)
+    options.use_reduced_symmetry_p2p = p2p_mode == "dictionary"
+    options.cuda_dictionary_target_owned = dictionary_executor == "target_owned"
+    options.cuda_dictionary_power2_microtiles = dictionary_executor == "power2"
+    if p2p_mode == "canonical":
+        options.cuda_p2p_bsr_max_bytes = 0
     if source_geometry == cdfmm.SourceGeometry.UNIFORM_CUBOID:
         if sides is None:
             raise ValueError("cuboid modes require material cell sides")
@@ -375,7 +388,8 @@ def p2p_topology_statistics(topology):
     )
 
 
-def plan_diagnostics(plan, topology, tree, interaction_mode, reduced):
+def plan_diagnostics(plan, topology, tree, interaction_mode, reduced,
+                     p2p_mode=None, dictionary_executor="source_warp"):
     """Collect topology, packing and memory evidence for one static plan."""
     statistics = dict(plan.static_plan_statistics)
     interactions = int(statistics["p2p_interactions"])
@@ -390,7 +404,10 @@ def plan_diagnostics(plan, topology, tree, interaction_mode, reduced):
         tree=tree,
         interaction_mode=interaction_mode,
         reduced=bool(reduced),
-        requested_packing="TensorDictionary" if reduced else "ordinary",
+        p2p_mode=p2p_mode or ("dictionary" if reduced else "canonical"),
+        dictionary_executor=dictionary_executor,
+        requested_packing=("TensorDictionary" if reduced else
+                           ("BSR" if p2p_mode == "bsr" else "canonical")),
         resolved_packing=_enum_name(plan.p2p_execution_packing),
         resolved_p2p_executor=_resolved_p2p_executor(plan),
         p2p_interactions=interactions,
@@ -426,7 +443,8 @@ def plan_diagnostics(plan, topology, tree, interaction_mode, reduced):
 
 def benchmark(topologies, states, material, backend, order=6,
               interaction_modes=INTERACTION_MODES, reduced_values=(False, True),
-              precision=None, component_runs=(0, -1)):
+              precision=None, component_runs=(0, -1), p2p_modes=None,
+              dictionary_executors=("source_warp",)):
     """Build and time cases sequentially, releasing each static plan.
 
     Retaining every full-size plan would multiply the dominant immutable P2P
@@ -435,12 +453,23 @@ def benchmark(topologies, states, material, backend, order=6,
     """
     setup, measurements, fields, components, diagnostics = {}, [], {}, {}, []
     selected_component_runs = sorted({run % len(states) for run in component_runs})
+    if p2p_modes is None:
+        cases = [("dictionary" if reduced else "canonical", "source_warp", reduced)
+                 for reduced in reduced_values]
+    else:
+        cases = []
+        for p2p_mode in p2p_modes:
+            executors = (dictionary_executors if p2p_mode == "dictionary"
+                         else ("source_warp",))
+            for executor in executors:
+                cases.append((p2p_mode, executor, p2p_mode == "dictionary"))
     for interaction_mode in interaction_modes:
-        for reduced in reduced_values:
-            options = make_options(material, backend, order, interaction_mode,
-                                   reduced, precision)
+        for p2p_mode, dictionary_executor, reduced in cases:
+            options = make_options(
+                material, backend, order, interaction_mode, reduced, precision,
+                p2p_mode, dictionary_executor)
             for tree, topology in topologies.items():
-                key = (tree, interaction_mode, bool(reduced))
+                key = (tree, interaction_mode, p2p_mode, dictionary_executor)
                 start = perf_counter()
                 plan = cdfmm.build_static_fmm(topology, options)
                 setup[key] = perf_counter() - start
@@ -448,7 +477,8 @@ def benchmark(topologies, states, material, backend, order=6,
                         cdfmm.P2PExecutionPacking.TENSOR_DICTIONARY):
                     raise RuntimeError("requested reduced Tensor6 packing was not selected")
                 diagnostics.append(plan_diagnostics(
-                    plan, topology, tree, interaction_mode, reduced))
+                    plan, topology, tree, interaction_mode, reduced,
+                    p2p_mode, dictionary_executor))
                 plan.evaluate(states[0])
                 fields[key] = []
                 for run, moments in enumerate(states):
@@ -457,7 +487,9 @@ def benchmark(topologies, states, material, backend, order=6,
                     elapsed = perf_counter() - start
                     measurements.append(dict(
                         tree=tree, interaction_mode=interaction_mode,
-                        reduced=bool(reduced), run=run, seconds=elapsed,
+                        reduced=bool(reduced), p2p_mode=p2p_mode,
+                        dictionary_executor=dictionary_executor,
+                        run=run, seconds=elapsed,
                         phases=dict(plan.last_timings),
                     ))
                 for run in selected_component_runs:
@@ -475,9 +507,10 @@ def benchmark_summary(setup, measurements, diagnostics):
     records = []
     for diagnostic in diagnostics:
         key = (diagnostic["tree"], diagnostic["interaction_mode"],
-               diagnostic["reduced"])
+               diagnostic["p2p_mode"], diagnostic["dictionary_executor"])
         rows = [row for row in measurements
-                if (row["tree"], row["interaction_mode"], row["reduced"]) == key]
+                if (row["tree"], row["interaction_mode"], row["p2p_mode"],
+                    row["dictionary_executor"]) == key]
         seconds = np.asarray([row["seconds"] for row in rows])
         phase_names = sorted({name for row in rows for name in row["phases"]})
         record = dict(diagnostic)
@@ -490,29 +523,42 @@ def benchmark_summary(setup, measurements, diagnostics):
         for name in phase_names:
             record[f"phase_{name}_median_seconds"] = float(np.median(
                 [row["phases"].get(name, 0.0) for row in rows]))
+        kernel_seconds = record.get("phase_cuda_p2p_kernel_median_seconds", 0.0)
+        if kernel_seconds <= 0.0:
+            kernel_seconds = record.get("phase_p2p_median_seconds", 0.0)
+        record["p2p_gpair_per_second"] = (
+            record["p2p_interactions"] / kernel_seconds / 1.0e9
+            if kernel_seconds > 0.0 else float("nan"))
         records.append(record)
     return records
 
 
 def comparison_ratios(summary):
-    """Calculate adaptive/uniform and reduced/ordinary case ratios."""
+    """Calculate adaptive/uniform and P2P mode comparison ratios."""
     def ratio(numerator, denominator, field):
         value = denominator.get(field, 0.0)
         return numerator.get(field, 0.0) / value if value else float("nan")
 
-    by_key = {(row["tree"], row["interaction_mode"], row["reduced"]): row
+    by_key = {(row["tree"], row["interaction_mode"], row["p2p_mode"],
+               row["dictionary_executor"]): row
               for row in summary}
     rows = []
     for mode in sorted({row["interaction_mode"] for row in summary}):
-        for reduced in sorted({row["reduced"] for row in summary}):
-            adaptive = by_key.get(("adaptive", mode, reduced))
-            uniform = by_key.get(("uniform", mode, reduced))
+        cases = sorted({(row["p2p_mode"], row["dictionary_executor"])
+                        for row in summary})
+        for p2p_mode, dictionary_executor in cases:
+            adaptive = by_key.get(("adaptive", mode, p2p_mode,
+                                   dictionary_executor))
+            uniform = by_key.get(("uniform", mode, p2p_mode,
+                                  dictionary_executor))
             if adaptive and uniform:
-                storage_field = ("p2p_dictionary_total_bytes" if reduced
+                storage_field = ("p2p_dictionary_total_bytes"
+                                 if p2p_mode == "dictionary"
                                  else "p2p_canonical_total_bytes")
                 rows.append(dict(
                     comparison="adaptive / uniform", interaction_mode=mode,
-                    reduced=reduced,
+                    p2p_mode=p2p_mode,
+                    dictionary_executor=dictionary_executor,
                     evaluation_ratio=(adaptive["evaluation_median_seconds"] /
                                       uniform["evaluation_median_seconds"]),
                     p2p_phase_ratio=ratio(
@@ -528,12 +574,13 @@ def comparison_ratios(summary):
                                        max(1, uniform[storage_field])),
                 ))
         for tree in sorted({row["tree"] for row in summary}):
-            ordinary = by_key.get((tree, mode, False))
-            reduced = by_key.get((tree, mode, True))
+            ordinary = by_key.get((tree, mode, "canonical", "source_warp"))
+            reduced = by_key.get((tree, mode, "dictionary", "source_warp"))
             if ordinary and reduced:
                 rows.append(dict(
                     comparison="ordinary / reduced speedup", interaction_mode=mode,
                     tree=tree,
+                    p2p_mode="dictionary", dictionary_executor="source_warp",
                     evaluation_ratio=(ordinary["evaluation_median_seconds"] /
                                       reduced["evaluation_median_seconds"]),
                     p2p_phase_ratio=ratio(
