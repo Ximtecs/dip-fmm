@@ -203,7 +203,7 @@ __global__ void apply_unscaled_m2l_rows_kernel(
     const Scalar *matrices, const CudaM2LActiveRow *active_rows,
     const int *sources, const int *matrix_ids,
     const Scalar *multipole_scaling, const Scalar *local_scaling,
-    const int active_row_count, const int coefficient_count,
+    const int *node_levels, const int active_row_count, const int coefficient_count,
     const Scalar *multipoles, Scalar *locals) {
   const std::size_t output =
       static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -234,7 +234,7 @@ __global__ void apply_unscaled_m2l_rows_kernel(
       value += matrices[matrix_base +
                         static_cast<std::size_t>(alpha) * coefficient_stride +
                         beta] *
-               multipole_scaling[scale_base + alpha] *
+               multipole_scaling[static_cast<std::size_t>(node_levels[sources[interaction]]) * coefficient_stride + alpha] *
                multipoles[source_base + alpha];
     }
   }
@@ -307,7 +307,7 @@ public:
       apply_unscaled_m2l_rows_kernel<<<block_count, threads_per_block_, 0,
                                        stream>>>(
           matrices_, active_rows_, sources_, matrix_ids_, multipole_scaling_,
-          local_scaling_, active_row_count_, coefficient_count_, multipoles,
+          local_scaling_, node_levels_, active_row_count_, coefficient_count_, multipoles,
           locals);
     }
     check_cuda(cudaGetLastError(), "launch optimised static M2L kernel");
@@ -347,26 +347,38 @@ private:
       throw std::invalid_argument("canonical M2L dimensions are invalid");
     }
     if (data.source_nodes.size() != data.matrix_ids.size() ||
-        data.source_nodes.size() != data.interaction_levels.size()) {
+        (!data.interaction_levels.empty() &&
+         data.source_nodes.size() != data.interaction_levels.size()) ||
+        (!data.source_levels.empty() &&
+         data.source_levels.size() != data.source_nodes.size()) ||
+        (!data.target_levels.empty() &&
+         data.target_levels.size() != data.source_nodes.size())) {
       throw std::invalid_argument("canonical M2L interaction arrays differ");
     }
 
     coefficient_count_ = data.coefficient_count;
     node_count_ = static_cast<int>(data.target_row_offsets.size()) - 1;
     std::vector<int> node_levels(static_cast<std::size_t>(node_count_), -1);
-    if (data.level_target_begin.size() !=
-            static_cast<std::size_t>(data.level_count) ||
-        data.level_target_end.size() !=
-            static_cast<std::size_t>(data.level_count)) {
-      throw std::invalid_argument("canonical M2L level bounds are invalid");
-    }
-    for (int level = 0; level < data.level_count; ++level) {
-      const int begin = data.level_target_begin[static_cast<std::size_t>(level)];
-      const int end = data.level_target_end[static_cast<std::size_t>(level)];
-      if (begin < 0 || end < begin || end > node_count_) {
-        throw std::invalid_argument("canonical M2L level bound is invalid");
+    if (!data.node_levels.empty()) {
+      if (data.node_levels.size() != static_cast<std::size_t>(node_count_)) {
+        throw std::invalid_argument("canonical M2L node levels are invalid");
       }
-      std::fill(node_levels.begin() + begin, node_levels.begin() + end, level);
+      node_levels = data.node_levels;
+    } else {
+      if (data.level_target_begin.size() !=
+              static_cast<std::size_t>(data.level_count) ||
+          data.level_target_end.size() !=
+              static_cast<std::size_t>(data.level_count)) {
+        throw std::invalid_argument("canonical M2L level bounds are invalid");
+      }
+      for (int level = 0; level < data.level_count; ++level) {
+        const int begin = data.level_target_begin[static_cast<std::size_t>(level)];
+        const int end = data.level_target_end[static_cast<std::size_t>(level)];
+        if (begin < 0 || end < begin || end > node_count_) {
+          throw std::invalid_argument("canonical M2L level bound is invalid");
+        }
+        std::fill(node_levels.begin() + begin, node_levels.begin() + end, level);
+      }
     }
 
     std::vector<CudaM2LActiveRow> active_rows;
@@ -381,18 +393,33 @@ private:
       if (begin == end) {
         continue;
       }
-      const int level = data.interaction_levels[static_cast<std::size_t>(begin)];
+      const int level = data.target_levels.empty()
+          ? (data.interaction_levels.empty()
+                 ? node_levels[static_cast<std::size_t>(target)]
+                 : data.interaction_levels[static_cast<std::size_t>(begin)])
+          : data.target_levels[static_cast<std::size_t>(begin)];
       if (level < 0 || level >= data.level_count ||
           node_levels[static_cast<std::size_t>(target)] != level) {
         throw std::invalid_argument("canonical M2L target level is invalid");
       }
       for (int interaction = begin; interaction < end; ++interaction) {
         const std::size_t index = static_cast<std::size_t>(interaction);
-        if (data.interaction_levels[index] != level ||
-            data.source_nodes[index] < 0 ||
-            data.source_nodes[index] >= node_count_ ||
-            node_levels[static_cast<std::size_t>(data.source_nodes[index])] !=
-                level ||
+        const int source_node = data.source_nodes[index];
+        const int interaction_target_level = data.target_levels.empty()
+            ? (data.interaction_levels.empty() ? level
+                                               : data.interaction_levels[index])
+            : data.target_levels[index];
+        const int interaction_source_level =
+            (source_node >= 0 && source_node < node_count_)
+                ? (data.source_levels.empty()
+                       ? node_levels[static_cast<std::size_t>(source_node)]
+                       : data.source_levels[index])
+                : -1;
+        if (interaction_target_level != level ||
+            source_node < 0 || source_node >= node_count_ ||
+            interaction_source_level < 0 ||
+            interaction_source_level >= data.level_count ||
+            interaction_source_level != node_levels[static_cast<std::size_t>(source_node)] ||
             data.matrix_ids[index] < 0 ||
             data.matrix_ids[index] >= data.matrix_count) {
           throw std::invalid_argument("canonical M2L interaction is invalid");
@@ -3774,7 +3801,7 @@ struct CudaFullPlan::Implementation {
   std::vector<int> fixed_self_indices{};
   bool identity_initialised{false};
   int p2m_stage{0};
-  int leaf_level{0};
+  int maximum_level{0};
   int m2m_entries_per_matrix{0};
   int l2l_entries_per_matrix{0};
   std::size_t m2m_interaction_count{0};
@@ -3814,7 +3841,7 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   };
   plan.p2m_stage = append_stage(data.p2m);
   plan.l2p_stage = append_stage(data.l2p);
-  plan.leaf_level = data.m2l.level_count - 1;
+  plan.maximum_level = data.m2l.level_count - 1;
   plan.m2m_entries_per_matrix = data.m2m.entries_per_matrix;
   plan.l2l_entries_per_matrix = data.l2l.entries_per_matrix;
   plan.m2m_interaction_count = data.m2m.interactions.size();
@@ -4063,7 +4090,7 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
   };
   plan.p2m_stage = append_stage(data.p2m);
   plan.l2p_stage = append_stage(data.l2p);
-  plan.leaf_level = data.m2l.level_count - 1;
+  plan.maximum_level = data.m2l.level_count - 1;
   plan.m2m_entries_per_matrix = data.m2m.entries_per_matrix;
   plan.l2l_entries_per_matrix = data.l2l.entries_per_matrix;
   plan.m2m_interaction_count = data.m2m.interactions.size();
@@ -4471,7 +4498,7 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   // parent level must not consume them early. Launching levels into one stream
   // supplies the required child-to-parent ordering without a host barrier.
   detail::ProfileRange m2m_range{"cdfmm/far_field/m2m"};
-  for (int level = plan.leaf_level; level >= 1; --level) {
+  for (int level = plan.maximum_level; level >= 1; --level) {
     const std::size_t items =
         plan.m2m_interaction_count * plan.m2m_entries_per_matrix;
     if (items != 0) {
@@ -4499,7 +4526,7 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
   // The downward dependency is the reverse: each parent local must be complete
   // before the next level translates it to children. Stream order enforces it.
-  for (int level = 1; level <= plan.leaf_level; ++level) {
+  for (int level = 1; level <= plan.maximum_level; ++level) {
     const std::size_t items =
         plan.l2l_interaction_count * plan.l2l_entries_per_matrix;
     if (items != 0) {
@@ -4686,7 +4713,7 @@ void CudaFullPlan::evaluate(
   check_cuda(cudaEventRecord(plan.p2m_complete, plan.far_field_stream),
              "record FP32 P2M");
 
-  for (int level = plan.leaf_level; level >= 1; --level) {
+  for (int level = plan.maximum_level; level >= 1; --level) {
     const std::size_t items =
         plan.m2m_interaction_count * plan.m2m_entries_per_matrix;
     if (items != 0) {
@@ -4713,7 +4740,7 @@ void CudaFullPlan::evaluate(
   check_cuda(cudaEventRecord(plan.m2l_complete, plan.far_field_stream),
              "record FP32 M2L");
 
-  for (int level = 1; level <= plan.leaf_level; ++level) {
+  for (int level = 1; level <= plan.maximum_level; ++level) {
     const std::size_t items =
         plan.l2l_interaction_count * plan.l2l_entries_per_matrix;
     if (items != 0) {
@@ -4809,6 +4836,25 @@ const CudaPlanStatistics &CudaFullPlan::statistics() const noexcept {
 
 const CudaEvaluationTimings &CudaFullPlan::timings() const noexcept {
   return implementation_->timings;
+}
+
+void CudaFullPlan::copy_far_fields(std::span<Vec3> fields) const {
+  const auto& plan = *implementation_;
+  if (fields.size() != static_cast<std::size_t>(plan.target_count)) {
+    throw std::invalid_argument("diagnostic target count mismatch");
+  }
+  if (plan.far_fields_float != nullptr) {
+    std::vector<FloatVec3> values(fields.size());
+    check_cuda(cudaMemcpy(values.data(), plan.far_fields_float,
+                          values.size() * sizeof(FloatVec3), cudaMemcpyDeviceToHost),
+               "copy diagnostic far fields");
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+      fields[i] = {values[i].x, values[i].y, values[i].z};
+    }
+  } else {
+    check_cuda(cudaMemcpy(fields.data(), plan.far_fields, fields.size_bytes(),
+                          cudaMemcpyDeviceToHost), "copy diagnostic far fields");
+  }
 }
 
 } // namespace cdfmm

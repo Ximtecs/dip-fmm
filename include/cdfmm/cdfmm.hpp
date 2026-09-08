@@ -15,9 +15,12 @@
 #include "cdfmm/spherical_harmonics.hpp"
 #include "cdfmm/parameter_selection.hpp"
 #include "cdfmm/static_operators.hpp"
+#include "cdfmm/static_topology.hpp"
 #include "cdfmm/taylor_jet.hpp"
 #include "cdfmm/vec3.hpp"
 #include "cdfmm/tree_node.hpp"
 #include "cdfmm/uniform_tree.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
+
+#include "cdfmm/adaptive_tree.hpp"

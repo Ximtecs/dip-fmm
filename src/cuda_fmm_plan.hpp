@@ -113,6 +113,7 @@ public:
   void evaluate(std::span<const FloatVec3> moments,
                 std::span<FloatVec3> fields,
                 std::span<const int> sorted_self_indices);
+  void copy_far_fields(std::span<Vec3> fields) const;
   [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
   [[nodiscard]] const CudaEvaluationTimings &timings() const noexcept;
 

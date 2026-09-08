@@ -447,6 +447,37 @@ TEST_CASE("canonical target-row M2L plan accepts empty geometry") {
   REQUIRE_NOTHROW(apply_static_m2l_plan(plan, 0, multipoles, locals));
 }
 
+TEST_CASE("canonical M2L metadata keeps source and target levels distinct") {
+  StaticM2LPlan plan;
+  plan.coefficient_count = 1;
+  plan.matrix_count = 1;
+  plan.level_count = 2;
+  plan.matrices = {2.0};
+  plan.multipole_scaling = {3.0, 5.0};
+  plan.local_scaling = {7.0, 11.0};
+  // Node zero (level 0) contributes to node one (level 1).
+  plan.target_row_offsets = {0, 0, 1};
+  plan.source_nodes = {0};
+  plan.matrix_ids = {0};
+  plan.source_levels = {0};
+  plan.target_levels = {1};
+  plan.interaction_levels = {1};
+  plan.target_level_offsets = {0, 1, 2};
+  plan.target_nodes_by_level = {0, 1};
+  plan.node_levels = {0, 1};
+
+  const FloatStaticM2LPlan quantised = quantise_static_m2l_plan(plan);
+  REQUIRE(quantised.source_levels == std::vector<int>{0});
+  REQUIRE(quantised.target_levels == std::vector<int>{1});
+  REQUIRE(quantised.target_level_offsets == std::vector<int>{0, 1, 2});
+  REQUIRE(quantised.target_nodes_by_level == std::vector<int>{0, 1});
+
+  std::vector<CoeffVector> multipoles{{4.0}, {0.0}};
+  std::vector<CoeffVector> locals(2, CoeffVector(1, 0.0));
+  apply_static_m2l_plan(plan, 1, multipoles, locals);
+  REQUIRE(locals[1][0] == Catch::Approx(264.0));
+}
+
 TEST_CASE("static grouped M2L matches the independent reference traversal") {
   std::mt19937 generator(417);
   std::uniform_real_distribution<double> coordinate(-0.9, 0.9);

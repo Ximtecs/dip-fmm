@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -17,6 +18,7 @@
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/spherical_harmonics.hpp"
 #include "cdfmm/uniform_tree.hpp"
+#include "cdfmm/static_topology.hpp"
 
 namespace cdfmm {
 
@@ -224,6 +226,19 @@ using M2LBackend = UniformFmmOptions::M2LBackend;
  */
 class UniformFmm {
 public:
+  /** @brief Builds operators from shared normalised geometry without a tree rebuild. */
+  UniformFmm(std::shared_ptr<const StaticFmmTopology> topology,
+             const UniformFmmOptions& options);
+  [[nodiscard]] const StaticFmmTopology& topology() const { return *topology_; }
+  [[nodiscard]] std::shared_ptr<const StaticFmmTopology> shared_topology() const {
+    return topology_;
+  }
+  /** @brief Opt-in field diagnostics; normal evaluate performs no diagnostic copies. */
+  struct FieldComponents {
+    std::vector<Vec3> far, p2p, total;
+  };
+  FieldComponents evaluate_components(std::span<const Vec3> moments,
+                                     std::span<const int> identities = {});
   ~UniformFmm();
   UniformFmm(UniformFmm&&) noexcept;
   UniformFmm& operator=(UniformFmm&&) noexcept;
@@ -425,11 +440,15 @@ private:
   /** @brief Immutable leaf index and geometry-specific P2M coefficient map. */
   struct P2MPlan {
     int leaf{0};
+    std::size_t begin{0};
+    std::size_t count{0};
     StaticCoefficientOperator operator_map{};
   };
   /** @brief FP32 leaf index and quantised P2M coefficient map. */
   struct FloatP2MPlan {
     int leaf{0};
+    std::size_t begin{0};
+    std::size_t count{0};
     FloatStaticCoefficientOperator operator_map{};
   };
   /**
@@ -443,6 +462,7 @@ private:
     int matrix_id{0};
     std::vector<int> sources{};
     std::vector<int> targets{};
+    std::vector<int> source_levels{};
     std::vector<int> levels{};
     std::vector<double> gathered{};
     std::vector<double> translated{};
@@ -452,11 +472,13 @@ private:
     int matrix_id{0};
     std::vector<int> sources{};
     std::vector<int> targets{};
+    std::vector<int> source_levels{};
     std::vector<int> levels{};
     std::vector<float> gathered{};
     std::vector<float> translated{};
   };
 
+  void initialise_execution(const UniformFmmOptions& options);
   void build_static_plan();
   void initialise_cache_keys(const UniformFmmOptions& options);
   [[nodiscard]] bool load_universal_cache();
@@ -510,8 +532,12 @@ private:
 
   // The public physical tree preserves the API boundary; all execution uses
   // the canonical normalised tree.
-  UniformTree physical_tree_;
-  UniformTree tree_;
+  std::optional<UniformTree> physical_tree_;
+  std::optional<UniformTree> tree_;
+  std::shared_ptr<const StaticFmmTopology> topology_{};
+  bool supplied_topology_{false};
+  bool capture_components_{false};
+  std::vector<Vec3> diagnostic_far_{};
   Vec3 physical_root_centre_{};
   double physical_root_side_length_{1.0};
   PeriodicCellOptions physical_periodic_{};

@@ -15,7 +15,10 @@ physical positions, cuboid sizes
 canonical root normalisation
    |
    v
-uniform tree and Morton permutations
+UniformTree builder
+   |
+   v
+canonical static topology/geometry adapter
    |
    v
 validated universal/geometry cache lookup
@@ -40,24 +43,30 @@ far field + near field -> target unsorting -> target field
 
 ## Data ownership and lifetime
 
-The `UniformTree` owns positions in Morton order, permutations, flat nodes,
-and `list1`/`list2`. These are immutable after construction. `UniformFmm` owns
-the static operator plan derived from that geometry and mutable per-evaluation
-arrays: sorted moments, one multipole and local vector per node, near/far
-result scratch, and timings. Calls on one evaluator are therefore not
-concurrent even though stages may use OpenMP internally.
+`UniformTree` remains the uniform builder and inspection object. The immutable
+`StaticFmmTopology` adapter copies its normalized geometry and permutations,
+assigns compact node IDs, and records leaf ranges, translation edges, M2L rows,
+and P2P leaf pairs with periodic image identities. M2L interactions include
+canonical target-row offsets and endpoint levels. Executors consume those
+records; `list1`/`list2` and
+analytical level offsets stay inside uniform construction. `UniformFmm` owns
+the topology, static operators, and mutable per-evaluation arrays: sorted
+moments, one multipole and local vector per node, near/far result scratch, and
+timings. Calls on one evaluator are therefore not concurrent even though
+stages may use OpenMP internally.
 
-Nodes are stored level by level. This makes the dependency order explicit:
-P2M writes occupied leaves; M2M visits levels from leaf to root; M2L reads
-same-level source multipoles and adds to target locals; L2L visits root to leaf;
-and L2P reads leaf locals. P2P is independent of the far-field chain until the
-two contributions are assembled.
+Schedules are grouped by explicit level barriers rather than by a node's flat
+index. P2M writes source leaf ranges; M2M follows child-to-parent edges from
+deep to shallow; M2L consumes target-row CSR; L2L follows parent-to-child edges
+from shallow to deep; and L2P reads target leaf ranges. P2P is independent of
+the far-field chain until the two contributions are assembled.
 
 ## Canonical packed plans
 
 Sparse coefficient maps store triples `(output, input, value)`. Dense M2L
 matrices are column-major and shared by transfer class. M2L interactions use
-target-row offsets plus parallel source-node, matrix-ID, and level arrays.
+target-row offsets plus parallel source-node, matrix-ID, and separate
+source/target-level arrays.
 That representation gives each target row a contiguous interaction range and
 lets portable CPU and CUDA executors consume identical mathematical data. The
 oneMKL executor derives a gather/multiply/scatter packing from it without

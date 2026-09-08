@@ -7,13 +7,13 @@ repeated path.
 
 ```text
 fixed source and target geometry
-    -> uniform tree, Morton permutations, list1, and list2
+    -> UniformTree -> canonical static topology and geometry records
     -> reusable P2M
     -> reusable M2M child classes
     -> reusable M2L transfer classes
     -> reusable L2L child classes
     -> reusable L2P rows
-    +  reusable exact list1 P2P tensor
+    +  reusable exact P2P leaf-pair tensor
 
 changing moments
     -> P2M -> M2M -> M2L -> L2L -> L2P --+
@@ -21,7 +21,7 @@ changing moments
 ```
 
 Construction fixes independent source and target geometry, the complete
-uniform tree, expansion order and basis, scalar precision, execution backend,
+uniform tree and its canonical topology, expansion order and basis, scalar precision, execution backend,
 and any immutable self-identity map. An `evaluate` call accepts a new moment
 for every source in original user order. Source moments are Morton-permuted,
 the expansion and result state is cleared, and results are returned in original
@@ -34,8 +34,8 @@ next.
 2. **M2M:** child multipoles are shifted and added from the leaves towards the
    root using one of eight universal child-offset templates and exact level
    degree scaling.
-3. **M2L:** every target box accumulates its well-separated `list2` source
-   boxes. Integer displacement classes share level-independent dense matrices;
+3. **M2L:** every target row accumulates its explicit well-separated source
+   interactions. Integer displacement classes share level-independent dense matrices;
    precomputed degree factors account for box width.
 4. **L2L:** parent locals are shifted and added towards the leaves using the
    corresponding eight universal child templates and level scaling.

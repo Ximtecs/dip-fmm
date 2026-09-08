@@ -20,6 +20,8 @@ P2P_SOA_INTERACTION_BYTES = 77
 VEC3_BYTES = 24
 DOUBLE_BYTES = 8
 INT_BYTES = 4
+# Four contiguous int fields: target, target level, row begin, and row end.
+CUDA_M2L_ACTIVE_ROW_BYTES = 4 * INT_BYTES
 
 
 @dataclass(frozen=True)
@@ -123,19 +125,23 @@ def estimate_source_point_storage(
     translation_entries = shift_entries(order)
 
     groups: dict[tuple[int, int, int], int] = {}
+    active_m2l_rows = 0
     for target in nodes:
         if target.level == 0 or target.target_count == 0:
             continue
+        row_has_interaction = False
         for source_index in target.list2:
             source = nodes[source_index]
             if source.source_count == 0:
                 continue
+            row_has_interaction = True
             key = (
                 target.ix - source.ix,
                 target.iy - source.iy,
                 target.iz - source.iz,
             )
             groups[key] = groups.get(key, 0) + 1
+        active_m2l_rows += int(row_has_interaction)
 
     p2p_pairs = 0
     for target in nodes:
@@ -162,15 +168,25 @@ def estimate_source_point_storage(
     )
     matrix_count = 316 if universal_translation_bank else len(groups)
     cached_matrix_bytes = matrix_count * coefficients**2 * DOUBLE_BYTES
-    # The canonical target-row plan stores one row offset per tree node;
-    # source, matrix-class, and level indices for every interaction; and two
-    # node-index bounds for every level. The latter let portable M2L visit only
-    # the targets owned by the requested level.
+    # CUDA stores compact active-row descriptors, source and matrix indices,
+    # and one explicit level per node. Endpoint levels are validated while the
+    # device packing is built and need not be uploaded separately.
     cuda_interaction_index_bytes = (
-        len(nodes) + 1 + 3 * m2l_interactions
-    ) * INT_BYTES
+        active_m2l_rows * CUDA_M2L_ACTIVE_ROW_BYTES
+        + (2 * m2l_interactions + len(nodes)) * INT_BYTES
+    )
+    # The canonical host plan retains explicit source and target levels plus
+    # the legacy same-level array. It also owns target schedules grouped by
+    # level and a level value for every compact node ID.
     interaction_index_bytes = (
-        cuda_interaction_index_bytes + 2 * (depth + 1) * INT_BYTES
+        (
+            len(nodes) + 1
+            + 5 * m2l_interactions
+            + 2 * (depth + 1)
+            + (depth + 2)
+            + 2 * len(nodes)
+        )
+        * INT_BYTES
     )
     level_scaling_bytes = 2 * (depth + 1) * coefficients * DOUBLE_BYTES
     host_static = {

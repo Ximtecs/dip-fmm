@@ -6,7 +6,7 @@
 
 #include "cdfmm/operators.hpp"
 #include "cdfmm/static_operators.hpp"
-#include "cdfmm/uniform_tree.hpp"
+#include "cdfmm/static_topology.hpp"
 
 namespace cdfmm::detail {
 
@@ -17,7 +17,7 @@ void evaluate_static_near_field(const StaticP2PCompactPlan &p2p_plan,
                                 std::span<const int> sorted_self_indices);
 
 /** @brief Evaluates list1 interactions with the mathematical reference P2P. */
-void evaluate_reference_near_field(const UniformTree &tree,
+void evaluate_reference_near_field(const StaticFmmTopology &topology,
                                    std::span<const Vec3> sorted_dipole_moments,
                                    std::span<const int> sorted_self_indices,
                                    OutputFlags output,

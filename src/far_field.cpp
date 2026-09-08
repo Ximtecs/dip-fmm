@@ -31,7 +31,7 @@ namespace cdfmm {
 // Geometry-plan construction and list1 P2P do not belong here.  The routines
 // consume the canonical operators owned by UniformFmm; they neither rebuild
 // plans nor introduce executor-specific copies.  Near-field work may therefore
-// proceed independently while this branch traverses the level-ordered tree.
+// proceed independently while this branch consumes explicit topology schedules.
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -67,8 +67,6 @@ void UniformFmm::static_m2l(const int level) {
   const int n = coefficient_count();
   const std::ptrdiff_t group_count =
       static_cast<std::ptrdiff_t>(m2l_groups_.size());
-  const double *multipole_scale =
-      m2l_plan_.multipole_scaling.data() + static_cast<std::size_t>(level) * n;
   const double *local_scale =
       m2l_plan_.local_scaling.data() + static_cast<std::size_t>(level) * n;
 
@@ -84,9 +82,12 @@ void UniformFmm::static_m2l(const int level) {
         continue;
       }
       const auto M = multipole_for_node(group.sources[column]);
+      const double *source_scale = m2l_plan_.multipole_scaling.data() +
+          static_cast<std::size_t>(group.source_levels.empty()
+              ? level : group.source_levels[column]) * n;
       for (int alpha = 0; alpha < n; ++alpha) {
         group.gathered[static_cast<std::size_t>(alpha) + column * n] =
-            multipole_scale[alpha] * M[static_cast<std::size_t>(alpha)];
+            source_scale[alpha] * M[static_cast<std::size_t>(alpha)];
       }
     }
   }
@@ -177,8 +178,6 @@ void UniformFmm::static_m2l_float(const int level) {
   const int n = coefficient_count();
   const std::ptrdiff_t group_count =
       static_cast<std::ptrdiff_t>(m2l_groups_float_.size());
-  const float *multipole_scale = m2l_plan_float_.multipole_scaling.data() +
-      static_cast<std::size_t>(level) * n;
   const float *local_scale = m2l_plan_float_.local_scaling.data() +
       static_cast<std::size_t>(level) * n;
 
@@ -193,9 +192,12 @@ void UniformFmm::static_m2l_float(const int level) {
         continue;
       }
       const auto M = multipole_float_for_node(group.sources[column]);
+      const float *source_scale = m2l_plan_float_.multipole_scaling.data() +
+          static_cast<std::size_t>(group.source_levels.empty()
+              ? level : group.source_levels[column]) * n;
       for (int alpha = 0; alpha < n; ++alpha) {
         group.gathered[static_cast<std::size_t>(alpha) + column * n] =
-            multipole_scale[alpha] * M[static_cast<std::size_t>(alpha)];
+            source_scale[alpha] * M[static_cast<std::size_t>(alpha)];
       }
     }
   }
@@ -264,7 +266,7 @@ void UniformFmm::upward_pass(std::span<const Vec3> dipole_moments) {
 void UniformFmm::prepare_moments_float(
     const std::span<const Vec3> dipole_moments) {
   detail::ProfileRange input_range{"cdfmm/input_preparation_fp32"};
-  if (dipole_moments.size() != tree_.sorted_source_positions().size()) {
+  if (dipole_moments.size() != topology_->sorted_source_positions.size()) {
     throw std::invalid_argument(
         "UniformFmm::upward_pass requires one dipole moment per source "
         "position");
@@ -274,7 +276,7 @@ void UniformFmm::prepare_moments_float(
   last_timings_.multipole_reset.add(elapsed_seconds(phase_start));
 
   phase_start = Clock::now();
-  const auto permutation = tree_.source_permutation();
+  const auto permutation = std::span<const int>(topology_->source_permutation);
 #pragma omp parallel for schedule(static) if (permutation.size() >= 256)
   for (std::ptrdiff_t sorted_index = 0;
        sorted_index < static_cast<std::ptrdiff_t>(permutation.size());
@@ -293,7 +295,7 @@ void UniformFmm::prepare_moments_float(
 void UniformFmm::prepare_moments_float(
     const std::span<const FloatVec3> dipole_moments) {
   detail::ProfileRange input_range{"cdfmm/input_preparation_fp32"};
-  if (dipole_moments.size() != tree_.sorted_source_positions().size()) {
+  if (dipole_moments.size() != topology_->sorted_source_positions.size()) {
     throw std::invalid_argument(
         "UniformFmm::upward_pass requires one dipole moment per source position");
   }
@@ -301,7 +303,7 @@ void UniformFmm::prepare_moments_float(
   std::fill(multipoles_float_.begin(), multipoles_float_.end(), 0.0F);
   last_timings_.multipole_reset.add(elapsed_seconds(phase_start));
   phase_start = Clock::now();
-  const auto permutation = tree_.source_permutation();
+  const auto permutation = std::span<const int>(topology_->source_permutation);
   const float scale = static_cast<float>(coordinate_scale_);
 #pragma omp parallel for schedule(static) if (permutation.size() >= 256)
   for (std::ptrdiff_t sorted_index = 0;
@@ -318,22 +320,23 @@ void UniformFmm::prepare_moments_float(
 }
 
 void UniformFmm::upward_pass_prepared_float() {
-  const auto nodes = tree_.nodes();
-  const auto occupied_leaves = tree_.occupied_source_leaves();
+  const auto &nodes = topology_->nodes;
+  const auto &occupied_leaves = topology_->source_leaves;
   auto phase_start = Clock::now();
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
   for (std::ptrdiff_t occupied_index = 0;
        occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
        ++occupied_index) {
     const int leaf_index =
+        occupied_leaves[static_cast<std::size_t>(occupied_index)].node;
+    const StaticLeafRange &leaf_range =
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
     const FloatStaticCoefficientOperator &operator_map =
         p2m_plans_float_[static_cast<std::size_t>(occupied_index)].operator_map;
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
     const auto M = multipole_float_for_node(leaf_index);
     for (const FloatStaticOperatorEntry &entry : operator_map.entries) {
       const FloatVec3 &moment =
-          sorted_dipole_moments_float_[leaf.source_begin +
+          sorted_dipole_moments_float_[leaf_range.begin +
               static_cast<std::size_t>(entry.input / 3)];
       const float component = entry.input % 3 == 0
           ? moment.x
@@ -346,25 +349,31 @@ void UniformFmm::upward_pass_prepared_float() {
   phase_start = Clock::now();
 #pragma omp parallel if (nodes.size() >= 64)
   {
-    for (int level = tree_.leaf_level() - 1; level >= 0; --level) {
-      const int begin = level_offset(level);
-      const int end = level_offset(level + 1);
+    for (int level = topology_->maximum_level - 1; level >= 0; --level) {
+      const int begin = topology_->m2m_parent_level_offsets[static_cast<std::size_t>(level + 1)];
+      const int end = topology_->m2m_parent_level_offsets[static_cast<std::size_t>(level + 2)];
 #pragma omp for schedule(static)
-      for (int parent_index = begin; parent_index < end; ++parent_index) {
-        const TreeNode &parent = nodes[static_cast<std::size_t>(parent_index)];
+      for (int parent_slot = begin; parent_slot < end; ++parent_slot) {
+        const int parent_index = topology_->m2m_parent_nodes[static_cast<std::size_t>(parent_slot)];
+        const auto &parent = nodes[static_cast<std::size_t>(parent_index)];
         if (parent.source_count() == 0) {
           continue;
         }
         const auto parent_M = multipole_float_for_node(parent_index);
-        for (const int child_index : parent.children) {
-          const TreeNode &child = nodes[static_cast<std::size_t>(child_index)];
+        const int edge_begin = topology_->m2m_parent_edge_offsets[
+            static_cast<std::size_t>(parent_slot)];
+        const int edge_end = topology_->m2m_parent_edge_offsets[
+            static_cast<std::size_t>(parent_slot + 1)];
+        for (int edge_slot = edge_begin; edge_slot < edge_end; ++edge_slot) {
+          const StaticTranslationEdge &edge = topology_->m2m_edges[
+              static_cast<std::size_t>(edge_slot)];
+          const int child_index = edge.source_node;
+          const auto &child = nodes[static_cast<std::size_t>(child_index)];
           if (child.source_count() == 0) {
             continue;
           }
-          const int child_class =
-              (child.ix & 1) | ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
           apply_level_scaled_translation(
-              m2m_operators_float_[child_class],
+              m2m_operators_float_[edge.child_class],
               multipole_float_for_node(child_index), parent_M, child.level,
               [this](const int coefficient) {
                 return coefficient_degree(coefficient);
@@ -378,7 +387,7 @@ void UniformFmm::upward_pass_prepared_float() {
 
 void UniformFmm::prepare_moments(std::span<const Vec3> dipole_moments) {
   detail::ProfileRange input_range{"cdfmm/input_preparation"};
-  if (dipole_moments.size() != tree_.sorted_source_positions().size()) {
+  if (dipole_moments.size() != topology_->sorted_source_positions.size()) {
     throw std::invalid_argument(
         "UniformFmm::upward_pass requires one dipole moment per source "
         "position");
@@ -396,7 +405,7 @@ void UniformFmm::prepare_moments(std::span<const Vec3> dipole_moments) {
   const auto phase_start = Clock::now();
   detail::ProfileRange permutation_range{
       "cdfmm/input_preparation/moment_permutation"};
-  const auto permutation = tree_.source_permutation();
+  const auto permutation = std::span<const int>(topology_->source_permutation);
   const double scale = coordinate_scale_;
   const double inverse_volume_scale = 1.0 / (scale * scale * scale);
 #pragma omp parallel for schedule(static) if (permutation.size() >= 256)
@@ -413,8 +422,8 @@ void UniformFmm::prepare_moments(std::span<const Vec3> dipole_moments) {
 }
 
 void UniformFmm::upward_pass_prepared() {
-  const auto nodes = tree_.nodes();
-  const auto occupied_leaves = tree_.occupied_source_leaves();
+  const auto &nodes = topology_->nodes;
+  const auto &occupied_leaves = topology_->source_leaves;
   const StaticOperatorExecutor p2m_executor = execution_plan().p2m;
   auto phase_start = Clock::now();
   detail::ProfileRange p2m_range{"cdfmm/far_field/p2m"};
@@ -425,15 +434,17 @@ void UniformFmm::upward_pass_prepared() {
     // Occupied leaves have disjoint multipole vectors. Each worker therefore
     // owns its output and no synchronisation is needed inside P2M.
     const int leaf_index =
+        occupied_leaves[static_cast<std::size_t>(occupied_index)].node;
+    const StaticLeafRange &leaf_range =
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+    const auto &leaf = nodes[static_cast<std::size_t>(leaf_index)];
     if (p2m_executor != StaticOperatorExecutor::Reference) {
       const StaticCoefficientOperator &operator_map =
           p2m_plans_[static_cast<std::size_t>(occupied_index)].operator_map;
       const auto M = multipole_for_node(leaf_index);
       for (const StaticOperatorEntry &entry : operator_map.entries) {
         const Vec3 &moment =
-            sorted_dipole_moments_[leaf.source_begin +
+            sorted_dipole_moments_[leaf_range.begin +
                                    static_cast<std::size_t>(entry.input / 3)];
         const double component =
             entry.input % 3 == 0 ? moment.x
@@ -442,10 +453,10 @@ void UniformFmm::upward_pass_prepared() {
       }
     } else {
       const CoeffVector M = p2m_dipole(basis_, leaf.centre,
-                     tree_.sorted_source_positions().subspan(
-                         leaf.source_begin, leaf.source_count()),
+                     std::span<const Vec3>(topology_->sorted_source_positions)
+                         .subspan(leaf_range.begin, leaf_range.count),
                      std::span<const Vec3>(sorted_dipole_moments_)
-                         .subspan(leaf.source_begin, leaf.source_count()));
+                         .subspan(leaf_range.begin, leaf_range.count));
       std::copy(M.begin(), M.end(), multipole_for_node(leaf_index).begin());
     }
   }
@@ -459,26 +470,32 @@ void UniformFmm::upward_pass_prepared() {
 // makes each parent level complete before its parent is consumed.
 #pragma omp parallel if (nodes.size() >= 64)
   {
-    for (int level = tree_.leaf_level() - 1; level >= 0; --level) {
-      const int begin = level_offset(level);
-      const int end = level_offset(level + 1);
+    for (int level = topology_->maximum_level - 1; level >= 0; --level) {
+      const int begin = topology_->m2m_parent_level_offsets[static_cast<std::size_t>(level + 1)];
+      const int end = topology_->m2m_parent_level_offsets[static_cast<std::size_t>(level + 2)];
 #pragma omp for schedule(static)
-      for (int parent_index = begin; parent_index < end; ++parent_index) {
-        const TreeNode &parent = nodes[static_cast<std::size_t>(parent_index)];
+      for (int parent_slot = begin; parent_slot < end; ++parent_slot) {
+        const int parent_index = topology_->m2m_parent_nodes[static_cast<std::size_t>(parent_slot)];
+        const auto &parent = nodes[static_cast<std::size_t>(parent_index)];
         if (parent.source_count() == 0) {
           continue;
         }
         const auto parent_M = multipole_for_node(parent_index);
-        for (const int child_index : parent.children) {
-          const TreeNode &child = nodes[static_cast<std::size_t>(child_index)];
+        const int edge_begin = topology_->m2m_parent_edge_offsets[
+            static_cast<std::size_t>(parent_slot)];
+        const int edge_end = topology_->m2m_parent_edge_offsets[
+            static_cast<std::size_t>(parent_slot + 1)];
+        for (int edge_slot = edge_begin; edge_slot < edge_end; ++edge_slot) {
+          const StaticTranslationEdge &edge = topology_->m2m_edges[
+              static_cast<std::size_t>(edge_slot)];
+          const int child_index = edge.source_node;
+          const auto &child = nodes[static_cast<std::size_t>(child_index)];
           if (child.source_count() == 0) {
             continue;
           }
           if (m2m_executor != StaticOperatorExecutor::Reference) {
-            const int child_class =
-                (child.ix & 1) | ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
             apply_level_scaled_translation(
-                m2m_operators_[child_class],
+                m2m_operators_[edge.child_class],
                 multipole_for_node(child_index), parent_M, child.level,
                 [this](const int coefficient) {
                   return coefficient_degree(coefficient);
@@ -524,34 +541,34 @@ void UniformFmm::downward_pass() {
     last_timings_.m2l.add(elapsed_seconds(phase_start));
   }
 
-  const auto nodes = tree_.nodes();
-  for (int level = 1; level <= tree_.leaf_level(); ++level) {
+  const auto &nodes = topology_->nodes;
+  for (int level = 1; level <= topology_->maximum_level; ++level) {
     // Parent locals must be inherited before this level's M2L is added.
     // Advancing levels in order makes the parent-child dependency explicit.
-    const int begin = level_offset(level);
-    const int end = level_offset(level + 1);
+    const int begin = topology_->l2l_level_offsets[static_cast<std::size_t>(level)];
+    const int end = topology_->l2l_level_offsets[static_cast<std::size_t>(level + 1)];
 
     phase_start = Clock::now();
     detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
 #pragma omp parallel for schedule(static) if (end - begin >= 8)
-    for (int target_index = begin; target_index < end; ++target_index) {
-      const TreeNode &target = nodes[static_cast<std::size_t>(target_index)];
+    for (int edge_slot = begin; edge_slot < end; ++edge_slot) {
+      const StaticTranslationEdge &edge = topology_->l2l_edges[
+          static_cast<std::size_t>(edge_slot)];
+      const int target_index = edge.target_node;
+      const auto &target = nodes[static_cast<std::size_t>(target_index)];
       if (target.target_count() == 0) {
         continue;
       }
-      const TreeNode &parent = nodes[static_cast<std::size_t>(target.parent)];
       if (execution_plan().l2l != StaticOperatorExecutor::Reference) {
-        const int child_class =
-            (target.ix & 1) | ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
         apply_level_scaled_translation(
-            l2l_operators_[child_class], local_for_node(target.parent),
+            l2l_operators_[edge.child_class], local_for_node(edge.source_node),
             local_for_node(target_index), target.level,
             [this](const int coefficient) {
               return coefficient_degree(coefficient);
             });
       } else {
-        const Vec3 d = target.centre - parent.centre;
-        l2l_add(basis_, d, local_for_node(target.parent),
+        const Vec3 d = target.centre - nodes[static_cast<std::size_t>(edge.source_node)].centre;
+        l2l_add(basis_, d, local_for_node(edge.source_node),
                 local_for_node(target_index));
       }
     }
@@ -567,22 +584,20 @@ void UniformFmm::downward_pass() {
 
     phase_start = Clock::now();
     detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
-#pragma omp parallel for schedule(static) if (end - begin >= 8)
-    for (int target_index = begin; target_index < end; ++target_index) {
-      const TreeNode &target = nodes[static_cast<std::size_t>(target_index)];
+    // Reference M2L retains list2 order through the canonical interaction
+    // records. It is intentionally serial to preserve each target's sum.
+    for (const StaticM2LInteraction &interaction : topology_->m2l_interactions) {
+      if (interaction.target_level != level) {
+        continue;
+      }
+      const auto &target = nodes[static_cast<std::size_t>(interaction.target_node)];
       if (target.target_count() == 0) {
         continue;
       }
-      const auto target_L = local_for_node(target_index);
-      for (const int source_index : target.list2) {
-        const TreeNode &source = nodes[static_cast<std::size_t>(source_index)];
-        if (source.source_count() == 0) {
-          continue;
-        }
-        const Vec3 R = target.centre - source.centre;
-        m2l_add(basis_, R, multipole_for_node(source_index),
-                target_L);
-      }
+      const auto &source = nodes[static_cast<std::size_t>(interaction.source_node)];
+      const Vec3 R = target.centre - source.centre - interaction.source_shift;
+      m2l_add(basis_, R, multipole_for_node(interaction.source_node),
+              local_for_node(interaction.target_node));
     }
     last_timings_.m2l.add(elapsed_seconds(phase_start));
   }
@@ -609,27 +624,28 @@ void UniformFmm::downward_pass_float() {
     last_timings_.m2l.add(elapsed_seconds(phase_start));
   }
 
-  const auto nodes = tree_.nodes();
+  const auto &nodes = topology_->nodes;
   if (periodic_.enabled && !cuda_m2l_executor) {
     phase_start = Clock::now();
     static_m2l_float(0);
     last_timings_.m2l.add(elapsed_seconds(phase_start));
   }
-  for (int level = 1; level <= tree_.leaf_level(); ++level) {
-    const int begin = level_offset(level);
-    const int end = level_offset(level + 1);
+  for (int level = 1; level <= topology_->maximum_level; ++level) {
+    const int begin = topology_->l2l_level_offsets[static_cast<std::size_t>(level)];
+    const int end = topology_->l2l_level_offsets[static_cast<std::size_t>(level + 1)];
     phase_start = Clock::now();
 #pragma omp parallel for schedule(static) if (end - begin >= 8)
-    for (int target_index = begin; target_index < end; ++target_index) {
-      const TreeNode &target = nodes[static_cast<std::size_t>(target_index)];
+    for (int edge_slot = begin; edge_slot < end; ++edge_slot) {
+      const StaticTranslationEdge &edge = topology_->l2l_edges[
+          static_cast<std::size_t>(edge_slot)];
+      const int target_index = edge.target_node;
+      const auto &target = nodes[static_cast<std::size_t>(target_index)];
       if (target.target_count() == 0) {
         continue;
       }
-      const int child_class =
-          (target.ix & 1) | ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
       apply_level_scaled_translation(
-          l2l_operators_float_[child_class],
-          local_float_for_node(target.parent),
+          l2l_operators_float_[edge.child_class],
+          local_float_for_node(edge.source_node),
           local_float_for_node(target_index), target.level,
           [this](const int coefficient) {
             return coefficient_degree(coefficient);
@@ -662,21 +678,22 @@ void UniformFmm::cuda_m2l() {
 
 void UniformFmm::l2l_downward() {
   detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
-  const auto nodes = tree_.nodes();
-  for (int level = 1; level <= tree_.leaf_level(); ++level) {
-    const int begin = level_offset(level);
-    const int end = level_offset(level + 1);
+  const auto &nodes = topology_->nodes;
+  for (int level = 1; level <= topology_->maximum_level; ++level) {
+    const int begin = topology_->l2l_level_offsets[static_cast<std::size_t>(level)];
+    const int end = topology_->l2l_level_offsets[static_cast<std::size_t>(level + 1)];
     const auto phase_start = Clock::now();
 #pragma omp parallel for schedule(static) if (end - begin >= 8)
-    for (int target_index = begin; target_index < end; ++target_index) {
-      const TreeNode &target = nodes[static_cast<std::size_t>(target_index)];
+    for (int edge_slot = begin; edge_slot < end; ++edge_slot) {
+      const StaticTranslationEdge &edge = topology_->l2l_edges[
+          static_cast<std::size_t>(edge_slot)];
+      const int target_index = edge.target_node;
+      const auto &target = nodes[static_cast<std::size_t>(target_index)];
       if (target.target_count() == 0) {
         continue;
       }
-      const int child_class =
-          (target.ix & 1) | ((target.iy & 1) << 1) | ((target.iz & 1) << 2);
       apply_level_scaled_translation(
-          l2l_operators_[child_class], local_for_node(target.parent),
+          l2l_operators_[edge.child_class], local_for_node(edge.source_node),
           local_for_node(target_index), target.level,
           [this](const int coefficient) {
             return coefficient_degree(coefficient);

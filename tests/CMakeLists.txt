@@ -8,6 +8,7 @@ add_executable(cdfmm_tests
   test_output_flags.cpp
   test_operator_consistency.cpp
   test_uniform_tree.cpp
+  test_static_topology.cpp
   test_uniform_fmm.cpp
   test_static_m2l.cpp
   test_cuda_backend.cpp

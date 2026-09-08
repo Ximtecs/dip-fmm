@@ -269,8 +269,8 @@ struct StaticP2PBsrPlan {
  * `matrices` contains column-major, level-independent transfer-class matrices.
  * Multipole and local scaling are laid out `[level][coefficient]` and restore
  * physical box width. For target node `t`, row offsets select parallel entries
- * in `source_nodes`, `matrix_ids`, and `interaction_levels`. CPU, oneMKL, and
- * CUDA execution derive from this single mathematical representation; the
+ * in `source_nodes`, `matrix_ids`, and the endpoint-level arrays. CPU, oneMKL,
+ * and CUDA execution derive from this single mathematical representation; the
  * vectors contain no mutable evaluation coefficients or device ownership.
  */
 struct StaticM2LPlan {
@@ -283,10 +283,19 @@ struct StaticM2LPlan {
     std::vector<int> target_row_offsets{};
     std::vector<int> source_nodes{};
     std::vector<int> matrix_ids{};
+    /// Source and target levels are per interaction, allowing cross-level M2L.
+    std::vector<int> source_levels{};
+    std::vector<int> target_levels{};
     std::vector<int> interaction_levels{};
-    /// Node-index bounds for each level in the level-ordered uniform tree.
+    /// Legacy uniform bounds retained for old callers; executors prefer the
+    /// explicit target-level schedule below.
     std::vector<int> level_target_begin{};
     std::vector<int> level_target_end{};
+    /// Explicit target-node schedule grouped by target level.
+    std::vector<int> target_level_offsets{};
+    std::vector<int> target_nodes_by_level{};
+    /// Explicit level for every node; avoids deriving levels from flat ranges.
+    std::vector<int> node_levels{};
 };
 
 //------------------------------------------------------------------------------
@@ -457,9 +466,14 @@ struct FloatStaticM2LPlan {
     std::vector<int> target_row_offsets{};
     std::vector<int> source_nodes{};
     std::vector<int> matrix_ids{};
+    std::vector<int> source_levels{};
+    std::vector<int> target_levels{};
     std::vector<int> interaction_levels{};
     std::vector<int> level_target_begin{};
     std::vector<int> level_target_end{};
+    std::vector<int> target_level_offsets{};
+    std::vector<int> target_nodes_by_level{};
+    std::vector<int> node_levels{};
 };
 
 [[nodiscard]] FloatStaticCoefficientOperator quantise_static_operator(

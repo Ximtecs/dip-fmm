@@ -109,6 +109,8 @@ struct StaticPlanStatistics {
     PhaseTiming normalisation{};
     /// @brief Time spent constructing the immutable uniform tree.
     PhaseTiming tree_construction{};
+    /// @brief Time spent extracting canonical static topology and geometry.
+    PhaseTiming topology_construction{};
     /// @brief Time spent locating and validating the universal cache file.
     PhaseTiming universal_cache_lookup{};
     /// @brief Time spent loading a valid universal operator bank.
@@ -200,6 +202,8 @@ struct StaticPlanStatistics {
     std::size_t near_field_operator_bytes{0};
     /// @brief Bytes occupied by immutable uniform-tree storage.
     std::size_t tree_bytes{0};
+    /// @brief Bytes occupied by immutable canonical topology and geometry.
+    std::size_t topology_bytes{0};
     /// @brief Universal M2M templates stored (exactly eight child classes).
     std::size_t m2m_operators{0};
     /// @brief Complete-tree parent-child relations represented by M2M IDs.
@@ -255,9 +259,9 @@ struct StaticPlanStatistics {
         return operator_bytes + interaction_bytes + scratch_bytes + state_bytes;
     }
 
-    /// @brief Returns the complete host plan, including immutable tree storage.
+    /// @brief Returns the complete host plan, including immutable tree and topology storage.
     [[nodiscard]] std::size_t total_persistent_bytes() const {
-        return total_bytes() + tree_bytes;
+        return total_bytes() + tree_bytes + topology_bytes;
     }
 };
 

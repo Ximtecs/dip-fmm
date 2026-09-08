@@ -18,6 +18,7 @@
 #include "cdfmm/parameter_selection.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/uniform_tree.hpp"
+#include "cdfmm/adaptive_tree.hpp"
 #include "cdfmm/validation.hpp"
 
 namespace py = pybind11;
@@ -692,6 +693,101 @@ PYBIND11_MODULE(cdfmm, module) {
         .def_readwrite("enable_cache",
                     &UniformFmmOptions::enable_cache);
 
+    py::class_<StaticLeafRange>(module, "StaticLeafRange")
+        .def_readonly("node", &StaticLeafRange::node)
+        .def_readonly("begin", &StaticLeafRange::begin)
+        .def_readonly("count", &StaticLeafRange::count);
+    py::class_<StaticFmmTopology::Node>(module, "StaticNode")
+        .def_readonly("index", &StaticFmmTopology::Node::index)
+        .def_readonly("level", &StaticFmmTopology::Node::level)
+        .def_readonly("parent", &StaticFmmTopology::Node::parent)
+        .def_readonly("children", &StaticFmmTopology::Node::children)
+        .def_readonly("centre", &StaticFmmTopology::Node::centre)
+        .def_readonly("half_width", &StaticFmmTopology::Node::half_width)
+        .def_readonly("source_begin", &StaticFmmTopology::Node::source_begin)
+        .def_readonly("source_end", &StaticFmmTopology::Node::source_end)
+        .def_readonly("target_begin", &StaticFmmTopology::Node::target_begin)
+        .def_readonly("target_end", &StaticFmmTopology::Node::target_end)
+        .def_property_readonly("source_count", &StaticFmmTopology::Node::source_count)
+        .def_property_readonly("target_count", &StaticFmmTopology::Node::target_count);
+    py::class_<StaticM2LInteraction>(module, "StaticM2LInteraction")
+        .def_readonly("source_node", &StaticM2LInteraction::source_node)
+        .def_readonly("target_node", &StaticM2LInteraction::target_node)
+        .def_readonly("source_level", &StaticM2LInteraction::source_level)
+        .def_readonly("target_level", &StaticM2LInteraction::target_level);
+    py::class_<StaticP2PLeafRecord>(module, "StaticP2PLeafRecord")
+        .def_readonly("source_leaf", &StaticP2PLeafRecord::source_leaf)
+        .def_readonly("target_leaf", &StaticP2PLeafRecord::target_leaf);
+    py::class_<StaticFmmTopology, std::shared_ptr<StaticFmmTopology>>(module, "StaticFmmTopology")
+        .def_readonly("nodes", &StaticFmmTopology::nodes)
+        .def_property_readonly("sorted_source_positions", [](const StaticFmmTopology& t) {
+            return points_to_array(t.sorted_source_positions);
+        })
+        .def_property_readonly("sorted_target_positions", [](const StaticFmmTopology& t) {
+            return points_to_array(t.sorted_target_positions);
+        })
+        .def_readonly("m2l_target_row_offsets", &StaticFmmTopology::m2l_target_row_offsets)
+        .def_readonly("p2p_target_leaf_offsets", &StaticFmmTopology::p2p_target_leaf_offsets)
+        .def_readonly("source_leaves", &StaticFmmTopology::source_leaves)
+        .def_readonly("target_leaves", &StaticFmmTopology::target_leaves)
+        .def_readonly("source_permutation", &StaticFmmTopology::source_permutation)
+        .def_readonly("target_permutation", &StaticFmmTopology::target_permutation)
+        .def_readonly("m2l_interactions", &StaticFmmTopology::m2l_interactions)
+        .def_readonly("p2p_leaf_records", &StaticFmmTopology::p2p_leaf_records)
+        .def_readonly("maximum_level", &StaticFmmTopology::maximum_level)
+        .def_readonly("root", &StaticFmmTopology::root)
+        .def_readonly("coordinate_origin", &StaticFmmTopology::coordinate_origin)
+        .def_readonly("coordinate_scale", &StaticFmmTopology::coordinate_scale)
+        .def_property_readonly("memory_bytes", &StaticFmmTopology::memory_bytes)
+        .def("validate", &StaticFmmTopology::validate);
+    py::class_<AdaptiveTreeOptions>(module, "AdaptiveTreeOptions")
+        .def(py::init<>())
+        .def_readwrite("max_particles_per_leaf", &AdaptiveTreeOptions::max_particles_per_leaf)
+        .def_readwrite("max_depth", &AdaptiveTreeOptions::max_depth)
+        .def_readwrite("root_centre", &AdaptiveTreeOptions::root_centre)
+        .def_readwrite("root_half_width", &AdaptiveTreeOptions::root_half_width);
+    py::class_<AdaptiveTree>(module, "AdaptiveTree")
+        .def(py::init([](py::object sources, const AdaptiveTreeOptions& options) {
+            return AdaptiveTree(parse_tree_points(sources), options);
+        }), py::arg("sources"), py::arg("options") = AdaptiveTreeOptions{})
+        .def(py::init([](py::object sources, py::object targets, const AdaptiveTreeOptions& options) {
+            return AdaptiveTree(parse_tree_points(sources), parse_tree_points(targets), options);
+        }), py::arg("sources"), py::arg("targets"), py::arg("options") = AdaptiveTreeOptions{})
+        .def_property_readonly("topology", [](const AdaptiveTree& tree) {
+            return std::const_pointer_cast<StaticFmmTopology>(tree.shared_topology());
+        })
+        .def_property_readonly("leaf_stop_reasons", [](const AdaptiveTree& tree) {
+            py::dict reasons;
+            for (const auto& node : tree.topology().nodes) {
+                if (std::any_of(node.children.begin(), node.children.end(), [](int id) { return id >= 0; })) continue;
+                reasons[py::int_(node.index)] = std::max(node.source_count(), node.target_count()) >
+                    tree.options().max_particles_per_leaf ? "depth_limit" : "capacity";
+            }
+            return reasons;
+        })
+        .def_property_readonly("tree_seconds", &AdaptiveTree::tree_seconds)
+        .def_property_readonly("interaction_seconds", &AdaptiveTree::interaction_seconds)
+        .def("build_fmm", [](const AdaptiveTree& tree, const UniformFmmOptions& options) {
+            return std::make_unique<UniformFmm>(tree.shared_topology(), options);
+        }, py::arg("options") = UniformFmmOptions{});
+    module.def("uniform_topology", [](const UniformTree& tree) {
+        auto t = std::make_shared<StaticFmmTopology>(build_uniform_fmm_topology(tree));
+        t->coordinate_origin = tree.root_centre();
+        t->coordinate_scale = 2.0 * tree.root_half_width();
+        for (auto& node : t->nodes) {
+            node.centre = (node.centre - t->coordinate_origin) * (1.0 / t->coordinate_scale);
+            node.half_width /= t->coordinate_scale;
+        }
+        for (auto& point : t->sorted_source_positions) point = (point - t->coordinate_origin) * (1.0 / t->coordinate_scale);
+        for (auto& point : t->sorted_target_positions) point = (point - t->coordinate_origin) * (1.0 / t->coordinate_scale);
+        for (auto& interaction : t->m2l_interactions) interaction.displacement = interaction.displacement * (1.0 / t->coordinate_scale);
+        return t;
+    });
+    module.def("build_static_fmm", [](std::shared_ptr<StaticFmmTopology> topology,
+                                      const UniformFmmOptions& options) {
+        return std::make_unique<UniformFmm>(std::move(topology), options);
+    }, py::arg("topology"), py::arg("options") = UniformFmmOptions{});
+
     py::class_<UniformFmm>(module, "UniformFmm")
         .def(py::init([](py::object source_positions,
                          const UniformFmmOptions &options) {
@@ -721,6 +817,15 @@ PYBIND11_MODULE(cdfmm, module) {
             "Replace all node multipoles using moments in original source "
             "order.")
         .def("downward_pass", &UniformFmm::downward_pass)
+        .def("evaluate_components", [](UniformFmm& fmm, py::object moments,
+                                        std::vector<int> identities) {
+            const auto result = fmm.evaluate_components(parse_tree_points(moments), identities);
+            py::dict output;
+            output["H_far"] = points_to_array(result.far);
+            output["H_p2p"] = points_to_array(result.p2p);
+            output["H_total"] = points_to_array(result.total);
+            return output;
+        }, py::arg("moments"), py::arg("target_source_indices") = std::vector<int>{})
         .def(
             "evaluate",
             [](UniformFmm &fmm, py::object dipole_moments,
@@ -742,6 +847,9 @@ PYBIND11_MODULE(cdfmm, module) {
             py::arg("dipole_moments"), py::arg("output") = "field",
             py::arg("target_source_indices") = py::none(),
             "Run the complete FMM and return values in target order.")
+        .def_property_readonly("topology", [](const UniformFmm& plan) {
+            return std::const_pointer_cast<StaticFmmTopology>(plan.shared_topology());
+        })
         .def_property_readonly("tree", &UniformFmm::tree,
                                py::return_value_policy::reference_internal)
         .def_property_readonly(
@@ -864,6 +972,8 @@ PYBIND11_MODULE(cdfmm, module) {
               result["p2p_dictionary_total_bytes"] =
                   statistics.p2p_dictionary_total_bytes;
               result["tree_bytes"] = statistics.tree_bytes;
+              result["topology_bytes"] = statistics.topology_bytes;
+              result["topology_construction_seconds"] = statistics.topology_construction.total_seconds;
               result["translation_operator_bytes"] =
                   statistics.translation_operator_bytes();
               result["dense"] = statistics.dense;

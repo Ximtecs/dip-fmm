@@ -257,4 +257,8 @@ std::vector<PotentialField> cuda_direct_p2p_reference(std::span<const Vec3>,
       "CUDA direct P2P requested, but CDFMM_ENABLE_CUDA is OFF");
 }
 
+void CudaFullPlan::copy_far_fields(std::span<Vec3>) const {
+  throw std::runtime_error("CUDA backend is unavailable");
+}
+
 } // namespace cdfmm

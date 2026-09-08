@@ -9,7 +9,7 @@ namespace cdfmm::detail {
 //------------------------------------------------------------------------------
 // This file owns direct neighbours only:
 //
-//   current moments -> list1 P2P -> near field
+//   current moments -> explicit P2P leaf rows -> near field
 //
 // Multipole and local expansions do not belong here.  UniformFmm combines this
 // result with the independent expansion branch as H = H_far + H_near.  Both
@@ -28,49 +28,57 @@ void evaluate_static_near_field(
 }
 
 void evaluate_reference_near_field(
-    const UniformTree &tree, const std::span<const Vec3> sorted_dipole_moments,
+    const StaticFmmTopology &topology, const std::span<const Vec3> sorted_dipole_moments,
     const std::span<const int> sorted_self_indices, const OutputFlags output,
     const std::span<PotentialField> sorted_results) {
-  const auto nodes = tree.nodes();
-  const auto targets = tree.sorted_target_positions();
-  const auto sources = tree.sorted_source_positions();
-  const auto occupied_leaves = tree.occupied_target_leaves();
+  const auto &nodes = topology.nodes;
+  const auto &targets = topology.sorted_target_positions;
+  const std::span<const Vec3> sources = topology.sorted_source_positions;
+  const auto &occupied_leaves = topology.target_leaves;
 
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
   for (std::ptrdiff_t occupied_index = 0;
        occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
        ++occupied_index) {
-    const int leaf_index =
+    const StaticLeafRange &leaf_range =
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+    const int leaf_index = leaf_range.node;
+    const StaticFmmTopology::Node &leaf = nodes[static_cast<std::size_t>(leaf_index)];
 
     // A target is written by exactly one occupied leaf.  Neighbours are kept in
     // canonical list1 order so this parallel loop changes neither summation
     // order within a target nor the explicit self-interaction policy.
-    for (std::size_t target_index = leaf.target_begin;
-         target_index < leaf.target_end; ++target_index) {
+    for (std::size_t target_index = leaf_range.begin;
+         target_index < leaf_range.begin + leaf_range.count; ++target_index) {
       const int self_sorted_index = sorted_self_indices[target_index];
       PotentialField &result = sorted_results[target_index];
 
-      for (const int neighbour_index : leaf.list1) {
-        const TreeNode &neighbour =
-            nodes[static_cast<std::size_t>(neighbour_index)];
-        if (neighbour.source_count() == 0) {
+      const int row_begin = topology.p2p_target_leaf_offsets[
+          static_cast<std::size_t>(occupied_index)];
+      const int row_end = topology.p2p_target_leaf_offsets[
+          static_cast<std::size_t>(occupied_index + 1)];
+      for (int row = row_begin; row < row_end; ++row) {
+        const StaticP2PLeafRecord &record = topology.p2p_leaf_records[
+            static_cast<std::size_t>(row)];
+        if (record.pair.source_count == 0) {
           continue;
         }
 
         int local_self_index = -1;
-        if (self_sorted_index >= static_cast<int>(neighbour.source_begin) &&
-            self_sorted_index < static_cast<int>(neighbour.source_end)) {
+        if (record.skip_for_identity &&
+            self_sorted_index >= record.pair.source_begin &&
+            self_sorted_index < record.pair.source_begin + record.pair.source_count) {
           local_self_index =
-              self_sorted_index - static_cast<int>(neighbour.source_begin);
+              self_sorted_index - record.pair.source_begin;
         }
 
         const PotentialField near = p2p_dipole_sum(
             targets[target_index],
-            sources.subspan(neighbour.source_begin, neighbour.source_count()),
-            sorted_dipole_moments.subspan(neighbour.source_begin,
-                                          neighbour.source_count()),
+            sources.subspan(static_cast<std::size_t>(record.pair.source_begin),
+                            static_cast<std::size_t>(record.pair.source_count)),
+            sorted_dipole_moments.subspan(
+                static_cast<std::size_t>(record.pair.source_begin),
+                static_cast<std::size_t>(record.pair.source_count)),
             output, local_self_index);
         result.phi += near.phi;
         result.H += near.H;

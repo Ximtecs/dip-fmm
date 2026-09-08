@@ -450,10 +450,10 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
 
 UniformFmm::UniformFmm(NormalisedGeometry geometry,
                        const UniformFmmOptions& physical_options)
-    : physical_tree_(geometry.physical_source_positions,
+    : physical_tree_(std::in_place, geometry.physical_source_positions,
                      geometry.physical_target_positions,
                      geometry.physical_tree_options),
-      tree_(geometry.source_positions, geometry.target_positions,
+      tree_(std::in_place, geometry.source_positions, geometry.target_positions,
             geometry.options.tree),
       physical_root_centre_(geometry.physical_root_centre),
       physical_root_side_length_(geometry.physical_root_side_length),
@@ -468,10 +468,48 @@ UniformFmm::UniformFmm(NormalisedGeometry geometry,
       precision_(geometry.options.precision),
       coordinate_scale_(geometry.physical_root_side_length) {
   const UniformFmmOptions& options = geometry.options;
+  const auto topology_start = Clock::now();
+  topology_ = std::make_shared<const StaticFmmTopology>(build_uniform_fmm_topology(*tree_, periodic_));
+  static_plan_statistics_.topology_construction.add(
+      elapsed_seconds(topology_start));
   static_plan_statistics_.normalisation.add(geometry.normalisation_seconds);
-  static_plan_statistics_.tree_construction = tree_.build_timings().total;
+  static_plan_statistics_.tree_construction = tree_->build_timings().total;
   static_plan_statistics_.tree_construction.add(
-      physical_tree_.build_timings().total.total_seconds);
+      physical_tree_->build_timings().total.total_seconds);
+  initialise_execution(options);
+  static_plan_statistics_.total_setup.add(elapsed_seconds(geometry.construction_start));
+  print_initialisation_summary(physical_options);
+}
+
+UniformFmm::UniformFmm(std::shared_ptr<const StaticFmmTopology> topology,
+                       const UniformFmmOptions& options)
+    : topology_(std::move(topology)), supplied_topology_(true),
+      basis_(std::max(options.expansion_order, 0)),
+      spherical_basis_(std::max(options.expansion_order, 0)),
+      expansion_basis_(options.expansion_basis),
+      spherical_m2l_backend_(options.spherical_m2l_backend),
+      m2l_backend_(options.m2l_backend),
+      static_matrix_backend_(options.static_matrix_backend), precision_(options.precision) {
+  const auto start = Clock::now();
+  if (!topology_) throw std::invalid_argument("topology must not be null");
+  topology_->validate();
+  const auto& root = topology_->nodes[topology_->root];
+  if (root.level != 0 || root.half_width != 0.5 ||
+      !std::isfinite(topology_->coordinate_scale) || topology_->coordinate_scale <= 0.0) {
+    throw std::invalid_argument("prebuilt topology requires a unit-width normalised root and positive physical scale");
+  }
+  if (options.periodic.enabled || options.source_geometry != SourceGeometry::PointDipole ||
+      options.target_geometry != TargetGeometry::Point) {
+    throw std::invalid_argument("prebuilt topology currently supports non-periodic point dipoles");
+  }
+  physical_root_centre_ = topology_->coordinate_origin;
+  coordinate_scale_ = topology_->coordinate_scale;
+  physical_root_side_length_ = coordinate_scale_;
+  initialise_execution(options);
+  static_plan_statistics_.total_setup.add(elapsed_seconds(start));
+}
+
+void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
   if (options.expansion_order < 0) {
     throw std::invalid_argument(
         "UniformFmmOptions.expansion_order must be >= 0");
@@ -522,9 +560,9 @@ UniformFmm::UniformFmm(NormalisedGeometry geometry,
   }
 
   const std::size_t coefficient_values =
-      tree_.nodes().size() * static_cast<std::size_t>(coefficient_count());
-  const std::size_t source_count = tree_.sorted_source_positions().size();
-  const std::size_t target_count = tree_.sorted_target_positions().size();
+      topology_->nodes.size() * static_cast<std::size_t>(coefficient_count());
+  const std::size_t source_count = topology_->sorted_source_positions.size();
+  const std::size_t target_count = topology_->sorted_target_positions.size();
   if (precision_ == StaticPrecision::Float32) {
     multipoles_float_.assign(coefficient_values, 0.0F);
     locals_float_.assign(coefficient_values, 0.0F);
@@ -595,9 +633,6 @@ UniformFmm::UniformFmm(NormalisedGeometry geometry,
     static_plan_statistics_.cuda_upload.add(
         elapsed_seconds(cuda_setup_start));
   }
-  static_plan_statistics_.total_setup.add(
-      elapsed_seconds(geometry.construction_start));
-  print_initialisation_summary(physical_options);
 }
 
 void UniformFmm::print_initialisation_summary(
@@ -606,9 +641,9 @@ void UniformFmm::print_initialisation_summary(
   std::ostringstream stream;
   stream << std::boolalpha << std::setprecision(12);
   stream << "[cdfmm] UniformFmm initialisation\n";
-  stream << "  source_count: " << tree_.sorted_source_positions().size()
+  stream << "  source_count: " << tree_->sorted_source_positions().size()
          << '\n';
-  stream << "  target_count: " << tree_.sorted_target_positions().size()
+  stream << "  target_count: " << tree_->sorted_target_positions().size()
          << '\n';
   stream << "  expansion_order: " << expansion_order() << '\n';
   stream << "  coefficient_count: " << coefficient_count() << '\n';
@@ -634,7 +669,7 @@ void UniformFmm::print_initialisation_summary(
   stream << "  p2p.signed_simd_path: " << static_p2p_signed_simd_path()
          << '\n';
   stream << "  tree.max_level.requested: " << options.tree.max_level << '\n';
-  stream << "  tree.max_level.resolved: " << tree_.max_level() << '\n';
+  stream << "  tree.max_level.resolved: " << tree_->max_level() << '\n';
   stream << "  tree.include_empty_nodes: "
          << options.tree.include_empty_nodes << '\n';
   stream << "  tree.cubic_root_box: " << options.tree.cubic_root_box << '\n';
@@ -660,9 +695,9 @@ void UniformFmm::print_initialisation_summary(
   stream << "  tree.root_side_length.physical_resolved: "
          << physical_root_side_length_ << '\n';
   stream << "  tree.root_centre.internal: ";
-  append_vec3(stream, tree_.root_centre());
+  append_vec3(stream, tree_->root_centre());
   stream << '\n';
-  stream << "  tree.root_half_width.internal: " << tree_.root_half_width()
+  stream << "  tree.root_half_width.internal: " << tree_->root_half_width()
          << '\n';
   stream << "  source_geometry: " << name(source_geometry_) << '\n';
   append_size_option(stream, "source_sizes", options.source_sizes);
@@ -700,6 +735,8 @@ void UniformFmm::print_initialisation_summary(
          << static_plan_statistics_.normalisation.total_seconds << '\n';
   stream << "  setup.tree_construction_seconds: "
          << static_plan_statistics_.tree_construction.total_seconds << '\n';
+  stream << "  setup.topology_construction_seconds: "
+         << static_plan_statistics_.topology_construction.total_seconds << '\n';
   stream << "  setup.universal_cache_lookup_seconds: "
          << static_plan_statistics_.universal_cache_lookup.total_seconds
          << '\n';
@@ -783,8 +820,8 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
 
   const std::vector<int> &identities =
       options.fixed_target_source_indices.value();
-  const std::size_t target_count = tree_.sorted_target_positions().size();
-  const std::size_t source_count = tree_.sorted_source_positions().size();
+  const std::size_t target_count = topology_->sorted_target_positions.size();
+  const std::size_t source_count = topology_->sorted_source_positions.size();
   if (identities.size() != target_count) {
     throw std::invalid_argument(
         "fixed_target_source_indices must contain one entry per target");
@@ -820,19 +857,9 @@ void UniformFmm::build_reduced_symmetry_p2p_packing() {
   }
 
   std::vector<StaticP2PLeafPair> leaf_pairs;
-  const auto nodes = tree_.nodes();
-  for (const int leaf_index : tree_.occupied_target_leaves()) {
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
-    for (const int neighbour_index : leaf.list1) {
-      const TreeNode &neighbour = nodes[static_cast<std::size_t>(neighbour_index)];
-      if (neighbour.source_begin == neighbour.source_end) {
-        continue;
-      }
-      leaf_pairs.push_back({static_cast<int>(leaf.target_begin),
-                            static_cast<int>(leaf.target_end - leaf.target_begin),
-                            static_cast<int>(neighbour.source_begin),
-                            static_cast<int>(neighbour.source_end - neighbour.source_begin)});
-    }
+  leaf_pairs.reserve(topology_->p2p_leaf_records.size());
+  for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
+    leaf_pairs.push_back(record.pair);
   }
 
   if (geometry_cache_loaded_direct_float_) {
@@ -861,7 +888,7 @@ void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
   source_geometry_ = options.source_geometry;
   use_cuboid_p2m_ = source_geometry_ == SourceGeometry::UniformCuboid &&
       options.use_cuboid_p2m;
-  const std::size_t count = tree_.sorted_source_positions().size();
+  const std::size_t count = topology_->sorted_source_positions.size();
   if (source_geometry_ == SourceGeometry::PointDipole) {
     if (!options.source_sizes.empty()) {
       throw std::invalid_argument(
@@ -885,7 +912,7 @@ void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
     return;
   }
   sorted_source_sizes_.resize(count);
-  const auto permutation = tree_.source_permutation();
+  const auto permutation = std::span<const int>(topology_->source_permutation);
   for (std::size_t sorted = 0; sorted < count; ++sorted) {
     sorted_source_sizes_[sorted] = options.source_sizes[permutation[sorted]];
   }
@@ -896,7 +923,7 @@ void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
   use_cuboid_l2p_ =
       target_geometry_ == TargetGeometry::VolumeAveragedCuboid &&
       options.use_cuboid_l2p;
-  const std::size_t count = tree_.sorted_target_positions().size();
+  const std::size_t count = topology_->sorted_target_positions.size();
   if (target_geometry_ == TargetGeometry::Point) {
     if (!options.target_sizes.empty()) {
       throw std::invalid_argument("point targets do not accept cuboid sizes");
@@ -918,7 +945,7 @@ void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
     return;
   }
   sorted_target_sizes_.resize(count);
-  const auto permutation = tree_.target_permutation();
+  const auto permutation = std::span<const int>(topology_->target_permutation);
   for (std::size_t sorted = 0; sorted < count; ++sorted) {
     sorted_target_sizes_[sorted] = options.target_sizes[permutation[sorted]];
   }
@@ -1005,16 +1032,53 @@ void UniformFmm::build_backend_packing() {
             groups[static_cast<std::size_t>(plan.matrix_ids[slot])];
         group.sources.push_back(plan.source_nodes[slot]);
         group.targets.push_back(static_cast<int>(target));
-        group.levels.push_back(plan.interaction_levels[slot]);
+        const int target_level = plan.target_levels.empty()
+            ? (plan.interaction_levels.empty()
+                   ? topology_->nodes[target].level
+                   : plan.interaction_levels[slot])
+            : plan.target_levels[slot];
+        const int source_level = plan.source_levels.empty()
+            ? (plan.node_levels.empty()
+                   ? target_level
+                   : plan.node_levels[static_cast<std::size_t>(
+                         plan.source_nodes[slot])])
+            : plan.source_levels[slot];
+        group.source_levels.push_back(source_level);
+        group.levels.push_back(target_level);
       }
     }
     for (auto& group : groups) {
+      // oneMKL consumes contiguous columns for one target level.  Uniform
+      // extraction is already level ordered; stable sorting makes that
+      // contract explicit for a future compact/mixed-depth producer while
+      // preserving the original order within each level.
+      if (!std::is_sorted(group.levels.begin(), group.levels.end())) {
+        std::vector<std::size_t> order(group.levels.size());
+        std::iota(order.begin(), order.end(), std::size_t{0});
+        std::stable_sort(order.begin(), order.end(), [&group](const std::size_t a,
+                                                               const std::size_t b) {
+          return group.levels[a] < group.levels[b];
+        });
+        const auto reorder = [&order](std::vector<int>& values) {
+          std::vector<int> sorted;
+          sorted.reserve(values.size());
+          for (const std::size_t index : order) {
+            sorted.push_back(values[index]);
+          }
+          values = std::move(sorted);
+        };
+        reorder(group.sources);
+        reorder(group.targets);
+        reorder(group.source_levels);
+        reorder(group.levels);
+      }
       const std::size_t values =
           static_cast<std::size_t>(coefficient_count()) * group.sources.size();
       group.gathered.resize(values);
       group.translated.resize(values);
       const std::size_t metadata_bytes =
-          (group.sources.size() + group.targets.size() + group.levels.size()) *
+          (group.sources.size() + group.targets.size() +
+           group.source_levels.size() + group.levels.size()) *
           sizeof(int);
       static_plan_statistics_.interaction_bytes += metadata_bytes;
       static_plan_statistics_.m2l_interaction_bytes += metadata_bytes;
@@ -1127,11 +1191,12 @@ void UniformFmm::build_static_plan() {
       static_cast<std::size_t>(coefficient_count());
   static_plan_statistics_.spherical =
       expansion_basis_ == ExpansionBasis::Spherical;
-  static_plan_statistics_.tree_bytes = tree_.memory_statistics().total_bytes();
+  static_plan_statistics_.tree_bytes = (tree_ ? tree_->memory_statistics().total_bytes() : 0);
+  static_plan_statistics_.topology_bytes = topology_->memory_bytes();
   bool universal_available = load_universal_cache();
-  const bool periodic_required = periodic_.enabled && !tree_.nodes().empty() &&
-      tree_.nodes().front().source_count() != 0 &&
-      tree_.nodes().front().target_count() != 0;
+  const bool periodic_required = periodic_.enabled && !topology_->nodes.empty() &&
+      topology_->nodes[static_cast<std::size_t>(topology_->root)].source_count() != 0 &&
+      topology_->nodes[static_cast<std::size_t>(topology_->root)].target_count() != 0;
   const bool universal_write_required = !universal_available ||
       (periodic_required && !periodic_operator_available_);
   if (universal_write_required) {
@@ -1163,9 +1228,56 @@ void UniformFmm::build_static_plan() {
             ? p2p_operator_float_.blocks.size()
             : p2p_operator_.blocks.size();
     static_plan_statistics_.m2m_theoretical_interactions =
-        tree_.nodes().empty() ? 0 : tree_.nodes().size() - 1;
+        topology_->nodes.empty() ? 0 : topology_->nodes.size() - 1;
     static_plan_statistics_.l2l_theoretical_interactions =
         static_plan_statistics_.m2m_theoretical_interactions;
+
+    // Geometry caches contain operator payloads rather than their derived
+    // memory statistics. Reconstruct the same accounting recorded by the cold
+    // construction path so warm and cold plans report identical storage.
+    const auto record_m2l_metadata = [this](const auto& plan) {
+      const std::size_t bytes =
+          (plan.target_row_offsets.size() + plan.source_nodes.size() +
+           plan.matrix_ids.size() + plan.source_levels.size() +
+           plan.target_levels.size() + plan.interaction_levels.size() +
+           plan.level_target_begin.size() + plan.level_target_end.size() +
+           plan.target_level_offsets.size() +
+           plan.target_nodes_by_level.size() + plan.node_levels.size()) *
+          sizeof(int);
+      static_plan_statistics_.interaction_bytes += bytes;
+      static_plan_statistics_.m2l_interaction_bytes += bytes;
+    };
+    if (precision_ == StaticPrecision::Float32) {
+      record_m2l_metadata(m2l_plan_float_);
+    } else {
+      std::size_t p2m_bytes = 0;
+      for (const P2MPlan& plan : p2m_plans_) {
+        p2m_bytes +=
+            plan.operator_map.entries.size() * sizeof(StaticOperatorEntry);
+      }
+      const std::size_t m2l_bytes =
+          (m2l_plan_.matrices.size() +
+           m2l_plan_.multipole_scaling.size() +
+           m2l_plan_.local_scaling.size()) *
+          sizeof(double);
+      std::size_t l2p_bytes = 0;
+      for (const StaticL2PEvaluator& evaluator : l2p_evaluators_) {
+        l2p_bytes += evaluator.potential.size() * sizeof(double);
+        for (const std::vector<double>& field : evaluator.field) {
+          l2p_bytes += field.size() * sizeof(double);
+        }
+      }
+      const std::size_t near_field_bytes =
+          p2p_operator_.memory_bytes() +
+          p2p_compact_plan_.memory().total_bytes();
+      static_plan_statistics_.operator_bytes +=
+          p2m_bytes + m2l_bytes + l2p_bytes + near_field_bytes;
+      static_plan_statistics_.p2m_operator_bytes += p2m_bytes;
+      static_plan_statistics_.m2l_operator_bytes += m2l_bytes;
+      static_plan_statistics_.l2p_operator_bytes += l2p_bytes;
+      static_plan_statistics_.near_field_operator_bytes = near_field_bytes;
+      record_m2l_metadata(m2l_plan_);
+    }
     try {
       build_reduced_symmetry_p2p_packing();
     } catch (const std::invalid_argument &error) {
@@ -1207,30 +1319,31 @@ void UniformFmm::build_static_plan() {
     return;
   }
   const bool universal_cache_hit = universal_available;
-  const auto nodes = tree_.nodes();
-  using Key = std::tuple<int, int, int>;
+  const auto &nodes = topology_->nodes;
+  using Key = std::tuple<double, double, double, double>;
   using ClassMap = std::map<Key, std::vector<std::pair<int, int>>>;
   ClassMap classes;
 
   auto phase_start = Clock::now();
-  const std::span<const Vec3> sorted_positions =
-      tree_.sorted_source_positions();
-  const std::span<const Vec3> sorted_targets =
-      tree_.sorted_target_positions();
+  const std::span<const Vec3> sorted_positions = topology_->sorted_source_positions;
+  const std::span<const Vec3> sorted_targets = topology_->sorted_target_positions;
   const std::span<const CuboidSize> source_sizes = sorted_source_sizes_;
   const std::span<const CuboidSize> target_sizes = sorted_target_sizes_;
-  p2m_plans_.reserve(tree_.occupied_source_leaves().size());
-  for (const int leaf_index : tree_.occupied_source_leaves()) {
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+  p2m_plans_.reserve(topology_->source_leaves.size());
+  for (const StaticLeafRange& leaf_range : topology_->source_leaves) {
+    const int leaf_index = leaf_range.node;
+    const auto &leaf = topology_->nodes[static_cast<std::size_t>(leaf_index)];
     P2MPlan plan;
     plan.leaf = leaf_index;
+    plan.begin = leaf_range.begin;
+    plan.count = leaf_range.count;
     const auto leaf_positions =
-        sorted_positions.subspan(leaf.source_begin, leaf.source_count());
+        sorted_positions.subspan(leaf_range.begin, leaf_range.count);
     if (use_cuboid_p2m_) {
       const std::span<const CuboidSize> leaf_sizes =
           source_sizes.size() == 1
               ? source_sizes
-              : source_sizes.subspan(leaf.source_begin, leaf.source_count());
+              : source_sizes.subspan(leaf_range.begin, leaf_range.count);
       plan.operator_map = expansion_basis_ == ExpansionBasis::Spherical
           ? build_static_cuboid_p2m_operator(
                 spherical_basis_, leaf.centre,
@@ -1303,47 +1416,29 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.l2l_plan = static_plan_statistics_.m2m_plan;
 
   phase_start = Clock::now();
-  for (const TreeNode &target : nodes) {
-    if (target.level == 0 || target.target_count() == 0) {
+  for (const StaticM2LInteraction& interaction : topology_->m2l_interactions) {
+    const auto& target = nodes[static_cast<std::size_t>(interaction.target_node)];
+    const auto& source = nodes[static_cast<std::size_t>(interaction.source_node)];
+    if (target.target_count() == 0 || source.source_count() == 0) {
       continue;
     }
-    if (periodic_.enabled) {
-      const int boxes_per_axis = 1 << target.level;
-      const auto identities = build_periodic_list2(
-          target.level, {target.ix, target.iy, target.iz});
-      for (const PeriodicBoxIdentity& identity : identities) {
-        const TreeNode& source =
-            nodes[static_cast<std::size_t>(identity.node)];
-        if (source.source_count() == 0) {
-          continue;
-        }
-        const Key key{
-            target.ix -
-                (source.ix + identity.image_shift[0] * boxes_per_axis),
-            target.iy -
-                (source.iy + identity.image_shift[1] * boxes_per_axis),
-            target.iz -
-                (source.iz + identity.image_shift[2] * boxes_per_axis)};
-        classes[key].emplace_back(identity.node, target.index);
-      }
-    } else {
-      for (const int source_index : target.list2) {
-        const TreeNode &source = nodes[static_cast<std::size_t>(source_index)];
-        if (source.source_count() == 0) {
-          continue;
-        }
-        const Key key{target.ix - source.ix, target.iy - source.iy,
-                      target.iz - source.iz};
-        classes[key].emplace_back(source_index, target.index);
-      }
-    }
+    const double target_width = 2.0 * target.half_width;
+    const Vec3 displacement = supplied_topology_
+        ? interaction.displacement * (1.0 / target_width)
+        : Vec3{static_cast<double>(interaction.transfer_class[0]),
+               static_cast<double>(interaction.transfer_class[1]),
+               static_cast<double>(interaction.transfer_class[2])};
+    classes[Key{displacement.x, displacement.y, displacement.z,
+                interaction.source_to_target_width}].emplace_back(
+        interaction.source_node, interaction.target_node);
   }
   static_plan_statistics_.transfer_discovery.add(elapsed_seconds(phase_start));
 
   const int coefficient_count = this->coefficient_count();
   m2l_plan_.coefficient_count = coefficient_count;
   const bool has_periodic_root = periodic_.enabled && !nodes.empty() &&
-      nodes.front().source_count() != 0 && nodes.front().target_count() != 0;
+      nodes[static_cast<std::size_t>(topology_->root)].source_count() != 0 &&
+      nodes[static_cast<std::size_t>(topology_->root)].target_count() != 0;
   std::vector<Key> universal_classes;
   universal_classes.reserve(
       StaticPlanStatistics::theoretical_maximum_m2l_classes);
@@ -1355,21 +1450,46 @@ void UniformFmm::build_static_plan() {
             std::abs(dz) <= 1) {
           continue;
         }
-        const Key key{dx, dy, dz};
+        const Key key{dx, dy, dz, 1.0};
         universal_class_ids.emplace(
             key, static_cast<int>(universal_classes.size()));
         universal_classes.push_back(key);
       }
     }
   }
+  // Additional adaptive classes retain the source/target size ratio.
+  for (const auto& [key, interactions] : classes) {
+    if (!universal_class_ids.contains(key)) {
+      universal_class_ids.emplace(key, static_cast<int>(universal_classes.size()));
+      universal_classes.push_back(key);
+    }
+  }
   m2l_plan_.matrix_count = static_cast<int>(universal_classes.size()) +
       (has_periodic_root ? 1 : 0);
-  m2l_plan_.level_count = tree_.leaf_level() + 1;
-  m2l_plan_.target_row_offsets.assign(nodes.size() + 1, 0);
+  m2l_plan_.level_count = topology_->maximum_level + 1;
   m2l_plan_.level_target_begin.resize(
       static_cast<std::size_t>(m2l_plan_.level_count));
   m2l_plan_.level_target_end.resize(
       static_cast<std::size_t>(m2l_plan_.level_count));
+  m2l_plan_.target_level_offsets.assign(
+      static_cast<std::size_t>(m2l_plan_.level_count) + 1, 0);
+  m2l_plan_.target_nodes_by_level.clear();
+  for (int target_level = 0; target_level < m2l_plan_.level_count;
+       ++target_level) {
+    m2l_plan_.target_level_offsets[static_cast<std::size_t>(target_level)] =
+        static_cast<int>(m2l_plan_.target_nodes_by_level.size());
+    for (const auto& node : topology_->nodes) {
+      if (node.level == target_level) {
+        m2l_plan_.target_nodes_by_level.push_back(node.index);
+      }
+    }
+  }
+  m2l_plan_.target_level_offsets.back() =
+      static_cast<int>(m2l_plan_.target_nodes_by_level.size());
+  m2l_plan_.node_levels.reserve(topology_->nodes.size());
+  for (const auto& node : topology_->nodes) {
+    m2l_plan_.node_levels.push_back(node.level);
+  }
 
   const std::size_t scaling_size =
       static_cast<std::size_t>(m2l_plan_.level_count) * coefficient_count;
@@ -1378,13 +1498,20 @@ void UniformFmm::build_static_plan() {
   std::vector<double> inverse_width_powers(
       static_cast<std::size_t>(expansion_order() + 2), 1.0);
 
-  for (int level = 0; level <= tree_.leaf_level(); ++level) {
+  for (int level = 0; level <= topology_->maximum_level; ++level) {
     m2l_plan_.level_target_begin[static_cast<std::size_t>(level)] =
-        level_offset(level);
+        m2l_plan_.target_level_offsets[static_cast<std::size_t>(level)];
     m2l_plan_.level_target_end[static_cast<std::size_t>(level)] =
-        level_offset(level + 1);
-    const double box_width =
-        2.0 * nodes[static_cast<std::size_t>(level_offset(level))].half_width;
+        m2l_plan_.target_level_offsets[static_cast<std::size_t>(level + 1)];
+    const int first_target =
+        m2l_plan_.target_level_offsets[static_cast<std::size_t>(level)];
+    const double box_width = first_target <
+            m2l_plan_.target_level_offsets[static_cast<std::size_t>(level + 1)]
+        ? 2.0 * nodes[static_cast<std::size_t>(
+                         m2l_plan_.target_nodes_by_level[
+                             static_cast<std::size_t>(first_target)])]
+                  .half_width
+        : 0.0;
     const std::size_t scaling_offset =
         static_cast<std::size_t>(level) * coefficient_count;
     // The matrices below are dimensionless and level independent. These two
@@ -1432,17 +1559,27 @@ void UniformFmm::build_static_plan() {
   const auto universal_m2l_start = Clock::now();
 #pragma omp parallel for schedule(dynamic) if (class_count >= 8)
   for (std::ptrdiff_t id = 0; id < class_count; ++id) {
-    if (universal_cache_hit) {
+    if (universal_cache_hit && id < 316) {
       continue;
     }
     const Key& key = universal_classes[static_cast<std::size_t>(id)];
-    const auto [dx, dy, dz] = key;
+    const auto [dx, dy, dz, ratio] = key;
     const Vec3 R{static_cast<double>(dx), static_cast<double>(dy),
                  static_cast<double>(dz)};
-    const std::vector<double> matrix =
+    std::vector<double> matrix =
         expansion_basis_ == ExpansionBasis::Spherical
             ? build_static_m2l_matrix(spherical_basis_, R)
             : build_static_m2l_matrix(basis_, R);
+    // T(R/wt) * (ws/wt)^degree(alpha), followed by ws^-alpha and
+    // wt^-(beta+1), equals the physical translation T(R).
+    if (ratio != 1.0) {
+      for (int alpha = 0; alpha < coefficient_count; ++alpha) {
+        const double factor = std::pow(ratio, coefficient_degree(alpha));
+        for (int beta = 0; beta < coefficient_count; ++beta) {
+          matrix[static_cast<std::size_t>(alpha) * coefficient_count + beta] *= factor;
+        }
+      }
+    }
     std::copy(matrix.begin(), matrix.end(),
               m2l_plan_.matrices.begin() + id * matrix_values);
   }
@@ -1469,23 +1606,28 @@ void UniformFmm::build_static_plan() {
     periodic_operator_available_ = true;
   }
 
-  for (const ClassEntry* entry : ordered_classes) {
-    for (const auto [source, target] : entry->second) {
-      (void)source;
-      ++m2l_plan_.target_row_offsets[static_cast<std::size_t>(target) + 1];
+  // The canonical topology already owns target-row boundaries. Static matrix
+  // ordering is a derived permutation of those rows, so only the optional
+  // periodic root row changes the cumulative offsets.
+  m2l_plan_.target_row_offsets = topology_->m2l_target_row_offsets;
+  if (has_periodic_root) {
+    for (std::size_t row = static_cast<std::size_t>(topology_->root) + 1;
+         row < m2l_plan_.target_row_offsets.size(); ++row) {
+      ++m2l_plan_.target_row_offsets[row];
     }
   }
-  if (has_periodic_root) {
-    ++m2l_plan_.target_row_offsets[1];
+  if (m2l_plan_.target_row_offsets.empty() ||
+      m2l_plan_.target_row_offsets.back() !=
+          static_cast<int>(interaction_count)) {
+    throw std::logic_error("canonical M2L row count does not match interactions");
   }
-  std::partial_sum(m2l_plan_.target_row_offsets.begin(),
-                   m2l_plan_.target_row_offsets.end(),
-                   m2l_plan_.target_row_offsets.begin());
   // Convert discovered interactions to CSR-like target rows. A target's
   // contributions are contiguous, giving the portable and CUDA executors one
   // output owner and deterministic accumulation without atomics on the CPU.
   m2l_plan_.source_nodes.resize(interaction_count);
   m2l_plan_.matrix_ids.resize(interaction_count);
+  m2l_plan_.source_levels.resize(interaction_count);
+  m2l_plan_.target_levels.resize(interaction_count);
   m2l_plan_.interaction_levels.resize(interaction_count);
   std::vector<int> row_cursors = m2l_plan_.target_row_offsets;
   for (const ClassEntry* entry : ordered_classes) {
@@ -1494,15 +1636,21 @@ void UniformFmm::build_static_plan() {
       const int slot = row_cursors[static_cast<std::size_t>(target)]++;
       m2l_plan_.source_nodes[static_cast<std::size_t>(slot)] = source;
       m2l_plan_.matrix_ids[static_cast<std::size_t>(slot)] = matrix_id;
+      m2l_plan_.source_levels[static_cast<std::size_t>(slot)] =
+          nodes[static_cast<std::size_t>(source)].level;
+      m2l_plan_.target_levels[static_cast<std::size_t>(slot)] =
+          nodes[static_cast<std::size_t>(target)].level;
       m2l_plan_.interaction_levels[static_cast<std::size_t>(slot)] =
           nodes[static_cast<std::size_t>(target)].level;
     }
   }
   if (has_periodic_root) {
-    const int slot = row_cursors[0]++;
-    m2l_plan_.source_nodes[static_cast<std::size_t>(slot)] = 0;
+    const int slot = row_cursors[static_cast<std::size_t>(topology_->root)]++;
+    m2l_plan_.source_nodes[static_cast<std::size_t>(slot)] = topology_->root;
     m2l_plan_.matrix_ids[static_cast<std::size_t>(slot)] =
         static_cast<int>(universal_classes.size());
+    m2l_plan_.source_levels[static_cast<std::size_t>(slot)] = 0;
+    m2l_plan_.target_levels[static_cast<std::size_t>(slot)] = 0;
     m2l_plan_.interaction_levels[static_cast<std::size_t>(slot)] = 0;
   }
   static_plan_statistics_.operator_construction.add(
@@ -1517,9 +1665,13 @@ void UniformFmm::build_static_plan() {
       sizeof(double);
   const std::size_t metadata_bytes =
       (m2l_plan_.target_row_offsets.size() + m2l_plan_.source_nodes.size() +
-       m2l_plan_.matrix_ids.size() + m2l_plan_.interaction_levels.size() +
+       m2l_plan_.matrix_ids.size() + m2l_plan_.source_levels.size() +
+       m2l_plan_.target_levels.size() + m2l_plan_.interaction_levels.size() +
        m2l_plan_.level_target_begin.size() +
-       m2l_plan_.level_target_end.size()) *
+       m2l_plan_.level_target_end.size() +
+       m2l_plan_.target_level_offsets.size() +
+       m2l_plan_.target_nodes_by_level.size() +
+       m2l_plan_.node_levels.size()) *
       sizeof(int);
   static_plan_statistics_.operator_bytes += matrix_bytes + scaling_bytes;
   static_plan_statistics_.m2l_operator_bytes += matrix_bytes + scaling_bytes;
@@ -1533,10 +1685,11 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
   phase_start = Clock::now();
   l2p_evaluators_.resize(sorted_targets.size());
-  for (const int leaf_index : tree_.occupied_target_leaves()) {
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
-    for (std::size_t target = leaf.target_begin; target < leaf.target_end;
-         ++target) {
+  for (const StaticLeafRange& leaf_range : topology_->target_leaves) {
+    const int leaf_index = leaf_range.node;
+    const auto &leaf = topology_->nodes[static_cast<std::size_t>(leaf_index)];
+    for (std::size_t target = leaf_range.begin;
+         target < leaf_range.begin + leaf_range.count; ++target) {
       l2p_evaluators_[target] =
           expansion_basis_ == ExpansionBasis::Spherical
               ? use_cuboid_l2p_
@@ -1565,29 +1718,13 @@ void UniformFmm::build_static_plan() {
   phase_start = Clock::now();
   if (periodic_.enabled) {
     std::vector<StaticP2PInteraction> near_interactions;
-    for (const int leaf_index : tree_.occupied_target_leaves()) {
-      const TreeNode& leaf = nodes[static_cast<std::size_t>(leaf_index)];
-      const auto identities = build_periodic_list1(
-          leaf.level, {leaf.ix, leaf.iy, leaf.iz});
-      for (std::size_t target = leaf.target_begin; target < leaf.target_end;
-           ++target) {
-        for (const PeriodicBoxIdentity& identity : identities) {
-          const TreeNode& neighbour =
-              nodes[static_cast<std::size_t>(identity.node)];
-          const Vec3 source_shift{
-              periodic_.lengths.x * identity.image_shift[0],
-              periodic_.lengths.y * identity.image_shift[1],
-              periodic_.lengths.z * identity.image_shift[2],
-          };
-          const bool central_image = identity.image_shift[0] == 0 &&
-              identity.image_shift[1] == 0 &&
-              identity.image_shift[2] == 0;
-          for (std::size_t source = neighbour.source_begin;
-               source < neighbour.source_end; ++source) {
-            near_interactions.push_back({
-                static_cast<int>(target), static_cast<int>(source),
-                source_shift, central_image});
-          }
+    for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
+      for (int target = record.pair.target_begin;
+           target < record.pair.target_begin + record.pair.target_count; ++target) {
+        for (int source = record.pair.source_begin;
+             source < record.pair.source_begin + record.pair.source_count; ++source) {
+          near_interactions.push_back({target, source, record.source_shift,
+                                       record.skip_for_identity});
         }
       }
     }
@@ -1596,18 +1733,12 @@ void UniformFmm::build_static_plan() {
         source_sizes, target_geometry_, target_sizes);
   } else {
     std::vector<std::array<int, 2>> near_interactions;
-    for (const int leaf_index : tree_.occupied_target_leaves()) {
-      const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
-      for (std::size_t target = leaf.target_begin; target < leaf.target_end;
-           ++target) {
-        for (const int neighbour_index : leaf.list1) {
-          const TreeNode &neighbour =
-              nodes[static_cast<std::size_t>(neighbour_index)];
-          for (std::size_t source = neighbour.source_begin;
-               source < neighbour.source_end; ++source) {
-            near_interactions.push_back(
-                {static_cast<int>(target), static_cast<int>(source)});
-          }
+    for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
+      for (int target = record.pair.target_begin;
+           target < record.pair.target_begin + record.pair.target_count; ++target) {
+        for (int source = record.pair.source_begin;
+             source < record.pair.source_begin + record.pair.source_count; ++source) {
+          near_interactions.push_back({target, source});
         }
       }
     }
@@ -1671,7 +1802,8 @@ void UniformFmm::quantise_static_plan_to_float() {
     p2m_plans_float_.reserve(p2m_plans_.size());
     for (const P2MPlan &plan : p2m_plans_) {
       p2m_plans_float_.push_back(
-          {plan.leaf, quantise_static_operator(plan.operator_map)});
+          {plan.leaf, plan.begin, plan.count,
+           quantise_static_operator(plan.operator_map)});
     }
   }
 
@@ -1824,30 +1956,28 @@ void UniformFmm::build_cuda_full_plan() {
   if (precision_ == StaticPrecision::Float32) {
     FloatCudaFullPlanData data;
     data.coefficient_count = coefficient_count();
-    data.node_count = static_cast<int>(tree_.nodes().size());
+    data.node_count = static_cast<int>(topology_->nodes.size());
     data.source_count =
-        static_cast<int>(tree_.sorted_source_positions().size());
+        static_cast<int>(topology_->sorted_source_positions.size());
     data.target_count =
-        static_cast<int>(tree_.sorted_target_positions().size());
-    data.source_permutation.assign(tree_.source_permutation().begin(),
-                                   tree_.source_permutation().end());
-    data.target_permutation.assign(tree_.target_permutation().begin(),
-                                   tree_.target_permutation().end());
+        static_cast<int>(topology_->sorted_target_positions.size());
+    data.source_permutation = topology_->source_permutation;
+    data.target_permutation = topology_->target_permutation;
     const int n = coefficient_count();
     data.coefficient_degrees.reserve(static_cast<std::size_t>(n));
     for (int coefficient = 0; coefficient < n; ++coefficient) {
       data.coefficient_degrees.push_back(coefficient_degree(coefficient));
     }
-    const auto nodes = tree_.nodes();
+    const auto &nodes = topology_->nodes;
     for (const FloatP2MPlan &leaf_plan : p2m_plans_float_) {
-      const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_plan.leaf)];
+      const auto &leaf = nodes[static_cast<std::size_t>(leaf_plan.leaf)];
       for (FloatStaticOperatorEntry entry : leaf_plan.operator_map.entries) {
-        entry.input += static_cast<int>(leaf.source_begin) * 3;
+        entry.input += static_cast<int>(leaf_plan.begin) * 3;
         entry.output += leaf.index * n;
         data.p2m.push_back(entry);
       }
     }
-    if (tree_.leaf_level() > 0) {
+    if (topology_->maximum_level > 0) {
       data.m2m.entries_per_matrix =
           static_cast<int>(m2m_operators_float_[0].entries.size());
       data.l2l.entries_per_matrix =
@@ -1863,31 +1993,27 @@ void UniformFmm::build_cuda_full_plan() {
           l2l_operators_float_[child_class].entries.begin(),
           l2l_operators_float_[child_class].entries.end());
     }
-    data.m2m.matrix_count = tree_.leaf_level() == 0 ? 0 : 8;
-    data.l2l.matrix_count = tree_.leaf_level() == 0 ? 0 : 8;
-    for (int level = 1; level <= tree_.leaf_level(); ++level) {
-      const int begin = level_offset(level);
-      const int end = level_offset(level + 1);
-      for (int child_index = begin; child_index < end; ++child_index) {
-        const TreeNode &child = nodes[static_cast<std::size_t>(child_index)];
-        const int child_class =
-            (child.ix & 1) | ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
-        const int matrix_id = child_class;
-        if (child.source_count() != 0) {
-          data.m2m.interactions.push_back(
-              {child.index, child.parent, matrix_id, level});
-        }
-        if (child.target_count() != 0) {
-          data.l2l.interactions.push_back(
-              {child.parent, child.index, matrix_id, level});
-        }
+    data.m2m.matrix_count = topology_->maximum_level == 0 ? 0 : 8;
+    data.l2l.matrix_count = topology_->maximum_level == 0 ? 0 : 8;
+    for (const StaticTranslationEdge& edge : topology_->m2m_edges) {
+      if (nodes[static_cast<std::size_t>(edge.source_node)].source_count() != 0) {
+        data.m2m.interactions.push_back(
+            {edge.source_node, edge.target_node, edge.child_class,
+             edge.child_level});
+      }
+    }
+    for (const StaticTranslationEdge& edge : topology_->l2l_edges) {
+      if (nodes[static_cast<std::size_t>(edge.target_node)].target_count() != 0) {
+        data.l2l.interactions.push_back(
+            {edge.source_node, edge.target_node, edge.child_class,
+             edge.child_level});
       }
     }
     data.m2l = m2l_plan_float_;
-    for (const int leaf_index : tree_.occupied_target_leaves()) {
-      const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
-      for (std::size_t target = leaf.target_begin; target < leaf.target_end;
-           ++target) {
+    for (const StaticLeafRange& leaf_range : topology_->target_leaves) {
+      const auto &leaf = nodes[static_cast<std::size_t>(leaf_range.node)];
+      for (std::size_t target = leaf_range.begin;
+           target < leaf_range.begin + leaf_range.count; ++target) {
         for (int component = 0; component < 3; ++component) {
           for (int coefficient = 0; coefficient < n; ++coefficient) {
             const float value =
@@ -1937,29 +2063,27 @@ void UniformFmm::build_cuda_full_plan() {
 
   CudaFullPlanData data;
   data.coefficient_count = coefficient_count();
-  data.node_count = static_cast<int>(tree_.nodes().size());
-  data.source_count = static_cast<int>(tree_.sorted_source_positions().size());
-  data.target_count = static_cast<int>(tree_.sorted_target_positions().size());
-  data.source_permutation.assign(tree_.source_permutation().begin(),
-                                 tree_.source_permutation().end());
-  data.target_permutation.assign(tree_.target_permutation().begin(),
-                                 tree_.target_permutation().end());
+  data.node_count = static_cast<int>(topology_->nodes.size());
+  data.source_count = static_cast<int>(topology_->sorted_source_positions.size());
+  data.target_count = static_cast<int>(topology_->sorted_target_positions.size());
+  data.source_permutation = topology_->source_permutation;
+  data.target_permutation = topology_->target_permutation;
   const int n = coefficient_count();
   data.coefficient_degrees.reserve(static_cast<std::size_t>(n));
   for (int coefficient = 0; coefficient < n; ++coefficient) {
     data.coefficient_degrees.push_back(coefficient_degree(coefficient));
   }
-  const auto nodes = tree_.nodes();
+  const auto &nodes = topology_->nodes;
 
   for (const P2MPlan &leaf_plan : p2m_plans_) {
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_plan.leaf)];
+    const auto &leaf = nodes[static_cast<std::size_t>(leaf_plan.leaf)];
     for (StaticOperatorEntry entry : leaf_plan.operator_map.entries) {
-      entry.input += static_cast<int>(leaf.source_begin) * 3;
+      entry.input += static_cast<int>(leaf_plan.begin) * 3;
       entry.output += leaf.index * n;
       data.p2m.push_back(entry);
     }
   }
-  if (tree_.leaf_level() > 0) {
+  if (topology_->maximum_level > 0) {
     data.m2m.entries_per_matrix =
         static_cast<int>(m2m_operators_[0].entries.size());
     data.l2l.entries_per_matrix =
@@ -1975,32 +2099,27 @@ void UniformFmm::build_cuda_full_plan() {
         l2l_operators_[child_class].entries.begin(),
         l2l_operators_[child_class].entries.end());
   }
-  data.m2m.matrix_count = tree_.leaf_level() == 0 ? 0 : 8;
-  data.l2l.matrix_count = tree_.leaf_level() == 0 ? 0 : 8;
-  for (int level = 1; level <= tree_.leaf_level(); ++level) {
-    const int begin = level_offset(level);
-    const int end = level_offset(level + 1);
-    for (int child_index = begin; child_index < end; ++child_index) {
-      const TreeNode &child = nodes[static_cast<std::size_t>(child_index)];
-      const int child_class =
-          (child.ix & 1) | ((child.iy & 1) << 1) | ((child.iz & 1) << 2);
-      const int matrix_id = child_class;
-      if (child.source_count() != 0) {
-        data.m2m.interactions.push_back(
-            {child.index, child.parent, matrix_id, level});
-      }
-      if (child.target_count() != 0) {
-        data.l2l.interactions.push_back(
-            {child.parent, child.index, matrix_id, level});
-      }
+  data.m2m.matrix_count = topology_->maximum_level == 0 ? 0 : 8;
+  data.l2l.matrix_count = topology_->maximum_level == 0 ? 0 : 8;
+  for (const StaticTranslationEdge& edge : topology_->m2m_edges) {
+    if (nodes[static_cast<std::size_t>(edge.source_node)].source_count() != 0) {
+      data.m2m.interactions.push_back(
+          {edge.source_node, edge.target_node, edge.child_class,
+           edge.child_level});
+    }
+  }
+  for (const StaticTranslationEdge& edge : topology_->l2l_edges) {
+    if (nodes[static_cast<std::size_t>(edge.target_node)].target_count() != 0) {
+      data.l2l.interactions.push_back(
+          {edge.source_node, edge.target_node, edge.child_class,
+           edge.child_level});
     }
   }
   data.m2l = m2l_plan_;
-  const auto occupied_leaves = tree_.occupied_target_leaves();
-  for (const int leaf_index : occupied_leaves) {
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
-    for (std::size_t target = leaf.target_begin; target < leaf.target_end;
-         ++target) {
+  for (const StaticLeafRange& leaf_range : topology_->target_leaves) {
+    const auto &leaf = nodes[static_cast<std::size_t>(leaf_range.node)];
+    for (std::size_t target = leaf_range.begin;
+         target < leaf_range.begin + leaf_range.count; ++target) {
       for (int component = 0; component < 3; ++component) {
         for (int coefficient = 0; coefficient < n; ++coefficient) {
           const double value =
@@ -2054,15 +2173,17 @@ std::vector<PotentialField>
 UniformFmm::evaluate(std::span<const Vec3> dipole_moments,
                      const OutputFlags output,
                      std::span<const int> target_source_indices) {
-  std::vector<PotentialField> results(tree_.sorted_target_positions().size());
+  std::vector<PotentialField> results(topology_->sorted_target_positions.size());
   evaluate_into(dipole_moments, results, output, target_source_indices);
   return results;
 }
 
 void UniformFmm::prepare_self_indices(
     const std::span<const int> target_source_indices) {
-  const auto target_permutation = tree_.target_permutation();
-  const auto source_inverse = tree_.source_inverse_permutation();
+  const auto target_permutation =
+      std::span<const int>(topology_->target_permutation);
+  const auto source_inverse =
+      std::span<const int>(topology_->source_inverse_permutation);
   std::fill(sorted_self_indices_.begin(), sorted_self_indices_.end(), -1);
   for (std::size_t target_index = 0;
        target_index < target_source_indices.size(); ++target_index) {
@@ -2113,7 +2234,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     return;
   }
   detail::ProfileRange evaluation_range{"cdfmm/evaluate"};
-  const std::size_t target_count = tree_.sorted_target_positions().size();
+  const std::size_t target_count = topology_->sorted_target_positions.size();
   target_source_indices = resolve_self_indices(target_source_indices);
   if (results.size() != target_count) {
     throw std::invalid_argument(
@@ -2152,6 +2273,14 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     for (std::size_t target = 0; target < target_count; ++target) {
       results[target].phi = 0.0;
       results[target].H = near_fields_[target];
+    }
+    if (capture_components_) {
+      std::vector<Vec3> sorted_far(target_count);
+      cuda_full_plan_->plan->copy_far_fields(sorted_far);
+      diagnostic_far_.resize(target_count);
+      for (std::size_t i = 0; i < target_count; ++i) {
+        diagnostic_far_[topology_->target_permutation[i]] = sorted_far[i];
+      }
     }
     const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
     last_timings_.cuda_h2d.add(device.h2d_seconds);
@@ -2197,11 +2326,11 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     downward_pass();
   }
 
-  const auto nodes = tree_.nodes();
-  const auto targets = tree_.sorted_target_positions();
-  const auto sources = tree_.sorted_source_positions();
-  const auto target_permutation = tree_.target_permutation();
-  const auto occupied_leaves = tree_.occupied_target_leaves();
+  const auto &nodes = topology_->nodes;
+  const auto targets = std::span<const Vec3>(topology_->sorted_target_positions);
+  const auto target_permutation =
+      std::span<const int>(topology_->target_permutation);
+  const auto &occupied_leaves = topology_->target_leaves;
 
   auto phase_start = Clock::now();
   detail::ProfileRange l2p_range{"cdfmm/far_field/l2p"};
@@ -2209,11 +2338,12 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
   for (std::ptrdiff_t occupied_index = 0;
        occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
        ++occupied_index) {
-    const int leaf_index =
+    const StaticLeafRange &leaf_range =
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
-    for (std::size_t target_index = leaf.target_begin;
-         target_index < leaf.target_end; ++target_index) {
+    const int leaf_index = leaf_range.node;
+    const auto &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+    for (std::size_t target_index = leaf_range.begin;
+         target_index < leaf_range.begin + leaf_range.count; ++target_index) {
       if (execution_plan().l2p != StaticOperatorExecutor::Reference) {
         sorted_results_[target_index] = apply_static_l2p_evaluator(
             l2p_evaluators_[target_index], local_for_node(leaf_index), output);
@@ -2225,6 +2355,13 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     }
   }
   last_timings_.l2p.add(elapsed_seconds(phase_start));
+
+  if (capture_components_) {
+    diagnostic_far_.resize(target_count);
+    for (std::size_t i = 0; i < target_count; ++i) {
+      diagnostic_far_[topology_->target_permutation[i]] = sorted_results_[i].H;
+    }
+  }
 
   if (execution_plan().p2p != StaticOperatorExecutor::Reference &&
       has_flag(output, OutputFlags::Field)) {
@@ -2303,7 +2440,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
   // the direct list1 formula rather than changing the tensor representation.
   if (reference_near_output != OutputFlags::None) {
     detail::evaluate_reference_near_field(
-        tree_, sorted_dipole_moments_, sorted_self_indices_,
+        *topology_, sorted_dipole_moments_, sorted_self_indices_,
         reference_near_output, sorted_results_);
   }
   if (reference_near_output != OutputFlags::None) {
@@ -2336,7 +2473,7 @@ UniformFmm::evaluate_float32(const std::span<const Vec3> dipole_moments,
     throw std::logic_error("evaluate_float32 requires an FP32 FMM plan");
   }
   std::vector<FloatPotentialField> results(
-      tree_.sorted_target_positions().size());
+      topology_->sorted_target_positions.size());
   evaluate_into_float32(dipole_moments, results, output, target_source_indices);
   return results;
 }
@@ -2375,7 +2512,7 @@ void UniformFmm::evaluate_into_float32_impl(
   if (precision_ != StaticPrecision::Float32) {
     throw std::logic_error("evaluate_into_float32 requires an FP32 FMM plan");
   }
-  const std::size_t target_count = tree_.sorted_target_positions().size();
+  const std::size_t target_count = topology_->sorted_target_positions.size();
   target_source_indices = resolve_self_indices(target_source_indices);
   if (results.size() != target_count) {
     throw std::invalid_argument(
@@ -2417,6 +2554,14 @@ void UniformFmm::evaluate_into_float32_impl(
       results[target].phi = 0.0F;
       results[target].H = near_fields_float_[target];
     }
+    if (capture_components_) {
+      std::vector<Vec3> sorted_far(target_count);
+      cuda_full_plan_->plan->copy_far_fields(sorted_far);
+      diagnostic_far_.resize(target_count);
+      for (std::size_t i = 0; i < target_count; ++i) {
+        diagnostic_far_[topology_->target_permutation[i]] = sorted_far[i];
+      }
+    }
     const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
     last_timings_.cuda_h2d.add(device.h2d_seconds);
     last_timings_.p2m.add(device.p2m_seconds);
@@ -2454,20 +2599,22 @@ void UniformFmm::evaluate_into_float32_impl(
   upward_pass_prepared_float();
   downward_pass_float();
 
-  const auto nodes = tree_.nodes();
-  const auto target_permutation = tree_.target_permutation();
-  const auto occupied_leaves = tree_.occupied_target_leaves();
+  const auto &nodes = topology_->nodes;
+  const auto target_permutation =
+      std::span<const int>(topology_->target_permutation);
+  const auto &occupied_leaves = topology_->target_leaves;
 
   auto phase_start = Clock::now();
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
   for (std::ptrdiff_t occupied_index = 0;
        occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
        ++occupied_index) {
-    const int leaf_index =
+    const StaticLeafRange &leaf_range =
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
-    const TreeNode &leaf = nodes[static_cast<std::size_t>(leaf_index)];
-    for (std::size_t target_index = leaf.target_begin;
-         target_index < leaf.target_end; ++target_index) {
+    const int leaf_index = leaf_range.node;
+    const auto &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+    for (std::size_t target_index = leaf_range.begin;
+         target_index < leaf_range.begin + leaf_range.count; ++target_index) {
       sorted_results_float_[target_index] =
           apply_static_l2p_evaluator(l2p_evaluators_float_[target_index],
           local_float_for_node(leaf_index), output);
@@ -2498,6 +2645,13 @@ void UniformFmm::evaluate_into_float32_impl(
         apply_static_p2p_compact_plan(p2p_compact_plan_float_,
                                       sorted_dipole_moments_float_,
                                       near_fields_float_, sorted_self_indices_);
+      }
+    }
+    if (capture_components_) {
+      diagnostic_far_.resize(target_count);
+      for (std::size_t i = 0; i < target_count; ++i) {
+        const auto h = sorted_results_float_[i].H;
+        diagnostic_far_[topology_->target_permutation[i]] = {h.x, h.y, h.z};
       }
     }
     for (std::size_t target = 0; target < target_count; ++target) {
@@ -2572,7 +2726,10 @@ void UniformFmm::evaluate_into_float32_impl(
 // Public inspection
 //------------------------------------------------------------------------------
 
-const UniformTree &UniformFmm::tree() const { return physical_tree_; }
+const UniformTree &UniformFmm::tree() const {
+  if (!physical_tree_) throw std::logic_error("prebuilt evaluator exposes topology(), not a uniform tree");
+  return *physical_tree_;
+}
 const Vec3& UniformFmm::physical_root_centre() const noexcept {
   return physical_root_centre_;
 }
@@ -2688,7 +2845,7 @@ const StaticPlanStatistics &UniformFmm::static_plan_statistics() const {
 
 std::span<const double> UniformFmm::multipole(const int node_index) const {
   if (node_index < 0 ||
-      static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
+      static_cast<std::size_t>(node_index) >= topology_->nodes.size()) {
     throw std::out_of_range("multipole node index is out of range");
   }
   inspection_widening_buffer_.resize(
@@ -2706,7 +2863,7 @@ std::span<const double> UniformFmm::multipole(const int node_index) const {
 
 std::span<const double> UniformFmm::local(const int node_index) const {
   if (node_index < 0 ||
-      static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
+      static_cast<std::size_t>(node_index) >= topology_->nodes.size()) {
     throw std::out_of_range("local node index is out of range");
   }
   inspection_widening_buffer_.resize(
@@ -2724,7 +2881,7 @@ std::span<const double> UniformFmm::local(const int node_index) const {
 }
 
 std::span<const double> UniformFmm::root_multipole() const {
-  return multipole(0);
+  return multipole(topology_->root);
 }
 
 std::span<const float>
@@ -2733,7 +2890,7 @@ UniformFmm::multipole_float32(const int node_index) const {
     throw std::logic_error("multipole_float32 requires an FP32 FMM plan");
   }
   if (node_index < 0 ||
-      static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
+      static_cast<std::size_t>(node_index) >= topology_->nodes.size()) {
     throw std::out_of_range("multipole node index is out of range");
   }
   const auto values = multipole_float_for_node(node_index);
@@ -2752,7 +2909,7 @@ std::span<const float> UniformFmm::local_float32(const int node_index) const {
     throw std::logic_error("local_float32 requires an FP32 FMM plan");
   }
   if (node_index < 0 ||
-      static_cast<std::size_t>(node_index) >= tree_.nodes().size()) {
+      static_cast<std::size_t>(node_index) >= topology_->nodes.size()) {
     throw std::out_of_range("local node index is out of range");
   }
   const auto values = local_float_for_node(node_index);
@@ -2767,7 +2924,7 @@ std::span<const float> UniformFmm::local_float32(const int node_index) const {
 }
 
 std::span<const float> UniformFmm::root_multipole_float32() const {
-  return multipole_float32(0);
+  return multipole_float32(topology_->root);
 }
 
 std::span<const double>
@@ -2786,7 +2943,7 @@ std::span<const double> UniformFmm::local_float64(const int node_index) const {
 }
 
 std::span<const double> UniformFmm::root_multipole_float64() const {
-  return multipole_float64(0);
+  return multipole_float64(topology_->root);
 }
 
 std::span<double>
@@ -2863,5 +3020,27 @@ bool one_mkl_available() noexcept {
 bool cuda_available() noexcept { return cuda_runtime_available(); }
 
 std::string cuda_device_description() { return cuda_runtime_description(); }
+
+UniformFmm::FieldComponents UniformFmm::evaluate_components(
+    std::span<const Vec3> moments, std::span<const int> identities) {
+  capture_components_ = true;
+  std::vector<PotentialField> fields;
+  try {
+    fields = evaluate(moments, OutputFlags::Field, identities);
+  } catch (...) {
+    capture_components_ = false;
+    throw;
+  }
+  capture_components_ = false;
+  FieldComponents result;
+  result.far = diagnostic_far_;
+  result.p2p.resize(fields.size());
+  result.total.resize(fields.size());
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    result.total[i] = fields[i].H;
+    result.p2p[i] = result.total[i] - result.far[i];
+  }
+  return result;
+}
 
 } // namespace cdfmm
