@@ -111,7 +111,7 @@ int main(int argc, char** argv) {
     options.expansion_order = 6;
     options.precision = cdfmm::StaticPrecision::Float32;
     options.tree.max_level = arguments.depth;
-    options.source_geometry = cdfmm::SourceGeometry::UniformCuboid;
+    options.source_geometry = cdfmm::SourceGeometry::RectangularPrism;
     options.source_sizes = {{spacing, spacing, spacing}};
     options.fixed_target_source_indices = identities;
     if (arguments.backend == "onemkl") {

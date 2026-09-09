@@ -685,13 +685,13 @@ int main(int argc, char** argv)
             const CuboidSize size{
                 0.9 / grid_dimensions[0], 0.9 / grid_dimensions[1],
                 0.9 / grid_dimensions[2]};
-            fmm_options.source_geometry = SourceGeometry::UniformCuboid;
+            fmm_options.source_geometry = SourceGeometry::RectangularPrism;
             fmm_options.target_geometry =
-                TargetGeometry::VolumeAveragedCuboid;
+                TargetGeometry::RectangularPrism;
             fmm_options.source_sizes = {size};
             fmm_options.target_sizes = {size};
-            fmm_options.use_cuboid_p2m = false;
-            fmm_options.use_cuboid_l2p = false;
+            fmm_options.far_field_source_model = SourceModel::PointDipole;
+            fmm_options.far_field_target_model = TargetModel::Point;
         }
 
         UniformFmmOptions selected_options = fmm_options;
