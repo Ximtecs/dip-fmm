@@ -15,7 +15,7 @@ NOTEBOOK = (
     Path(__file__).parents[1]
     / "examples"
     / "simple_notebooks"
-    / "simple_geometry_magtense_all_to_all_compare.ipynb"
+    / "simple_geometry_magtense_compare.ipynb"
 )
 
 
@@ -52,13 +52,13 @@ def test_geometry_magtense_all_to_all_notebook_contract():
     assert "max_level" not in combined
     assert _has(r"def\s+run_dense\s*\(", combined)
 
-    # Two public-MagTense accuracy comparisons and two CDFMM target-policy
+    # Two public-MagTense accuracy comparisons and two CDFMM target-averaging
     # comparisons are represented with explicit labels.
     for label in (
         "prism -> point",
         "prism target averaging impact (vs point target)",
         "tetrahedron -> point",
-        "tetra geometry record + point target model",
+        "tetrahedron target averaging impact (vs point target)",
     ):
         assert label in combined
     assert "physical-model impact" in lowered
@@ -89,30 +89,28 @@ def test_geometry_magtense_all_to_all_notebook_contract():
         assert token in combined
     assert "target_source_indices" in combined
 
-    # Self/coincident behavior must be asserted, and the physical tetrahedral
-    # target + point target model comparison must be explained explicitly.
+    # Self/coincident behaviour must be asserted, and finite tetrahedral
+    # target averaging must be explained explicitly as a physical effect.
     assert _has(r"assert[^\n]*(self|coincident|identity)", lowered)
     assert any(
         "physical" in cell.lower()
         and "tetra" in cell.lower()
-        and "targetmodel.point" in cell.lower()
+        and "target" in cell.lower()
         for cell in sources
     )
-    assert _has(r"tetra.{0,120}(tetra|tetrahedron).{0,120}unsupported", lowered)
 
     # Figures cover the physical setup, MagTense parity, and the distinction
     # between numerical error and changing the target model.
     assert "matplotlib.pyplot" in combined
     assert "Poly3DCollection" in combined
-    assert "setup-figure" in {cell.id for cell in notebook.cells}
-    assert "result-figures" in {cell.id for cell in notebook.cells}
+    cell_ids = {cell.id for cell in notebook.cells}
+    assert "07f20147" in cell_ids
+    assert "de3acd1d" in cell_ids
     assert _has(r"scatter\s*\(", combined)
     assert _has(r"quiver\s*\(", combined)
     assert "ideal parity" in lowered
     assert "target-model effect (not numerical error)" in lowered
-    assert "no tetrahedron target-averaging curve is shown" in lowered
-
-    # Exact tetra-target averaging is unsupported.  The equal tetra curves
-    # are explicitly attributed to TargetModel.POINT, not to small tiles.
-    assert "by construction" in lowered
-    assert "not evidence that these tiles are small enough" in lowered
+    assert _has(r"tetra.{0,100}averaging", lowered)
+    assert _has(r"tetrahedron.{0,240}exact_geometry", lowered)
+    assert "not available" not in lowered
+    assert "unsupported" not in lowered
