@@ -16,6 +16,8 @@ than here.
 - [x] Laplace point-dipole potential and field with explicit self identity.
 - [x] Complete non-adaptive uniform octree, Morton ordering, `list1`, and
   `list2`.
+- [x] Geometry-only adaptive octree construction with shared static topology
+  support.
 - [x] P2M, M2M, M2L, L2L, L2P, M2P, and exact P2P reference operators.
 - [x] Field-only, potential-only, and combined output on supported CPU paths.
 - [x] Independent direct CPU and CUDA references.
@@ -82,10 +84,11 @@ volume-averaged rectangular prisms. Both bases use finite-prism P2M, volume-aver
 and the same exact canonical `list1` tensors; spherical runtime state remains
 `(p+1)^2` coefficients per node.
 
-The tree is complete and uniform, not adaptive. CUDA-full currently provides
-the repeated field path; potential output remains on the supported CPU and
-hybrid paths. The source/target geometry and any fixed identity map belong to
-the plan and require reconstruction when changed.
+`UniformTree` is complete and uniform. `AdaptiveTree` provides a compact
+non-uniform topology which can be passed to the same static plan; CUDA-full
+currently provides the repeated field path, while potential output remains on
+the supported CPU and hybrid paths. The source/target geometry and any fixed
+identity map belong to the plan and require reconstruction when changed.
 
 ## Current consolidation work
 
@@ -120,8 +123,8 @@ integration API.
 ## Later work
 
 - Add the experimental MagTense backend described above.
-- Investigate adaptive or sparse trees only where non-uniform populations show
-  a practical benefit over the complete tree.
+- Extend adaptive-topology validation and use it where non-uniform populations
+  show a practical benefit over the complete tree.
 - Investigate exponential spherical M2L, translation symmetry, compression,
   CUDA Graphs, or other execution changes only after profiling identifies a
   bottleneck and end-to-end measurements justify the added complexity.

@@ -7,9 +7,10 @@ backends. The magnetic field $H$ is its primary output; scalar potential is
 optional on supported paths.
 
 Point dipoles, rectangular prisms, and tetrahedra are supported by the
-geometry-aware static operators in both bases.
-The tree is complete and non-adaptive. Fully periodic cubic cells use the
-explicit zero-`k=0` convention.
+geometry-aware static operators in both bases. `UniformTree` is complete and
+uniform, while `AdaptiveTree` can produce a compact non-uniform topology for a
+shared static plan. Fully periodic cubic cells use the explicit zero-`k=0`
+convention.
 
 ```{toctree}
 :maxdepth: 2

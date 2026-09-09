@@ -48,19 +48,21 @@ positions and the self-identity map on the device across evaluations.
 
 ## Status
 
-The production plan is static and non-adaptive. Both expansion bases support
+The production `UniformFmm` plan is static and uses a complete uniform tree by
+default. `AdaptiveTree` can instead construct a compact non-uniform topology
+that is shared by the same static FMM plan. Both expansion bases support
 point-dipole to point-target FMM on CPU static, oneMKL, CUDA partial, and CUDA
 full backends. Both also support rectangular-prism sources and analytically
-volume-averaged rectangular-prism targets. Fully periodic evaluation requires an explicit
-cubic cell and currently implements the zero-`k=0` convention on static CPU
-and CUDA plans.
+volume-averaged rectangular-prism targets. Fully periodic evaluation requires
+an explicit cubic cell and currently implements the zero-`k=0` convention on
+static CPU and CUDA plans.
 
 Self exclusion uses an explicit target-to-source identity map rather than
 coordinate equality. CUDA-full keeps all static operators and coefficient
 state resident and, for repeated field evaluation, transfers only changing
-moments to the device and the final user-ordered field back. Adaptive trees,
-partial/rectangular periodicity, a stable C/Fortran interface, and MagTense
-integration remain future work. See the [periodic-boundary
+moments to the device and the final user-ordered field back. Partial or
+rectangular periodicity and runtime MagTense integration remain future work.
+See the [periodic-boundary
 documentation](docs/periodic-boundaries.md) and [roadmap](docs/roadmap.md) for
 the precise capability boundary.
 

@@ -2,9 +2,8 @@
 
 ## Project scope
 
-This repository implements a Cartesian-coordinate fast multipole method specialised for dipole interactions.
-
-The initial scope is the CPU operator layer only:
+This repository implements a fixed-geometry fast multipole method specialised
+for magnetic dipole interactions. The current implementation includes:
 
 - P2M: particle/dipole to multipole
 - M2M: multipole to multipole
@@ -12,8 +11,18 @@ The initial scope is the CPU operator layer only:
 - L2L: local to local
 - L2P: local to particle/target
 - P2P: direct near-field dipole interaction
+- complete, non-adaptive `UniformTree` traversal;
+- geometry-only `AdaptiveTree` construction and shared static-topology plans;
+- point-dipole, rectangular-prism, and tetrahedron geometry where documented;
+- portable CPU, oneMKL, optional CUDA-partial, and CUDA-full backends;
+- persistent fixed-geometry plans, Python bindings, an unconditional C ABI,
+  and an optional Fortran wrapper; and
+- deterministic tests, examples, notebooks, and benchmark infrastructure.
 
-Do not implement CUDA, adaptive trees, persistent geometry plans, MagTense integration, or Fortran bindings unless explicitly requested.
+The current architecture is intentionally retained during baseline work.
+MagTense comparison notebooks and formulas are included, but a runtime
+MagTense backend and broader micromagnetic integration remain outside this
+repository's current scope.
 
 The main quantity of interest is the magnetic field `H`. The scalar potential `phi` should be optional.
 
@@ -286,32 +295,30 @@ Run before finalising changes:
 
 ## Python interface
 
-A Python interface should be provided using `pybind11`.
-
-The Python module should import as:
+The Python interface is provided using `pybind11` and should import as:
 
     import cdfmm
 
-Initially expose at least:
-
-- direct dipole pair evaluation
-- direct dipole summation over sources
-
-The Python interface should prioritise testing and experimentation over completeness.
+It exposes direct dipole operators, geometry records, both expansion bases,
+uniform and adaptive topology inspection, complete static FMM evaluation, and
+plan/timing/memory diagnostics. Keep additions focused on testing and
+experimentation rather than promising an unvalidated high-level API.
 
 ## Repository workflow
 
-Keep commits focused and reviewable.
+Keep commits focused and reviewable. Use the checked-in CMake presets where
+possible; the standard release verification is:
 
-Do not implement the full tree in the initial setup.
+    cmake --fresh --preset release
+    cmake --build --preset release -j
+    ctest --preset release
+    python -m pytest python_tests -v
 
-Suggested implementation sequence:
+Use the `cuda`, `notebooks`, `magtense`, or benchmark presets for their
+documented optional configurations. Do not assume that an optional CUDA
+device, oneMKL runtime, MagTense environment, or FMM3D dependency is present;
+record such skips precisely. Preserve the current static-plan architecture
+unless an architectural change is explicitly requested.
 
-1. Repository skeleton, CMake setup, tests, Python bindings, and CPU operator layer.
-2. Basic non-adaptive uniform tree.
-3. Persistent geometry plan for stationary source/target points.
-4. Adaptive tree support.
-5. CUDA acceleration for P2P and M2L.
-6. MagTense/Fortran interface.
-
-When in doubt, prefer a small correct implementation with tests over a large untested implementation.
+When in doubt, prefer a small correct implementation with tests over a large
+untested implementation.

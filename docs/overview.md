@@ -12,8 +12,10 @@ supported execution paths.
 
 - real spherical-harmonic expansions by default and a complete independent
   Cartesian Taylor formulation;
-- a complete non-adaptive, Morton-sorted uniform octree with `list1` near and
-  `list2` far interactions;
+- a complete non-adaptive, Morton-sorted `UniformTree` octree with `list1`
+  near and `list2` far interactions;
+- a geometry-only `AdaptiveTree` that produces a compact shared static topology
+  for the same FMM operators;
 - reusable static P2M, M2M, dense M2L, L2L, L2P, and exact P2P operators;
 - true FP32 and FP64 operator storage, state, CPU execution, and CUDA execution;
 - portable CPU, class-grouped oneMKL M2L, hybrid CUDA M2L/P2P, and full
@@ -28,14 +30,16 @@ supported execution paths.
 
 ## Capability boundary
 
-The tree is complete and uniform rather than adaptive. CUDA-full is the
-repeated field path. Fully three-dimensional periodic
+`UniformTree` is complete and uniform; `AdaptiveTree` provides the supported
+compact non-uniform topology path and can feed a shared static `UniformFmm`
+plan. CUDA-full is the repeated field path. Fully three-dimensional periodic
 magnetostatics is available for explicit cubic cells with the zero-`k=0`
 convention on static CPU and CUDA plans. Partial periodicity and rectangular
 periodic cells are not implemented. There is no runtime MagTense dependency or
 backend integration: the prism formulas are analytical adaptations of the
 MagTense conventions, while dip-fmm supplies its own C++/Python execution
-paths. A stable C ABI and Fortran wrapper are also not implemented.
+paths. The C ABI is built unconditionally; the Fortran wrapper and smoke test
+are optional and enabled with `CDFMM_BUILD_FORTRAN_INTERFACE`.
 
 ## Architecture
 
