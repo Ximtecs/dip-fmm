@@ -1064,10 +1064,6 @@ StaticP2POperator build_static_p2p_operator_impl(
         throw std::invalid_argument(
             "exact tetrahedron to rectangular-prism P2P is unsupported");
     }
-    if (source_is_tetrahedron && target_is_tetrahedron) {
-        throw std::invalid_argument(
-            "exact tetrahedron to tetrahedron P2P is unsupported");
-    }
 
     const auto validate_count = [](const std::size_t geometry_count,
                                    const std::size_t object_count,
@@ -1167,7 +1163,10 @@ StaticP2POperator build_static_p2p_operator_impl(
             result.blocks[index] = {
                 target, source, undefined, undefined, undefined,
                 undefined, undefined, undefined, undefined, undefined,
-                undefined, interaction.skip_for_identity ? 1 : 0
+                undefined,
+                (interaction.skip_for_identity &&
+                 effective_source_geometry == SourceGeometry::PointDipole)
+                    ? 1 : 0
             };
             continue;
         }
@@ -1188,7 +1187,10 @@ StaticP2POperator build_static_p2p_operator_impl(
             : nullptr;
 
         PairTensor tensor;
-        if (source_is_tetrahedron) {
+        if (source_is_tetrahedron && target_is_tetrahedron) {
+            tensor = tetrahedron_tetrahedron_tensor(
+                r, *source_tetrahedron, *target_tetrahedron);
+        } else if (source_is_tetrahedron) {
             tensor = tetrahedron_point_tensor(r, *source_tetrahedron);
         } else if (target_is_tetrahedron) {
             tensor = point_tetrahedron_tensor(r, *target_tetrahedron);
@@ -1208,7 +1210,9 @@ StaticP2POperator build_static_p2p_operator_impl(
             target, source, potential_scale * r.x, potential_scale * r.y,
             potential_scale * r.z, tensor.xx, tensor.xy, tensor.xz,
             tensor.yy, tensor.yz, tensor.zz,
-            interaction.skip_for_identity ? 1 : 0
+            (interaction.skip_for_identity &&
+             effective_source_geometry == SourceGeometry::PointDipole)
+                ? 1 : 0
         };
     }
     return result;

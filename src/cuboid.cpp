@@ -214,8 +214,7 @@ DenseDirectPlan::DenseDirectPlan(
         effective_target_geometry == TargetGeometry::Tetrahedron;
 
     if ((source_is_prism && target_is_tetrahedron) ||
-        (source_is_tetrahedron && target_is_prism) ||
-        (source_is_tetrahedron && target_is_tetrahedron)) {
+        (source_is_tetrahedron && target_is_prism)) {
         throw std::invalid_argument(
             "exact prism/tetrahedron DenseDirect interactions are unsupported");
     }
@@ -358,6 +357,10 @@ DenseDirectPlan::DenseDirectPlan(
                 PairTensor tensor;
                 if (omit_identity) {
                     tensor = {};
+                } else if (source_is_tetrahedron && target_is_tetrahedron) {
+                    tensor = tetrahedron_tetrahedron_tensor(
+                        target_positions[target] - source_positions[source],
+                        *source_tetrahedron, *target_tetrahedron);
                 } else if (source_is_tetrahedron) {
                     tensor = tetrahedron_point_tensor(
                         target_positions[target] - source_positions[source],

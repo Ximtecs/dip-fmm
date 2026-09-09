@@ -161,6 +161,187 @@ Vec3 apply_pair_tensor(const PairTensor& tensor, const Vec3& moment)
         tensor.xz * moment.x + tensor.yz * moment.y + tensor.zz * moment.z};
 }
 
+TEST_CASE("dense direct caches exact tetrahedron pairs including self",
+          "[dense_direct][tetrahedron]")
+{
+    const Tetrahedron tetrahedron = centred_reference_tetrahedron();
+    const std::array<Vec3, 2> positions{{
+        {0.0, 0.0, 0.0},
+        {1.8, -0.3, 0.4}
+    }};
+    const std::array<Tetrahedron, 2> source_tetrahedra{{
+        tetrahedron,
+        tetrahedron
+    }};
+    const std::array<Tetrahedron, 2> target_tetrahedra{{
+        tetrahedron,
+        tetrahedron
+    }};
+    const DenseDirectPlan plan(
+        positions, positions, SourceGeometry::Tetrahedron,
+        TargetGeometry::Tetrahedron, {}, {}, {}, StaticPrecision::Float64,
+        source_tetrahedra, target_tetrahedra, SourceModel::ExactGeometry,
+        TargetModel::ExactGeometry);
+    const std::array<Vec3, 2> moments{{
+        {0.7, -0.2, 0.4},
+        {-0.3, 0.6, 0.1}
+    }};
+    const std::vector<Vec3> fields = plan.evaluate(
+        moments, DenseDirectBackend::Portable);
+
+    REQUIRE(plan.tensor_memory_bytes() ==
+            6 * positions.size() * positions.size() * sizeof(double));
+    for (std::size_t target = 0; target < positions.size(); ++target) {
+        Vec3 expected{};
+        for (std::size_t source = 0; source < positions.size(); ++source) {
+            const PairTensor tensor = tetrahedron_tetrahedron_tensor(
+                positions[target] - positions[source],
+                source_tetrahedra[source], target_tetrahedra[target]);
+            const Vec3 contribution = apply_pair_tensor(tensor, moments[source]);
+            expected.x += contribution.x;
+            expected.y += contribution.y;
+            expected.z += contribution.z;
+        }
+        REQUIRE(std::isfinite(fields[target].x));
+        REQUIRE(std::isfinite(fields[target].y));
+        REQUIRE(std::isfinite(fields[target].z));
+        REQUIRE(fields[target].x == Catch::Approx(expected.x).margin(2.0e-12));
+        REQUIRE(fields[target].y == Catch::Approx(expected.y).margin(2.0e-12));
+        REQUIRE(fields[target].z == Catch::Approx(expected.z).margin(2.0e-12));
+    }
+
+    const PairTensor self = tetrahedron_tetrahedron_tensor(
+        {}, tetrahedron, tetrahedron);
+    REQUIRE(self.xx + self.yy + self.zz ==
+            Catch::Approx(-1.0 / tetrahedron_volume(tetrahedron))
+                .margin(2.0e-10));
+}
+
+TEST_CASE("static P2P caches exact tetrahedron dispatch and retains finite self",
+          "[static_p2p][tetrahedron]")
+{
+    const Tetrahedron tetrahedron = centred_reference_tetrahedron();
+    const std::array<Vec3, 2> positions{{
+        {0.0, 0.0, 0.0},
+        {1.8, -0.3, 0.4}
+    }};
+    const std::array<Tetrahedron, 2> source_tetrahedra{{
+        tetrahedron,
+        tetrahedron
+    }};
+    const std::array<Tetrahedron, 2> target_tetrahedra{{
+        tetrahedron,
+        tetrahedron
+    }};
+    const std::array<StaticP2PInteraction, 4> interactions{{
+        StaticP2PInteraction{0, 0, {}, true},
+        StaticP2PInteraction{0, 1, {}, false},
+        StaticP2PInteraction{1, 0, {}, false},
+        StaticP2PInteraction{1, 1, {}, true}
+    }};
+    const StaticP2POperator operator_map = build_static_p2p_operator(
+        positions, positions, interactions, SourceGeometry::Tetrahedron, {},
+        source_tetrahedra, TargetGeometry::Tetrahedron, {},
+        target_tetrahedra, SourceModel::ExactGeometry,
+        TargetModel::ExactGeometry);
+
+    REQUIRE(operator_map.blocks.size() == interactions.size());
+    for (const StaticDipoleBlock& block : operator_map.blocks) {
+        const PairTensor expected = tetrahedron_tetrahedron_tensor(
+            positions[static_cast<std::size_t>(block.target)] -
+                positions[static_cast<std::size_t>(block.source)],
+            source_tetrahedra[static_cast<std::size_t>(block.source)],
+            target_tetrahedra[static_cast<std::size_t>(block.target)]);
+        REQUIRE(block.xx == Catch::Approx(expected.xx).margin(2.0e-12));
+        REQUIRE(block.xy == Catch::Approx(expected.xy).margin(2.0e-12));
+        REQUIRE(block.xz == Catch::Approx(expected.xz).margin(2.0e-12));
+        REQUIRE(block.yy == Catch::Approx(expected.yy).margin(2.0e-12));
+        REQUIRE(block.yz == Catch::Approx(expected.yz).margin(2.0e-12));
+        REQUIRE(block.zz == Catch::Approx(expected.zz).margin(2.0e-12));
+        REQUIRE(block.skip_for_identity == 0);
+    }
+
+    const std::array<Vec3, 2> moments{{
+        {0.7, -0.2, 0.4},
+        {-0.3, 0.6, 0.1}
+    }};
+    const std::array<int, 2> identities{{0, 1}};
+    std::array<Vec3, 2> fields{};
+    apply_static_p2p_operator(operator_map, moments, fields, identities);
+    for (std::size_t target = 0; target < positions.size(); ++target) {
+        Vec3 expected{};
+        for (std::size_t source = 0; source < positions.size(); ++source) {
+            const PairTensor tensor = tetrahedron_tetrahedron_tensor(
+                positions[target] - positions[source],
+                source_tetrahedra[source], target_tetrahedra[target]);
+            const Vec3 contribution = apply_pair_tensor(tensor, moments[source]);
+            expected.x += contribution.x;
+            expected.y += contribution.y;
+            expected.z += contribution.z;
+        }
+        REQUIRE(fields[target].x == Catch::Approx(expected.x).margin(2.0e-12));
+        REQUIRE(fields[target].y == Catch::Approx(expected.y).margin(2.0e-12));
+        REQUIRE(fields[target].z == Catch::Approx(expected.z).margin(2.0e-12));
+    }
+}
+
+TEST_CASE("static P2P identity handling distinguishes finite and point sources",
+          "[static_p2p][self]")
+{
+    const std::array<Vec3, 1> positions{{{0.0, 0.0, 0.0}}};
+    const std::array<StaticP2PInteraction, 1> interactions{{
+        StaticP2PInteraction{0, 0, {}, true}
+    }};
+    const std::array<int, 1> identities{{0}};
+    const std::array<Vec3, 1> moments{{{0.7, -0.2, 0.4}}};
+
+    const Tetrahedron tetrahedron = centred_reference_tetrahedron();
+    const std::array<Tetrahedron, 1> tetrahedra{{tetrahedron}};
+    const StaticP2POperator tetrahedron_to_point = build_static_p2p_operator(
+        positions, positions, interactions, SourceGeometry::Tetrahedron, {},
+        tetrahedra, TargetGeometry::Point, {}, std::span<const Tetrahedron>{},
+        SourceModel::ExactGeometry, TargetModel::Point);
+    REQUIRE(tetrahedron_to_point.blocks[0].skip_for_identity == 0);
+    std::array<Vec3, 1> tetrahedron_field{};
+    apply_static_p2p_operator(
+        tetrahedron_to_point, moments, tetrahedron_field, identities);
+    REQUIRE(std::isfinite(tetrahedron_field[0].x));
+    REQUIRE(std::isfinite(tetrahedron_field[0].y));
+    REQUIRE(std::isfinite(tetrahedron_field[0].z));
+    REQUIRE(std::abs(tetrahedron_field[0].x) +
+                std::abs(tetrahedron_field[0].y) +
+                std::abs(tetrahedron_field[0].z) >
+            1.0e-12);
+
+    const std::array<RectangularPrism, 1> prisms{{{0.2, 0.2, 0.2}}};
+    const StaticP2POperator prism_to_point = build_static_p2p_operator(
+        positions, positions, interactions, SourceGeometry::RectangularPrism,
+        prisms, std::span<const Tetrahedron>{}, TargetGeometry::Point, {},
+        std::span<const Tetrahedron>{}, SourceModel::ExactGeometry,
+        TargetModel::Point);
+    REQUIRE(prism_to_point.blocks[0].skip_for_identity == 0);
+    std::array<Vec3, 1> prism_field{};
+    apply_static_p2p_operator(prism_to_point, moments, prism_field, identities);
+    REQUIRE(std::isfinite(prism_field[0].x));
+    REQUIRE(std::isfinite(prism_field[0].y));
+    REQUIRE(std::isfinite(prism_field[0].z));
+    REQUIRE(std::abs(prism_field[0].x) + std::abs(prism_field[0].y) +
+                std::abs(prism_field[0].z) >
+            1.0e-12);
+
+    const StaticP2POperator point_to_tetrahedron = build_static_p2p_operator(
+        positions, positions, interactions, SourceGeometry::PointDipole, {},
+        std::span<const Tetrahedron>{}, TargetGeometry::Tetrahedron, {},
+        tetrahedra, SourceModel::PointDipole, TargetModel::ExactGeometry);
+    REQUIRE(point_to_tetrahedron.blocks[0].skip_for_identity == 1);
+    std::array<Vec3, 1> point_field{};
+    apply_static_p2p_operator(
+        point_to_tetrahedron, moments, point_field, identities);
+    REQUIRE(point_field[0].x == 0.0);
+    REQUIRE(point_field[0].y == 0.0);
+    REQUIRE(point_field[0].z == 0.0);
+}
+
 TEST_CASE("dense direct supports exact tetrahedron source and point self")
 {
     const Tetrahedron tetrahedron = centred_reference_tetrahedron();
