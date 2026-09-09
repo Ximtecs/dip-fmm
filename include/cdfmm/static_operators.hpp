@@ -8,11 +8,13 @@
 #include <vector>
 
 #include "cdfmm/cuboid.hpp"
+#include "cdfmm/geometry.hpp"
 #include "cdfmm/operators.hpp"
 #include "cdfmm/periodic.hpp"
 #include "cdfmm/precision.hpp"
 #include "cdfmm/spherical_harmonics.hpp"
 #include "cdfmm/tensor_dictionary.hpp"
+#include "cdfmm/tetrahedron.hpp"
 
 namespace cdfmm {
 
@@ -577,6 +579,29 @@ void apply_static_m2l_plan(
     std::span<const CuboidSize> source_sizes
 );
 
+/**
+ * @brief Builds Cartesian P2M coefficients averaged over tetrahedral sources.
+ *
+ * Tetrahedron vertices are representative-relative offsets, and the source
+ * positions provide the corresponding representatives.  The returned map
+ * uses total source moments, so the volume normalisation is included in the
+ * exact simplex average.
+ */
+[[nodiscard]] StaticCoefficientOperator build_static_tetrahedron_p2m_operator(
+    const MultiIndexSet& basis,
+    const Vec3& centre,
+    std::span<const Vec3> source_positions,
+    std::span<const Tetrahedron> source_tetrahedra
+);
+
+/** @brief Builds exact tetrahedral P2M coefficients in the real spherical basis. */
+[[nodiscard]] StaticCoefficientOperator build_static_tetrahedron_p2m_operator(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& centre,
+    std::span<const Vec3> source_positions,
+    std::span<const Tetrahedron> source_tetrahedra
+);
+
 /** @brief Builds the triangular map M_parent += A(d) M_child. */
 [[nodiscard]] StaticCoefficientOperator build_static_m2m_operator(
     const MultiIndexSet& basis,
@@ -635,6 +660,28 @@ build_static_cuboid_l2p_evaluator(const SphericalHarmonicBasis &basis,
                                   const CuboidSize &target_size);
 
 /**
+ * @brief Builds Cartesian local rows averaged over one tetrahedral target.
+ *
+ * The target tetrahedron is represented by offsets from @p target.  The
+ * potential and field rows contain exact factorial-normalised simplex
+ * moments and therefore require no quadrature at evaluation time.
+ */
+[[nodiscard]] StaticL2PEvaluator build_static_tetrahedron_l2p_evaluator(
+    const MultiIndexSet& basis,
+    const Vec3& centre,
+    const Vec3& target,
+    const Tetrahedron& target_tetrahedron
+);
+
+/** @brief Builds exact tetrahedral target rows for a real spherical expansion. */
+[[nodiscard]] StaticL2PEvaluator build_static_tetrahedron_l2p_evaluator(
+    const SphericalHarmonicBasis& basis,
+    const Vec3& centre,
+    const Vec3& target,
+    const Tetrahedron& target_tetrahedron
+);
+
+/**
  * @brief Builds the exact sparse dipole tensor for an explicit interaction set.
  *
  * Interaction pairs contain sorted target and source indices. The caller is
@@ -649,6 +696,47 @@ build_static_cuboid_l2p_evaluator(const SphericalHarmonicBasis &basis,
     std::span<const CuboidSize> source_sizes = {},
     TargetGeometry target_geometry = TargetGeometry::Point,
     std::span<const CuboidSize> target_sizes = {});
+
+/**
+ * @brief Builds P2P rows after independently resolving finite near-field models.
+ *
+ * `source_model` and `target_model` select the effective source and target
+ * treatment for this near-field operator.  A point model ignores finite
+ * geometry and uses the corresponding representative position.  Exact finite
+ * models consume either prism or tetrahedron records, each supplied as one
+ * common record or one record per particle.  The output remains the canonical
+ * six-component Tensor6 representation used by all execution packings.
+ *
+ * Exact finite prism/tetrahedron and tetrahedron/tetrahedron interactions are
+ * intentionally rejected because no analytical kernel is available for those
+ * combinations.
+ */
+[[nodiscard]] StaticP2POperator build_static_p2p_operator(
+    std::span<const Vec3> target_positions,
+    std::span<const Vec3> source_positions,
+    std::span<const std::array<int, 2>> interactions,
+    SourceGeometry source_geometry,
+    std::span<const RectangularPrism> source_prisms,
+    std::span<const Tetrahedron> source_tetrahedra,
+    TargetGeometry target_geometry,
+    std::span<const RectangularPrism> target_prisms,
+    std::span<const Tetrahedron> target_tetrahedra,
+    SourceModel source_model = SourceModel::ExactGeometry,
+    TargetModel target_model = TargetModel::ExactGeometry);
+
+/** @brief Image-aware overload of the independently modelled P2P builder. */
+[[nodiscard]] StaticP2POperator build_static_p2p_operator(
+    std::span<const Vec3> target_positions,
+    std::span<const Vec3> source_positions,
+    std::span<const StaticP2PInteraction> interactions,
+    SourceGeometry source_geometry,
+    std::span<const RectangularPrism> source_prisms,
+    std::span<const Tetrahedron> source_tetrahedra,
+    TargetGeometry target_geometry,
+    std::span<const RectangularPrism> target_prisms,
+    std::span<const Tetrahedron> target_tetrahedra,
+    SourceModel source_model = SourceModel::ExactGeometry,
+    TargetModel target_model = TargetModel::ExactGeometry);
 
 /** @brief Builds exact P2P rows from image-aware periodic interactions. */
 [[nodiscard]] StaticP2POperator build_static_p2p_operator(
