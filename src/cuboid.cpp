@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cdfmm/cuboid.hpp"
+#include "cdfmm/rectangular_prism.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -28,159 +29,11 @@ double factorial(const int n)
 
 void validate_size(const CuboidSize& h, const char* name)
 {
-    if (!(h.hx > 0.0 && h.hy > 0.0 && h.hz > 0.0)) {
+    if (!(std::isfinite(h.hx) && std::isfinite(h.hy) &&
+          std::isfinite(h.hz) && h.hx > 0.0 && h.hy > 0.0 && h.hz > 0.0)) {
         throw std::invalid_argument(std::string(name) +
-                                    " dimensions must be positive");
+                                    " dimensions must be finite and positive");
     }
-}
-
-double safe_asinh_ratio(const double numerator, const double a, const double b)
-{
-    const double denominator = std::hypot(a, b);
-    if (denominator == 0.0) {
-        return 0.0;
-    }
-    return std::asinh(numerator / denominator);
-}
-
-double safe_atan_ratio(const double numerator, const double denominator)
-{
-    if (denominator != 0.0) {
-        return std::atan(numerator / denominator);
-    }
-    if (numerator == 0.0) {
-        return 0.0;
-    }
-    return std::copysign(0.5 * std::numbers::pi, numerator);
-}
-
-// Newell's finite-volume diagonal primitive. This independently implements
-// the published rectangular-cell formula; no MagTense source is incorporated.
-double newell_f(const double x, const double y, const double z)
-{
-    const double R = std::hypot(std::hypot(x, y), z);
-    if (R == 0.0) {
-        return 0.0;
-    }
-    return 0.5 * y * (z * z - x * x) * safe_asinh_ratio(y, x, z) +
-           0.5 * z * (y * y - x * x) * safe_asinh_ratio(z, x, y) -
-           x * y * z * safe_atan_ratio(y * z, x * R) +
-           (2.0 * x * x - y * y - z * z) * R / 6.0;
-}
-
-// Newell's off-diagonal primitive uses explicit limiting ratios at faces,
-// edges and self positions rather than arbitrary coordinate perturbations.
-double newell_g(const double x, const double y, const double z)
-{
-    const double R = std::hypot(std::hypot(x, y), z);
-    if (R == 0.0) {
-        return 0.0;
-    }
-    return x * y * z * safe_asinh_ratio(z, x, y) +
-           y * (3.0 * z * z - y * y) * safe_asinh_ratio(x, y, z) / 6.0 +
-           x * (3.0 * z * z - x * x) * safe_asinh_ratio(y, x, z) / 6.0 -
-           z * z * z * safe_atan_ratio(x * y, z * R) / 6.0 -
-           z * y * y * safe_atan_ratio(x * z, y * R) / 2.0 -
-           z * x * x * safe_atan_ratio(y * z, x * R) / 2.0 -
-           x * y * R / 3.0;
-}
-
-template <typename Primitive>
-double finite_volume_sum(const Vec3& r, const CuboidSize& source,
-                         const CuboidSize& target, Primitive primitive)
-{
-    constexpr int weights[4] = {1, -1, -1, 1};
-    const double x_offsets[4] = {
-        -0.5 * (source.hx + target.hx),
-        -0.5 * source.hx + 0.5 * target.hx,
-         0.5 * source.hx - 0.5 * target.hx,
-         0.5 * (source.hx + target.hx)};
-    const double y_offsets[4] = {
-        -0.5 * (source.hy + target.hy),
-        -0.5 * source.hy + 0.5 * target.hy,
-         0.5 * source.hy - 0.5 * target.hy,
-         0.5 * (source.hy + target.hy)};
-    const double z_offsets[4] = {
-        -0.5 * (source.hz + target.hz),
-        -0.5 * source.hz + 0.5 * target.hz,
-         0.5 * source.hz - 0.5 * target.hz,
-         0.5 * (source.hz + target.hz)};
-    double result = 0.0;
-    for (int ix = 0; ix < 4; ++ix) {
-        for (int iy = 0; iy < 4; ++iy) {
-            for (int iz = 0; iz < 4; ++iz) {
-                const double x = r.x + x_offsets[ix];
-                const double y = r.y + y_offsets[iy];
-                const double z = r.z + z_offsets[iz];
-                result += weights[ix] * weights[iy] * weights[iz] *
-                    primitive(x, y, z);
-            }
-        }
-    }
-    return result;
-}
-
-PairTensor cuboid_cuboid_tensor(const Vec3& r, const CuboidSize& source,
-                                const CuboidSize& target)
-{
-    validate_size(source, "source cuboid");
-    validate_size(target, "target cuboid");
-    const double scale = 1.0 / (4.0 * std::numbers::pi *
-                                 source.volume() * target.volume());
-    PairTensor tensor;
-    tensor.xx = scale * finite_volume_sum(
-        r, source, target, [](double x, double y, double z) {
-            return newell_f(x, y, z);
-        });
-    tensor.yy = scale * finite_volume_sum(
-        r, source, target, [](double x, double y, double z) {
-            return newell_f(y, x, z);
-        });
-    tensor.zz = scale * finite_volume_sum(
-        r, source, target, [](double x, double y, double z) {
-            return newell_f(z, y, x);
-        });
-    tensor.xy = scale * finite_volume_sum(
-        r, source, target, [](double x, double y, double z) {
-            return newell_g(x, y, z);
-        });
-    tensor.xz = scale * finite_volume_sum(
-        r, source, target, [](double x, double y, double z) {
-            return newell_g(x, z, y);
-        });
-    tensor.yz = scale * finite_volume_sum(
-        r, source, target, [](double x, double y, double z) {
-            return newell_g(y, z, x);
-        });
-    return tensor;
-}
-
-PairTensor cuboid_point_tensor(const Vec3& r, const CuboidSize& source)
-{
-    validate_size(source, "source cuboid");
-    double diagonal[3]{};
-    double off_diagonal[3]{};
-    for (int ix = 0; ix < 2; ++ix) {
-        for (int iy = 0; iy < 2; ++iy) {
-            for (int iz = 0; iz < 2; ++iz) {
-                const double x = r.x + (ix == 0 ? -0.5 : 0.5) * source.hx;
-                const double y = r.y + (iy == 0 ? -0.5 : 0.5) * source.hy;
-                const double z = r.z + (iz == 0 ? -0.5 : 0.5) * source.hz;
-                const double R = std::hypot(std::hypot(x, y), z);
-                const double sign = ((ix + iy + iz) % 2 == 0) ? -1.0 : 1.0;
-                diagonal[0] += sign * safe_atan_ratio(y * z, x * R);
-                diagonal[1] += sign * safe_atan_ratio(x * z, y * R);
-                diagonal[2] += sign * safe_atan_ratio(x * y, z * R);
-                off_diagonal[0] += sign * safe_asinh_ratio(z, x, y);
-                off_diagonal[1] += sign * safe_asinh_ratio(y, x, z);
-                off_diagonal[2] += sign * safe_asinh_ratio(x, y, z);
-            }
-        }
-    }
-    const double scale = 1.0 / (4.0 * std::numbers::pi * source.volume());
-    return {-scale * diagonal[0], scale * off_diagonal[0],
-            scale * off_diagonal[1], -scale * diagonal[1],
-            scale * off_diagonal[2], -scale * diagonal[2]};
 }
 
 template <typename Scalar>
@@ -266,6 +119,13 @@ double cuboid_averaged_monomial(const MultiIndex& beta, const Vec3& d,
     return result;
 }
 
+double rectangular_prism_averaged_monomial(const MultiIndex& beta,
+                                           const Vec3& d,
+                                           const RectangularPrism& prism)
+{
+    return cuboid_averaged_monomial(beta, d, prism);
+}
+
 PairTensor build_pair_tensor(const Vec3& target_position,
                              const Vec3& source_position,
                              const SourceGeometry source_geometry,
@@ -274,21 +134,35 @@ PairTensor build_pair_tensor(const Vec3& target_position,
                              const CuboidSize& target_size,
                              const bool omit_singular_point_pair)
 {
+    if (source_geometry == SourceGeometry::Tetrahedron ||
+        target_geometry == TargetGeometry::Tetrahedron) {
+        throw std::invalid_argument(
+            "build_pair_tensor does not accept tetrahedral geometry; "
+            "use the tetrahedron P2P operator with tetrahedron records");
+    }
     const Vec3 r = target_position - source_position;
-    if (source_geometry == SourceGeometry::UniformCuboid &&
-        target_geometry == TargetGeometry::VolumeAveragedCuboid) {
-        return cuboid_cuboid_tensor(r, source_size, target_size);
+    // An explicit identity map marks a point-source self interaction.  The
+    // singular point field is omitted even when the target is a finite volume;
+    // finite sources are handled by their analytical self-limit below.
+    if (omit_singular_point_pair &&
+        source_geometry == SourceGeometry::PointDipole) {
+        return {};
+    }
+    if (source_geometry == SourceGeometry::RectangularPrism &&
+        target_geometry == TargetGeometry::RectangularPrism) {
+        return rectangular_prism_rectangular_prism_tensor(
+            r, source_size, target_size);
     }
 
     // Reciprocity converts a point-to-volume average into the corresponding
     // finite-source field, including the required total-moment normalisation.
     if (source_geometry == SourceGeometry::PointDipole &&
-        target_geometry == TargetGeometry::VolumeAveragedCuboid) {
-        return cuboid_point_tensor(r, target_size);
+        target_geometry == TargetGeometry::RectangularPrism) {
+        return rectangular_prism_point_tensor(r, target_size);
     }
 
-    if (source_geometry == SourceGeometry::UniformCuboid) {
-        return cuboid_point_tensor(r, source_size);
+    if (source_geometry == SourceGeometry::RectangularPrism) {
+        return rectangular_prism_point_tensor(r, source_size);
     }
 
     const double r2 = dot(r, r);
@@ -316,10 +190,35 @@ DenseDirectPlan::DenseDirectPlan(
     const std::span<const CuboidSize> source_sizes,
     const std::span<const CuboidSize> target_sizes,
     const std::span<const int> target_source_indices,
-    const StaticPrecision static_precision)
+    const StaticPrecision static_precision,
+    const std::span<const Tetrahedron> source_tetrahedra,
+    const std::span<const Tetrahedron> target_tetrahedra,
+    const SourceModel source_model,
+    const TargetModel target_model)
     : ns_(source_positions.size()), nt_(target_positions.size()),
       static_precision_(static_precision)
 {
+    const SourceGeometry effective_source_geometry =
+        source_model == SourceModel::ExactGeometry
+            ? source_geometry : SourceGeometry::PointDipole;
+    const TargetGeometry effective_target_geometry =
+        target_model == TargetModel::ExactGeometry
+            ? target_geometry : TargetGeometry::Point;
+    const bool source_is_prism =
+        effective_source_geometry == SourceGeometry::RectangularPrism;
+    const bool source_is_tetrahedron =
+        effective_source_geometry == SourceGeometry::Tetrahedron;
+    const bool target_is_prism =
+        effective_target_geometry == TargetGeometry::RectangularPrism;
+    const bool target_is_tetrahedron =
+        effective_target_geometry == TargetGeometry::Tetrahedron;
+
+    if ((source_is_prism && target_is_tetrahedron) ||
+        (source_is_tetrahedron && target_is_prism) ||
+        (source_is_tetrahedron && target_is_tetrahedron)) {
+        throw std::invalid_argument(
+            "exact prism/tetrahedron DenseDirect interactions are unsupported");
+    }
     if (static_precision_ == StaticPrecision::Float32) {
         matrices_.emplace<FloatMatrices>();
     } else {
@@ -334,22 +233,86 @@ DenseDirectPlan::DenseDirectPlan(
     if (!target_source_indices.empty() && target_source_indices.size() != nt_) {
         throw std::invalid_argument("target-source identity map has wrong length");
     }
-    if (source_geometry == SourceGeometry::UniformCuboid && source_sizes.empty()) {
-        throw std::invalid_argument("cuboid sources require dimensions");
+    // Validate physical records from the declared geometry even when a
+    // point model is selected for this plan.  This keeps DenseDirectPlan's
+    // contract consistent with UniformFmm and prevents silently malformed
+    // geometry from being accepted merely because it is currently ignored.
+    if (source_geometry == SourceGeometry::PointDipole) {
+        if (!source_sizes.empty() || !source_tetrahedra.empty()) {
+            throw std::invalid_argument(
+                "point-dipole sources do not accept finite geometry records");
+        }
+    } else if (source_geometry == SourceGeometry::RectangularPrism) {
+        if (!source_tetrahedra.empty()) {
+            throw std::invalid_argument(
+                "rectangular-prism sources do not accept tetrahedron records");
+        }
+        if (source_sizes.empty()) {
+            throw std::invalid_argument("cuboid sources require dimensions");
+        }
+    } else if (source_geometry == SourceGeometry::Tetrahedron) {
+        if (!source_sizes.empty()) {
+            throw std::invalid_argument(
+                "tetrahedron sources do not accept rectangular-prism sizes");
+        }
+        if (source_tetrahedra.empty()) {
+            throw std::invalid_argument("tetrahedron sources require geometry");
+        }
     }
-    if (target_geometry == TargetGeometry::VolumeAveragedCuboid &&
-        target_sizes.empty()) {
-        throw std::invalid_argument("cuboid targets require dimensions");
+    if (target_geometry == TargetGeometry::Point) {
+        if (!target_sizes.empty() || !target_tetrahedra.empty()) {
+            throw std::invalid_argument(
+                "point targets do not accept finite geometry records");
+        }
+    } else if (target_geometry == TargetGeometry::RectangularPrism) {
+        if (!target_tetrahedra.empty()) {
+            throw std::invalid_argument(
+                "rectangular-prism targets do not accept tetrahedron records");
+        }
+        if (target_sizes.empty()) {
+            throw std::invalid_argument("cuboid targets require dimensions");
+        }
+    } else if (target_geometry == TargetGeometry::Tetrahedron) {
+        if (!target_sizes.empty()) {
+            throw std::invalid_argument(
+                "tetrahedron targets do not accept rectangular-prism sizes");
+        }
+        if (target_tetrahedra.empty()) {
+            throw std::invalid_argument("tetrahedron targets require geometry");
+        }
     }
-    if (source_geometry == SourceGeometry::UniformCuboid) {
+    if (source_geometry == SourceGeometry::Tetrahedron) {
+        if (source_tetrahedra.size() != 1 &&
+            source_tetrahedra.size() != ns_) {
+            throw std::invalid_argument(
+                "tetrahedron sources must be common or per object");
+        }
+        for (const Tetrahedron& tetrahedron : source_tetrahedra) {
+            static_cast<void>(tetrahedron_volume(tetrahedron));
+        }
+    }
+    if (target_geometry == TargetGeometry::Tetrahedron) {
+        if (target_tetrahedra.size() != 1 &&
+            target_tetrahedra.size() != nt_) {
+            throw std::invalid_argument(
+                "tetrahedron targets must be common or per object");
+        }
+        for (const Tetrahedron& tetrahedron : target_tetrahedra) {
+            static_cast<void>(tetrahedron_volume(tetrahedron));
+        }
+    }
+    if (source_geometry == SourceGeometry::RectangularPrism) {
         for (const CuboidSize& size : source_sizes) {
             validate_size(size, "source cuboid");
         }
     }
-    if (target_geometry == TargetGeometry::VolumeAveragedCuboid) {
+    if (target_geometry == TargetGeometry::RectangularPrism) {
         for (const CuboidSize& size : target_sizes) {
             validate_size(size, "target cuboid");
         }
+    }
+    if (ns_ != 0 && nt_ > std::numeric_limits<std::size_t>::max() / ns_) {
+        throw std::overflow_error("dense direct tensor size overflow");
     }
     std::visit([&](auto& matrices) {
         for (auto& matrix : matrices) {
@@ -383,12 +346,32 @@ DenseDirectPlan::DenseDirectPlan(
                 const CuboidSize target_size = target_sizes.empty()
                     ? CuboidSize{}
                     : target_sizes[target_sizes.size() == 1 ? 0 : target];
-                const PairTensor tensor = build_pair_tensor(
-                    target_positions[target], source_positions[source],
-                    source_geometry, target_geometry, source_size, target_size,
-                    identity &&
-                        source_geometry == SourceGeometry::PointDipole &&
-                        target_geometry == TargetGeometry::Point);
+                const Tetrahedron* source_tetrahedron = source_is_tetrahedron
+                    ? &source_tetrahedra[source_tetrahedra.size() == 1 ? 0 : source]
+                    : nullptr;
+                const Tetrahedron* target_tetrahedron = target_is_tetrahedron
+                    ? &target_tetrahedra[target_tetrahedra.size() == 1 ? 0 : target]
+                    : nullptr;
+                const bool omit_identity =
+                    identity && effective_source_geometry ==
+                        SourceGeometry::PointDipole;
+                PairTensor tensor;
+                if (omit_identity) {
+                    tensor = {};
+                } else if (source_is_tetrahedron) {
+                    tensor = tetrahedron_point_tensor(
+                        target_positions[target] - source_positions[source],
+                        *source_tetrahedron);
+                } else if (target_is_tetrahedron) {
+                    tensor = point_tetrahedron_tensor(
+                        target_positions[target] - source_positions[source],
+                        *target_tetrahedron);
+                } else {
+                    tensor = build_pair_tensor(
+                        target_positions[target], source_positions[source],
+                        effective_source_geometry, effective_target_geometry,
+                        source_size, target_size, omit_identity);
+                }
                 matrices[0][index] = static_cast<Scalar>(tensor.xx);
                 matrices[1][index] = static_cast<Scalar>(tensor.xy);
                 matrices[2][index] = static_cast<Scalar>(tensor.xz);

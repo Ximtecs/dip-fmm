@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "cdfmm/geometry.hpp"
+#include "cdfmm/rectangular_prism.hpp"
 #include "cdfmm/cuboid.hpp"
 #include "cdfmm/cuda_cuboid.hpp"
 
@@ -17,6 +19,7 @@
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/static_topology.hpp"
 #include "cdfmm/taylor_jet.hpp"
+#include "cdfmm/tetrahedron.hpp"
 #include "cdfmm/vec3.hpp"
 #include "cdfmm/tree_node.hpp"
 #include "cdfmm/uniform_tree.hpp"

@@ -32,8 +32,8 @@ TEST_CASE("cuboid averaged monomials have analytical moments") {
 TEST_CASE("cube self tensor includes finite demagnetising field") {
     const CuboidSize cube{1.0, 1.0, 1.0};
   const PairTensor tensor =
-      build_pair_tensor({}, {}, SourceGeometry::UniformCuboid,
-        TargetGeometry::VolumeAveragedCuboid, cube, cube);
+      build_pair_tensor({}, {}, SourceGeometry::RectangularPrism,
+        TargetGeometry::RectangularPrism, cube, cube);
     REQUIRE(tensor.xx == Catch::Approx(-1.0 / 3.0).margin(2.0e-14));
     REQUIRE(tensor.yy == Catch::Approx(-1.0 / 3.0).margin(2.0e-14));
     REQUIRE(tensor.zz == Catch::Approx(-1.0 / 3.0).margin(2.0e-14));
@@ -117,13 +117,13 @@ TEST_CASE("dense and static P2P store the same canonical cuboid tensor") {
   const std::array<CuboidSize, 1> source_sizes{{{0.8, 0.5, 1.1}}};
   const std::array<CuboidSize, 1> target_sizes{{{0.4, 0.9, 0.6}}};
   const std::array<std::array<int, 2>, 1> interactions{{{0, 0}}};
-  const DenseDirectPlan dense(sources, targets, SourceGeometry::UniformCuboid,
-                              TargetGeometry::VolumeAveragedCuboid,
+  const DenseDirectPlan dense(sources, targets, SourceGeometry::RectangularPrism,
+                              TargetGeometry::RectangularPrism,
                               source_sizes, target_sizes, {},
                               StaticPrecision::Float64);
   const StaticP2POperator sparse = build_static_p2p_operator(
-      targets, sources, interactions, SourceGeometry::UniformCuboid,
-      source_sizes, TargetGeometry::VolumeAveragedCuboid, target_sizes);
+      targets, sources, interactions, SourceGeometry::RectangularPrism,
+      source_sizes, TargetGeometry::RectangularPrism, target_sizes);
   const auto &matrices = dense.matrices();
   const auto &block = sparse.blocks.front();
   REQUIRE(block.xx == matrices[0][0]);
@@ -143,13 +143,13 @@ TEST_CASE("empty-identity BSR preserves finite cuboid self fields",
   const std::array<Vec3, 1> moments{{{0.7, -0.4, 0.2}}};
 
   for (const TargetGeometry target_geometry :
-       {TargetGeometry::Point, TargetGeometry::VolumeAveragedCuboid}) {
+       {TargetGeometry::Point, TargetGeometry::RectangularPrism}) {
     const std::span<const CuboidSize> target_geometry_sizes =
         target_geometry == TargetGeometry::Point
             ? std::span<const CuboidSize>{}
             : std::span<const CuboidSize>(target_sizes);
     const StaticP2POperator canonical = build_static_p2p_operator(
-        positions, positions, interactions, SourceGeometry::UniformCuboid,
+        positions, positions, interactions, SourceGeometry::RectangularPrism,
         source_sizes, target_geometry, target_geometry_sizes);
     const StaticP2PBsrPlan bsr = build_static_p2p_bsr_plan(canonical, {});
     std::array<Vec3, 1> expected{};
@@ -182,8 +182,8 @@ TEST_CASE("parallel dense cuboid construction preserves every tensor entry",
   const std::array<CuboidSize, 1> sizes{{{0.8, 0.9, 1.1}}};
   omp_set_num_threads(std::min(4, omp_get_num_procs()));
   const DenseDirectPlan plan(
-      positions, positions, SourceGeometry::UniformCuboid,
-      TargetGeometry::VolumeAveragedCuboid, sizes, sizes, {},
+      positions, positions, SourceGeometry::RectangularPrism,
+      TargetGeometry::RectangularPrism, sizes, sizes, {},
       StaticPrecision::Float64);
 
   const auto& matrices = plan.matrices();
@@ -191,8 +191,8 @@ TEST_CASE("parallel dense cuboid construction preserves every tensor entry",
     for (std::size_t source = 0; source < positions.size(); ++source) {
       const PairTensor expected = build_pair_tensor(
           positions[target], positions[source],
-          SourceGeometry::UniformCuboid,
-          TargetGeometry::VolumeAveragedCuboid, sizes[0], sizes[0]);
+          SourceGeometry::RectangularPrism,
+          TargetGeometry::RectangularPrism, sizes[0], sizes[0]);
       const std::size_t matrix_index = target * positions.size() + source;
       REQUIRE(matrices[0][matrix_index] == expected.xx);
       REQUIRE(matrices[1][matrix_index] == expected.xy);

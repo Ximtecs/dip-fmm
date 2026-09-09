@@ -8,8 +8,10 @@
 #include <vector>
 
 #include "cdfmm/coefficients.hpp"
+#include "cdfmm/geometry.hpp"
 #include "cdfmm/multi_index.hpp"
 #include "cdfmm/precision.hpp"
+#include "cdfmm/tetrahedron.hpp"
 
 namespace cdfmm {
 
@@ -17,44 +19,11 @@ namespace cdfmm {
 // Geometry and pair tensors
 //------------------------------------------------------------------------------
 
-/** @brief Selects the physical model used for a magnetic source. */
-enum class SourceGeometry {
-    /// Singular point dipole carrying a total magnetic moment.
-    PointDipole,
-    /// Axis-aligned uniformly magnetised cuboid carrying a total moment.
-    UniformCuboid
-};
-
-/** @brief Selects point or volume-averaged field evaluation. */
-enum class TargetGeometry {
-    /// Evaluate at one point.
-    Point,
-    /// Return the analytical average over an axis-aligned cuboid.
-    VolumeAveragedCuboid
-};
-
-/** @brief Side lengths of an axis-aligned rectangular cuboid. */
-struct CuboidSize {
-    double hx{0.0};
-    double hy{0.0};
-    double hz{0.0};
-
-    /// @brief Returns the cuboid volume.
-    [[nodiscard]] double volume() const noexcept { return hx * hy * hz; }
-};
-
-/** @brief Six independent components of a symmetric Cartesian pair tensor. */
-struct PairTensor {
-    double xx{0.0};
-    double xy{0.0};
-    double xz{0.0};
-    double yy{0.0};
-    double yz{0.0};
-    double zz{0.0};
-};
+/** @brief Compatibility name for the pre-generalisation prism record. */
+using CuboidSize = RectangularPrism;
 
 /**
- * @brief Evaluates the factorial-normalised monomial averaged over a cuboid.
+ * @brief Evaluates the factorial-normalised monomial averaged over a prism.
  *
  * This is J_beta(d,h) = V^-1 integral_V (d+u)^beta/beta! dV and is evaluated
  * by its finite even-power sum, without numerical quadrature.
@@ -63,6 +32,13 @@ struct PairTensor {
     const MultiIndex& beta,
     const Vec3& d,
     const CuboidSize& h
+);
+
+/** @brief Generic rectangular-prism spelling of cuboid_averaged_monomial. */
+[[nodiscard]] double rectangular_prism_averaged_monomial(
+    const MultiIndex& beta,
+    const Vec3& d,
+    const RectangularPrism& prism
 );
 
 /**
@@ -112,7 +88,11 @@ public:
         std::span<const CuboidSize> source_sizes = {},
         std::span<const CuboidSize> target_sizes = {},
         std::span<const int> target_source_indices = {},
-        StaticPrecision static_precision = StaticPrecision::Float32
+        StaticPrecision static_precision = StaticPrecision::Float32,
+        std::span<const Tetrahedron> source_tetrahedra = {},
+        std::span<const Tetrahedron> target_tetrahedra = {},
+        SourceModel source_model = SourceModel::ExactGeometry,
+        TargetModel target_model = TargetModel::ExactGeometry
     );
 
     /**
