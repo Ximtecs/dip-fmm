@@ -14,12 +14,14 @@
 #include "cdfmm/cuda_direct.hpp"
 #include "cdfmm/cuda_cuboid.hpp"
 #include "cdfmm/cuboid.hpp"
+#include "cdfmm/geometry.hpp"
 #include "cdfmm/operators.hpp"
 #include "cdfmm/parameter_selection.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/uniform_tree.hpp"
 #include "cdfmm/adaptive_tree.hpp"
 #include "cdfmm/validation.hpp"
+#include "cdfmm/tetrahedron.hpp"
 
 namespace py = pybind11;
 using namespace cdfmm;
@@ -110,6 +112,17 @@ std::vector<Vec3> parse_vec3_array(const py::handle &input,
         result.push_back({values(i, 0), values(i, 1), values(i, 2)});
     }
 
+  return result;
+}
+
+Tetrahedron parse_tetrahedron(const py::handle& input,
+                              const std::string& argument_name) {
+  const std::vector<Vec3> vertices = parse_vec3_array(input, argument_name);
+  if (vertices.size() != 4) {
+    throw std::invalid_argument(argument_name + " must have shape (4, 3)");
+  }
+  Tetrahedron result;
+  std::copy(vertices.begin(), vertices.end(), result.vertices.begin());
   return result;
 }
 
@@ -331,6 +344,25 @@ PYBIND11_MODULE(cdfmm, module) {
         .def_readwrite("x", &Vec3::x)
         .def_readwrite("y", &Vec3::y)
         .def_readwrite("z", &Vec3::z);
+
+    // Geometry records are intentionally named after their physical meaning;
+    // the former CuboidSize spelling is not part of the Python API.
+    py::class_<RectangularPrism>(module, "RectangularPrism")
+        .def(py::init<double, double, double>(), py::arg("hx"),
+             py::arg("hy"), py::arg("hz"))
+        .def_readwrite("hx", &RectangularPrism::hx)
+        .def_readwrite("hy", &RectangularPrism::hy)
+        .def_readwrite("hz", &RectangularPrism::hz)
+        .def_property_readonly("volume", &RectangularPrism::volume);
+    py::class_<Tetrahedron>(module, "Tetrahedron")
+        .def(py::init<>())
+        .def(py::init([](py::object vertices) {
+          return parse_tetrahedron(vertices, "vertices");
+        }), py::arg("vertices"))
+        .def_readwrite("vertices", &Tetrahedron::vertices)
+        .def_property_readonly("signed_volume", &Tetrahedron::signed_volume)
+        .def_property_readonly("volume", &Tetrahedron::volume)
+        .def_property_readonly("centroid_offset", &Tetrahedron::centroid_offset);
 
     py::class_<TreeNode>(module, "TreeNode")
         .def_readonly("index", &TreeNode::index)
@@ -690,10 +722,18 @@ PYBIND11_MODULE(cdfmm, module) {
         .def_readwrite("backend", &UniformFmmOptions::backend)
         .def_readwrite("source_geometry", &UniformFmmOptions::source_geometry)
         .def_readwrite("source_sizes", &UniformFmmOptions::source_sizes)
+        .def_readwrite("source_tetrahedra", &UniformFmmOptions::source_tetrahedra)
         .def_readwrite("target_geometry", &UniformFmmOptions::target_geometry)
         .def_readwrite("target_sizes", &UniformFmmOptions::target_sizes)
-        .def_readwrite("use_cuboid_p2m", &UniformFmmOptions::use_cuboid_p2m)
-        .def_readwrite("use_cuboid_l2p", &UniformFmmOptions::use_cuboid_l2p)
+        .def_readwrite("target_tetrahedra", &UniformFmmOptions::target_tetrahedra)
+        .def_readwrite("near_field_source_model",
+                       &UniformFmmOptions::near_field_source_model)
+        .def_readwrite("near_field_target_model",
+                       &UniformFmmOptions::near_field_target_model)
+        .def_readwrite("far_field_source_model",
+                       &UniformFmmOptions::far_field_source_model)
+        .def_readwrite("far_field_target_model",
+                       &UniformFmmOptions::far_field_target_model)
         .def_readwrite("fixed_target_source_indices",
                        &UniformFmmOptions::fixed_target_source_indices)
         .def_readwrite("cuda_p2p_bsr_max_bytes",
@@ -1369,10 +1409,18 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
       "Evaluate a local expansion at one target position.");
     py::enum_<SourceGeometry>(module, "SourceGeometry")
         .value("POINT_DIPOLE", SourceGeometry::PointDipole)
-        .value("UNIFORM_CUBOID", SourceGeometry::UniformCuboid);
+        .value("RECTANGULAR_PRISM", SourceGeometry::RectangularPrism)
+        .value("TETRAHEDRON", SourceGeometry::Tetrahedron);
     py::enum_<TargetGeometry>(module, "TargetGeometry")
         .value("POINT", TargetGeometry::Point)
-        .value("VOLUME_AVERAGED_CUBOID", TargetGeometry::VolumeAveragedCuboid);
+        .value("RECTANGULAR_PRISM", TargetGeometry::RectangularPrism)
+        .value("TETRAHEDRON", TargetGeometry::Tetrahedron);
+    py::enum_<SourceModel>(module, "SourceModel")
+        .value("POINT_DIPOLE", SourceModel::PointDipole)
+        .value("EXACT_GEOMETRY", SourceModel::ExactGeometry);
+    py::enum_<TargetModel>(module, "TargetModel")
+        .value("POINT", TargetModel::Point)
+        .value("EXACT_GEOMETRY", TargetModel::ExactGeometry);
     py::enum_<DenseDirectBackend>(module, "DenseDirectBackend")
         .value("AUTOMATIC", DenseDirectBackend::Automatic)
         .value("PORTABLE", DenseDirectBackend::Portable)
@@ -1382,33 +1430,36 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
         .value("FLOAT64", StaticPrecision::Float64);
     module.def("dense_direct_mkl_available", &dense_direct_mkl_available);
     module.def("cuda_dense_direct_available", &cuda_dense_direct_available);
-    py::class_<CuboidSize>(module, "CuboidSize")
-        .def(py::init<double, double, double>(), py::arg("hx"), py::arg("hy"),
-             py::arg("hz"))
-        .def_readwrite("hx", &CuboidSize::hx)
-        .def_readwrite("hy", &CuboidSize::hy)
-        .def_readwrite("hz", &CuboidSize::hz)
-        .def_property_readonly("volume", &CuboidSize::volume);
     py::class_<DenseDirectPlan>(module, "DenseDirectPlan")
         .def(py::init([](py::object sources, py::object targets,
                          SourceGeometry source_geometry,
                          TargetGeometry target_geometry,
-                         const std::vector<CuboidSize>& source_sizes,
-                         const std::vector<CuboidSize>& target_sizes,
+                         const std::vector<RectangularPrism>& source_sizes,
+                         const std::vector<RectangularPrism>& target_sizes,
                          const std::vector<int>& identities,
-                         const std::string& static_precision) {
+                         const std::string& static_precision,
+                         const std::vector<Tetrahedron>& source_tetrahedra,
+                         const std::vector<Tetrahedron>& target_tetrahedra,
+                         const SourceModel source_model,
+                         const TargetModel target_model) {
             return std::make_unique<DenseDirectPlan>(
                 parse_vec3_array(sources, "source_positions"),
                 parse_vec3_array(targets, "target_positions"),
                 source_geometry, target_geometry, source_sizes, target_sizes,
-                identities, parse_static_precision(static_precision));
+                identities, parse_static_precision(static_precision),
+                source_tetrahedra, target_tetrahedra, source_model,
+                target_model);
         }), py::arg("source_positions"), py::arg("target_positions"),
             py::arg("source_geometry") = SourceGeometry::PointDipole,
             py::arg("target_geometry") = TargetGeometry::Point,
-            py::arg("source_sizes") = std::vector<CuboidSize>{},
-            py::arg("target_sizes") = std::vector<CuboidSize>{},
+            py::arg("source_sizes") = std::vector<RectangularPrism>{},
+            py::arg("target_sizes") = std::vector<RectangularPrism>{},
             py::arg("target_source_indices") = std::vector<int>{},
-            py::arg("static_precision") = "float32")
+            py::arg("static_precision") = "float32",
+            py::arg("source_tetrahedra") = std::vector<Tetrahedron>{},
+            py::arg("target_tetrahedra") = std::vector<Tetrahedron>{},
+            py::arg("source_model") = SourceModel::ExactGeometry,
+            py::arg("target_model") = TargetModel::ExactGeometry)
         .def("evaluate", [](const DenseDirectPlan& plan, py::object moments,
                             const DenseDirectBackend backend) {
             const std::vector<Vec3> parsed_moments =
@@ -1433,10 +1484,14 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
         .def(py::init([](py::object sources, py::object targets,
                          SourceGeometry source_geometry,
                          TargetGeometry target_geometry,
-                         const std::vector<CuboidSize>& source_sizes,
-                         const std::vector<CuboidSize>& target_sizes,
+                         const std::vector<RectangularPrism>& source_sizes,
+                         const std::vector<RectangularPrism>& target_sizes,
                          const std::vector<int>& identities,
-                         const std::string& static_precision) {
+                         const std::string& static_precision,
+                         const std::vector<Tetrahedron>& source_tetrahedra,
+                         const std::vector<Tetrahedron>& target_tetrahedra,
+                         const SourceModel source_model,
+                         const TargetModel target_model) {
             const std::vector<Vec3> parsed_sources =
                 parse_vec3_array(sources, "source_positions");
             const std::vector<Vec3> parsed_targets =
@@ -1447,16 +1502,21 @@ lexicographic ``(alpha_x, alpha_y)`` within each degree.)doc");
                 plan = std::make_unique<CudaDenseDirectPlan>(
                     parsed_sources, parsed_targets, source_geometry,
                     target_geometry, source_sizes, target_sizes, identities,
-                    parse_static_precision(static_precision));
+                    parse_static_precision(static_precision), source_tetrahedra,
+                    target_tetrahedra, source_model, target_model);
             }
             return plan;
         }), py::arg("source_positions"), py::arg("target_positions"),
             py::arg("source_geometry") = SourceGeometry::PointDipole,
             py::arg("target_geometry") = TargetGeometry::Point,
-            py::arg("source_sizes") = std::vector<CuboidSize>{},
-            py::arg("target_sizes") = std::vector<CuboidSize>{},
+            py::arg("source_sizes") = std::vector<RectangularPrism>{},
+            py::arg("target_sizes") = std::vector<RectangularPrism>{},
             py::arg("target_source_indices") = std::vector<int>{},
-            py::arg("static_precision") = "float64")
+            py::arg("static_precision") = "float64",
+            py::arg("source_tetrahedra") = std::vector<Tetrahedron>{},
+            py::arg("target_tetrahedra") = std::vector<Tetrahedron>{},
+            py::arg("source_model") = SourceModel::ExactGeometry,
+            py::arg("target_model") = TargetModel::ExactGeometry)
         .def("evaluate", [](CudaDenseDirectPlan& plan, py::object moments) {
             const std::vector<Vec3> parsed_moments =
                 parse_vec3_array(moments, "total_moments");
