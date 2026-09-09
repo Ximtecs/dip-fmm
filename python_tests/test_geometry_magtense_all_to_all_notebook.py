@@ -52,31 +52,27 @@ def test_geometry_magtense_all_to_all_notebook_contract():
     assert "max_level" not in combined
     assert _has(r"def\s+run_dense\s*\(", combined)
 
-    # Four labeled comparison cases must be represented, not merely four
-    # unlabelled calls.  Check the labels emitted into the result table.
+    # Two public-MagTense accuracy comparisons and two CDFMM target-policy
+    # comparisons are represented with explicit labels.
     for label in (
         "prism -> point",
-        "prism -> prism average",
+        "prism target averaging impact (vs point target)",
         "tetrahedron -> point",
-        "physical tetra target + point model",
+        "tetra geometry record + point target model",
     ):
         assert label in combined
+    assert "physical-model impact" in lowered
+    assert "not a numerical error" in lowered
     assert "prism" in lowered and "point" in lowered
     assert "tetra" in lowered
     assert _has(r"prism.{0,80}point|point.{0,80}prism", lowered)
-    assert _has(r"prism.{0,80}prism", lowered)
     assert _has(r"tetra.{0,80}point|point.{0,80}tetra", lowered)
 
-    # MagTense tile types and averaged-prism observations are visible in the
-    # notebook source rather than hidden in an imported helper.
-    for tile_type in (2, 8, 5):
+    # Use only tile types and arguments available in public MagTense 2.2.0.
+    for tile_type in (2, 5):
         assert _has(rf"tile_type\s*=\s*{tile_type}\b", combined)
-    assert "obs_size" in lowered
-    assert any(
-        "obs_size" in cell.lower()
-        and _has(r"average|averaged|volume", cell)
-        for cell in sources
-    )
+    assert not _has(r"tile_type\s*=\s*8\b", combined)
+    assert "obs_size" not in lowered
 
     # The CDFMM physical geometry/model API is exercised explicitly by the
     # dense plan, including the tetrahedral records carried by the target.
@@ -103,3 +99,20 @@ def test_geometry_magtense_all_to_all_notebook_contract():
         for cell in sources
     )
     assert _has(r"tetra.{0,120}(tetra|tetrahedron).{0,120}unsupported", lowered)
+
+    # Figures cover the physical setup, MagTense parity, and the distinction
+    # between numerical error and changing the target model.
+    assert "matplotlib.pyplot" in combined
+    assert "Poly3DCollection" in combined
+    assert "setup-figure" in {cell.id for cell in notebook.cells}
+    assert "result-figures" in {cell.id for cell in notebook.cells}
+    assert _has(r"scatter\s*\(", combined)
+    assert _has(r"quiver\s*\(", combined)
+    assert "ideal parity" in lowered
+    assert "target-model effect (not numerical error)" in lowered
+    assert "no tetrahedron target-averaging curve is shown" in lowered
+
+    # Exact tetra-target averaging is unsupported.  The equal tetra curves
+    # are explicitly attributed to TargetModel.POINT, not to small tiles.
+    assert "by construction" in lowered
+    assert "not evidence that these tiles are small enough" in lowered
