@@ -35,7 +35,11 @@ public:
         std::span<const CuboidSize> source_sizes = {},
         std::span<const CuboidSize> target_sizes = {},
         std::span<const int> target_source_indices = {},
-        StaticPrecision static_precision = StaticPrecision::Float64
+        StaticPrecision static_precision = StaticPrecision::Float64,
+        std::span<const Tetrahedron> source_tetrahedra = {},
+        std::span<const Tetrahedron> target_tetrahedra = {},
+        SourceModel source_model = SourceModel::ExactGeometry,
+        TargetModel target_model = TargetModel::ExactGeometry
     );
 
     ~CudaDenseDirectPlan();

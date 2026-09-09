@@ -70,6 +70,42 @@ UniformFmmOptions normalise_supplied_topology_options(
   UniformFmmOptions normalised = options;
   const auto& root = topology.nodes[static_cast<std::size_t>(topology.root)];
   const double inverse_scale = 1.0 / topology.coordinate_scale;
+  const auto normalise_tetrahedra =
+      [&](std::vector<Tetrahedron>& tetrahedra,
+          const std::vector<Vec3>& positions,
+          const std::vector<int>& permutation, const char* description) {
+    if (tetrahedra.size() != 1 && tetrahedra.size() != positions.size()) {
+      throw std::invalid_argument(
+          std::string(description) +
+          " geometries must contain one or one per object");
+    }
+    for (Tetrahedron& tetrahedron : tetrahedra) {
+      static_cast<void>(tetrahedron_volume(tetrahedron));
+      for (Vec3& vertex : tetrahedron.vertices) {
+        vertex = vertex * inverse_scale;
+        vertex = {canonicalise_normalised_value(vertex.x),
+                  canonicalise_normalised_value(vertex.y),
+                  canonicalise_normalised_value(vertex.z)};
+      }
+    }
+    constexpr double tolerance = 2.0e-9;
+    for (std::size_t sorted = 0; sorted < positions.size(); ++sorted) {
+      const std::size_t geometry_index = tetrahedra.size() == 1
+          ? 0
+          : static_cast<std::size_t>(permutation[sorted]);
+      const Tetrahedron& tetrahedron = tetrahedra[geometry_index];
+      const Vec3 distance = positions[sorted] - root.centre;
+      for (const Vec3& vertex : tetrahedron.vertices) {
+        if (std::abs(distance.x + vertex.x) > root.half_width + tolerance ||
+            std::abs(distance.y + vertex.y) > root.half_width + tolerance ||
+            std::abs(distance.z + vertex.z) > root.half_width + tolerance) {
+          throw std::invalid_argument(
+              std::string(description) +
+              " geometry lies outside the supplied topology root");
+        }
+      }
+    }
+  };
   const auto normalise_sizes = [&](std::vector<CuboidSize>& sizes,
                                    const std::vector<Vec3>& positions,
                                    const std::vector<int>& permutation,
@@ -112,15 +148,25 @@ UniformFmmOptions normalise_supplied_topology_options(
     }
   };
 
-  if (normalised.source_geometry == SourceGeometry::UniformCuboid) {
+  if (normalised.source_geometry == SourceGeometry::RectangularPrism) {
     normalise_sizes(normalised.source_sizes,
                     topology.sorted_source_positions,
                     topology.source_permutation, "source cuboid");
   }
-  if (normalised.target_geometry == TargetGeometry::VolumeAveragedCuboid) {
+  if (normalised.target_geometry == TargetGeometry::RectangularPrism) {
     normalise_sizes(normalised.target_sizes,
                     topology.sorted_target_positions,
                     topology.target_permutation, "target cuboid");
+  }
+  if (normalised.source_geometry == SourceGeometry::Tetrahedron) {
+    normalise_tetrahedra(normalised.source_tetrahedra,
+                         topology.sorted_source_positions,
+                         topology.source_permutation, "source tetrahedron");
+  }
+  if (normalised.target_geometry == TargetGeometry::Tetrahedron) {
+    normalise_tetrahedra(normalised.target_tetrahedra,
+                         topology.sorted_target_positions,
+                         topology.target_permutation, "target tetrahedron");
   }
   return normalised;
 }
@@ -257,8 +303,10 @@ std::string_view name(const SourceGeometry value) {
   switch (value) {
   case SourceGeometry::PointDipole:
     return "point_dipole";
-  case SourceGeometry::UniformCuboid:
-    return "uniform_cuboid";
+  case SourceGeometry::RectangularPrism:
+    return "rectangular_prism";
+  case SourceGeometry::Tetrahedron:
+    return "tetrahedron";
   }
   return "unknown";
 }
@@ -267,10 +315,64 @@ std::string_view name(const TargetGeometry value) {
   switch (value) {
   case TargetGeometry::Point:
     return "point";
-  case TargetGeometry::VolumeAveragedCuboid:
-    return "volume_averaged_cuboid";
+  case TargetGeometry::RectangularPrism:
+    return "rectangular_prism";
+  case TargetGeometry::Tetrahedron:
+    return "tetrahedron";
   }
   return "unknown";
+}
+
+std::string_view name(const SourceModel value) {
+  switch (value) {
+  case SourceModel::PointDipole:
+    return "point_dipole";
+  case SourceModel::ExactGeometry:
+    return "exact_geometry";
+  }
+  return "unknown";
+}
+
+std::string_view name(const TargetModel value) {
+  switch (value) {
+  case TargetModel::Point:
+    return "point";
+  case TargetModel::ExactGeometry:
+    return "exact_geometry";
+  }
+  return "unknown";
+}
+
+void validate_model_options(const UniformFmmOptions& options)
+{
+  switch (options.near_field_source_model) {
+  case SourceModel::PointDipole:
+  case SourceModel::ExactGeometry:
+    break;
+  default:
+    throw std::invalid_argument("unsupported near-field source model");
+  }
+  switch (options.near_field_target_model) {
+  case TargetModel::Point:
+  case TargetModel::ExactGeometry:
+    break;
+  default:
+    throw std::invalid_argument("unsupported near-field target model");
+  }
+  switch (options.far_field_source_model) {
+  case SourceModel::PointDipole:
+  case SourceModel::ExactGeometry:
+    break;
+  default:
+    throw std::invalid_argument("unsupported far-field source model");
+  }
+  switch (options.far_field_target_model) {
+  case TargetModel::Point:
+  case TargetModel::ExactGeometry:
+    break;
+  default:
+    throw std::invalid_argument("unsupported far-field target model");
+  }
 }
 
 void append_vec3(std::ostringstream& stream, const Vec3& value) {
@@ -353,6 +455,18 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
       }
     }
   };
+  const auto validate_tetrahedra =
+      [](const std::vector<Tetrahedron>& tetrahedra,
+         const std::size_t count, const char* description) {
+    if (tetrahedra.size() != 1 && tetrahedra.size() != count) {
+      throw std::invalid_argument(
+          std::string(description) +
+          " geometries must contain one or one per object");
+    }
+    for (const Tetrahedron& tetrahedron : tetrahedra) {
+      static_cast<void>(tetrahedron_volume(tetrahedron));
+    }
+  };
 
   for (const Vec3& position : source_positions) {
     if (!finite_position(position)) {
@@ -364,13 +478,21 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
       throw std::invalid_argument("target positions must be finite");
     }
   }
-  if (options.source_geometry == SourceGeometry::UniformCuboid) {
+  if (options.source_geometry == SourceGeometry::RectangularPrism) {
     validate_sizes(options.source_sizes, source_positions.size(),
                    "source cuboid");
   }
-  if (options.target_geometry == TargetGeometry::VolumeAveragedCuboid) {
+  if (options.target_geometry == TargetGeometry::RectangularPrism) {
     validate_sizes(options.target_sizes, target_positions.size(),
                    "target cuboid");
+  }
+  if (options.source_geometry == SourceGeometry::Tetrahedron) {
+    validate_tetrahedra(options.source_tetrahedra, source_positions.size(),
+                        "source tetrahedron");
+  }
+  if (options.target_geometry == TargetGeometry::Tetrahedron) {
+    validate_tetrahedra(options.target_tetrahedra, target_positions.size(),
+                        "target tetrahedron");
   }
 
   Vec3 minimum{std::numeric_limits<double>::infinity(),
@@ -400,11 +522,34 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
       has_geometry = true;
     }
   };
+  const auto include_tetrahedra = [&](const std::vector<Vec3>& positions,
+                                      const std::vector<Tetrahedron>& tetrahedra) {
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+      const Tetrahedron& tetrahedron =
+          tetrahedra[tetrahedra.size() == 1 ? 0 : index];
+      for (const Vec3& vertex : tetrahedron.vertices) {
+        const Vec3 point = positions[index] + vertex;
+        minimum.x = std::min(minimum.x, point.x);
+        minimum.y = std::min(minimum.y, point.y);
+        minimum.z = std::min(minimum.z, point.z);
+        maximum.x = std::max(maximum.x, point.x);
+        maximum.y = std::max(maximum.y, point.y);
+        maximum.z = std::max(maximum.z, point.z);
+      }
+      has_geometry = true;
+    }
+  };
   include_population(source_positions, options.source_sizes,
-                     options.source_geometry == SourceGeometry::UniformCuboid);
+                     options.source_geometry == SourceGeometry::RectangularPrism);
   include_population(
       target_positions, options.target_sizes,
-      options.target_geometry == TargetGeometry::VolumeAveragedCuboid);
+      options.target_geometry == TargetGeometry::RectangularPrism);
+  if (options.source_geometry == SourceGeometry::Tetrahedron) {
+    include_tetrahedra(source_positions, options.source_tetrahedra);
+  }
+  if (options.target_geometry == TargetGeometry::Tetrahedron) {
+    include_tetrahedra(target_positions, options.target_tetrahedra);
+  }
 
   NormalisedGeometry geometry;
   geometry.construction_start = normalisation_start;
@@ -467,12 +612,74 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
     }
     return wrapped;
   };
+  if (options.periodic.enabled) {
+    const std::vector<Vec3> wrapped_sources =
+        physical_positions(source_positions);
+    const std::vector<Vec3> wrapped_targets =
+        physical_positions(target_positions);
+    const double half_width = 0.5 * options.periodic.lengths.x;
+    const double tolerance =
+        32.0 * std::numeric_limits<double>::epsilon() *
+        std::max({1.0, half_width, options.periodic.lengths.x});
+    const auto check_point = [&](const Vec3& point, const char* description) {
+      const Vec3 distance = point - options.periodic.centre;
+      if (std::abs(distance.x) > half_width + tolerance ||
+          std::abs(distance.y) > half_width + tolerance ||
+          std::abs(distance.z) > half_width + tolerance) {
+        throw std::invalid_argument(std::string(description) +
+                                    " geometry lies outside the periodic root");
+      }
+    };
+    const auto check_prisms = [&](const std::vector<Vec3>& positions,
+                                  const std::vector<CuboidSize>& sizes,
+                                  const char* description) {
+      for (std::size_t index = 0; index < positions.size(); ++index) {
+        const CuboidSize& size = sizes[sizes.size() == 1 ? 0 : index];
+        const Vec3 extent{0.5 * size.hx, 0.5 * size.hy, 0.5 * size.hz};
+        check_point(positions[index] - extent, description);
+        check_point(positions[index] + extent, description);
+      }
+    };
+    const auto check_tetrahedra = [&](const std::vector<Vec3>& positions,
+                                      const std::vector<Tetrahedron>& tetrahedra,
+                                      const char* description) {
+      for (std::size_t index = 0; index < positions.size(); ++index) {
+        const Tetrahedron& tetrahedron =
+            tetrahedra[tetrahedra.size() == 1 ? 0 : index];
+        for (const Vec3& vertex : tetrahedron.vertices) {
+          check_point(positions[index] + vertex, description);
+        }
+      }
+    };
+    if (options.source_geometry == SourceGeometry::RectangularPrism) {
+      check_prisms(wrapped_sources, options.source_sizes, "source prism");
+    } else if (options.source_geometry == SourceGeometry::Tetrahedron) {
+      check_tetrahedra(wrapped_sources, options.source_tetrahedra,
+                       "source tetrahedron");
+    }
+    if (options.target_geometry == TargetGeometry::RectangularPrism) {
+      check_prisms(wrapped_targets, options.target_sizes, "target prism");
+    } else if (options.target_geometry == TargetGeometry::Tetrahedron) {
+      check_tetrahedra(wrapped_targets, options.target_tetrahedra,
+                       "target tetrahedron");
+    }
+  }
   const auto normalise_sizes = [inverse_length](
                                    std::vector<CuboidSize>& sizes) {
     for (CuboidSize& size : sizes) {
       size.hx *= inverse_length;
       size.hy *= inverse_length;
       size.hz *= inverse_length;
+    }
+  };
+  const auto normalise_tetrahedra = [inverse_length, canonicalise](
+                                        std::vector<Tetrahedron>& tetrahedra) {
+    for (Tetrahedron& tetrahedron : tetrahedra) {
+      for (Vec3& vertex : tetrahedron.vertices) {
+        vertex = vertex * inverse_length;
+        vertex = {canonicalise(vertex.x), canonicalise(vertex.y),
+                   canonicalise(vertex.z)};
+      }
     }
   };
 
@@ -498,6 +705,8 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
       0.5 * geometry.physical_root_side_length;
   normalise_sizes(geometry.options.source_sizes);
   normalise_sizes(geometry.options.target_sizes);
+  normalise_tetrahedra(geometry.options.source_tetrahedra);
+  normalise_tetrahedra(geometry.options.target_tetrahedra);
   const auto canonicalise_sizes = [canonicalise](
                                       std::vector<CuboidSize>& sizes) {
     for (CuboidSize& size : sizes) {
@@ -596,6 +805,7 @@ UniformFmm::UniformFmm(std::shared_ptr<const StaticFmmTopology> topology,
 }
 
 void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
+  validate_model_options(options);
   if (options.expansion_order < 0) {
     throw std::invalid_argument(
         "UniformFmmOptions.expansion_order must be >= 0");
@@ -622,6 +832,24 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
   }
   initialise_source_geometry(options);
   initialise_target_geometry(options);
+
+  const bool effective_finite_source =
+      source_geometry_ != SourceGeometry::PointDipole &&
+      (near_field_source_model_ == SourceModel::ExactGeometry ||
+       far_field_source_model_ == SourceModel::ExactGeometry);
+  const bool effective_finite_target =
+      target_geometry_ != TargetGeometry::Point &&
+      (near_field_target_model_ == TargetModel::ExactGeometry ||
+       far_field_target_model_ == TargetModel::ExactGeometry);
+  const bool reference_requested =
+      options.backend == ExecutionBackend::CpuReference ||
+      (options.backend == ExecutionBackend::Auto &&
+       options.m2l_backend == M2LBackend::Reference);
+  if (reference_requested &&
+      (effective_finite_source || effective_finite_target)) {
+    throw std::invalid_argument(
+        "CpuReference cannot execute selected exact finite source/target stages");
+  }
 
   backend_ = options.backend;
   if (backend_ == ExecutionBackend::Auto) {
@@ -688,7 +916,11 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
           sizeof(int) +
       sorted_source_sizes_.capacity() * sizeof(CuboidSize);
   static_plan_statistics_.state_bytes +=
+      sorted_source_tetrahedra_.capacity() * sizeof(Tetrahedron);
+  static_plan_statistics_.state_bytes +=
       sorted_target_sizes_.capacity() * sizeof(CuboidSize);
+  static_plan_statistics_.state_bytes +=
+      sorted_target_tetrahedra_.capacity() * sizeof(Tetrahedron);
   const std::size_t coefficient_scalar_bytes =
       precision_ == StaticPrecision::Float32 ? sizeof(float) : sizeof(double);
   static_plan_statistics_.multipole_state_bytes =
@@ -787,10 +1019,16 @@ void UniformFmm::print_initialisation_summary(
          << '\n';
   stream << "  source_geometry: " << name(source_geometry_) << '\n';
   append_size_option(stream, "source_sizes", options.source_sizes);
-  stream << "  use_cuboid_p2m: " << use_cuboid_p2m_ << '\n';
+  stream << "  near_field_source_model: "
+         << name(near_field_source_model_) << '\n';
+  stream << "  far_field_source_model: "
+         << name(far_field_source_model_) << '\n';
   stream << "  target_geometry: " << name(target_geometry_) << '\n';
   append_size_option(stream, "target_sizes", options.target_sizes);
-  stream << "  use_cuboid_l2p: " << use_cuboid_l2p_ << '\n';
+  stream << "  near_field_target_model: "
+         << name(near_field_target_model_) << '\n';
+  stream << "  far_field_target_model: "
+         << name(far_field_target_model_) << '\n';
   stream << "  fixed_target_source_indices.requested: "
          << options.fixed_target_source_indices.has_value() << '\n';
   stream << "  fixed_target_source_indices.active: "
@@ -925,10 +1163,12 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
     }
   }
 
-  // Finite cuboid self fields are physical; identity maps only remove
-  // singular point-dipole self interactions.
-  if (source_geometry_ != SourceGeometry::PointDipole ||
-      target_geometry_ != TargetGeometry::Point) {
+  // Finite-geometry source self fields are physical; identity maps remove
+  // self interactions only when the near-field source is a point dipole.
+  const bool effective_point_source =
+      source_geometry_ == SourceGeometry::PointDipole ||
+      near_field_source_model_ == SourceModel::PointDipole;
+  if (!effective_point_source) {
     return;
   }
 
@@ -943,8 +1183,10 @@ void UniformFmm::build_reduced_symmetry_p2p_packing() {
   }
   // The branch-free point-dipole executor encodes fixed self pairs as the
   // zero variant.  Dynamic identity maps retain the production SoA path.
-  if (source_geometry_ == SourceGeometry::PointDipole &&
-      !fixed_target_source_indices_.has_value()) {
+  const bool effective_point_source =
+      source_geometry_ == SourceGeometry::PointDipole ||
+      near_field_source_model_ == SourceModel::PointDipole;
+  if (effective_point_source && !fixed_target_source_indices_.has_value()) {
     p2p_tensor_dictionary_plan_.reset();
     return;
   }
@@ -979,29 +1221,56 @@ void UniformFmm::build_reduced_symmetry_p2p_packing() {
 
 void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
   source_geometry_ = options.source_geometry;
-  use_cuboid_p2m_ = source_geometry_ == SourceGeometry::UniformCuboid &&
-      options.use_cuboid_p2m;
+  near_field_source_model_ = options.near_field_source_model;
+  far_field_source_model_ = options.far_field_source_model;
   const std::size_t count = topology_->sorted_source_positions.size();
   if (source_geometry_ == SourceGeometry::PointDipole) {
-    if (!options.source_sizes.empty()) {
+    if (!options.source_sizes.empty() || !options.source_tetrahedra.empty()) {
       throw std::invalid_argument(
-          "point-dipole sources do not accept cuboid sizes");
+          "point-dipole sources do not accept finite geometry records");
     }
     return;
+  }
+  if (source_geometry_ != SourceGeometry::RectangularPrism) {
+    if (!options.source_sizes.empty()) {
+      throw std::invalid_argument(
+          "non-prism sources do not accept rectangular-prism sizes");
+    }
+    if (source_geometry_ == SourceGeometry::Tetrahedron) {
+      if (options.source_tetrahedra.size() != 1 &&
+          options.source_tetrahedra.size() != count) {
+        throw std::invalid_argument(
+            "tetrahedron geometries must contain one or one per source");
+      }
+      if (options.source_tetrahedra.size() == 1) {
+        sorted_source_tetrahedra_ = options.source_tetrahedra;
+      } else {
+        sorted_source_tetrahedra_.resize(count);
+        for (std::size_t sorted = 0; sorted < count; ++sorted) {
+          sorted_source_tetrahedra_[sorted] =
+              options.source_tetrahedra[topology_->source_permutation[sorted]];
+        }
+      }
+      for (const Tetrahedron& tetrahedron : sorted_source_tetrahedra_) {
+        static_cast<void>(tetrahedron_volume(tetrahedron));
+      }
+      use_cuboid_p2m_ = false;
+      return;
+    }
+    throw std::invalid_argument("unsupported source geometry");
+  }
+  if (!options.source_tetrahedra.empty()) {
+    throw std::invalid_argument(
+        "rectangular-prism sources do not accept tetrahedron records");
   }
   if (options.source_sizes.size() != 1 &&
       options.source_sizes.size() != count) {
     throw std::invalid_argument(
         "cuboid sizes must contain one or one per source");
   }
-  if (options.backend == ExecutionBackend::CpuReference ||
-      (options.backend == ExecutionBackend::Auto &&
-       options.m2l_backend == M2LBackend::Reference)) {
-    throw std::invalid_argument(
-        "UniformCuboid sources require a static backend");
-  }
   if (options.source_sizes.size() == 1) {
     sorted_source_sizes_ = options.source_sizes;
+    use_cuboid_p2m_ = far_field_source_model_ == SourceModel::ExactGeometry;
     return;
   }
   sorted_source_sizes_.resize(count);
@@ -1009,32 +1278,59 @@ void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
   for (std::size_t sorted = 0; sorted < count; ++sorted) {
     sorted_source_sizes_[sorted] = options.source_sizes[permutation[sorted]];
   }
+  use_cuboid_p2m_ = far_field_source_model_ == SourceModel::ExactGeometry;
 }
 
 void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
   target_geometry_ = options.target_geometry;
-  use_cuboid_l2p_ =
-      target_geometry_ == TargetGeometry::VolumeAveragedCuboid &&
-      options.use_cuboid_l2p;
+  near_field_target_model_ = options.near_field_target_model;
+  far_field_target_model_ = options.far_field_target_model;
   const std::size_t count = topology_->sorted_target_positions.size();
   if (target_geometry_ == TargetGeometry::Point) {
-    if (!options.target_sizes.empty()) {
-      throw std::invalid_argument("point targets do not accept cuboid sizes");
+    if (!options.target_sizes.empty() || !options.target_tetrahedra.empty()) {
+      throw std::invalid_argument("point targets do not accept finite geometry records");
     }
     return;
+  }
+  if (target_geometry_ != TargetGeometry::RectangularPrism) {
+    if (!options.target_sizes.empty()) {
+      throw std::invalid_argument(
+          "non-prism targets do not accept rectangular-prism sizes");
+    }
+    if (target_geometry_ == TargetGeometry::Tetrahedron) {
+      if (options.target_tetrahedra.size() != 1 &&
+          options.target_tetrahedra.size() != count) {
+        throw std::invalid_argument(
+            "tetrahedron geometries must contain one or one per target");
+      }
+      if (options.target_tetrahedra.size() == 1) {
+        sorted_target_tetrahedra_ = options.target_tetrahedra;
+      } else {
+        sorted_target_tetrahedra_.resize(count);
+        for (std::size_t sorted = 0; sorted < count; ++sorted) {
+          sorted_target_tetrahedra_[sorted] =
+              options.target_tetrahedra[topology_->target_permutation[sorted]];
+        }
+      }
+      for (const Tetrahedron& tetrahedron : sorted_target_tetrahedra_) {
+        static_cast<void>(tetrahedron_volume(tetrahedron));
+      }
+      return;
+    }
+    throw std::invalid_argument("unsupported target geometry");
+  }
+  if (!options.target_tetrahedra.empty()) {
+    throw std::invalid_argument(
+        "rectangular-prism targets do not accept tetrahedron records");
   }
   if (options.target_sizes.size() != 1 &&
       options.target_sizes.size() != count) {
     throw std::invalid_argument(
         "cuboid target sizes must contain one or one per target");
   }
-  if (options.backend == ExecutionBackend::CpuReference ||
-      (options.backend == ExecutionBackend::Auto &&
-       options.m2l_backend == M2LBackend::Reference)) {
-    throw std::invalid_argument("cuboid targets require a static backend");
-  }
   if (options.target_sizes.size() == 1) {
     sorted_target_sizes_ = options.target_sizes;
+    use_cuboid_l2p_ = far_field_target_model_ == TargetModel::ExactGeometry;
     return;
   }
   sorted_target_sizes_.resize(count);
@@ -1042,21 +1338,32 @@ void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
   for (std::size_t sorted = 0; sorted < count; ++sorted) {
     sorted_target_sizes_[sorted] = options.target_sizes[permutation[sorted]];
   }
+  use_cuboid_l2p_ = far_field_target_model_ == TargetModel::ExactGeometry;
 }
 
 void UniformFmm::build_cuda_p2p_plan() {
+  // A BSR plan bakes identity suppression into its values and therefore
+  // cannot accept a dynamic identity map.  Keep the canonical CUDA plan for
+  // effective point sources unless a fixed map was supplied; finite sources
+  // retain the BSR fast path because their identity map is intentionally
+  // ignored.
+  const bool effective_point_source =
+      source_geometry_ == SourceGeometry::PointDipole ||
+      near_field_source_model_ == SourceModel::PointDipole;
+  const bool bsr_identity_compatible =
+      !effective_point_source || fixed_target_source_indices_.has_value();
   if (precision_ == StaticPrecision::Float32) {
     if (use_reduced_symmetry_p2p_ &&
         p2p_tensor_dictionary_plan_float_.has_value()) {
-        cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-            std::make_unique<CudaP2PPlan>(
-                *p2p_tensor_dictionary_plan_float_,
-                cuda_dictionary_target_owned_,
-                cuda_dictionary_power2_microtiles_));
-        p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
+      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+          std::make_unique<CudaP2PPlan>(
+              *p2p_tensor_dictionary_plan_float_,
+              cuda_dictionary_target_owned_,
+              cuda_dictionary_power2_microtiles_));
+      p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
       return;
     }
-    if (!periodic_.enabled &&
+    if (!periodic_.enabled && bsr_identity_compatible &&
         estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
             cuda_p2p_bsr_max_bytes_) {
       cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
@@ -1075,15 +1382,15 @@ void UniformFmm::build_cuda_p2p_plan() {
   }
   if (use_reduced_symmetry_p2p_ &&
       p2p_tensor_dictionary_plan_.has_value()) {
-      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-          std::make_unique<CudaP2PPlan>(
-              *p2p_tensor_dictionary_plan_,
-              cuda_dictionary_target_owned_,
-              cuda_dictionary_power2_microtiles_));
-      p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
+    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+        std::make_unique<CudaP2PPlan>(
+            *p2p_tensor_dictionary_plan_,
+            cuda_dictionary_target_owned_,
+            cuda_dictionary_power2_microtiles_));
+    p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     return;
   }
-  if (!periodic_.enabled &&
+  if (!periodic_.enabled && bsr_identity_compatible &&
       estimate_bsr_bytes(p2p_operator_, sizeof(double)) <=
           cuda_p2p_bsr_max_bytes_) {
     const std::span<const int> bsr_identities =
@@ -1443,7 +1750,8 @@ void UniformFmm::build_static_plan() {
     plan.count = leaf_range.count;
     const auto leaf_positions =
         sorted_positions.subspan(leaf_range.begin, leaf_range.count);
-    if (use_cuboid_p2m_) {
+    if (source_geometry_ == SourceGeometry::RectangularPrism &&
+        far_field_source_model_ == SourceModel::ExactGeometry) {
       const std::span<const CuboidSize> leaf_sizes =
           source_sizes.size() == 1
               ? source_sizes
@@ -1454,6 +1762,19 @@ void UniformFmm::build_static_plan() {
                 leaf_positions, leaf_sizes)
           : build_static_cuboid_p2m_operator(
                 basis_, leaf.centre, leaf_positions, leaf_sizes);
+    } else if (source_geometry_ == SourceGeometry::Tetrahedron &&
+               far_field_source_model_ == SourceModel::ExactGeometry) {
+      const std::span<const Tetrahedron> leaf_tetrahedra =
+          sorted_source_tetrahedra_.size() == 1
+              ? std::span<const Tetrahedron>(sorted_source_tetrahedra_)
+              : std::span<const Tetrahedron>(sorted_source_tetrahedra_)
+                    .subspan(leaf_range.begin, leaf_range.count);
+      plan.operator_map = expansion_basis_ == ExpansionBasis::Spherical
+          ? build_static_tetrahedron_p2m_operator(
+                spherical_basis_, leaf.centre, leaf_positions,
+                leaf_tetrahedra)
+          : build_static_tetrahedron_p2m_operator(
+                basis_, leaf.centre, leaf_positions, leaf_tetrahedra);
     } else if (expansion_basis_ == ExpansionBasis::Spherical) {
       plan.operator_map = build_static_p2m_operator(
           spherical_basis_, leaf.centre, leaf_positions);
@@ -1796,21 +2117,38 @@ void UniformFmm::build_static_plan() {
          target < leaf_range.begin + leaf_range.count; ++target) {
       l2p_evaluators_[target] =
           expansion_basis_ == ExpansionBasis::Spherical
-              ? use_cuboid_l2p_
+              ? (target_geometry_ == TargetGeometry::RectangularPrism &&
+                 far_field_target_model_ == TargetModel::ExactGeometry)
                     ? build_static_cuboid_l2p_evaluator(
                           spherical_basis_, leaf.centre,
                           sorted_targets[target],
                           target_sizes[target_sizes.size() == 1 ? 0 : target])
-                    : build_static_l2p_evaluator(
+                    : target_geometry_ == TargetGeometry::Tetrahedron &&
+                          far_field_target_model_ == TargetModel::ExactGeometry
+                        ? build_static_tetrahedron_l2p_evaluator(
+                              spherical_basis_, leaf.centre,
+                              sorted_targets[target],
+                              sorted_target_tetrahedra_[
+                                  sorted_target_tetrahedra_.size() == 1
+                                      ? 0
+                                      : target])
+                        : build_static_l2p_evaluator(
                           spherical_basis_, leaf.centre,
                           sorted_targets[target])
-          : use_cuboid_l2p_
+              : (target_geometry_ == TargetGeometry::RectangularPrism &&
+                 far_field_target_model_ == TargetModel::ExactGeometry)
               ? build_static_cuboid_l2p_evaluator(
                     basis_, leaf.centre,
                     sorted_targets[target],
                     target_sizes[target_sizes.size() == 1 ? 0 : target])
-              : build_static_l2p_evaluator(basis_, leaf.centre,
-                                           sorted_targets[target]);
+              : target_geometry_ == TargetGeometry::Tetrahedron &&
+                    far_field_target_model_ == TargetModel::ExactGeometry
+                  ? build_static_tetrahedron_l2p_evaluator(
+                        basis_, leaf.centre, sorted_targets[target],
+                        sorted_target_tetrahedra_[
+                            sorted_target_tetrahedra_.size() == 1 ? 0 : target])
+                  : build_static_l2p_evaluator(basis_, leaf.centre,
+                                               sorted_targets[target]);
       const std::size_t bytes =
           4 * static_cast<std::size_t>(coefficient_count) * sizeof(double);
       static_plan_statistics_.operator_bytes += bytes;
@@ -1833,8 +2171,10 @@ void UniformFmm::build_static_plan() {
       }
     }
     p2p_operator_ = build_static_p2p_operator(
-        sorted_targets, sorted_positions, near_interactions, source_geometry_,
-        source_sizes, target_geometry_, target_sizes);
+        sorted_targets, sorted_positions, near_interactions,
+        source_geometry_, source_sizes, sorted_source_tetrahedra_,
+        target_geometry_, target_sizes, sorted_target_tetrahedra_,
+        near_field_source_model_, near_field_target_model_);
   } else {
     std::vector<std::array<int, 2>> near_interactions;
     for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
@@ -1847,8 +2187,10 @@ void UniformFmm::build_static_plan() {
       }
     }
     p2p_operator_ = build_static_p2p_operator(
-        sorted_targets, sorted_positions, near_interactions, source_geometry_,
-        source_sizes, target_geometry_, target_sizes);
+        sorted_targets, sorted_positions, near_interactions,
+        source_geometry_, source_sizes, sorted_source_tetrahedra_,
+        target_geometry_, target_sizes, sorted_target_tetrahedra_,
+        near_field_source_model_, near_field_target_model_);
   }
   p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
   try {
@@ -1906,6 +2248,11 @@ void UniformFmm::build_static_plan() {
 }
 
 void UniformFmm::quantise_static_plan_to_float() {
+  const bool effective_point_source =
+      source_geometry_ == SourceGeometry::PointDipole ||
+      near_field_source_model_ == SourceModel::PointDipole;
+  const bool bsr_identity_compatible =
+      !effective_point_source || fixed_target_source_indices_.has_value();
   if (!geometry_cache_loaded_direct_float_) {
     p2m_plans_float_.reserve(p2m_plans_.size());
     for (const P2MPlan &plan : p2m_plans_) {
@@ -1958,7 +2305,7 @@ void UniformFmm::quantise_static_plan_to_float() {
       p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     }
   }
-  if (!periodic_.enabled &&
+  if (!periodic_.enabled && bsr_identity_compatible &&
       estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
           cuda_p2p_bsr_max_bytes_) {
     const std::span<const int> bsr_identities =
@@ -2071,6 +2418,11 @@ void UniformFmm::quantise_static_plan_to_float() {
 }
 
 void UniformFmm::build_cuda_full_plan() {
+  const bool effective_point_source =
+      source_geometry_ == SourceGeometry::PointDipole ||
+      near_field_source_model_ == SourceModel::PointDipole;
+  const bool bsr_identity_compatible =
+      !effective_point_source || fixed_target_source_indices_.has_value();
   if (precision_ == StaticPrecision::Float32) {
     FloatCudaFullPlanData data;
     data.coefficient_count = coefficient_count();
@@ -2144,21 +2496,20 @@ void UniformFmm::build_cuda_full_plan() {
         }
       }
     }
-  if (use_reduced_symmetry_p2p_ &&
-      p2p_tensor_dictionary_plan_float_.has_value()) {
-    data.use_p2p_dictionary = true;
-    data.p2p_dictionary_target_owned =
-        cuda_dictionary_target_owned_;
-    data.p2p_dictionary_power2_microtiles =
-        cuda_dictionary_power2_microtiles_;
-    data.p2p_dictionary =
-        std::move(*p2p_tensor_dictionary_plan_float_);
+    if (use_reduced_symmetry_p2p_ &&
+        p2p_tensor_dictionary_plan_float_.has_value()) {
+      data.use_p2p_dictionary = true;
+      data.p2p_dictionary_target_owned = cuda_dictionary_target_owned_;
+      data.p2p_dictionary_power2_microtiles =
+          cuda_dictionary_power2_microtiles_;
+      data.p2p_dictionary =
+          std::move(*p2p_tensor_dictionary_plan_float_);
     } else {
       if (fixed_target_source_indices_.has_value()) {
         data.has_fixed_self_indices = true;
         data.fixed_self_indices = fixed_sorted_self_indices_;
       }
-      if (!periodic_.enabled &&
+      if (!periodic_.enabled && bsr_identity_compatible &&
           estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
               cuda_p2p_bsr_max_bytes_) {
         data.use_p2p_bsr = true;
@@ -2270,7 +2621,7 @@ void UniformFmm::build_cuda_full_plan() {
       data.has_fixed_self_indices = true;
       data.fixed_self_indices = fixed_sorted_self_indices_;
     }
-    if (!periodic_.enabled &&
+    if (!periodic_.enabled && bsr_identity_compatible &&
         estimate_bsr_bytes(p2p_operator_, sizeof(double)) <=
             cuda_p2p_bsr_max_bytes_) {
       const std::span<const int> bsr_identities =
@@ -2327,8 +2678,10 @@ void UniformFmm::prepare_self_indices(
 
 std::span<const int> UniformFmm::resolve_self_indices(
     const std::span<const int> target_source_indices) const {
-  if (source_geometry_ != SourceGeometry::PointDipole ||
-      target_geometry_ != TargetGeometry::Point) {
+  const bool effective_point_source =
+      source_geometry_ == SourceGeometry::PointDipole ||
+      near_field_source_model_ == SourceModel::PointDipole;
+  if (!effective_point_source) {
     return {};
   }
   if (!fixed_target_source_indices_.has_value()) {
@@ -2350,6 +2703,18 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
                                std::span<PotentialField> results,
                                const OutputFlags output,
                                std::span<const int> target_source_indices) {
+  const bool effective_finite_source =
+      source_geometry_ != SourceGeometry::PointDipole &&
+      near_field_source_model_ == SourceModel::ExactGeometry;
+  const bool effective_finite_target =
+      target_geometry_ != TargetGeometry::Point &&
+      near_field_target_model_ == TargetModel::ExactGeometry;
+  if (has_flag(output, OutputFlags::Potential) &&
+      (effective_finite_source || effective_finite_target)) {
+    throw std::invalid_argument(
+        "near-field potential is unsupported for exact finite geometry; "
+        "request field only or select point near-field models");
+  }
   if (precision_ == StaticPrecision::Float32) {
     std::vector<FloatPotentialField> float_results(results.size());
     evaluate_into_float32(dipole_moments, float_results, output,
@@ -2638,6 +3003,18 @@ void UniformFmm::evaluate_into_float32_impl(
     const std::span<const Moment> dipole_moments,
     const std::span<FloatPotentialField> results, const OutputFlags output,
     std::span<const int> target_source_indices) {
+  const bool effective_finite_source =
+      source_geometry_ != SourceGeometry::PointDipole &&
+      near_field_source_model_ == SourceModel::ExactGeometry;
+  const bool effective_finite_target =
+      target_geometry_ != TargetGeometry::Point &&
+      near_field_target_model_ == TargetModel::ExactGeometry;
+  if (has_flag(output, OutputFlags::Potential) &&
+      (effective_finite_source || effective_finite_target)) {
+    throw std::invalid_argument(
+        "near-field potential is unsupported for exact finite geometry; "
+        "request field only or select point near-field models");
+  }
   if (precision_ != StaticPrecision::Float32) {
     throw std::logic_error("evaluate_into_float32 requires an FP32 FMM plan");
   }

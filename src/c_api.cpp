@@ -197,11 +197,10 @@ void create_same_uniform_cuboid_plan(
         throw std::invalid_argument("cuboid count must be positive");
     }
 
-    options.source_geometry = cdfmm::SourceGeometry::UniformCuboid;
+    options.source_geometry = cdfmm::SourceGeometry::RectangularPrism;
     options.source_sizes = {{hx, hy, hz}};
-    options.target_geometry = cdfmm::TargetGeometry::VolumeAveragedCuboid;
+    options.target_geometry = cdfmm::TargetGeometry::RectangularPrism;
     options.target_sizes = {{hx, hy, hz}};
-    options.use_cuboid_p2m = true;
 
     // Finite cuboid self interactions are physical and are not excluded.
     create_plan(count, x, y, z, count, x, y, z, nullptr, std::move(options),
@@ -281,9 +280,8 @@ int cdfmm_plan_create_uniform_cuboid_sources(
         if (ns == 0 || nt == 0) {
             throw std::invalid_argument("source and target counts must be positive");
         }
-        translated.source_geometry = cdfmm::SourceGeometry::UniformCuboid;
+        translated.source_geometry = cdfmm::SourceGeometry::RectangularPrism;
         translated.source_sizes = {{hx, hy, hz}};
-        translated.use_cuboid_p2m = true;
     create_plan(ns, sx, sy, sz, nt, tx, ty, tz, identity, std::move(translated),
                 plan);
   });

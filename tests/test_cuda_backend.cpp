@@ -202,10 +202,10 @@ TEST_CASE("CUDA dense cuboid direct plan agrees with portable CPU",
     for (const StaticPrecision precision : {
              StaticPrecision::Float32, StaticPrecision::Float64}) {
         const DenseDirectPlan cpu(
-            positions, positions, SourceGeometry::UniformCuboid,
+            positions, positions, SourceGeometry::RectangularPrism,
             TargetGeometry::Point, cube, {}, {}, precision);
         CudaDenseDirectPlan cuda(
-            positions, positions, SourceGeometry::UniformCuboid,
+            positions, positions, SourceGeometry::RectangularPrism,
             TargetGeometry::Point, cube, {}, {}, precision);
 
         const auto expected = cpu.evaluate(
@@ -773,13 +773,13 @@ TEST_CASE("CUDA BSR supports finite cuboid point and cuboid self fields",
   const std::array<CuboidSize, 1> target_sizes{{{0.11, 0.14, 0.09}}};
 
   for (const TargetGeometry target_geometry :
-       {TargetGeometry::Point, TargetGeometry::VolumeAveragedCuboid}) {
+       {TargetGeometry::Point, TargetGeometry::RectangularPrism}) {
     const std::span<const CuboidSize> target_geometry_sizes =
         target_geometry == TargetGeometry::Point
             ? std::span<const CuboidSize>{}
             : std::span<const CuboidSize>(target_sizes);
     const DenseDirectPlan direct(
-        positions, positions, SourceGeometry::UniformCuboid, target_geometry,
+        positions, positions, SourceGeometry::RectangularPrism, target_geometry,
         source_sizes, target_geometry_sizes, {}, StaticPrecision::Float64);
     const auto expected = direct.evaluate(moments, DenseDirectBackend::Portable);
 
@@ -791,10 +791,10 @@ TEST_CASE("CUDA BSR supports finite cuboid point and cuboid self fields",
     options.tree.max_level = 0;
     options.tree.root_centre = Vec3{};
     options.tree.root_half_width = 0.5;
-    options.source_geometry = SourceGeometry::UniformCuboid;
+    options.source_geometry = SourceGeometry::RectangularPrism;
     options.source_sizes = {source_sizes.front()};
     options.target_geometry = target_geometry;
-    if (target_geometry == TargetGeometry::VolumeAveragedCuboid) {
+    if (target_geometry == TargetGeometry::RectangularPrism) {
       options.target_sizes = {target_sizes.front()};
     }
 

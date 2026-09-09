@@ -708,7 +708,11 @@ CudaDenseDirectPlan::CudaDenseDirectPlan(
     const std::span<const CuboidSize> source_sizes,
     const std::span<const CuboidSize> target_sizes,
     const std::span<const int> target_source_indices,
-    const StaticPrecision static_precision)
+    const StaticPrecision static_precision,
+    const std::span<const Tetrahedron> source_tetrahedra,
+    const std::span<const Tetrahedron> target_tetrahedra,
+    const SourceModel source_model,
+    const TargetModel target_model)
     : implementation_(new Implementation{})
 {
   try {
@@ -747,7 +751,8 @@ CudaDenseDirectPlan::CudaDenseDirectPlan(
     const DenseDirectPlan host_plan(
         source_positions, target_positions, source_geometry, target_geometry,
         source_sizes, target_sizes, target_source_indices,
-        static_precision);
+        static_precision, source_tetrahedra, target_tetrahedra, source_model,
+        target_model);
 
     check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
                "create CUDA dense direct stream");
@@ -1688,8 +1693,6 @@ struct CudaLeafP2PDeviceView {
 constexpr int cuda_dictionary_warp_size = 32;
 constexpr int cuda_dictionary_target_tile_size = 32;
 constexpr int cuda_dictionary_max_source_warps = 8;
-constexpr int cuda_dictionary_max_threads_per_block =
-    cuda_dictionary_warp_size * cuda_dictionary_max_source_warps;
 
 constexpr int cuda_dictionary_target_owned_threads = 256;
 
@@ -1699,6 +1702,14 @@ constexpr int cuda_dictionary_target_owned_threads = 256;
 template <typename Scalar>
 struct CudaPackedTensor6;
 
+// CUDA 13 split double4 into explicitly aligned variants.  Keep the legacy
+// spelling for older toolkits, where the alignment-specific type is absent.
+#if CUDART_VERSION >= 13000
+using CudaDouble4 = double4_16a;
+#else
+using CudaDouble4 = double4;
+#endif
+
 template <>
 struct alignas(16) CudaPackedTensor6<float> {
   float4 a;  // xx, xy, xz, yy
@@ -1707,7 +1718,7 @@ struct alignas(16) CudaPackedTensor6<float> {
 
 template <>
 struct alignas(16) CudaPackedTensor6<double> {
-  double4 a;  // xx, xy, xz, yy
+  CudaDouble4 a;  // xx, xy, xz, yy
   double2 b;  // yz, zz
 };
 
@@ -1734,7 +1745,11 @@ static CudaPackedTensor6<double> make_cuda_packed_tensor6(
     const double zz) {
 
   CudaPackedTensor6<double> result{};
+#if CUDART_VERSION >= 13000
+  result.a = make_double4_16a(xx, xy, xz, yy);
+#else
   result.a = make_double4(xx, xy, xz, yy);
+#endif
   result.b = make_double2(yz, zz);
   return result;
 }
@@ -2856,12 +2871,57 @@ struct CudaBsrP2PDeviceView {
   int* source_indices{nullptr};
   Scalar* values{nullptr};
   cusparseHandle_t handle{nullptr};
-  cusparseMatDescr_t descriptor{nullptr};
+  cusparseSpMatDescr_t descriptor{nullptr};
+  cusparseConstDnVecDescr_t input_descriptor{nullptr};
+  cusparseDnVecDescr_t output_descriptor{nullptr};
+  void* workspace{nullptr};
+  std::size_t workspace_size{0};
 };
+
+template <typename Scalar>
+void initialise_bsr_p2p(
+    CudaBsrP2PDeviceView<Scalar>& plan,
+    const void* input_values,
+    void* output_values,
+    const cudaDataType value_type,
+    const char* operation_prefix) {
+  check_cusparse(
+      cusparseCreateBsr(
+          &plan.descriptor, plan.target_count, plan.source_count,
+          plan.interaction_count, 3, 3, plan.row_offsets, plan.source_indices,
+          plan.values, CUSPARSE_INDEX_32I, CUSPARSE_INDEX_32I,
+          CUSPARSE_INDEX_BASE_ZERO, value_type, CUSPARSE_ORDER_ROW),
+      operation_prefix);
+
+  check_cusparse(
+      cusparseCreateConstDnVec(
+          &plan.input_descriptor,
+          static_cast<int64_t>(plan.source_count) * 3, input_values,
+          value_type),
+      "create cuSPARSE BSR input vector descriptor");
+  check_cusparse(
+      cusparseCreateDnVec(
+          &plan.output_descriptor,
+          static_cast<int64_t>(plan.target_count) * 3, output_values,
+          value_type),
+      "create cuSPARSE BSR output vector descriptor");
+
+  constexpr Scalar alpha = static_cast<Scalar>(1);
+  constexpr Scalar beta = static_cast<Scalar>(0);
+  check_cusparse(
+      cusparseSpMV_bufferSize(
+          plan.handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha,
+          plan.descriptor, plan.input_descriptor, &beta, plan.output_descriptor,
+          value_type, CUSPARSE_SPMV_ALG_DEFAULT, &plan.workspace_size),
+      "size cuSPARSE BSR P2P workspace");
+  if (plan.workspace_size != 0) {
+    check_cuda(cudaMalloc(&plan.workspace, plan.workspace_size),
+               "allocate cuSPARSE BSR P2P workspace");
+  }
+}
 
 void launch_bsr_p2p(
     const CudaBsrP2PDeviceView<double>& plan,
-    const Vec3* moments,
     Vec3* fields,
     cudaStream_t stream)
 {
@@ -2882,19 +2942,15 @@ void launch_bsr_p2p(
   check_cusparse(cusparseSetStream(plan.handle, stream),
                  "set cuSPARSE P2P stream");
   check_cusparse(
-      cusparseDbsrmv(
-          plan.handle, CUSPARSE_DIRECTION_ROW,
-          CUSPARSE_OPERATION_NON_TRANSPOSE, plan.target_count,
-          plan.source_count, plan.interaction_count, &alpha, plan.descriptor,
-          plan.values, plan.row_offsets, plan.source_indices, 3,
-          reinterpret_cast<const double*>(moments), &beta,
-          reinterpret_cast<double*>(fields)),
+      cusparseSpMV(
+          plan.handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha,
+          plan.descriptor, plan.input_descriptor, &beta, plan.output_descriptor,
+          CUDA_R_64F, CUSPARSE_SPMV_ALG_DEFAULT, plan.workspace),
       "launch cuSPARSE BSR(3) P2P");
 }
 
 void launch_bsr_p2p(
     const CudaBsrP2PDeviceView<float>& plan,
-    const FloatVec3* moments,
     FloatVec3* fields,
     cudaStream_t stream)
 {
@@ -2916,13 +2972,10 @@ void launch_bsr_p2p(
   check_cusparse(cusparseSetStream(plan.handle, stream),
                  "set FP32 cuSPARSE P2P stream");
   check_cusparse(
-      cusparseSbsrmv(
-          plan.handle, CUSPARSE_DIRECTION_ROW,
-          CUSPARSE_OPERATION_NON_TRANSPOSE, plan.target_count,
-          plan.source_count, plan.interaction_count, &alpha, plan.descriptor,
-          plan.values, plan.row_offsets, plan.source_indices, 3,
-          reinterpret_cast<const float *>(moments), &beta,
-          reinterpret_cast<float *>(fields)),
+      cusparseSpMV(
+          plan.handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha,
+          plan.descriptor, plan.input_descriptor, &beta, plan.output_descriptor,
+          CUDA_R_32F, CUSPARSE_SPMV_ALG_DEFAULT, plan.workspace),
       "launch FP32 cuSPARSE BSR(3) P2P");
 }
 
@@ -3572,19 +3625,13 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan& bsr)
          "upload cuSPARSE BSR values");
   check_cusparse(cusparseCreate(&plan.bsr.handle),
                  "create cuSPARSE P2P handle");
-  check_cusparse(cusparseCreateMatDescr(&plan.bsr.descriptor),
-                 "create cuSPARSE P2P descriptor");
-  check_cusparse(
-      cusparseSetMatType(plan.bsr.descriptor, CUSPARSE_MATRIX_TYPE_GENERAL),
-      "set cuSPARSE P2P matrix type");
-  check_cusparse(
-      cusparseSetMatIndexBase(
-          plan.bsr.descriptor, CUSPARSE_INDEX_BASE_ZERO),
-      "set cuSPARSE P2P index base");
+  initialise_bsr_p2p(plan.bsr, plan.moments, plan.fields, CUDA_R_64F,
+                     "create cuSPARSE P2P BSR descriptor");
 
   plan.statistics.setup_h2d_bytes += row_bytes + index_bytes + tensor_bytes;
   plan.statistics.persistent_device_bytes +=
-      row_bytes + index_bytes + tensor_bytes;
+      row_bytes + index_bytes + tensor_bytes + plan.bsr.workspace_size;
+  plan.statistics.p2p_scratch_bytes = plan.bsr.workspace_size;
   plan.statistics.p2p_interaction_count = bsr.source_indices.size();
   plan.statistics.p2p_tensor_bytes = tensor_bytes;
   plan.statistics.p2p_index_bytes = index_bytes;
@@ -3630,17 +3677,13 @@ CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PBsrPlan &bsr)
          "upload FP32 cuSPARSE BSR values");
   check_cusparse(cusparseCreate(&plan.bsr_float.handle),
                  "create FP32 cuSPARSE P2P handle");
-  check_cusparse(cusparseCreateMatDescr(&plan.bsr_float.descriptor),
-                 "create FP32 cuSPARSE P2P descriptor");
-  check_cusparse(cusparseSetMatType(plan.bsr_float.descriptor,
-                                    CUSPARSE_MATRIX_TYPE_GENERAL),
-                 "set FP32 cuSPARSE P2P matrix type");
-  check_cusparse(cusparseSetMatIndexBase(plan.bsr_float.descriptor,
-                                         CUSPARSE_INDEX_BASE_ZERO),
-                 "set FP32 cuSPARSE P2P index base");
+  initialise_bsr_p2p(plan.bsr_float, plan.moments_float, plan.fields_float,
+                     CUDA_R_32F,
+                     "create FP32 cuSPARSE P2P BSR descriptor");
   plan.statistics.setup_h2d_bytes += row_bytes + index_bytes + tensor_bytes;
   plan.statistics.persistent_device_bytes +=
-      row_bytes + index_bytes + tensor_bytes;
+      row_bytes + index_bytes + tensor_bytes + plan.bsr_float.workspace_size;
+  plan.statistics.p2p_scratch_bytes = plan.bsr_float.workspace_size;
   plan.statistics.p2p_interaction_count = bsr.source_indices.size();
   plan.statistics.p2p_tensor_bytes = tensor_bytes;
   plan.statistics.p2p_index_bytes = index_bytes;
@@ -3675,8 +3718,14 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaFree(plan.dictionary.microtile_target_offsets);
   cudaFree(plan.dictionary.tensors);
   cudaFree(plan.dictionary.tokens);
+  if (plan.bsr.input_descriptor != nullptr) {
+    cusparseDestroyDnVec(plan.bsr.input_descriptor);
+  }
+  if (plan.bsr.output_descriptor != nullptr) {
+    cusparseDestroyDnVec(plan.bsr.output_descriptor);
+  }
   if (plan.bsr.descriptor != nullptr) {
-    cusparseDestroyMatDescr(plan.bsr.descriptor);
+    cusparseDestroySpMat(plan.bsr.descriptor);
   }
   if (plan.bsr.handle != nullptr) {
     cusparseDestroy(plan.bsr.handle);
@@ -3684,6 +3733,7 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaFree(plan.bsr.row_offsets);
   cudaFree(plan.bsr.source_indices);
   cudaFree(plan.bsr.values);
+  cudaFree(plan.bsr.workspace);
   cudaFree(plan.canonical_float.row_offsets);
   cudaFree(plan.canonical_float.blocks);
   cudaFree(plan.compact_float.row_offsets);
@@ -3705,8 +3755,14 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaFree(plan.dictionary_float.microtile_target_offsets);
   cudaFree(plan.dictionary_float.tensors);
   cudaFree(plan.dictionary_float.tokens);
+  if (plan.bsr_float.input_descriptor != nullptr) {
+    cusparseDestroyDnVec(plan.bsr_float.input_descriptor);
+  }
+  if (plan.bsr_float.output_descriptor != nullptr) {
+    cusparseDestroyDnVec(plan.bsr_float.output_descriptor);
+  }
   if (plan.bsr_float.descriptor != nullptr) {
-    cusparseDestroyMatDescr(plan.bsr_float.descriptor);
+    cusparseDestroySpMat(plan.bsr_float.descriptor);
   }
   if (plan.bsr_float.handle != nullptr) {
     cusparseDestroy(plan.bsr_float.handle);
@@ -3714,6 +3770,7 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaFree(plan.bsr_float.row_offsets);
   cudaFree(plan.bsr_float.source_indices);
   cudaFree(plan.bsr_float.values);
+  cudaFree(plan.bsr_float.workspace);
   cudaFree(plan.moments);
   cudaFree(plan.self_indices);
   cudaFree(plan.fields);
@@ -3791,7 +3848,7 @@ void CudaP2PPlan::begin_evaluate(
                                    plan.stream);
       break;
     case Implementation::Kind::Bsr:
-      launch_bsr_p2p(plan.bsr, plan.moments, plan.fields, plan.stream);
+      launch_bsr_p2p(plan.bsr, plan.fields, plan.stream);
       break;
     }
     check_cuda(cudaEventRecord(plan.kernel, plan.stream), "record P2P kernel");
@@ -3902,8 +3959,7 @@ void CudaP2PPlan::begin_evaluate(
                                    plan.fields_float, plan.stream);
       break;
     case Implementation::Kind::Bsr:
-      launch_bsr_p2p(plan.bsr_float, plan.moments_float, plan.fields_float,
-                     plan.stream);
+      launch_bsr_p2p(plan.bsr_float, plan.fields_float, plan.stream);
       break;
     }
     check_cuda(cudaEventRecord(plan.kernel, plan.stream),
@@ -4183,16 +4239,6 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
              data.p2p_bsr.values.size() * sizeof(double));
     check_cusparse(cusparseCreate(&plan.p2p_bsr.handle),
                    "create full FMM cuSPARSE P2P handle");
-    check_cusparse(cusparseCreateMatDescr(&plan.p2p_bsr.descriptor),
-                   "create full FMM cuSPARSE P2P descriptor");
-    check_cusparse(
-        cusparseSetMatType(plan.p2p_bsr.descriptor,
-                           CUSPARSE_MATRIX_TYPE_GENERAL),
-        "set full FMM cuSPARSE P2P matrix type");
-    check_cusparse(
-        cusparseSetMatIndexBase(plan.p2p_bsr.descriptor,
-                                CUSPARSE_INDEX_BASE_ZERO),
-        "set full FMM cuSPARSE P2P index base");
   }
   allocate(&plan.entries, entries.size() * sizeof(StaticOperatorEntry));
   allocate(&plan.m2m_matrices,
@@ -4210,6 +4256,12 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   allocate(&plan.far_fields, target_bytes);
   allocate(&plan.near_fields, target_bytes);
   allocate(&plan.final_fields, target_bytes);
+  if (plan.use_p2p_bsr) {
+    initialise_bsr_p2p(plan.p2p_bsr, plan.sorted_moments, plan.near_fields,
+                       CUDA_R_64F,
+                       "create full FMM cuSPARSE P2P BSR descriptor");
+    plan.statistics.p2p_scratch_bytes = plan.p2p_bsr.workspace_size;
+  }
   check_cuda(cudaMallocHost(&plan.pinned_moments,
                             std::max(source_bytes, std::size_t{1})),
              "allocate pinned full FMM moments");
@@ -4297,7 +4349,7 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
                data.has_fixed_self_indices
            ? 0
            : static_cast<std::size_t>(plan.target_count) * sizeof(int)) +
-      plan.statistics.m2l_scratch_bytes;
+      plan.statistics.m2l_scratch_bytes + plan.statistics.p2p_scratch_bytes;
   plan.statistics.plan_generation_count = 1;
   plan.statistics.static_upload_count = 1;
     plan.statistics.static_m2l_upload_count = 1;
@@ -4312,9 +4364,10 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
         data.p2p_bsr.values.size() * sizeof(double);
     plan.statistics.p2p_index_bytes =
         data.p2p_bsr.source_indices.size() * sizeof(int);
-    plan.statistics.p2p_row_metadata_bytes =
-        data.p2p_bsr.row_offsets.size() * sizeof(int);
+      plan.statistics.p2p_row_metadata_bytes =
+          data.p2p_bsr.row_offsets.size() * sizeof(int);
     plan.statistics.p2p_identity_bytes = 0;
+    plan.statistics.p2p_scratch_bytes = plan.p2p_bsr.workspace_size;
     plan.statistics.p2p_threads_per_block = 0;
   } else {
     plan.statistics.p2p_tensor_bytes =
@@ -4427,14 +4480,6 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
              data.p2p_bsr.values.size() * sizeof(float));
     check_cusparse(cusparseCreate(&plan.p2p_bsr_float.handle),
                    "create FP32 full FMM cuSPARSE handle");
-    check_cusparse(cusparseCreateMatDescr(&plan.p2p_bsr_float.descriptor),
-                   "create FP32 full FMM cuSPARSE descriptor");
-    check_cusparse(cusparseSetMatType(plan.p2p_bsr_float.descriptor,
-                                      CUSPARSE_MATRIX_TYPE_GENERAL),
-                   "set FP32 full FMM cuSPARSE matrix type");
-    check_cusparse(cusparseSetMatIndexBase(plan.p2p_bsr_float.descriptor,
-                                           CUSPARSE_INDEX_BASE_ZERO),
-                   "set FP32 full FMM cuSPARSE index base");
   }
   allocate(&plan.entries_float,
            entries.size() * sizeof(FloatStaticOperatorEntry));
@@ -4453,6 +4498,12 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
   allocate(&plan.far_fields_float, target_bytes);
   allocate(&plan.near_fields_float, target_bytes);
   allocate(&plan.final_fields_float, target_bytes);
+  if (plan.use_p2p_bsr) {
+    initialise_bsr_p2p(plan.p2p_bsr_float, plan.sorted_moments_float,
+                       plan.near_fields_float, CUDA_R_32F,
+                       "create FP32 full FMM cuSPARSE P2P BSR descriptor");
+    plan.statistics.p2p_scratch_bytes = plan.p2p_bsr_float.workspace_size;
+  }
   check_cuda(cudaMallocHost(&plan.pinned_moments_float,
                             std::max(source_bytes, std::size_t{1})),
              "allocate pinned FP32 full FMM moments");
@@ -4545,7 +4596,7 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
                data.has_fixed_self_indices
            ? 0
            : static_cast<std::size_t>(plan.target_count) * sizeof(int)) +
-      plan.statistics.m2l_scratch_bytes;
+      plan.statistics.m2l_scratch_bytes + plan.statistics.p2p_scratch_bytes;
   plan.statistics.plan_generation_count = 1;
   plan.statistics.static_upload_count = 1;
   plan.statistics.static_m2l_upload_count = 1;
@@ -4560,8 +4611,9 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
         data.p2p_bsr.values.size() * sizeof(float);
     plan.statistics.p2p_index_bytes =
         data.p2p_bsr.source_indices.size() * sizeof(int);
-    plan.statistics.p2p_row_metadata_bytes =
-        data.p2p_bsr.row_offsets.size() * sizeof(int);
+      plan.statistics.p2p_row_metadata_bytes =
+          data.p2p_bsr.row_offsets.size() * sizeof(int);
+    plan.statistics.p2p_scratch_bytes = plan.p2p_bsr_float.workspace_size;
     plan.statistics.p2p_threads_per_block = 0;
   } else {
     plan.statistics.p2p_tensor_bytes =
@@ -4587,8 +4639,14 @@ CudaFullPlan::~CudaFullPlan() {
     cudaFree(plan.self_indices);
   cudaFree(plan.p2p.row_offsets);
   cudaFree(plan.p2p.blocks);
+  if (plan.p2p_bsr.input_descriptor != nullptr) {
+    cusparseDestroyDnVec(plan.p2p_bsr.input_descriptor);
+  }
+  if (plan.p2p_bsr.output_descriptor != nullptr) {
+    cusparseDestroyDnVec(plan.p2p_bsr.output_descriptor);
+  }
   if (plan.p2p_bsr.descriptor != nullptr) {
-    cusparseDestroyMatDescr(plan.p2p_bsr.descriptor);
+    cusparseDestroySpMat(plan.p2p_bsr.descriptor);
   }
   if (plan.p2p_bsr.handle != nullptr) {
     cusparseDestroy(plan.p2p_bsr.handle);
@@ -4596,6 +4654,7 @@ CudaFullPlan::~CudaFullPlan() {
   cudaFree(plan.p2p_bsr.row_offsets);
   cudaFree(plan.p2p_bsr.source_indices);
   cudaFree(plan.p2p_bsr.values);
+  cudaFree(plan.p2p_bsr.workspace);
   cudaFree(plan.p2p_dictionary.target_begins);
   cudaFree(plan.p2p_dictionary.target_counts);
   cudaFree(plan.p2p_dictionary.target_leaf_for_target);
@@ -4609,8 +4668,14 @@ CudaFullPlan::~CudaFullPlan() {
   cudaFree(plan.p2p_dictionary.tokens);
   cudaFree(plan.p2p_float.row_offsets);
   cudaFree(plan.p2p_float.blocks);
+  if (plan.p2p_bsr_float.input_descriptor != nullptr) {
+    cusparseDestroyDnVec(plan.p2p_bsr_float.input_descriptor);
+  }
+  if (plan.p2p_bsr_float.output_descriptor != nullptr) {
+    cusparseDestroyDnVec(plan.p2p_bsr_float.output_descriptor);
+  }
   if (plan.p2p_bsr_float.descriptor != nullptr) {
-    cusparseDestroyMatDescr(plan.p2p_bsr_float.descriptor);
+    cusparseDestroySpMat(plan.p2p_bsr_float.descriptor);
   }
   if (plan.p2p_bsr_float.handle != nullptr) {
     cusparseDestroy(plan.p2p_bsr_float.handle);
@@ -4618,6 +4683,7 @@ CudaFullPlan::~CudaFullPlan() {
   cudaFree(plan.p2p_bsr_float.row_offsets);
   cudaFree(plan.p2p_bsr_float.source_indices);
   cudaFree(plan.p2p_bsr_float.values);
+  cudaFree(plan.p2p_bsr_float.workspace);
   cudaFree(plan.p2p_dictionary_float.target_begins);
   cudaFree(plan.p2p_dictionary_float.target_counts);
   cudaFree(plan.p2p_dictionary_float.target_leaf_for_target);
@@ -4734,7 +4800,9 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
                                threads, 0, plan.far_field_stream>>>(
           plan.moments, plan.source_permutation, plan.source_count,
           plan.sorted_moments);
+      permutation_range.end();
     }
+    transfer_range.end();
   }
   check_cuda(cudaEventRecord(plan.moments_ready, plan.far_field_stream),
              "record full FMM moments ready");
@@ -4753,12 +4821,12 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
           plan.p2p_dictionary, plan.sorted_moments, plan.near_fields,
           plan.near_field_stream);
     } else if (plan.use_p2p_bsr) {
-      launch_bsr_p2p(plan.p2p_bsr, plan.sorted_moments, plan.near_fields,
-                     plan.near_field_stream);
+      launch_bsr_p2p(plan.p2p_bsr, plan.near_fields, plan.near_field_stream);
     } else {
       launch_static_p2p(plan.p2p, plan.sorted_moments, plan.self_indices,
                         plan.near_fields, plan.near_field_stream);
     }
+    p2p_range.end();
   }
   check_cuda(cudaEventRecord(plan.p2p_complete, plan.near_field_stream),
              "record full FMM P2P completion");
@@ -4773,6 +4841,7 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
     launch_stage(plan.p2m_stage,
                  reinterpret_cast<double *>(plan.sorted_moments),
                  plan.multipoles);
+    p2m_range.end();
   }
   check_cuda(cudaEventRecord(plan.p2m_complete, plan.far_field_stream),
              "record P2M");
@@ -4861,6 +4930,7 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
                                  plan.far_field_stream),
                  "download full FMM fields");
     }
+    transfer_range.end();
   }
   check_cuda(cudaEventRecord(plan.d2h_complete, plan.far_field_stream),
              "record field download");
@@ -4973,8 +5043,8 @@ void CudaFullPlan::evaluate(
         plan.p2p_dictionary_float, plan.sorted_moments_float,
         plan.near_fields_float, plan.near_field_stream);
   } else if (plan.use_p2p_bsr) {
-    launch_bsr_p2p(plan.p2p_bsr_float, plan.sorted_moments_float,
-                   plan.near_fields_float, plan.near_field_stream);
+    launch_bsr_p2p(plan.p2p_bsr_float, plan.near_fields_float,
+                   plan.near_field_stream);
   } else {
     launch_static_p2p(plan.p2p_float, plan.sorted_moments_float,
                       plan.self_indices, plan.near_fields_float,

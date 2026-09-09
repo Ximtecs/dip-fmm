@@ -132,8 +132,8 @@ TEST_CASE("periodic spherical cuboids preserve whole-cell translations")
     options.expansion_basis = ExpansionBasis::Spherical;
     options.tree.max_level = 1;
     options.periodic.enabled = true;
-    options.source_geometry = SourceGeometry::UniformCuboid;
-    options.target_geometry = TargetGeometry::VolumeAveragedCuboid;
+    options.source_geometry = SourceGeometry::RectangularPrism;
+    options.target_geometry = TargetGeometry::RectangularPrism;
     options.source_sizes = {CuboidSize{0.05, 0.05, 0.05}};
     options.target_sizes = {CuboidSize{0.05, 0.05, 0.05}};
 

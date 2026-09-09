@@ -28,7 +28,9 @@
 namespace cdfmm {
 namespace {
 
-constexpr std::uint32_t kCacheSchemaVersion = 3;
+// Version 4 adds independent near/far source/target model selectors and
+// representative-relative tetrahedron records to the geometry identity.
+constexpr std::uint32_t kCacheSchemaVersion = 4;
 constexpr std::uint32_t kOperatorVersion = 1;
 constexpr std::uint32_t kEndianMarker = 0x01020304U;
 constexpr std::uint32_t kChecksumAlgorithm = 2U; // fast 64-bit payload checksum
@@ -1148,8 +1150,10 @@ void UniformFmm::initialise_cache_keys(const UniformFmmOptions& options) {
   hash_value(hash, tree_->leaf_level());
   hash_value(hash, static_cast<std::uint32_t>(source_geometry_));
   hash_value(hash, static_cast<std::uint32_t>(target_geometry_));
-  hash_value(hash, use_cuboid_p2m_);
-  hash_value(hash, use_cuboid_l2p_);
+  hash_value(hash, static_cast<std::uint32_t>(near_field_source_model_));
+  hash_value(hash, static_cast<std::uint32_t>(near_field_target_model_));
+  hash_value(hash, static_cast<std::uint32_t>(far_field_source_model_));
+  hash_value(hash, static_cast<std::uint32_t>(far_field_target_model_));
   // Derived P2P execution packing is part of the plan identity. The cached
   // canonical operator remains reusable, while the cache key prevents a
   // reduced-symmetry request from being reported as a default packing.
@@ -1199,8 +1203,45 @@ void UniformFmm::initialise_cache_keys(const UniformFmmOptions& options) {
       hash_value(hash, canonical_coordinate(size.hz));
     }
   };
+  const auto hash_tetrahedra = [&hash](
+                                  const std::vector<Tetrahedron>& tetrahedra) {
+    hash_value(hash, static_cast<std::uint64_t>(tetrahedra.size()));
+    // Keep a common record compact while retaining one-per-particle geometry
+    // exactly. Coordinates are representative-relative and already in the
+    // topology-normalised coordinate system at this point.
+    if (!tetrahedra.empty() && std::all_of(
+            tetrahedra.begin() + 1, tetrahedra.end(),
+            [&tetrahedra](const Tetrahedron& tetrahedron) {
+              for (std::size_t vertex = 0; vertex < 4; ++vertex) {
+                const Vec3& lhs = tetrahedron.vertices[vertex];
+                const Vec3& rhs = tetrahedra.front().vertices[vertex];
+                if (lhs.x != rhs.x || lhs.y != rhs.y || lhs.z != rhs.z) {
+                  return false;
+                }
+              }
+              return true;
+            })) {
+      hash_value(hash, std::uint32_t{0x53414d45U}); // "SAME"
+      for (const Vec3& vertex : tetrahedra.front().vertices) {
+        hash_value(hash, canonical_coordinate(vertex.x));
+        hash_value(hash, canonical_coordinate(vertex.y));
+        hash_value(hash, canonical_coordinate(vertex.z));
+      }
+      return;
+    }
+    hash_value(hash, std::uint32_t{0x54455452U}); // "TETR"
+    for (const Tetrahedron& tetrahedron : tetrahedra) {
+      for (const Vec3& vertex : tetrahedron.vertices) {
+        hash_value(hash, canonical_coordinate(vertex.x));
+        hash_value(hash, canonical_coordinate(vertex.y));
+        hash_value(hash, canonical_coordinate(vertex.z));
+      }
+    }
+  };
   hash_sizes(sorted_source_sizes_);
   hash_sizes(sorted_target_sizes_);
+  hash_tetrahedra(sorted_source_tetrahedra_);
+  hash_tetrahedra(sorted_target_tetrahedra_);
   hash_permutation(hash, tree_->source_permutation(),
                    tree_->sorted_source_positions(), source_grid);
   hash_permutation(hash, tree_->target_permutation(),
@@ -1219,7 +1260,7 @@ void UniformFmm::initialise_cache_keys(const UniformFmmOptions& options) {
        << tree_->leaf_level() << '_' << precision_name(precision_) << "_N_"
        << tree_->sorted_source_positions().size() << "_p2p_"
        << (use_reduced_symmetry_p2p_ ? "reduced_symmetry" : "canonical")
-       << '_' << digest << "_v03.bin";
+       << '_' << digest << "_v04.bin";
   geometry_cache_key_ = plan.str();
   static_plan_statistics_.geometry_hash.add(
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start)

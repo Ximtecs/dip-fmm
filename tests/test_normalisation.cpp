@@ -151,13 +151,13 @@ TEST_CASE("cuboid P2P and full FMM use complete scale-independent geometry",
     options.precision = StaticPrecision::Float64;
     options.expansion_order = 6;
     options.tree.max_level = depth;
-    options.source_geometry = SourceGeometry::UniformCuboid;
-    options.target_geometry = TargetGeometry::VolumeAveragedCuboid;
+  options.source_geometry = SourceGeometry::RectangularPrism;
+  options.target_geometry = TargetGeometry::RectangularPrism;
     options.source_sizes = source_sizes;
     options.target_sizes = target_sizes;
     UniformFmm reference_plan(source_positions, target_positions, options);
     const auto reference = reference_plan.evaluate_float64(
-        moments, OutputFlags::Both);
+        moments, OutputFlags::Field);
 
     for (const double scale : {1.0e-3, 1.0e3}) {
       UniformFmmOptions transformed_options = options;
@@ -172,7 +172,7 @@ TEST_CASE("cuboid P2P and full FMM use complete scale-independent geometry",
               reference_plan.geometry_cache_key());
       const auto transformed = transformed_plan.evaluate_float64(
           transform_moments(moments, scale),
-          OutputFlags::Both);
+          OutputFlags::Field);
       require_invariant(reference, transformed, scale, 3.0e-10);
     }
   }

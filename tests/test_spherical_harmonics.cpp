@@ -337,9 +337,9 @@ TEST_CASE("spherical plans accept finite cuboid source and target geometry")
   UniformFmmOptions options;
   options.expansion_basis = ExpansionBasis::Spherical;
   options.precision = StaticPrecision::Float64;
-  options.source_geometry = SourceGeometry::UniformCuboid;
+  options.source_geometry = SourceGeometry::RectangularPrism;
   options.source_sizes = {{1.0, 1.0, 1.0}};
-  options.target_geometry = TargetGeometry::VolumeAveragedCuboid;
+  options.target_geometry = TargetGeometry::RectangularPrism;
   options.target_sizes = options.source_sizes;
   options.backend = ExecutionBackend::CpuStatic;
   options.tree.root_centre = Vec3{};

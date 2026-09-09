@@ -241,12 +241,12 @@ TEST_CASE("geometry and periodic physics participate in cache keys",
   UniformFmm point(positions, targets, point_options);
 
   UniformFmmOptions cuboid_options = point_options;
-  cuboid_options.source_geometry = SourceGeometry::UniformCuboid;
+  cuboid_options.source_geometry = SourceGeometry::RectangularPrism;
   cuboid_options.source_sizes = {{0.05, 0.06, 0.07}};
   UniformFmm cuboid(positions, targets, cuboid_options);
   REQUIRE(cuboid.geometry_cache_key() != point.geometry_cache_key());
 
-  cuboid_options.use_cuboid_p2m = false;
+  cuboid_options.far_field_source_model = SourceModel::PointDipole;
   UniformFmm point_far_field(positions, targets, cuboid_options);
   REQUIRE(point_far_field.geometry_cache_key() != cuboid.geometry_cache_key());
 
@@ -262,6 +262,44 @@ TEST_CASE("geometry and periodic physics participate in cache keys",
   UniformFmm changed_tolerance(positions, targets, periodic_options);
   REQUIRE(changed_tolerance.periodic_cache_key() != periodic.periodic_cache_key());
   REQUIRE(changed_tolerance.geometry_cache_key() != periodic.geometry_cache_key());
+}
+
+TEST_CASE("all geometry model selectors and tetra records participate in cache keys",
+          "[cache][geometry]") {
+  TemporaryCache cache;
+  UniformFmmOptions point_options = cache_options();
+  point_options.enable_cache = false;
+  point_options.near_field_source_model = SourceModel::PointDipole;
+  point_options.near_field_target_model = TargetModel::Point;
+  point_options.far_field_source_model = SourceModel::PointDipole;
+  point_options.far_field_target_model = TargetModel::Point;
+  UniformFmm point(positions, targets, point_options);
+
+  UniformFmmOptions changed = point_options;
+  changed.near_field_source_model = SourceModel::ExactGeometry;
+  REQUIRE(UniformFmm(positions, targets, changed).geometry_cache_key() !=
+          point.geometry_cache_key());
+  changed = point_options;
+  changed.near_field_target_model = TargetModel::ExactGeometry;
+  REQUIRE(UniformFmm(positions, targets, changed).geometry_cache_key() !=
+          point.geometry_cache_key());
+  changed = point_options;
+  changed.far_field_source_model = SourceModel::ExactGeometry;
+  REQUIRE(UniformFmm(positions, targets, changed).geometry_cache_key() !=
+          point.geometry_cache_key());
+  changed = point_options;
+  changed.far_field_target_model = TargetModel::ExactGeometry;
+  REQUIRE(UniformFmm(positions, targets, changed).geometry_cache_key() !=
+          point.geometry_cache_key());
+
+  const Tetrahedron tetrahedron{std::array<Vec3, 4>{
+      Vec3{-0.25, -0.25, -0.25}, Vec3{0.75, -0.25, -0.25},
+      Vec3{-0.25, 0.75, -0.25}, Vec3{-0.25, -0.25, 0.75}}};
+  changed = point_options;
+  changed.source_geometry = SourceGeometry::Tetrahedron;
+  changed.source_tetrahedra = {tetrahedron};
+  UniformFmm tetrahedral(positions, targets, changed);
+  REQUIRE(tetrahedral.geometry_cache_key() != point.geometry_cache_key());
 }
 
 TEST_CASE("corrupt and incompatible caches rebuild safely", "[cache]") {

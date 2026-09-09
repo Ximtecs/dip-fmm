@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <numeric>
@@ -14,6 +15,8 @@
 
 #include "cdfmm/operators.hpp"
 #include "cdfmm/adaptive_tree.hpp"
+#include "cdfmm/rectangular_prism.hpp"
+#include "cdfmm/tetrahedron.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
 
@@ -22,6 +25,383 @@
 #endif
 
 using namespace cdfmm;
+
+namespace {
+
+Tetrahedron test_tetrahedron()
+{
+    return Tetrahedron{
+        std::array<Vec3, 4>{
+            Vec3{-0.18, -0.12, -0.10},
+            Vec3{0.22, -0.10, -0.08},
+            Vec3{-0.06, 0.24, -0.09},
+            Vec3{0.02, -0.02, 0.27}}};
+}
+
+Vec3 apply_pair_tensor(const PairTensor& tensor, const Vec3& moment)
+{
+    return {tensor.xx * moment.x + tensor.xy * moment.y + tensor.xz * moment.z,
+            tensor.xy * moment.x + tensor.yy * moment.y + tensor.yz * moment.z,
+            tensor.xz * moment.x + tensor.yz * moment.y + tensor.zz * moment.z};
+}
+
+} // namespace
+
+TEST_CASE("UniformFmm evaluates an exact tetrahedron source", "[uniform_fmm][tetrahedron]")
+{
+    const Tetrahedron tetrahedron = test_tetrahedron();
+    const Vec3 source{0.0, 0.0, 0.0};
+    const Vec3 target{0.7, -0.2, 0.3};
+    const Vec3 moment{0.31, -0.27, 0.44};
+
+    UniformFmmOptions options;
+    options.backend = ExecutionBackend::CpuStatic;
+    options.precision = StaticPrecision::Float64;
+    options.expansion_basis = ExpansionBasis::Cartesian;
+    options.expansion_order = 4;
+    options.tree.max_level = 0;
+    options.source_geometry = SourceGeometry::Tetrahedron;
+    options.source_tetrahedra = {tetrahedron};
+
+    UniformFmm fmm(std::vector<Vec3>{source}, std::vector<Vec3>{target},
+                   options);
+    const auto result = fmm.evaluate(std::vector<Vec3>{moment},
+                                     OutputFlags::Field);
+    const PairTensor tensor = tetrahedron_point_tensor(target - source,
+                                                        tetrahedron);
+    const Vec3 expected{
+        tensor.xx * moment.x + tensor.xy * moment.y + tensor.xz * moment.z,
+        tensor.xy * moment.x + tensor.yy * moment.y + tensor.yz * moment.z,
+        tensor.xz * moment.x + tensor.yz * moment.y + tensor.zz * moment.z};
+    REQUIRE(result[0].H.x == Catch::Approx(expected.x).margin(2.0e-12));
+    REQUIRE(result[0].H.y == Catch::Approx(expected.y).margin(2.0e-12));
+    REQUIRE(result[0].H.z == Catch::Approx(expected.z).margin(2.0e-12));
+}
+
+TEST_CASE("UniformFmm retains exact finite source self blocks with identities",
+          "[uniform_fmm][p2p][self][geometry]")
+{
+    const std::vector<Vec3> positions{{0.0, 0.0, 0.0}};
+    const std::vector<int> identities{0};
+
+    SECTION("rectangular prism source")
+    {
+        const RectangularPrism prism{0.2, 0.2, 0.2};
+        const Vec3 moment{prism.volume(), -2.0 * prism.volume(),
+                          0.5 * prism.volume()};
+        UniformFmmOptions options;
+        options.backend = ExecutionBackend::CpuStatic;
+        options.precision = StaticPrecision::Float64;
+        options.expansion_basis = ExpansionBasis::Cartesian;
+        options.expansion_order = 4;
+        options.tree.max_level = 0;
+        options.source_geometry = SourceGeometry::RectangularPrism;
+        options.source_sizes = {prism};
+        options.target_geometry = TargetGeometry::Point;
+        options.near_field_source_model = SourceModel::ExactGeometry;
+        options.near_field_target_model = TargetModel::Point;
+        options.far_field_source_model = SourceModel::PointDipole;
+        options.far_field_target_model = TargetModel::Point;
+        options.fixed_target_source_indices = identities;
+
+        UniformFmm fmm(positions, positions, options);
+        const auto result = fmm.evaluate(std::vector<Vec3>{moment},
+                                         OutputFlags::Field, identities);
+        const Vec3 expected = apply_pair_tensor(
+            rectangular_prism_point_tensor({}, prism), moment);
+        REQUIRE(std::isfinite(result[0].H.x));
+        REQUIRE(std::isfinite(result[0].H.y));
+        REQUIRE(std::isfinite(result[0].H.z));
+        REQUIRE(std::abs(result[0].H.x) + std::abs(result[0].H.y) +
+                    std::abs(result[0].H.z) >
+                1.0e-12);
+        REQUIRE(result[0].H.x == Catch::Approx(expected.x).margin(3.0e-12));
+        REQUIRE(result[0].H.y == Catch::Approx(expected.y).margin(3.0e-12));
+        REQUIRE(result[0].H.z == Catch::Approx(expected.z).margin(3.0e-12));
+
+        options.fixed_target_source_indices.reset();
+        UniformFmm dynamic_map_fmm(positions, positions, options);
+        const auto dynamic_result = dynamic_map_fmm.evaluate(
+            std::vector<Vec3>{moment}, OutputFlags::Field, identities);
+        REQUIRE(dynamic_result[0].H.x ==
+                Catch::Approx(expected.x).margin(3.0e-12));
+        REQUIRE(dynamic_result[0].H.y ==
+                Catch::Approx(expected.y).margin(3.0e-12));
+        REQUIRE(dynamic_result[0].H.z ==
+                Catch::Approx(expected.z).margin(3.0e-12));
+    }
+
+    SECTION("tetrahedron source")
+    {
+        const Tetrahedron tetrahedron = test_tetrahedron();
+        const Vec3 moment{0.31, -0.27, 0.44};
+        UniformFmmOptions options;
+        options.backend = ExecutionBackend::CpuStatic;
+        options.precision = StaticPrecision::Float64;
+        options.expansion_basis = ExpansionBasis::Cartesian;
+        options.expansion_order = 4;
+        options.tree.max_level = 0;
+        options.source_geometry = SourceGeometry::Tetrahedron;
+        options.source_tetrahedra = {tetrahedron};
+        options.target_geometry = TargetGeometry::Point;
+        options.near_field_source_model = SourceModel::ExactGeometry;
+        options.near_field_target_model = TargetModel::Point;
+        options.far_field_source_model = SourceModel::PointDipole;
+        options.far_field_target_model = TargetModel::Point;
+        options.fixed_target_source_indices = identities;
+
+        UniformFmm fmm(positions, positions, options);
+        const auto result = fmm.evaluate(std::vector<Vec3>{moment},
+                                         OutputFlags::Field, identities);
+        const Vec3 expected = apply_pair_tensor(
+            tetrahedron_point_tensor({}, tetrahedron), moment);
+        REQUIRE(std::isfinite(result[0].H.x));
+        REQUIRE(std::isfinite(result[0].H.y));
+        REQUIRE(std::isfinite(result[0].H.z));
+        REQUIRE(std::abs(result[0].H.x) + std::abs(result[0].H.y) +
+                    std::abs(result[0].H.z) >
+                1.0e-12);
+        REQUIRE(result[0].H.x == Catch::Approx(expected.x).margin(3.0e-12));
+        REQUIRE(result[0].H.y == Catch::Approx(expected.y).margin(3.0e-12));
+        REQUIRE(result[0].H.z == Catch::Approx(expected.z).margin(3.0e-12));
+
+        options.fixed_target_source_indices.reset();
+        UniformFmm dynamic_map_fmm(positions, positions, options);
+        const auto dynamic_result = dynamic_map_fmm.evaluate(
+            std::vector<Vec3>{moment}, OutputFlags::Field, identities);
+        REQUIRE(dynamic_result[0].H.x ==
+                Catch::Approx(expected.x).margin(3.0e-12));
+        REQUIRE(dynamic_result[0].H.y ==
+                Catch::Approx(expected.y).margin(3.0e-12));
+        REQUIRE(dynamic_result[0].H.z ==
+                Catch::Approx(expected.z).margin(3.0e-12));
+    }
+}
+
+TEST_CASE("Point identity still omits singular point self interaction",
+          "[uniform_fmm][p2p][self]")
+{
+    const std::vector<Vec3> positions{{0.0, 0.0, 0.0}};
+    const std::vector<Vec3> moments{{0.31, -0.27, 0.44}};
+    const std::vector<int> identities{0};
+    UniformFmmOptions options;
+    options.backend = ExecutionBackend::CpuStatic;
+    options.precision = StaticPrecision::Float64;
+    options.expansion_basis = ExpansionBasis::Cartesian;
+    options.expansion_order = 4;
+    options.tree.max_level = 0;
+    options.fixed_target_source_indices = identities;
+
+    UniformFmm fmm(positions, positions, options);
+    const auto result = fmm.evaluate(moments, OutputFlags::Field, identities);
+    REQUIRE(result[0].H.x == 0.0);
+    REQUIRE(result[0].H.y == 0.0);
+    REQUIRE(result[0].H.z == 0.0);
+}
+
+TEST_CASE("Point-source identities omit self for exact finite targets",
+          "[uniform_fmm][p2p][self][geometry]")
+{
+    const std::vector<Vec3> positions{{0.0, 0.0, 0.0}};
+    const std::vector<Vec3> moments{{0.31, -0.27, 0.44}};
+    const std::vector<int> identities{0};
+    const RectangularPrism target_prism{0.2, 0.2, 0.2};
+
+    UniformFmmOptions options;
+    options.backend = ExecutionBackend::CpuStatic;
+    options.precision = StaticPrecision::Float64;
+    options.expansion_basis = ExpansionBasis::Cartesian;
+    options.expansion_order = 4;
+    options.tree.max_level = 0;
+    options.tree.root_centre = Vec3{};
+    options.tree.root_half_width = 0.5;
+    options.source_geometry = SourceGeometry::PointDipole;
+    options.near_field_source_model = SourceModel::PointDipole;
+    options.near_field_target_model = TargetModel::ExactGeometry;
+    options.far_field_source_model = SourceModel::PointDipole;
+    options.far_field_target_model = TargetModel::Point;
+    options.target_geometry = TargetGeometry::RectangularPrism;
+    options.target_sizes = {target_prism};
+    options.fixed_target_source_indices = identities;
+
+    UniformFmm fixed_map_fmm(positions, positions, options);
+    const auto fixed_result =
+        fixed_map_fmm.evaluate(moments, OutputFlags::Field, identities);
+    REQUIRE(fixed_result[0].H.x == 0.0);
+    REQUIRE(fixed_result[0].H.y == 0.0);
+    REQUIRE(fixed_result[0].H.z == 0.0);
+
+    options.fixed_target_source_indices.reset();
+    UniformFmm dynamic_map_fmm(positions, positions, options);
+    const auto dynamic_result =
+        dynamic_map_fmm.evaluate(moments, OutputFlags::Field, identities);
+    REQUIRE(dynamic_result[0].H.x == 0.0);
+    REQUIRE(dynamic_result[0].H.y == 0.0);
+    REQUIRE(dynamic_result[0].H.z == 0.0);
+}
+
+TEST_CASE("Point target model ignores physical tetrahedron target record",
+          "[uniform_fmm][p2p][tetrahedron]")
+{
+    const std::vector<Vec3> sources{{0.0, 0.0, 0.0}};
+    const std::vector<Vec3> targets{{0.7, -0.2, 0.3}};
+    const std::vector<Vec3> moments{{0.31, -0.27, 0.44}};
+    const Tetrahedron tetrahedron = test_tetrahedron();
+
+    UniformFmmOptions point_options;
+    point_options.backend = ExecutionBackend::CpuStatic;
+    point_options.precision = StaticPrecision::Float64;
+    point_options.expansion_basis = ExpansionBasis::Cartesian;
+    point_options.expansion_order = 4;
+    point_options.tree.max_level = 0;
+    point_options.tree.root_centre = Vec3{0.35, 0.0, 0.15};
+    point_options.tree.root_half_width = 1.0;
+    point_options.source_geometry = SourceGeometry::Tetrahedron;
+    point_options.source_tetrahedra = {tetrahedron};
+    point_options.target_geometry = TargetGeometry::Point;
+    point_options.near_field_source_model = SourceModel::ExactGeometry;
+    point_options.near_field_target_model = TargetModel::Point;
+    point_options.far_field_source_model = SourceModel::PointDipole;
+    point_options.far_field_target_model = TargetModel::Point;
+
+    UniformFmmOptions tetra_target_options = point_options;
+    tetra_target_options.target_geometry = TargetGeometry::Tetrahedron;
+    tetra_target_options.target_tetrahedra = {tetrahedron};
+
+    UniformFmm point_plan(sources, targets, point_options);
+    UniformFmm tetra_target_plan(sources, targets, tetra_target_options);
+    const auto point_result = point_plan.evaluate(moments, OutputFlags::Field);
+    const auto tetra_target_result =
+        tetra_target_plan.evaluate(moments, OutputFlags::Field);
+    REQUIRE(tetra_target_result[0].H.x ==
+            Catch::Approx(point_result[0].H.x).margin(3.0e-12));
+    REQUIRE(tetra_target_result[0].H.y ==
+            Catch::Approx(point_result[0].H.y).margin(3.0e-12));
+    REQUIRE(tetra_target_result[0].H.z ==
+            Catch::Approx(point_result[0].H.z).margin(3.0e-12));
+}
+
+TEST_CASE("UniformFmm builds exact tetrahedron L2P rows", "[uniform_fmm][tetrahedron]")
+{
+    const Tetrahedron tetrahedron = test_tetrahedron();
+    UniformFmmOptions options;
+    options.backend = ExecutionBackend::CpuStatic;
+    options.precision = StaticPrecision::Float64;
+    options.expansion_basis = ExpansionBasis::Cartesian;
+    options.expansion_order = 5;
+    options.tree.max_level = 2;
+    options.tree.root_centre = {0.0, 0.0, 0.0};
+    // The target representative is at x=0.8 and this tetrahedron extends to
+    // z=0.27, so a unit half-width root would clip its complete geometry.
+    options.tree.root_half_width = 1.1;
+    options.target_geometry = TargetGeometry::Tetrahedron;
+    options.target_tetrahedra = {tetrahedron};
+
+    UniformFmm fmm(std::vector<Vec3>{{-0.8, 0.0, 0.0}},
+                   std::vector<Vec3>{{0.8, 0.0, 0.0}}, options);
+    const auto result = fmm.evaluate(std::vector<Vec3>{{0.2, -0.1, 0.3}},
+                                     OutputFlags::Field);
+    REQUIRE(result.size() == 1);
+    REQUIRE(std::isfinite(result[0].H.x));
+    REQUIRE(std::isfinite(result[0].H.y));
+    REQUIRE(std::isfinite(result[0].H.z));
+    REQUIRE(fmm.static_plan_statistics().l2p_operator_bytes > 0);
+}
+
+TEST_CASE("Adaptive shared topology accepts common and permuted tetrahedra",
+          "[uniform_fmm][adaptive][tetrahedron]")
+{
+    const std::vector<Vec3> positions{{0.75, 0.75, 0.75},
+                                      {-0.75, -0.75, -0.75}};
+    const Tetrahedron tetrahedron = test_tetrahedron();
+    const AdaptiveTree tree(
+        positions,
+        AdaptiveTreeOptions{.max_particles_per_leaf = 1,
+                            .max_depth = 1,
+                            .root_centre = Vec3{},
+                            // The positive source reaches z=1.02 including
+                            // its tetrahedron offset.
+                            .root_half_width = 1.1});
+    REQUIRE(tree.topology().source_permutation != std::vector<int>{0, 1});
+
+    UniformFmmOptions common;
+    common.backend = ExecutionBackend::CpuStatic;
+    common.precision = StaticPrecision::Float64;
+    common.expansion_basis = ExpansionBasis::Cartesian;
+    common.expansion_order = 3;
+    common.source_geometry = SourceGeometry::Tetrahedron;
+    common.source_tetrahedra = {tetrahedron};
+    common.target_geometry = TargetGeometry::Point;
+    common.enable_cache = false;
+
+    UniformFmmOptions per_object = common;
+    per_object.source_tetrahedra = {tetrahedron, tetrahedron};
+    UniformFmm common_plan(tree.shared_topology(), common);
+    UniformFmm per_object_plan(tree.shared_topology(), per_object);
+    const std::vector<Vec3> moments{{0.3, -0.2, 0.4}, {-0.1, 0.5, 0.2}};
+    const auto common_result = common_plan.evaluate(moments, OutputFlags::Field);
+    const auto per_object_result =
+        per_object_plan.evaluate(moments, OutputFlags::Field);
+    REQUIRE(common_result.size() == per_object_result.size());
+    for (std::size_t index = 0; index < common_result.size(); ++index) {
+        REQUIRE(per_object_result[index].H.x ==
+                Catch::Approx(common_result[index].H.x).margin(2.0e-12));
+        REQUIRE(per_object_result[index].H.y ==
+                Catch::Approx(common_result[index].H.y).margin(2.0e-12));
+        REQUIRE(per_object_result[index].H.z ==
+                Catch::Approx(common_result[index].H.z).margin(2.0e-12));
+    }
+}
+
+TEST_CASE("Exact near and point far prism models are independently selectable",
+          "[uniform_fmm][models]")
+{
+    const std::vector<Vec3> positions{{-0.75, -0.75, -0.75},
+                                      {0.75, 0.75, 0.75}};
+    UniformFmmOptions options;
+    options.backend = ExecutionBackend::CpuStatic;
+    options.precision = StaticPrecision::Float64;
+    options.expansion_basis = ExpansionBasis::Cartesian;
+    options.expansion_order = 4;
+    options.tree.max_level = 2;
+    options.tree.root_centre = {0.0, 0.0, 0.0};
+    options.tree.root_half_width = 1.0;
+    options.source_geometry = SourceGeometry::RectangularPrism;
+    options.target_geometry = TargetGeometry::RectangularPrism;
+    options.source_sizes = {{0.12, 0.10, 0.08}};
+    options.target_sizes = {{0.09, 0.11, 0.07}};
+    options.near_field_source_model = SourceModel::ExactGeometry;
+    options.near_field_target_model = TargetModel::ExactGeometry;
+    options.far_field_source_model = SourceModel::PointDipole;
+    options.far_field_target_model = TargetModel::Point;
+
+    std::ostringstream output;
+    std::streambuf* previous = std::cout.rdbuf(output.rdbuf());
+    const UniformFmm fmm(positions, positions, options);
+    std::cout.rdbuf(previous);
+    REQUIRE(output.str().find("near_field_source_model: exact_geometry") !=
+            std::string::npos);
+    REQUIRE(output.str().find("near_field_target_model: exact_geometry") !=
+            std::string::npos);
+    REQUIRE(output.str().find("far_field_source_model: point_dipole") !=
+            std::string::npos);
+    REQUIRE(output.str().find("far_field_target_model: point") !=
+            std::string::npos);
+}
+
+TEST_CASE("out-of-bounds tetrahedron is rejected by an explicit root",
+          "[uniform_fmm][tetrahedron]")
+{
+    Tetrahedron tetrahedron = test_tetrahedron();
+    tetrahedron.vertices[0].x = -0.8;
+    UniformFmmOptions options;
+    options.source_geometry = SourceGeometry::Tetrahedron;
+    options.source_tetrahedra = {tetrahedron};
+    options.tree.root_centre = {};
+    options.tree.root_half_width = 0.5;
+    REQUIRE_THROWS_AS(UniformFmm(std::vector<Vec3>{{0.0, 0.0, 0.0}}, options),
+                    std::invalid_argument);
+}
 
 TEST_CASE("FMM initialisation reports requested and resolved options")
 {
@@ -70,7 +450,7 @@ TEST_CASE("cuboid FMM includes finite centre self field", "[uniform_fmm][cuboid]
     options.precision = StaticPrecision::Float64;
     options.expansion_order = 5;
     options.tree.max_level = 0;
-    options.source_geometry = SourceGeometry::UniformCuboid;
+    options.source_geometry = SourceGeometry::RectangularPrism;
     options.source_sizes = {cube};
     options.fixed_target_source_indices = std::vector<int>{0};
     UniformFmm fmm(positions, positions, options);
@@ -81,7 +461,7 @@ TEST_CASE("cuboid FMM includes finite centre self field", "[uniform_fmm][cuboid]
     REQUIRE(result[0].H.z == Catch::Approx(-1.0 / 6.0).margin(2.0e-13));
 
     // Disabling cuboid P2M must not change the exact cuboid near field.
-    options.use_cuboid_p2m = false;
+    options.far_field_source_model = SourceModel::PointDipole;
     UniformFmm point_p2m_fmm(positions, positions, options);
     const auto point_p2m_result =
         point_p2m_fmm.evaluate(moments, OutputFlags::Field, identities);
@@ -109,11 +489,11 @@ TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
         }
     }
     const DenseDirectPlan direct(
-        positions, positions, SourceGeometry::UniformCuboid,
+        positions, positions, SourceGeometry::RectangularPrism,
         TargetGeometry::Point, std::span<const CuboidSize>(&cube, 1));
     const auto reference = direct.evaluate(moments, DenseDirectBackend::Portable);
     const auto error_at_order = [&](const int order,
-                                    const bool use_cuboid_p2m) {
+                           const bool use_exact_source_model) {
         UniformFmmOptions options;
         options.expansion_basis = ExpansionBasis::Cartesian;
         options.expansion_order = order;
@@ -121,9 +501,10 @@ TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
         options.tree.root_centre = {0.2, 0.2, 0.2};
         // The explicit root encloses the complete cuboids, not only centres.
         options.tree.root_half_width = 0.24;
-        options.source_geometry = SourceGeometry::UniformCuboid;
+        options.source_geometry = SourceGeometry::RectangularPrism;
         options.source_sizes = {cube};
-        options.use_cuboid_p2m = use_cuboid_p2m;
+        options.far_field_source_model = use_exact_source_model
+            ? SourceModel::ExactGeometry : SourceModel::PointDipole;
         UniformFmm fmm(positions, positions, options);
         const auto approximate = fmm.evaluate(moments);
         double difference_squared = 0.0;
@@ -149,9 +530,9 @@ TEST_CASE("static cuboid P2P reuses exact pair tensors", "[cuboid][p2p]")
     const std::array<CuboidSize, 1> sizes{{{0.1, 0.1, 0.1}}};
     const std::array<std::array<int, 2>, 1> interactions{{{0, 0}}};
     const auto sparse = build_static_p2p_operator(
-        positions, positions, interactions, SourceGeometry::UniformCuboid, sizes);
+        positions, positions, interactions, SourceGeometry::RectangularPrism, sizes);
     const PairTensor exact = build_pair_tensor(
-        {}, {}, SourceGeometry::UniformCuboid, TargetGeometry::Point, sizes[0]);
+        {}, {}, SourceGeometry::RectangularPrism, TargetGeometry::Point, sizes[0]);
     REQUIRE(sparse.blocks[0].xx == exact.xx);
     REQUIRE(sparse.blocks[0].yy == exact.yy);
     REQUIRE(sparse.blocks[0].zz == exact.zz);
@@ -181,7 +562,7 @@ TEST_CASE("reduced-symmetry P2P supports cuboid near fields",
     options.tree.max_level = 1;
     options.tree.root_centre = {0.15, 0.15, 0.15};
     options.tree.root_half_width = 0.25;
-    options.source_geometry = SourceGeometry::UniformCuboid;
+    options.source_geometry = SourceGeometry::RectangularPrism;
     options.source_sizes = {cube};
     options.target_geometry = target_geometry;
     options.target_sizes = target_sizes;
@@ -210,7 +591,7 @@ TEST_CASE("reduced-symmetry P2P supports cuboid near fields",
   };
 
   compare(TargetGeometry::Point, {});
-  compare(TargetGeometry::VolumeAveragedCuboid, {cube});
+  compare(TargetGeometry::RectangularPrism, {cube});
 }
 
 TEST_CASE("prebuilt adaptive topology preserves physical cuboid geometry",
@@ -246,14 +627,14 @@ TEST_CASE("prebuilt adaptive topology preserves physical cuboid geometry",
           std::vector<int>{0, 1, 2, 3, 4, 5, 6, 7});
 
   for (const TargetGeometry target_geometry :
-       {TargetGeometry::Point, TargetGeometry::VolumeAveragedCuboid}) {
+       {TargetGeometry::Point, TargetGeometry::RectangularPrism}) {
     CAPTURE(target_geometry);
     const std::vector<CuboidSize> target_sizes =
-        target_geometry == TargetGeometry::VolumeAveragedCuboid
+        target_geometry == TargetGeometry::RectangularPrism
             ? sizes
             : std::vector<CuboidSize>{};
     const DenseDirectPlan direct(
-        positions, positions, SourceGeometry::UniformCuboid, target_geometry,
+        positions, positions, SourceGeometry::RectangularPrism, target_geometry,
         sizes, target_sizes, {}, StaticPrecision::Float64);
     const std::vector<Vec3> reference = direct.evaluate(moments);
 
@@ -264,7 +645,7 @@ TEST_CASE("prebuilt adaptive topology preserves physical cuboid geometry",
       options.precision = StaticPrecision::Float64;
       options.expansion_basis = ExpansionBasis::Spherical;
       options.expansion_order = 4;
-      options.source_geometry = SourceGeometry::UniformCuboid;
+      options.source_geometry = SourceGeometry::RectangularPrism;
       options.source_sizes = sizes;
       options.target_geometry = target_geometry;
       options.target_sizes = target_sizes;
@@ -306,7 +687,7 @@ TEST_CASE("prebuilt adaptive topology preserves physical cuboid geometry",
 
   UniformFmmOptions invalid;
   invalid.backend = ExecutionBackend::CpuStatic;
-  invalid.source_geometry = SourceGeometry::UniformCuboid;
+  invalid.source_geometry = SourceGeometry::RectangularPrism;
   invalid.source_sizes = sizes;
   invalid.source_sizes[0].hx = 5.0;
   REQUIRE_THROWS_AS(UniformFmm(tree.shared_topology(), invalid),

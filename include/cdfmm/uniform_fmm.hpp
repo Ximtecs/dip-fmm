@@ -17,6 +17,7 @@
 #include "cdfmm/precision.hpp"
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/spherical_harmonics.hpp"
+#include "cdfmm/tetrahedron.hpp"
 #include "cdfmm/uniform_tree.hpp"
 #include "cdfmm/static_topology.hpp"
 
@@ -150,36 +151,30 @@ struct UniformFmmOptions {
   /// @brief Physical model represented by every source.
   SourceGeometry source_geometry{SourceGeometry::PointDipole};
   /// @brief Cuboid dimensions: one common size or one per source in user order.
-  std::vector<CuboidSize> source_sizes{};
+  std::vector<RectangularPrism> source_sizes{};
+  /// @brief Tetrahedra: one common record or one per source in user order.
+  std::vector<Tetrahedron> source_tetrahedra{};
   /// @brief Physical evaluation geometry represented by every target.
   TargetGeometry target_geometry{TargetGeometry::Point};
   /// @brief Cuboid dimensions: one common size or one per target in user order.
-  std::vector<CuboidSize> target_sizes{};
-  /**
-   * @brief Uses finite cuboid moments in P2M for uniform-cuboid sources.
-   *
-   * When false, P2M uses the ordinary point-dipole operator while P2P still
-   * uses the exact tensor selected by the source and target geometries. This
-   * comparison mode isolates the accuracy contribution from finite-source P2M
-   * moments. It has no effect for point-dipole sources.
-   */
-  bool use_cuboid_p2m{true};
-  /**
-   * @brief Uses volume-averaged L2P rows for cuboid targets.
-   *
-   * When false, L2P evaluates the far-field local expansion at the target
-   * centre while P2P still uses the exact cuboid-to-cuboid tensor. This
-   * comparison mode isolates the accuracy contribution from target-volume
-   * averaging in L2P. It has no effect for point targets.
-   */
-  bool use_cuboid_l2p{true};
+  std::vector<RectangularPrism> target_sizes{};
+  /// @brief Tetrahedra: one common record or one per target in user order.
+  std::vector<Tetrahedron> target_tetrahedra{};
+  /** @brief Near-field source treatment, independent of target treatment. */
+  SourceModel near_field_source_model{SourceModel::ExactGeometry};
+  /** @brief Near-field target treatment, independent of source treatment. */
+  TargetModel near_field_target_model{TargetModel::ExactGeometry};
+  /** @brief Far-field P2M source treatment. */
+  SourceModel far_field_source_model{SourceModel::ExactGeometry};
+  /** @brief Far-field L2P target treatment. */
+  TargetModel far_field_target_model{TargetModel::ExactGeometry};
   /**
    * @brief Optional immutable target-to-source self-identity map.
    *
    * Entries use original user ordering. Supplying the map permits CUDA to
-   * embed self exclusions in a cuSPARSE BSR(3) plan. For finite cuboid
-   * interactions, omitting it retains the physical coincident-target tensor
-   * while still allowing a BSR plan. The map must contain one entry per
+   * embed source-point self exclusions in a cuSPARSE BSR(3) plan. For finite
+   * source interactions, omitting it retains the physical coincident-target
+   * tensor while still allowing a BSR plan. The map must contain one entry per
    * target when present.
    */
   std::optional<std::vector<int>> fixed_target_source_indices{};
@@ -583,10 +578,17 @@ private:
   ExecutionBackend backend_{ExecutionBackend::CpuStatic};
   SourceGeometry source_geometry_{SourceGeometry::PointDipole};
   TargetGeometry target_geometry_{TargetGeometry::Point};
+  SourceModel near_field_source_model_{SourceModel::PointDipole};
+  TargetModel near_field_target_model_{TargetModel::Point};
+  SourceModel far_field_source_model_{SourceModel::PointDipole};
+  TargetModel far_field_target_model_{TargetModel::Point};
+  // Compatibility/cache metadata derived from the far-field model selectors.
   bool use_cuboid_p2m_{false};
   bool use_cuboid_l2p_{false};
   std::vector<CuboidSize> sorted_source_sizes_{};
+  std::vector<Tetrahedron> sorted_source_tetrahedra_{};
   std::vector<CuboidSize> sorted_target_sizes_{};
+  std::vector<Tetrahedron> sorted_target_tetrahedra_{};
   P2PExecutionPacking p2p_execution_packing_{P2PExecutionPacking::Reference};
   std::size_t cuda_p2p_bsr_max_bytes_{20ULL * 1024ULL * 1024ULL * 1024ULL};
   bool use_reduced_symmetry_p2p_{false};
