@@ -40,7 +40,7 @@ Each focused notebook answers a different question:
 | Notebook | Purpose |
 |---|---|
 | `examples/notebooks/10_uniform_downward_pass.ipynb` | Basic complete FMM decomposition and direct-reference accuracy |
-| `examples/simple_notebooks/simple_cuboid_fmm_direct_compare.ipynb` | Cartesian uniform-cuboid-to-point FMM versus exact dense cuboid direct |
+| `examples/simple_notebooks/simple_cuboid_fmm_direct_compare.ipynb` | Cartesian rectangular-prism-to-point FMM versus exact dense prism direct |
 | `examples/simple_notebooks/simple_cuboid_p2m_l2p_direct_compare.ipynb` | Spherical point/cuboid P2M and L2P comparison with fixed exact cuboid P2P |
 | `examples/simple_notebooks/simple_cuboid_magtense_compare.ipynb` | Direct cuboid field comparison with MagTense conventions |
 | `examples/simple_notebooks/simple_dense_direct_precision_compare.ipynb` | FP32 versus FP64 across available static FMM backends |

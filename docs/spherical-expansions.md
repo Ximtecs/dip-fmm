@@ -26,7 +26,7 @@ rotate--axial-shift--rotate-back spherical translation, but neither Cartesian
 expansion state nor complex rotation data is retained at runtime.
 
 Point P2M and L2P use analytic regular-harmonic values and gradients. For an
-axis-aligned uniform cuboid, setup analytically averages those finite
+axis-aligned rectangular prism, setup analytically averages those finite
 Cartesian polynomials and their gradients over the source or target volume.
 The resulting P2M and L2P operators have spherical width and are stored
 directly; repeated evaluation performs neither cuboid integration nor a
@@ -42,22 +42,25 @@ buffers use the selected execution scalar.
 
 ## Backends and limits
 
-Spherical point-dipole and uniform-cuboid sources, with point or
-volume-averaged cuboid targets, support FP32 and FP64 CPU static, oneMKL, CUDA
+Spherical point-dipole, rectangular-prism, and tetrahedron sources, with
+point, rectangular-prism, or tetrahedron targets, support FP32 and FP64 CPU
+static, oneMKL, CUDA
 partial, and CUDA full plans. The ordinary spherical M2M, M2L, and L2L
 operators are shared by every geometry. Exact near-field P2P tensors are
 basis-independent and use the same canonical builder as Cartesian and dense
 direct plans. The independent dynamic CPU reference traversal remains
 Cartesian-only.
 
-For controlled finite-cell comparisons, `use_cuboid_p2m=false` substitutes
-point-dipole P2M and `use_cuboid_l2p=false` substitutes point-evaluation L2P.
-Source and target geometry remain unchanged, so exact cuboid P2P physics is
-identical across the comparison cases.
+For controlled finite-geometry comparisons, set
+`far_field_source_model=SourceModel.POINT_DIPOLE` to substitute point P2M and
+`far_field_target_model=TargetModel.POINT` to substitute point-evaluation
+L2P. Source and target geometry remain unchanged, so exact near-field physics
+is identical across comparison cases.
 
 The comparison flags also provide a useful hybrid execution model. With
-uniform-cuboid sources, volume-averaged cuboid targets, and both flags false,
-list1 uses exact cuboid-to-cuboid tensors while the far field uses point P2M
+rectangular-prism sources, rectangular-prism targets, and both far-field
+models set to their point variants, list1 uses exact prism-to-prism tensors
+while the far field uses point P2M
 and centre-sampled L2P. Evaluation input remains total dipole moment rather
 than magnetisation; no volume scaling is performed implicitly.
 

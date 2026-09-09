@@ -38,10 +38,11 @@ FP32 geometry files are decoded directly into canonical FP32 operators. This
 avoids widening the persistent plan to FP64 and quantising it back to FP32
 before executor packing.
 
-The geometry SHA-256 covers canonical source and target geometry, cuboid
-dimensions and far-field flags, source/target modes, self identities, depth,
-periodicity, basis, order, precision, and cache/math versions. Physical root
-centre, root length, and changing moments are excluded. Complete regular grids
+The geometry SHA-256 covers canonical source and target geometry, rectangular
+prism dimensions, representative-relative tetrahedron vertices, all four
+near/far source/target model selectors, self identities, depth, periodicity,
+basis, order, precision, and cache/math versions. Physical root centre, root
+length, and changing moments are excluded. Complete regular grids
 use a validated compact descriptor (dimensions, canonical origin, spacing, and
 enumeration layout) instead of hashing every coordinate.
 

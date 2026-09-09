@@ -88,9 +88,9 @@ nor reuses repeated lattice displacements. This regular lattice has only
 convolution plan is the principal prospective optimisation. The fast repeated
 evaluation reflects reuse of the already constructed matrices.
 
-Setting both `use_cuboid_p2m=false` and `use_cuboid_l2p=false` provides the
-tested hybrid model: list1 P2P remains exact cuboid-to-cuboid, while far-field
-P2M treats each supplied total moment as a point dipole at its cuboid centre
+Setting both far-field model selectors to their point variants provides the
+tested hybrid model: list1 P2P remains exact prism-to-prism, while far-field
+P2M treats each supplied total moment as a point dipole at its prism centre
 and L2P samples the local expansion at the target centre. Source and target
 sizes select near-field physics; callers must still convert magnetisation to
 total dipole moment before evaluation.
@@ -461,7 +461,7 @@ benchmark_cache_initialisation --depth 3 --grid 8 --backend onemkl \
 ```
 
 The cache directory must initially be empty. The program constructs the same
-spherical `p=6`, FP32, uniform-cuboid plan twice and emits `CACHE_BENCH` CSV
+spherical `p=6`, FP32, rectangular-prism plan twice and emits `CACHE_BENCH` CSV
 rows for cold and warm setup, with normalization, tree, lookup/hash/load,
 analytical operator, backend-packing, CUDA-upload, and byte-count columns.
 Backends are `portable`, `onemkl`, and `cuda-full`.

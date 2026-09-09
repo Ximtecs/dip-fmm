@@ -57,8 +57,8 @@ construction of the five far-field operators. Cartesian order `p` stores
 The exact near-field P2P tensor is basis-independent.
 
 Real spherical harmonics are the default. Cartesian remains a complete
-independent formulation. Both bases support point and uniform-cuboid source
-and target geometries on static plans. The CPU reference traversal is
+independent formulation. Both bases support point, rectangular-prism, and
+tetrahedron geometry on static plans. The CPU reference traversal is
 Cartesian-only; both bases use static plans on the production CPU and CUDA
 backends. See
 [Mathematical formulation](math.md) for conventions and
@@ -66,11 +66,13 @@ backends. See
 
 ## Geometry and output boundary
 
-`UniformFmm` supports point-dipole or axis-aligned uniform-cuboid sources and
-point or analytically volume-averaged cuboid targets with Cartesian or
-spherical expansions. Exact near-field tensors follow the selected physical
-geometries. Comparison flags can independently substitute point P2M or point
-L2P while retaining the geometry-selected P2P tensor.
+`UniformFmm` supports point-dipole, axis-aligned rectangular-prism, and
+representative-relative tetrahedron sources, plus point, rectangular-prism,
+and tetrahedron targets. `near_field_source_model`,
+`near_field_target_model`, `far_field_source_model`, and
+`far_field_target_model` select source and target treatment independently.
+Exact tetrahedron P2P currently supports only point↔tetrahedron endpoint
+pairs; prism↔tetrahedron and tetrahedron↔tetrahedron exact pairs are rejected.
 
 CPU static and reference-capable paths support the applicable field,
 potential, or combined output modes. CUDA-full is the device-resident repeated

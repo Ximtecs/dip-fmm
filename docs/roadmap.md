@@ -19,7 +19,7 @@ than here.
 - [x] P2M, M2M, M2L, L2L, L2P, M2P, and exact P2P reference operators.
 - [x] Field-only, potential-only, and combined output on supported CPU paths.
 - [x] Independent direct CPU and CUDA references.
-- [x] Exact cuboid source to volume-averaged cuboid target direct and FMM paths.
+- [x] Exact rectangular-prism source to volume-averaged rectangular-prism target direct and FMM paths.
 
 ### Static geometry architecture
 
@@ -76,9 +76,9 @@ See [Execution backends](backends.md) and [Numerical precision](precision.md).
 
 ## Current capability boundary
 
-Point dipole and axis-aligned uniform-cuboid sources are supported by Cartesian
+Point dipole and axis-aligned rectangular-prism sources are supported by Cartesian
 and spherical `UniformFmm` plans. Targets may be points or analytically
-volume-averaged cuboids. Both bases use finite-cuboid P2M, volume-averaged L2P,
+volume-averaged rectangular prisms. Both bases use finite-prism P2M, volume-averaged L2P,
 and the same exact canonical `list1` tensors; spherical runtime state remains
 `(p+1)^2` coefficients per node.
 

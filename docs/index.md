@@ -6,7 +6,8 @@ static operators, FP32/FP64 execution, and optional CPU, oneMKL, and CUDA
 backends. The magnetic field $H$ is its primary output; scalar potential is
 optional on supported paths.
 
-Point dipoles and uniform-cuboid sources/targets are supported by both bases.
+Point dipoles, rectangular prisms, and tetrahedra are supported by the
+geometry-aware static operators in both bases.
 The tree is complete and non-adaptive. Fully periodic cubic cells use the
 explicit zero-`k=0` convention.
 
@@ -15,6 +16,7 @@ explicit zero-`k=0` convention.
 :caption: User guide
 
 overview
+geometry-models
 static-architecture
 caching
 backends

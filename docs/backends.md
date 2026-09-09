@@ -42,8 +42,9 @@ CUDA partial, and CUDA full execution in FP32 or FP64. `CpuReference` is
 Cartesian-only because it forms dynamic Cartesian derivative contractions
 instead of consuming the spherical static payload.
 
-`UniformFmm` supports point or uniform-cuboid sources and point or
-volume-averaged-cuboid targets with either expansion basis on static plans.
+`UniformFmm` supports point, rectangular-prism, and tetrahedron sources and
+point, rectangular-prism, and tetrahedron targets with either expansion basis
+on static plans.
 Exact P2P follows the selected physical geometry, while the comparison flags
 can substitute point P2M or point L2P. `DenseDirectPlan` provides the matching
 exact geometries as an independent reference.

@@ -20,8 +20,8 @@ supported execution paths.
   device-resident CUDA FMM;
 - exact direct CPU and CUDA references plus retained reference/alternative
   operator packings for validation and benchmarking;
-- point-dipole and uniform-cuboid sources, plus point and
-  volume-averaged-cuboid targets, in both bases;
+- point-dipole, rectangular-prism, and tetrahedron sources, plus point,
+  rectangular-prism, and tetrahedron targets, in both bases;
 - free-space and fully periodic cubic zero-`k=0` evaluation; and
 - C++ tests, Python bindings, benchmarks, notebooks, and plan/timing/memory
   inspection.
@@ -32,8 +32,10 @@ The tree is complete and uniform rather than adaptive. CUDA-full is the
 repeated field path. Fully three-dimensional periodic
 magnetostatics is available for explicit cubic cells with the zero-`k=0`
 convention on static CPU and CUDA plans. Partial periodicity and rectangular
-periodic cells are not implemented. A stable C ABI, Fortran wrapper, and
-MagTense integration are not implemented.
+periodic cells are not implemented. There is no runtime MagTense dependency or
+backend integration: the prism formulas are analytical adaptations of the
+MagTense conventions, while dip-fmm supplies its own C++/Python execution
+paths. A stable C ABI and Fortran wrapper are also not implemented.
 
 ## Architecture
 

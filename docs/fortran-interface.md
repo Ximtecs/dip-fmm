@@ -52,7 +52,7 @@ kind. The kind must match `options%precision`; a mismatch returns
 The wrapper neither converts precision nor packs temporary Nx3 arrays.
 
 The constructor represents coincident source and target positions, uniformly
-magnetised cuboid sources, volume-averaged cuboid targets, and one common
+magnetised rectangular-prism sources, volume-averaged rectangular-prism targets, and one common
 `cell_size(3)`. Geometry and backend resources are created once and reused by
 every evaluation. Periodicity is configured through `options%periodic`,
 `periodic_cell_center`, `periodic_cell_lengths`, and `periodic_tolerance`.

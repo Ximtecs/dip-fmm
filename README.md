@@ -2,7 +2,8 @@
 
 `dip-fmm` is a C++20 fast multipole method for repeated magnetic-field
 evaluation on fixed geometry. It supports real spherical-harmonic (default)
-and Cartesian expansions, point dipoles, uniform-cuboid sources and targets,
+and Cartesian expansions, point dipoles, rectangular-prism and tetrahedral
+sources and targets,
 free-space or fully periodic cubic cells, FP32 and FP64 execution, portable
 CPU, oneMKL, hybrid CUDA, full CUDA, and Python bindings. The implementation
 uses `G(r) = 1/(4*pi*|r|)` and treats `H = -grad(phi)` as the primary result,
@@ -49,8 +50,8 @@ positions and the self-identity map on the device across evaluations.
 
 The production plan is static and non-adaptive. Both expansion bases support
 point-dipole to point-target FMM on CPU static, oneMKL, CUDA partial, and CUDA
-full backends. Both also support uniform-cuboid sources and analytically
-volume-averaged cuboid targets. Fully periodic evaluation requires an explicit
+full backends. Both also support rectangular-prism sources and analytically
+volume-averaged rectangular-prism targets. Fully periodic evaluation requires an explicit
 cubic cell and currently implements the zero-`k=0` convention on static CPU
 and CUDA plans.
 
