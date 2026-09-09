@@ -211,10 +211,28 @@ def select_leaf(topology):
 
 
 def matching_node(topology, node):
+    """Find the same box, or the deepest box containing its centre.
+
+    Equal-depth comparisons return the geometrically identical uniform box.
+    When the two trees use different maximum depths, the fallback keeps the
+    interaction illustration meaningful instead of relying on matching node
+    IDs or requiring both trees to expose the same level.
+    """
     centre = vec3_to_array(node.centre)
-    return next(n.index for n in topology.nodes
-                if n.level == node.level and np.allclose(vec3_to_array(n.centre), centre)
-                and np.isclose(n.half_width, node.half_width))
+    exact = [candidate for candidate in topology.nodes
+             if candidate.level == node.level
+             and np.allclose(vec3_to_array(candidate.centre), centre)
+             and np.isclose(candidate.half_width, node.half_width)]
+    if exact:
+        return exact[0].index
+
+    tolerance = 32.0 * np.finfo(float).eps
+    containing = [candidate for candidate in topology.nodes
+                  if np.all(np.abs(centre - vec3_to_array(candidate.centre))
+                            <= candidate.half_width + tolerance)]
+    if not containing:
+        raise ValueError("the comparison topology does not cover the selected box")
+    return max(containing, key=lambda candidate: candidate.level).index
 
 
 def draw_interactions(axis, topology, selected, include_ancestors=True):
@@ -234,7 +252,16 @@ def draw_interactions(axis, topology, selected, include_ancestors=True):
     draw_box_3d(axis, vec3_to_array(node.centre), node.half_width,
                 colour="tab:red", linewidth=2.5, label="selected leaf")
     finish_3d_axes(axis, f"node {selected}, depth {node.level}")
-    axis.set(xlim=(-0.5, 0.5), ylim=(-0.5, 0.5), zlim=(-0.5, 0.5))
+    root = nodes[topology.root]
+    root_centre = vec3_to_array(root.centre)
+    axis.set(
+        xlim=(root_centre[0] - root.half_width,
+              root_centre[0] + root.half_width),
+        ylim=(root_centre[1] - root.half_width,
+              root_centre[1] + root.half_width),
+        zlim=(root_centre[2] - root.half_width,
+              root_centre[2] + root.half_width),
+    )
     axis.view_init(elev=24, azim=-55)
     axis.legend(fontsize=7)
 
@@ -263,7 +290,7 @@ def _cuboid_sizes(sides, indices=None):
     values = np.asarray(sides, dtype=float)
     if indices is not None:
         values = values[np.asarray(indices, dtype=int)]
-    return [cdfmm.CuboidSize(float(side), float(side), float(side))
+    return [cdfmm.RectangularPrism(float(side), float(side), float(side))
             for side in values]
 
 
@@ -272,10 +299,10 @@ def interaction_geometry(interaction_mode):
     if interaction_mode == "point-point":
         return cdfmm.SourceGeometry.POINT_DIPOLE, cdfmm.TargetGeometry.POINT
     if interaction_mode == "cuboid-point":
-        return cdfmm.SourceGeometry.UNIFORM_CUBOID, cdfmm.TargetGeometry.POINT
+        return cdfmm.SourceGeometry.RECTANGULAR_PRISM, cdfmm.TargetGeometry.POINT
     if interaction_mode == "cuboid-cuboid":
-        return (cdfmm.SourceGeometry.UNIFORM_CUBOID,
-                cdfmm.TargetGeometry.VOLUME_AVERAGED_CUBOID)
+        return (cdfmm.SourceGeometry.RECTANGULAR_PRISM,
+                cdfmm.TargetGeometry.RECTANGULAR_PRISM)
     raise ValueError(f"unknown interaction mode: {interaction_mode!r}")
 
 
@@ -308,19 +335,25 @@ def make_options(material, backend, order=6, interaction_mode="point-point",
     options.expansion_order = order
     options.source_geometry = source_geometry
     options.target_geometry = target_geometry
+    options.near_field_source_model = cdfmm.SourceModel.EXACT_GEOMETRY
+    options.near_field_target_model = cdfmm.TargetModel.EXACT_GEOMETRY
     options.use_reduced_symmetry_p2p = p2p_mode == "dictionary"
     options.cuda_dictionary_target_owned = dictionary_executor == "target_owned"
     options.cuda_dictionary_power2_microtiles = dictionary_executor == "power2"
     if p2p_mode == "canonical":
         options.cuda_p2p_bsr_max_bytes = 0
-    if source_geometry == cdfmm.SourceGeometry.UNIFORM_CUBOID:
+    if source_geometry == cdfmm.SourceGeometry.RECTANGULAR_PRISM:
         if sides is None:
             raise ValueError("cuboid modes require material cell sides")
         options.source_sizes = _cuboid_sizes(sides)
-        options.use_cuboid_p2m = True
-    if target_geometry == cdfmm.TargetGeometry.VOLUME_AVERAGED_CUBOID:
+        options.far_field_source_model = cdfmm.SourceModel.EXACT_GEOMETRY
+    else:
+        options.far_field_source_model = cdfmm.SourceModel.POINT_DIPOLE
+    if target_geometry == cdfmm.TargetGeometry.RECTANGULAR_PRISM:
         options.target_sizes = _cuboid_sizes(sides)
-        options.use_cuboid_l2p = True
+        options.far_field_target_model = cdfmm.TargetModel.EXACT_GEOMETRY
+    else:
+        options.far_field_target_model = cdfmm.TargetModel.POINT
     if interaction_mode == "point-point":
         options.fixed_target_source_indices = list(range(count))
     options.enable_cache = False
@@ -423,6 +456,13 @@ def plan_diagnostics(plan, topology, tree, interaction_mode, reduced,
         retained_bytes=int(statistics["total_persistent_bytes"]),
         backend_packing_seconds=float(statistics["backend_packing_seconds"]),
         cuda_upload_seconds=float(statistics["cuda_upload_seconds"]),
+        node_count=len(topology.nodes),
+        leaf_count=len(topology.target_leaves),
+        topology_bytes=int(topology.memory_bytes),
+        m2l_interactions=len(topology.m2l_interactions),
+        cross_level_m2l_interactions=sum(
+            item.source_level != item.target_level
+            for item in topology.m2l_interactions),
     )
     result.update(p2p_topology_statistics(topology))
     try:
@@ -439,6 +479,89 @@ def plan_diagnostics(plan, topology, tree, interaction_mode, reduced,
         cuda_p2p_scratch_bytes=int(cuda_statistics.get("p2p_scratch_bytes", 0)),
     )
     return result
+
+
+TREE_COLOURS = {"uniform": "tab:blue", "adaptive": "tab:red"}
+
+P2P_CASE_STYLES = {
+    ("canonical", "source_warp"): dict(marker="o", linestyle="-"),
+    ("bsr", "source_warp"): dict(marker="s", linestyle="--"),
+    ("dictionary", "source_warp"): dict(marker="^", linestyle="-."),
+    ("dictionary", "target_owned"): dict(marker="D", linestyle=":"),
+    ("dictionary", "power2"): dict(marker="P", linestyle=(0, (5, 1))),
+}
+
+
+def p2p_case_label(p2p_mode, dictionary_executor="source_warp"):
+    """Return a concise label for a benchmark P2P implementation."""
+    if p2p_mode == "canonical":
+        return "Canonical"
+    if p2p_mode == "bsr":
+        return "BSR"
+    labels = {
+        "source_warp": "Reduced source-warp",
+        "target_owned": "Reduced target-owned",
+        "power2": "Reduced power2",
+    }
+    return labels.get(dictionary_executor,
+                      f"Reduced {dictionary_executor.replace('_', '-')}")
+
+
+def benchmark_style(tree, p2p_mode, dictionary_executor="source_warp"):
+    """Encode tree type by colour and P2P implementation by line and marker."""
+    style = dict(P2P_CASE_STYLES.get(
+        (p2p_mode, dictionary_executor), dict(marker="x", linestyle="-")))
+    style["color"] = TREE_COLOURS.get(tree, "0.35")
+    return style
+
+
+def plan_build_preflight(topologies, p2p_modes, precision, capacities,
+                         maximum_depths):
+    """Estimate plan scale before materialising particle-pair operators.
+
+    The host estimates describe the current multi-stage construction path,
+    where canonical, compact and backend-specific P2P layouts overlap. They
+    are deliberately approximate and should be treated as an early warning,
+    not as a memory reservation or a measured peak.
+    """
+    scalar_bytes = (4 if precision == cdfmm.StaticPrecision.FLOAT32 else 8)
+    host_bytes_per_pair = {
+        "canonical": 224,
+        "bsr": 256,
+        "dictionary": 320,
+    }
+    records = []
+    for tree, topology in topologies.items():
+        topology_statistics = p2p_topology_statistics(topology)
+        nodes = topology.nodes
+        occupancies = [leaf.count for leaf in topology.source_leaves]
+        for p2p_mode in p2p_modes:
+            pair_count = topology_statistics["p2p_particle_rectangles"]
+            if p2p_mode == "dictionary":
+                # Continuous random positions normally retain one tensor for
+                # each reciprocal pair and require four-byte tokens.
+                device_p2p_bytes = pair_count * (3 * scalar_bytes + 4)
+            else:
+                # Nine tensor/potential scalars and one source index.
+                device_p2p_bytes = pair_count * (9 * scalar_bytes + 4)
+            records.append(dict(
+                tree=tree,
+                p2p_mode=p2p_mode,
+                configured_max_depth=int(maximum_depths[tree]),
+                reached_depth=int(topology.maximum_level),
+                nodes=len(nodes),
+                leaves=len(topology.source_leaves),
+                depth_limited_leaves=sum(
+                    nodes[leaf.node].level == maximum_depths[tree]
+                    and leaf.count > capacities[tree]
+                    for leaf in topology.source_leaves),
+                maximum_leaf_occupancy=max(occupancies, default=0),
+                p2p_particle_pairs=int(pair_count),
+                estimated_device_p2p_gib=device_p2p_bytes / 2**30,
+                estimated_host_build_peak_gib=(
+                    pair_count * host_bytes_per_pair[p2p_mode] / 2**30),
+            ))
+    return records
 
 
 def benchmark(topologies, states, material, backend, order=6,
@@ -676,7 +799,7 @@ def evaluate_direct_reference(reference, moments):
         if reference["cuda"]:
             return np.asarray(reference["plan"].evaluate(moments)["H"])
         return np.asarray(cdfmm.direct_p2p_reference(
-            reference["positions"], reference["targets"], moments,
+            reference["targets"], reference["positions"], moments,
             target_source_indices=reference["identities"])["H"])
     if reference["cuda"]:
         return np.asarray(reference["plan"].evaluate(moments))

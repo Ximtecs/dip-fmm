@@ -173,8 +173,14 @@ def test_geometry_options_cover_all_modes_without_excluding_cuboid_self():
                 mode != "point-point")
             assert (len(options.target_sizes) == len(material["positions"])) is (
                 mode == "cuboid-cuboid")
-            assert options.use_cuboid_p2m is (mode != "point-point")
-            assert options.use_cuboid_l2p is (mode == "cuboid-cuboid")
+            assert options.far_field_source_model == (
+                cdfmm.SourceModel.EXACT_GEOMETRY
+                if mode != "point-point" else cdfmm.SourceModel.POINT_DIPOLE
+            )
+            assert options.far_field_target_model == (
+                cdfmm.TargetModel.EXACT_GEOMETRY
+                if mode == "cuboid-cuboid" else cdfmm.TargetModel.POINT
+            )
 
 
 def test_cpu_showcase_matrix_preserves_topology_and_matches_direct_fields():
@@ -201,7 +207,8 @@ def test_cpu_showcase_matrix_preserves_topology_and_matches_direct_fields():
     case_count = 2 * len(INTERACTION_MODES) * 2
     assert len(setup) == case_count
     assert all(len(key) == 4 for key in fields)
-    assert all(len(key) == 4 for key in components)
+    # Component snapshots pair the four-part case key with the selected run.
+    assert all(len(key) == 2 and len(key[0]) == 4 for key in components)
     assert all(seconds >= 0.0 for seconds in setup.values())
     assert len(measurements) == case_count * len(states)
     assert all(len(values) == len(states) for values in fields.values())
