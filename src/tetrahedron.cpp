@@ -9,6 +9,7 @@
 #include <limits>
 #include <numbers>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -526,15 +527,18 @@ long double triangle_i0(const double p,
 
     const long double zero2 = 1.0e-28L;
     const long double radius = std::sqrt(P * P + hh);
-    long double phi1;
     if (hh < zero2 * P * P) {
-        phi1 = std::log(P) / P;
-    } else if (P == 0.0L) {
+        // This is the complete zero-height branch in the reference I0
+        // reduction, not merely an alternative way to compute Phi1.
+        return std::log(P) / (6.0L * P);
+    }
+
+    long double phi1;
+    if (P == 0.0L) {
         phi1 = 1.0L / std::sqrt(hh);
     } else {
         // asinh(P/sqrt(hh))/P is equivalent to the logarithm in I0 and is
-        // well behaved at P=0.  The far-field branch above retains the exact
-        // normalisation used by the reference implementation.
+        // well behaved at P=0.
         phi1 = std::asinh(P / std::sqrt(hh)) / P;
     }
 
@@ -547,7 +551,28 @@ long double triangle_i0(const double p,
         return std::atan((h1 * P) / (hh + h * radius)) / (h1 * P);
     };
     long double answer;
-    if (hh1 < tiny * hh) {
+    if (h1 * h1 + h2 * h2 + h4 * h4 < tiny * hh) {
+        // Rank-deficient reductions can leave h3 as the only non-zero
+        // height.  The reference case-4 expression is 0/0 at h1=0; this is
+        // its analytical h1 -> 0 limit.
+        const long double q = std::hypot(P, h3);
+        const long double logarithm = std::asinh(P / h3);
+        answer = (logarithm * (2.0L * q * q - 3.0L * h3 * h3) /
+                      (2.0L * P * P * P) +
+                  (4.0L * h3 - 3.0L * q) / (2.0L * P * P)) /
+            6.0L;
+    } else if (h1 * h1 + h2 * h2 + h3 * h3 < tiny * hh) {
+        // Likewise, the reference case-6 expression needs its h1 -> 0
+        // limit when h4 is the only non-zero height.
+        const long double q = std::hypot(P, h4);
+        const long double logarithm = std::asinh(P / h4);
+        answer = (logarithm * (2.0L * q * q - 5.0L * h4 * h4) /
+                      (2.0L * P * P * P) +
+                  3.0L * (2.0L * h4 - q) / (2.0L * P * P) -
+                  (q + 2.0L * h4) /
+                      (3.0L * (q + h4) * (q + h4))) /
+            6.0L;
+    } else if (hh1 < tiny * hh) {
         answer = phi1 / 6.0L;
     } else if (h3 * h3 + h4 * h4 < tiny * hh) {
         answer = (phi1 - h2 * phi2_for(h2)) / 6.0L;
@@ -1061,6 +1086,12 @@ PairTensor tetrahedron_tetrahedron_tensor(
             }};
             const double integral = detail::triangle_triangle_laplace_integral(
                 target_triangle, source_triangle);
+            if (!std::isfinite(integral)) {
+                throw std::domain_error(
+                    "tetrahedron face-pair integral is not finite (target face " +
+                    std::to_string(target_face) + ", source face " +
+                    std::to_string(source_face) + ")");
+            }
             const Vec3& target_normal = target_normals[
                 static_cast<std::size_t>(target_face)];
             const Vec3& source_normal = source_normals[
