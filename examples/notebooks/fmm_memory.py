@@ -96,9 +96,10 @@ def estimate_source_point_storage(
 ) -> StorageEstimate:
     """Estimate current host and CUDA storage without constructing an FMM plan.
 
-    The estimate follows the containers allocated by the present implementation.
-    It intentionally excludes allocator metadata, CUDA context storage, pinned
-    staging buffers, and Python object overhead.
+    The estimate follows the containers retained by the present implementation,
+    including the shared M2M/L2L templates on both cold construction and
+    universal-cache hits. It intentionally excludes allocator metadata, CUDA
+    context storage, pinned staging buffers, and Python object overhead.
     """
 
     if not hasattr(cdfmm, "static_m2l_matrix"):
@@ -166,7 +167,12 @@ def estimate_source_point_storage(
         p2p_pairs * P2P_SOA_INTERACTION_BYTES
         + (particle_count + 1) * INT_BYTES
     )
-    matrix_count = 316 if universal_translation_bank else len(groups)
+    # A populated far-field plan constructs the complete 316-class M2L bank.
+    # ``universal_translation_bank`` also requests that bank for a geometry
+    # with no active M2L rows. The eight shared M2M/L2L templates remain
+    # resident regardless of whether they were built or loaded from cache.
+    matrix_count = 316 if universal_translation_bank or groups else 0
+    shared_translation_bytes = 2 * 8 * translation_entries * STATIC_ENTRY_BYTES
     cached_matrix_bytes = matrix_count * coefficients**2 * DOUBLE_BYTES
     # CUDA stores compact active-row descriptors, source and matrix indices,
     # and one explicit level per node. Endpoint levels are validated while the
@@ -193,10 +199,7 @@ def estimate_source_point_storage(
         "canonical P2P tensors": p2p_static_bytes,
         "CPU SoA P2P packing": p2p_soa_bytes,
         "P2M maps": particle_entries * particle_count * STATIC_ENTRY_BYTES,
-        "shared M2M/L2L maps": (
-            0 if universal_translation_bank else
-            2 * depth * 8 * translation_entries * STATIC_ENTRY_BYTES
-        ),
+        "shared M2M/L2L maps": shared_translation_bytes,
         "cached M2L matrices": cached_matrix_bytes + level_scaling_bytes,
         "M2L interaction indices": interaction_index_bytes,
         "L2P rows": 4 * coefficients * particle_count * DOUBLE_BYTES,
@@ -228,7 +231,7 @@ def estimate_source_point_storage(
         "M2L interaction metadata": cuda_interaction_index_bytes,
         "M2L level scalings": level_scaling_bytes,
         "shared M2M/L2L matrices": (
-            2 * depth * 8 * translation_entries * STATIC_ENTRY_BYTES
+            shared_translation_bytes
         ),
         "other static operator entries": (
             2 * particle_entries * particle_count * STATIC_ENTRY_BYTES

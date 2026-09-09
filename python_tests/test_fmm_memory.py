@@ -72,6 +72,9 @@ def test_storage_estimate_detects_far_field_interactions():
 
 def test_host_storage_estimate_matches_constructed_cpu_static_plan():
     positions = np.random.default_rng(3).uniform(-0.9, 0.9, size=(24, 3))
+    # Compare against a cold plan so cache state cannot change the ownership
+    # path being measured. Both cold construction and cache hits retain the
+    # shared M2M/L2L maps, including when the universal bank is requested.
     estimate = estimate_source_point_storage(
         positions, order=3, depth=2, universal_translation_bank=True
     )
@@ -83,6 +86,7 @@ def test_host_storage_estimate_matches_constructed_cpu_static_plan():
     options.tree.root_centre = cdfmm.Vec3(0.0, 0.0, 0.0)
     options.tree.root_half_width = 1.0
     options.backend = cdfmm.ExecutionBackend.CPU_STATIC
+    options.enable_cache = False
 
     plan = cdfmm.UniformFmm(positions, positions, options)
 

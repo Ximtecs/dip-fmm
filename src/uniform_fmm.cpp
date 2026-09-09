@@ -1601,6 +1601,7 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.tree_bytes = (tree_ ? tree_->memory_statistics().total_bytes() : 0);
   static_plan_statistics_.topology_bytes = topology_->memory_bytes();
   bool universal_available = load_universal_cache();
+  const bool universal_cache_loaded = universal_available;
   const bool periodic_required = periodic_.enabled && !topology_->nodes.empty() &&
       topology_->nodes[static_cast<std::size_t>(topology_->root)].source_count() != 0 &&
       topology_->nodes[static_cast<std::size_t>(topology_->root)].target_count() != 0;
@@ -1616,6 +1617,24 @@ void UniformFmm::build_static_plan() {
     // Record them on both cache hits and analytical construction paths.
     static_plan_statistics_.m2m_operators = 8;
     static_plan_statistics_.l2l_operators = 8;
+    if (universal_cache_loaded) {
+      // Cache payloads are deserialised into the same retained operator
+      // containers as cold construction.  Reconstruct their storage
+      // accounting here; the cache-hit path skips the construction loop
+      // below, so otherwise these bytes would be silently omitted.
+      for (const StaticCoefficientOperator &operator_map : m2m_operators_) {
+        const std::size_t bytes =
+            operator_map.entries.size() * sizeof(StaticOperatorEntry);
+        static_plan_statistics_.m2m_operator_bytes += bytes;
+        static_plan_statistics_.operator_bytes += bytes;
+      }
+      for (const StaticCoefficientOperator &operator_map : l2l_operators_) {
+        const std::size_t bytes =
+            operator_map.entries.size() * sizeof(StaticOperatorEntry);
+        static_plan_statistics_.l2l_operator_bytes += bytes;
+        static_plan_statistics_.operator_bytes += bytes;
+      }
+    }
   }
   if (universal_available &&
       (!periodic_required || periodic_operator_available_) &&

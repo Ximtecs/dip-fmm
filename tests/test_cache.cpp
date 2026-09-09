@@ -131,6 +131,14 @@ TEST_CASE("cold and warm binary caches preserve complete plan results",
   REQUIRE(warm.static_plan_statistics().p2p_tensor_plan.calls == 0);
   REQUIRE(warm.universal_cache_key() == cold.universal_cache_key());
   REQUIRE(warm.geometry_cache_key() == cold.geometry_cache_key());
+  REQUIRE(warm.static_plan_statistics().m2m_operator_bytes ==
+          cold.static_plan_statistics().m2m_operator_bytes);
+  REQUIRE(warm.static_plan_statistics().l2l_operator_bytes ==
+          cold.static_plan_statistics().l2l_operator_bytes);
+  REQUIRE(warm.static_plan_statistics().operator_bytes ==
+          cold.static_plan_statistics().operator_bytes);
+  REQUIRE(warm.static_plan_statistics().total_bytes() ==
+          cold.static_plan_statistics().total_bytes());
   require_same_fields(cold_result, warm_result);
 }
 
