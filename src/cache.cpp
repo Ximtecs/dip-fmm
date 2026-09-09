@@ -31,7 +31,9 @@ namespace {
 // Version 4 adds independent near/far source/target model selectors and
 // representative-relative tetrahedron records to the geometry identity.
 constexpr std::uint32_t kCacheSchemaVersion = 4;
-constexpr std::uint32_t kOperatorVersion = 1;
+// Version 2 invalidates plans built before the analytical tetrahedron pair
+// kernel and its rank-deficient reduction fixes.
+constexpr std::uint32_t kOperatorVersion = 2;
 constexpr std::uint32_t kEndianMarker = 0x01020304U;
 constexpr std::uint32_t kChecksumAlgorithm = 2U; // fast 64-bit payload checksum
 constexpr std::size_t kUniversalClassCount =
