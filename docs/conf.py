@@ -18,7 +18,7 @@ copyright = "2026, dip-fmm contributors"
 
 extensions = ["myst_parser", "breathe"]
 source_suffix = {".rst": "restructuredtext", ".md": "markdown"}
-exclude_patterns = ["_build"]
+exclude_patterns = ["_build", "AGENTS.md"]
 
 breathe_projects = {"dip-fmm": str(DOCS_DIR / "_build/doxygen/xml")}
 breathe_default_project = "dip-fmm"

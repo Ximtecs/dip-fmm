@@ -17,6 +17,7 @@ convention.
 :caption: User guide
 
 overview
+architecture
 geometry-models
 static-architecture
 caching
@@ -41,6 +42,7 @@ parameter-selection
 static-p2p
 cuda-m2l-performance
 roadmap
+pre-refactor-baseline-v0.1.0
 ```
 
 ```{toctree}
