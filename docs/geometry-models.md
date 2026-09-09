@@ -27,9 +27,11 @@ options.far_field_target_model   # L2P target treatment
 ```
 
 Exact near-field P2P supports point↔point, prism↔point, point↔prism,
-prism↔prism, tetrahedron↔point, and point↔tetrahedron. Exact
-tetrahedron↔prism and tetrahedron↔tetrahedron P2P are intentionally rejected;
-use a supported point endpoint or an exact finite-geometry L2P path instead.
+prism↔prism, tetrahedron↔point, point↔tetrahedron, and
+tetrahedron↔tetrahedron. The tetrahedron↔tetrahedron tensor is evaluated during
+plan construction and cached for repeated application; finite tetrahedron self
+interactions are retained. Prism↔tetrahedron and tetrahedron↔prism remain
+unsupported.
 For tetrahedron point evaluations on a face, the analytical boundary value uses
 the MagTense-compatible one-sided limiting convention; edge and vertex
 coincidences remain singular.

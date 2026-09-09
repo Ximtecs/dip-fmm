@@ -138,6 +138,9 @@ End-to-end Cartesian `UniformFmm` supports rectangular-prism sources to point
 or analytically volume-averaged rectangular-prism targets. A point target
 evaluates the finite source at the receiving representative; a prism target
 uses the exact receiving-volume average through the target-geometry operators.
+It also supports tetrahedron sources and targets: tetrahedral P2M and
+volume-averaged L2P use exact simplex moments, while tetrahedron-to-tetrahedron
+list1 pairs use the analytical face-integral tensor.
 
 Direct geometry stores exactly the six symmetric Cartesian components
 $K_{xx},K_{xy},K_{xz},K_{yy},K_{yz},K_{zz}$, each an $N_t\times N_s$ matrix.
@@ -153,11 +156,12 @@ precomputed tensors and performs no prism integration at runtime.
 
 For point/prism endpoint pairs, `DenseDirectPlan` and FMM `list1` construction
 share the canonical `build_pair_tensor` implementation. Tetrahedron endpoint
-pairs dispatch through tetrahedron-specific analytical operators; dense direct
-does not currently accept tetrahedron records, and finite tetrahedron-to-prism
-or tetrahedron-to-tetrahedron P2P is rejected. Dense direct is exact all-to-all
-for its supported geometries, while FMM combines the same exact near-field
-physics with a truncated multipole/local far field. MagTense stores its demagnetisation tensor
+pairs dispatch through tetrahedron-specific analytical operators; finite
+tetrahedron-to-prism interactions remain unsupported, while tetrahedron-to-
+tetrahedron pairs are evaluated exactly during DenseDirect or static P2P plan
+construction. Dense direct is exact all-to-all for its supported geometries,
+while FMM combines the same exact near-field physics with a truncated
+multipole/local far field. MagTense stores its demagnetisation tensor
 and applies the physical minus sign during the matrix-vector operation;
 dip-fmm's tensor maps total moments directly to the signed field
 $H=-\nabla\phi$ with $1/(4\pi)$ normalisation.
