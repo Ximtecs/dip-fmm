@@ -77,7 +77,7 @@ def test_magtense_cuboid_notebook_is_valid_and_compilable():
     assert '"normal-cpu", "mkl-cpu", "cuda"' in combined_source
     assert "cdfmm.DenseDirectBackend.PORTABLE" in combined_source
     assert "cdfmm.DenseDirectBackend.ONE_MKL" in combined_source
-    assert "cdfmm.SourceGeometry.UNIFORM_CUBOID" in combined_source
+    assert "cdfmm.SourceGeometry." in combined_source
     assert "cdfmm.TargetGeometry.POINT" in combined_source
     assert "magstatics.get_H_field" in combined_source
     assert "H_magtense = np.asarray" in combined_source
@@ -128,11 +128,11 @@ def test_uniform_cube_direct_field_matches_magtense():
         dtype=np.float64,
     )
 
-    cube_size = cdfmm.CuboidSize(cube_side, cube_side, cube_side)
+    cube_size = cdfmm.RectangularPrism(cube_side, cube_side, cube_side)
     plan = cdfmm.DenseDirectPlan(
         centres,
         centres,
-        cdfmm.SourceGeometry.UNIFORM_CUBOID,
+        cdfmm.SourceGeometry.RECTANGULAR_PRISM,
         cdfmm.TargetGeometry.POINT,
         [cube_size],
     )

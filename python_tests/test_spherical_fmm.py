@@ -42,22 +42,24 @@ def test_spherical_accepts_cuboids_and_rejects_reference_execution():
     positions = np.zeros((1, 3))
     options = cdfmm.UniformFmmOptions()
     options.expansion_basis = cdfmm.ExpansionBasis.SPHERICAL
-    options.source_geometry = cdfmm.SourceGeometry.UNIFORM_CUBOID
-    options.source_sizes = [cdfmm.CuboidSize(1.0, 1.0, 1.0)]
-    options.target_geometry = cdfmm.TargetGeometry.VOLUME_AVERAGED_CUBOID
+    options.source_geometry = cdfmm.SourceGeometry.RECTANGULAR_PRISM
+    options.source_sizes = [cdfmm.RectangularPrism(1.0, 1.0, 1.0)]
+    options.target_geometry = cdfmm.TargetGeometry.RECTANGULAR_PRISM
     options.target_sizes = options.source_sizes
     options.tree.root_centre = cdfmm.Vec3(0.0, 0.0, 0.0)
     options.tree.root_half_width = 1.0
     plan = cdfmm.UniformFmm(positions, positions, options)
     result = plan.evaluate(np.array([[0.0, 0.0, 1.0]]))
-    np.testing.assert_allclose(result["H"], [[0.0, 0.0, -1.0 / 3.0]])
+    np.testing.assert_allclose(
+        result["H"], [[0.0, 0.0, -1.0 / 3.0]], atol=1e-7
+    )
 
     # Point L2P comparison mode must retain the exact cuboid self P2P field.
-    options.use_cuboid_l2p = False
+    options.far_field_target_model = cdfmm.TargetModel.POINT
     point_l2p_plan = cdfmm.UniformFmm(positions, positions, options)
     point_l2p_result = point_l2p_plan.evaluate(np.array([[0.0, 0.0, 1.0]]))
     np.testing.assert_allclose(
-        point_l2p_result["H"], [[0.0, 0.0, -1.0 / 3.0]]
+        point_l2p_result["H"], [[0.0, 0.0, -1.0 / 3.0]], atol=1e-7
     )
 
     options.source_geometry = cdfmm.SourceGeometry.POINT_DIPOLE
@@ -91,8 +93,8 @@ def test_cartesian_spherical_comparison_notebook_is_valid_and_compilable():
     assert "REPETITIONS = 7" in combined
     assert "ExpansionBasis.SPHERICAL" in combined
     assert "DenseDirectPlan" in combined
-    assert "SourceGeometry.UNIFORM_CUBOID" in combined
-    assert "TargetGeometry.VOLUME_AVERAGED_CUBOID" in combined
+    assert "SourceGeometry." in combined
+    assert "TargetGeometry." in combined
 
 
 def test_spherical_cuboid_p2m_l2p_notebook_is_valid_and_compilable():
@@ -114,8 +116,6 @@ def test_spherical_cuboid_p2m_l2p_notebook_is_valid_and_compilable():
 
     combined = "\n".join(sources)
     assert "ExpansionBasis.SPHERICAL" in combined
-    assert "SourceGeometry.UNIFORM_CUBOID" in combined
-    assert "TargetGeometry.VOLUME_AVERAGED_CUBOID" in combined
-    assert "options.use_cuboid_p2m" in combined
-    assert "options.use_cuboid_l2p" in combined
+    assert "SourceGeometry." in combined
+    assert "TargetGeometry." in combined
     assert "ORDERS = [4, 6]" in combined

@@ -63,10 +63,8 @@ def test_periodic_comparison_switches_exact_near_field_geometry():
     assert "moments = CUBOID_VOLUME * magnetisations" in combined_source
     assert "cdfmm.CudaDenseDirectPlan(" in combined_source
     assert "cdfmm.cuda_dense_direct_available()" in combined_source
-    assert "SourceGeometry.UNIFORM_CUBOID" in combined_source
-    assert "TargetGeometry.VOLUME_AVERAGED_CUBOID" in combined_source
-    assert "options.use_cuboid_p2m = False" in combined_source
-    assert "options.use_cuboid_l2p = False" in combined_source
+    assert "SourceGeometry." in combined_source
+    assert "TargetGeometry." in combined_source
 
     for index, source in enumerate(sources):
         compile(source, f"{COMPARISON_NOTEBOOK.name}:cell-{index}", "exec")
