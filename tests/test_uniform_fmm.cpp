@@ -524,6 +524,90 @@ TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
     REQUIRE(std::abs(high_order_error - point_p2m_error) > 1.0e-5);
 }
 
+TEST_CASE("tetrahedron FMM converges to exact dense direct",
+          "[uniform_fmm][tetrahedron]")
+{
+    // Two compact clusters make the diagonal cluster pairs list1 interactions
+    // while the opposite clusters traverse the far-field operators.
+    const std::vector<Vec3> positions{
+        {-0.85, 0.00, 0.00},
+        {-0.75, 0.06, 0.04},
+        {0.75, -0.05, 0.08},
+        {0.85, 0.01, -0.02}
+    };
+    const Tetrahedron tetrahedron = test_tetrahedron();
+    const std::vector<Tetrahedron> source_tetrahedra(positions.size(),
+                                                      tetrahedron);
+    const std::vector<Tetrahedron> target_tetrahedra(positions.size(),
+                                                      tetrahedron);
+    const std::vector<Vec3> moments{
+        {0.31, -0.27, 0.44},
+        {-0.18, 0.36, 0.21},
+        {0.42, 0.11, -0.29},
+        {-0.37, 0.22, 0.17}
+    };
+    const std::vector<int> identities{0, 1, 2, 3};
+
+    const DenseDirectPlan direct(
+        positions, positions, SourceGeometry::Tetrahedron,
+        TargetGeometry::Tetrahedron, {}, {}, identities,
+        StaticPrecision::Float64,
+        source_tetrahedra, target_tetrahedra, SourceModel::ExactGeometry,
+        TargetModel::ExactGeometry);
+    const std::vector<Vec3> reference = direct.evaluate(
+        moments, DenseDirectBackend::Portable);
+    const PairTensor self_tensor = tetrahedron_tetrahedron_tensor(
+        {}, tetrahedron, tetrahedron);
+    REQUIRE(std::isfinite(self_tensor.xx));
+    REQUIRE(std::isfinite(self_tensor.yy));
+    REQUIRE(std::isfinite(self_tensor.zz));
+
+    const auto relative_rms_error = [&](const int order) {
+        UniformFmmOptions options;
+        options.backend = ExecutionBackend::CpuStatic;
+        options.precision = StaticPrecision::Float64;
+        options.expansion_basis = ExpansionBasis::Cartesian;
+        options.expansion_order = order;
+        options.tree.max_level = 2;
+        options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
+        options.tree.root_half_width = 1.2;
+        options.source_geometry = SourceGeometry::Tetrahedron;
+        options.source_tetrahedra = source_tetrahedra;
+        options.target_geometry = TargetGeometry::Tetrahedron;
+        options.target_tetrahedra = target_tetrahedra;
+        options.near_field_source_model = SourceModel::ExactGeometry;
+        options.near_field_target_model = TargetModel::ExactGeometry;
+        options.far_field_source_model = SourceModel::ExactGeometry;
+        options.far_field_target_model = TargetModel::ExactGeometry;
+        options.fixed_target_source_indices = identities;
+
+        UniformFmm fmm(positions, positions, options);
+        if (order == 6) {
+            const StaticPlanStatistics& statistics =
+                fmm.static_plan_statistics();
+            REQUIRE(statistics.p2p_interactions > 0);
+            REQUIRE(statistics.p2p_interactions <
+                    positions.size() * positions.size());
+            REQUIRE(statistics.interactions > 0);
+        }
+        const auto approximate = fmm.evaluate(
+            moments, OutputFlags::Field, identities);
+        double difference_squared = 0.0;
+        double reference_squared = 0.0;
+        for (std::size_t index = 0; index < reference.size(); ++index) {
+            const Vec3 difference = approximate[index].H - reference[index];
+            difference_squared += dot(difference, difference);
+            reference_squared += dot(reference[index], reference[index]);
+        }
+        return std::sqrt(difference_squared / reference_squared);
+    };
+
+    const double low_order_error = relative_rms_error(2);
+    const double high_order_error = relative_rms_error(6);
+    REQUIRE(high_order_error < low_order_error);
+    REQUIRE(high_order_error < 1.0e-2);
+}
+
 TEST_CASE("static cuboid P2P reuses exact pair tensors", "[cuboid][p2p]")
 {
     const std::array<Vec3, 1> positions{{{0.0, 0.0, 0.0}}};
