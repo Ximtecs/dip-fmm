@@ -2,6 +2,8 @@
 
 #include "cdfmm/tetrahedron.hpp"
 
+#include "tetrahedron_detail.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -394,6 +396,436 @@ PairTensor to_pair_tensor(const Matrix3& matrix)
             matrix.value[1][1], matrix.value[1][2], matrix.value[2][2]};
 }
 
+//------------------------------------------------------------------------------
+// Analytical constant-density triangle Galerkin integral
+//------------------------------------------------------------------------------
+
+// This is a focused C++ port of the constant-density L path in
+// GalerkinLaplaceTriGS.m and its I3/I2s/I2t/I1/I0 dependencies from
+// Gumerov, Kaneko, and Duraiswami, SIAM J. Sci. Comput. 46 (2024),
+// DOI 10.1137/23M1547688.  The upstream reference implementation is MIT
+// licensed: https://github.com/pirl-lab/analytical-quadrature-laplace-galerkin.
+
+struct ExpansionProjection {
+    std::array<double, 4> coefficient{{0.0, 0.0, 0.0, 0.0}};
+    Vec3 projected{};
+    double residual{0.0};
+};
+
+// This is the small Gram--Schmidt projection used by the reference
+// expan_GrammSchmidt.m routine.  Keeping the triangular back substitution
+// explicit is important: I3/I2s/I2t use the coefficients of the original
+// edge vectors, rather than coefficients of an orthogonal basis.
+ExpansionProjection expand_gram_schmidt(
+    const std::array<Vec3, 4>& vectors, const int count, const Vec3& value)
+{
+    std::array<Vec3, 4> orthogonal{};
+    std::array<double, 4> orthogonal_norm_squared{{0.0, 0.0, 0.0, 0.0}};
+    double vector_scale = norm(value);
+    double basis_scale = 0.0;
+    for (int i = 0; i < count; ++i) {
+        const double length = norm(vectors[static_cast<std::size_t>(i)]);
+        vector_scale = std::max(vector_scale, length);
+        basis_scale = std::max(basis_scale, length);
+    }
+    const double rank_tolerance = 256.0 *
+        std::numeric_limits<double>::epsilon() *
+        std::max(std::numeric_limits<double>::min(), basis_scale * basis_scale);
+
+    double coefficient_matrix[4][4]{};
+    for (int column = 0; column < count; ++column) {
+        orthogonal[static_cast<std::size_t>(column)] =
+            vectors[static_cast<std::size_t>(column)];
+        for (int row = 0; row < column; ++row) {
+            const double denominator = orthogonal_norm_squared[
+                static_cast<std::size_t>(row)];
+            coefficient_matrix[row][column] =
+                dot(orthogonal[static_cast<std::size_t>(row)],
+                    vectors[static_cast<std::size_t>(column)]) /
+                denominator;
+            orthogonal[static_cast<std::size_t>(column)] =
+                orthogonal[static_cast<std::size_t>(column)] -
+                coefficient_matrix[row][column] *
+                    orthogonal[static_cast<std::size_t>(row)];
+        }
+        const double norm_squared = dot(
+            orthogonal[static_cast<std::size_t>(column)],
+            orthogonal[static_cast<std::size_t>(column)]);
+        if (!(norm_squared > rank_tolerance)) {
+            orthogonal[static_cast<std::size_t>(column)] = {};
+            orthogonal_norm_squared[static_cast<std::size_t>(column)] = 1.0;
+            coefficient_matrix[column][column] = 0.0;
+        } else {
+            orthogonal_norm_squared[static_cast<std::size_t>(column)] =
+                norm_squared;
+            coefficient_matrix[column][column] = dot(
+                orthogonal[static_cast<std::size_t>(column)],
+                vectors[static_cast<std::size_t>(column)]) /
+                norm_squared;
+        }
+    }
+
+    ExpansionProjection result;
+    std::array<double, 4> residual_projection{{0.0, 0.0, 0.0, 0.0}};
+    for (int index = count - 1; index >= 0; --index) {
+        const double diagonal = coefficient_matrix[index][index];
+        if (diagonal == 0.0) {
+            continue;
+        }
+        double correction = residual_projection[static_cast<std::size_t>(index)];
+        const double numerator = dot(
+            value, orthogonal[static_cast<std::size_t>(index)]) - correction;
+        result.coefficient[static_cast<std::size_t>(index)] = numerator /
+            (diagonal * orthogonal_norm_squared[
+                static_cast<std::size_t>(index)]);
+        for (int row = 0; row < index; ++row) {
+            residual_projection[static_cast<std::size_t>(row)] +=
+                result.coefficient[static_cast<std::size_t>(index)] *
+                coefficient_matrix[row][index] *
+                orthogonal_norm_squared[static_cast<std::size_t>(row)];
+        }
+    }
+
+    for (int index = 0; index < count; ++index) {
+        result.projected += result.coefficient[
+            static_cast<std::size_t>(index)] * vectors[
+                static_cast<std::size_t>(index)];
+    }
+    result.residual = norm(value - result.projected);
+    const double residual_tolerance = 256.0 *
+        std::numeric_limits<double>::epsilon() * std::max(1.0, vector_scale);
+    if (result.residual <= residual_tolerance) {
+        result.residual = 0.0;
+    }
+    return result;
+}
+
+long double triangle_i0(const double p,
+                        const std::array<double, 4>& input_heights)
+{
+    std::array<double, 4> heights = input_heights;
+    std::array<int, 4> order{{0, 1, 2, 3}};
+    std::sort(order.begin(), order.end(), [&](const int first,
+                                              const int second) {
+        return heights[static_cast<std::size_t>(first)] <
+            heights[static_cast<std::size_t>(second)];
+    });
+    heights[static_cast<std::size_t>(order[0])] = 0.0;
+    heights[static_cast<std::size_t>(order[1])] = 0.0;
+    const long double h1 = heights[0];
+    const long double h2 = heights[1];
+    const long double h3 = heights[2];
+    const long double h4 = heights[3];
+    const long double P = std::abs(static_cast<long double>(p));
+    const long double hh = h1 * h1 + h2 * h2 + h3 * h3 + h4 * h4;
+    if (P == 0.0L && hh == 0.0L) {
+        // This primitive is only reached with a zero edge in a degenerate
+        // triangle.  Valid triangle reductions skip that term before I0.
+        return 0.0L;
+    }
+
+    const long double zero2 = 1.0e-28L;
+    const long double radius = std::sqrt(P * P + hh);
+    long double phi1;
+    if (hh < zero2 * P * P) {
+        phi1 = std::log(P) / P;
+    } else if (P == 0.0L) {
+        phi1 = 1.0L / std::sqrt(hh);
+    } else {
+        // asinh(P/sqrt(hh))/P is equivalent to the logarithm in I0 and is
+        // well behaved at P=0.  The far-field branch above retains the exact
+        // normalisation used by the reference implementation.
+        phi1 = std::asinh(P / std::sqrt(hh)) / P;
+    }
+
+    const long double hh1 = hh - h1 * h1;
+    const long double tiny = zero2;
+    const auto phi2_for = [&](const long double h) {
+        if (h1 * P == 0.0L) {
+            return 1.0L / (hh + h * radius);
+        }
+        return std::atan((h1 * P) / (hh + h * radius)) / (h1 * P);
+    };
+    long double answer;
+    if (hh1 < tiny * hh) {
+        answer = phi1 / 6.0L;
+    } else if (h3 * h3 + h4 * h4 < tiny * hh) {
+        answer = (phi1 - h2 * phi2_for(h2)) / 6.0L;
+    } else {
+        const long double radius1 = std::sqrt(P * P + h1 * h1);
+        if (h2 * h2 + h4 * h4 < tiny * hh) {
+            const long double phi2 = phi2_for(h3);
+            const long double phi3 = 0.5L * hh1 / radius1 *
+                std::log((radius1 + radius) * (radius1 + radius) / hh1);
+            answer = ((h1 * h1 - h3 * h3) * phi1 -
+                      2.0L * h1 * h1 * h3 * phi2 + phi3) /
+                (6.0L * h1 * h1);
+        } else if (h2 * h2 + h3 * h3 < tiny * hh) {
+            const long double phi2 = phi2_for(h4);
+            const long double phi3 = 0.5L / radius1 *
+                std::log((radius1 + radius) * (radius1 + radius) / hh1);
+            answer = ((h1 * h1 - 3.0L * h4 * h4) * phi1 -
+                      h4 * (3.0L * h1 * h1 - h4 * h4) * phi2 +
+                      3.0L * h4 * h4 * phi3 -
+                      h4 * h4 / (radius + h4)) /
+                (6.0L * h1 * h1);
+        } else if (h1 * h1 + h4 * h4 < tiny * hh) {
+            const long double h = std::sqrt(hh);
+            const long double radius2 = std::sqrt(P * P + h2 * h2);
+            const long double phi4 = h3 * h3 / (h2 * P * P) *
+                ((radius2 / h2) * std::log((radius2 + radius) / h3) -
+                 std::log((h2 + h) / h3));
+            answer = (hh / (h2 * h2) * phi1 - 1.0L / (radius + h) -
+                      phi4) / 6.0L;
+        } else if (h1 * h1 + h3 * h3 < tiny * hh) {
+            const long double h = std::sqrt(hh);
+            const long double radius2 = std::sqrt(P * P + h2 * h2);
+            const long double phi2 = std::atan(h2 * P /
+                (hh + h4 * radius)) / P;
+            const long double phi4 = h4 * h4 / (h2 * P * P) *
+                ((radius2 / h2) * std::log((radius2 + radius) / h4) -
+                 std::log((h2 + h) / h4));
+            answer = ((1.0L + 3.0L * h4 * h4 / (h2 * h2)) * phi1 -
+                      2.0L * (h4 / h2) * (h4 / h2) * (h4 / h2) * phi2 -
+                      3.0L * phi4 +
+                      (2.0L * h4 * h4 - h2 * h2) /
+                      (h2 * h2 * (radius + h))) / 6.0L;
+        } else {
+            // This is the prohibited reference-I0 case.  Reaching it means
+            // that the preceding dimensional reduction has lost its expected
+            // rank; assigning an ad-hoc limiting value would hide that error.
+            throw std::domain_error("triangle I0 reached prohibited branch");
+        }
+    }
+    return answer;
+}
+
+double triangle_i1(const Vec3& vector, const Vec3& offset,
+                   const double h2, const double h3, const double h4)
+{
+    const double length = norm(vector);
+    if (!(length > 0.0)) {
+        return 0.0;
+    }
+    std::array<Vec3, 4> basis{{vector, {}, {}, {}}};
+    const ExpansionProjection expansion = expand_gram_schmidt(
+        basis, 1, offset);
+    constexpr double zero_tolerance = 1.0e-14;
+    double result = 0.0;
+    const double coefficient = expansion.coefficient[0];
+    if (std::abs(1.0 + coefficient) > zero_tolerance) {
+        result += (1.0 + coefficient) * static_cast<double>(triangle_i0(
+            std::abs(1.0 + coefficient) * length,
+            {{expansion.residual, h2, h3, h4}}));
+    }
+    if (std::abs(coefficient) > zero_tolerance) {
+        result -= coefficient * static_cast<double>(triangle_i0(
+            std::abs(coefficient) * length,
+            {{expansion.residual, h2, h3, h4}}));
+    }
+    return result;
+}
+
+double triangle_i2s(const Vec3& first, const Vec3& second,
+                    const Vec3& offset, const double h3, const double h4)
+{
+    std::array<Vec3, 4> basis{{first, second, {}, {}}};
+    const ExpansionProjection expansion = expand_gram_schmidt(
+        basis, 2, offset);
+    constexpr double zero_tolerance = 1.0e-14;
+    double result = 0.0;
+    const double s0 = expansion.coefficient[0];
+    const double s1 = expansion.coefficient[1];
+    if (std::abs(1.0 + s0) > zero_tolerance) {
+        result += (1.0 + s0) * triangle_i1(
+            second, expansion.projected + first, expansion.residual, h3, h4);
+    }
+    if (std::abs(s0) > zero_tolerance) {
+        result -= s0 * triangle_i1(
+            second, expansion.projected, expansion.residual, h3, h4);
+    }
+    if (std::abs(1.0 + s1) > zero_tolerance) {
+        result += (1.0 + s1) * triangle_i1(
+            first, expansion.projected + second, expansion.residual, h3, h4);
+    }
+    if (std::abs(s1) > zero_tolerance) {
+        result -= s1 * triangle_i1(
+            first, expansion.projected, expansion.residual, h3, h4);
+    }
+    return result;
+}
+
+double triangle_i2t(const Vec3& first, const Vec3& second,
+                    const Vec3& offset, const double h3, const double h4)
+{
+    std::array<Vec3, 4> basis{{first, second, {}, {}}};
+    const ExpansionProjection expansion = expand_gram_schmidt(
+        basis, 2, offset);
+    constexpr double zero_tolerance = 1.0e-14;
+    double result = 0.0;
+    const double s0 = expansion.coefficient[0];
+    const double s1 = expansion.coefficient[1];
+    if (std::abs(s0) > zero_tolerance) {
+        result -= s0 * triangle_i1(
+            second, expansion.projected, expansion.residual, h3, h4);
+    }
+    if (std::abs(s1) > zero_tolerance) {
+        result -= s1 * triangle_i1(
+            first, expansion.projected, expansion.residual, h3, h4);
+    }
+    if (std::abs(1.0 + s0 + s1) > zero_tolerance) {
+        result += (1.0 + s0 + s1) * triangle_i1(
+            first - second, expansion.projected + second,
+            expansion.residual, h3, h4);
+    }
+    return result;
+}
+
+double triangle_i3(const Vec3& first, const Vec3& second, const Vec3& third,
+                   const Vec3& offset, const double h4)
+{
+    std::array<Vec3, 4> basis{{first, second, third, {}}};
+    const ExpansionProjection expansion = expand_gram_schmidt(
+        basis, 3, offset);
+    constexpr double zero_tolerance = 1.0e-14;
+    double result = 0.0;
+    const double s0 = expansion.coefficient[0];
+    const double s1 = expansion.coefficient[1];
+    const double s2 = expansion.coefficient[2];
+    if (std::abs(1.0 + s0 + s1) > zero_tolerance) {
+        result += (1.0 + s0 + s1) * triangle_i2s(
+            first - second, third, expansion.projected + second,
+            expansion.residual, h4);
+    }
+    if (std::abs(s0) > zero_tolerance) {
+        result -= s0 * triangle_i2s(
+            second, third, expansion.projected, expansion.residual, h4);
+    }
+    if (std::abs(s1) > zero_tolerance) {
+        result -= s1 * triangle_i2s(
+            first, third, expansion.projected, expansion.residual, h4);
+    }
+    if (std::abs(1.0 + s2) > zero_tolerance) {
+        result += (1.0 + s2) * triangle_i2t(
+            first, second, expansion.projected + third,
+            expansion.residual, h4);
+    }
+    if (std::abs(s2) > zero_tolerance) {
+        result -= s2 * triangle_i2t(
+            first, second, expansion.projected, expansion.residual, h4);
+    }
+    return result;
+}
+
+double triangle_triangle_integral_core(
+    const std::array<Vec3, 3>& first,
+    const std::array<Vec3, 3>& second)
+{
+    const Vec3 first_edge_1 = first[1] - first[0];
+    const Vec3 first_edge_2 = first[2] - first[1];
+    const Vec3 first_edge_3 = first[0] - first[2];
+    const Vec3 second_edge_1 = second[1] - second[0];
+    const Vec3 second_edge_2 = second[2] - second[1];
+    const Vec3 second_edge_3 = second[0] - second[2];
+    const Vec3 first_cross = cross(first_edge_1, -1.0 * first_edge_3);
+    const Vec3 second_cross = cross(second_edge_1, -1.0 * second_edge_3);
+    const double first_area_twice = norm(first_cross);
+    const double second_area_twice = norm(second_cross);
+    if (!(first_area_twice > 0.0 && second_area_twice > 0.0)) {
+        throw std::invalid_argument("triangle pair contains a degenerate triangle");
+    }
+
+    const Vec3 a1 = first_edge_1;
+    const Vec3 a2 = -1.0 * first_edge_3;
+    const Vec3 a3 = -1.0 * second_edge_1;
+    const Vec3 a4 = second_edge_3;
+    const Vec3 e4 = first[0] - second[0];
+    std::array<Vec3, 4> all_vectors{{a1, a2, a3, a4}};
+    const ExpansionProjection complete_expansion = expand_gram_schmidt(
+        all_vectors, 4, e4);
+    const double s0 = complete_expansion.coefficient[0];
+    const double s1 = complete_expansion.coefficient[1];
+    const double s2 = complete_expansion.coefficient[2];
+    const double s3 = complete_expansion.coefficient[3];
+    const Vec3 e4x = complete_expansion.projected;
+    const Vec3 first_normal = scale(first_cross, 1.0 / first_area_twice);
+    const Vec3 second_normal = scale(second_cross, 1.0 / second_area_twice);
+    const double parallel_measure = std::min(
+        norm(first_normal + second_normal),
+        norm(first_normal - second_normal));
+    constexpr double zero_tolerance = 1.0e-14;
+    double reduced = 0.0;
+    if (parallel_measure > zero_tolerance) {
+        const double h4 = 0.0;
+        const double i31 = triangle_i3(a1, a2, a3, e4, h4);
+        const double i32 = triangle_i3(a1, a2, a4, e4, h4);
+        const double i33 = triangle_i3(a1, a2, a4 - a3, e4 + a3, h4);
+        const double i34 = triangle_i3(a3, a4, a1, e4, h4);
+        const double i35 = triangle_i3(a3, a4, a2, e4, h4);
+        const double i36 = triangle_i3(a3, a4, a2 - a1, e4 + a1, h4);
+        reduced = (1.0 + s2 + s3) * i33 - s3 * i31 - s2 * i32 +
+            (1.0 + s0 + s1) * i36 - s1 * i34 - s0 * i35;
+    } else {
+        // In the parallel case the projection of e4 onto the common plane
+        // is the only offset required by the dimensional reduction.
+        const double h4 = complete_expansion.residual;
+        const double i33 = triangle_i3(
+            a1, a2, a4 - a3, e4x + a3, h4);
+        const double i34 = triangle_i3(a3, a4, a1, e4x, h4);
+        const double i35 = triangle_i3(a3, a4, a2, e4x, h4);
+        const double i36 = triangle_i3(
+            a3, a4, a2 - a1, e4x + a1, h4);
+        reduced = i33 + (1.0 + s0 + s1) * i36 - s1 * i34 - s0 * i35;
+    }
+    return 4.0 * (0.5 * first_area_twice) *
+        (0.5 * second_area_twice) * reduced;
+}
+
+double triangle_triangle_integral_impl(
+    std::array<Vec3, 3> first,
+    std::array<Vec3, 3> second)
+{
+    const auto triangle_scale = [](const std::array<Vec3, 3>& triangle) {
+        return std::max({
+            norm(triangle[1] - triangle[0]),
+            norm(triangle[2] - triangle[1]),
+            norm(triangle[0] - triangle[2])});
+    };
+    const double first_scale = triangle_scale(first);
+    const double second_scale = triangle_scale(second);
+    if (!(first_scale > 0.0) || !(second_scale > 0.0) ||
+        !std::isfinite(first_scale) || !std::isfinite(second_scale)) {
+        throw std::invalid_argument("triangle pair has invalid scale");
+    }
+    // The core is symmetric in its two triangles.  Keep the larger triangle
+    // first for the same ordering used by the reference reduction, but do so
+    // before choosing the common origin so normalization remains one-pass.
+    if (first_scale < second_scale) {
+        std::swap(first, second);
+    }
+
+    const double scale_value = std::max(first_scale, second_scale);
+    const Vec3 origin = first[0];
+    const double inverse_scale = 1.0 / scale_value;
+    std::array<Vec3, 3> normalised_first{};
+    std::array<Vec3, 3> normalised_second{};
+    for (int index = 0; index < 3; ++index) {
+        normalised_first[static_cast<std::size_t>(index)] =
+            (first[static_cast<std::size_t>(index)] - origin) * inverse_scale;
+        normalised_second[static_cast<std::size_t>(index)] =
+            (second[static_cast<std::size_t>(index)] - origin) * inverse_scale;
+    }
+    return std::pow(scale_value, 3.0) *
+        triangle_triangle_integral_core(normalised_first,
+                                        normalised_second);
+}
+
+double triangle_triangle_integral(const std::array<Vec3, 3>& first,
+                                  const std::array<Vec3, 3>& second)
+{
+    return triangle_triangle_integral_impl(first, second);
+}
+
 struct BarycentricPolynomial {
     std::array<int, 4> power{{0, 0, 0, 0}};
     double coefficient{0.0};
@@ -429,6 +861,17 @@ void expand_axis(const int power, const double offset,
 }
 
 } // namespace
+
+namespace detail {
+
+double triangle_triangle_laplace_integral(
+    const std::array<Vec3, 3>& first,
+    const std::array<Vec3, 3>& second)
+{
+    return triangle_triangle_integral(first, second);
+}
+
+} // namespace detail
 
 double Tetrahedron::signed_volume() const noexcept
 {
@@ -546,10 +989,116 @@ double tetrahedron_averaged_monomial(const MultiIndex& beta, const Vec3& d,
 }
 
 PairTensor tetrahedron_tetrahedron_tensor(
-    const Vec3&, const Tetrahedron&, const Tetrahedron&)
+    const Vec3& target_minus_source_representative,
+    const Tetrahedron& source,
+    const Tetrahedron& target)
 {
-    throw std::domain_error(
-        "exact tetrahedron-to-tetrahedron P2P is not implemented analytically");
+    const double source_volume = tetrahedron_volume(source);
+    const double target_volume = tetrahedron_volume(target);
+
+    // The face order is immaterial to the scalar Galerkin integral.  It is
+    // made outward below using the vertex opposite each face, which keeps the
+    // tensor sign independent of the caller's tetrahedron orientation.
+    constexpr std::array<std::array<int, 3>, 4> face_vertices{{
+        {{1, 2, 3}},
+        {{0, 3, 2}},
+        {{0, 1, 3}},
+        {{0, 2, 1}},
+    }};
+
+    const auto outward_normal = [](const std::array<Vec3, 4>& vertices,
+                                   const std::array<int, 3>& face,
+                                   const int opposite) {
+        const Vec3 first = vertices[static_cast<std::size_t>(face[0])];
+        const Vec3 second = vertices[static_cast<std::size_t>(face[1])];
+        const Vec3 third = vertices[static_cast<std::size_t>(face[2])];
+        Vec3 normal = cross(second - first, third - first);
+        if (dot(normal,
+                vertices[static_cast<std::size_t>(opposite)] - first) > 0.0) {
+            normal = -1.0 * normal;
+        }
+        const double length = norm(normal);
+        if (!(length > 0.0) || !std::isfinite(length)) {
+            throw std::invalid_argument("tetrahedron face is degenerate");
+        }
+        return scale(normal, 1.0 / length);
+    };
+
+    std::array<Vec3, 4> source_normals{};
+    std::array<Vec3, 4> target_normals{};
+    for (int face = 0; face < 4; ++face) {
+        source_normals[static_cast<std::size_t>(face)] = outward_normal(
+            source.vertices, face_vertices[static_cast<std::size_t>(face)],
+            face);
+        target_normals[static_cast<std::size_t>(face)] = outward_normal(
+            target.vertices, face_vertices[static_cast<std::size_t>(face)],
+            face);
+    }
+
+    std::array<Vec3, 4> target_vertices{};
+    for (int vertex = 0; vertex < 4; ++vertex) {
+        target_vertices[static_cast<std::size_t>(vertex)] =
+            target_minus_source_representative + target.vertices[
+                static_cast<std::size_t>(vertex)];
+    }
+
+    Matrix3 tensor;
+    for (int target_face = 0; target_face < 4; ++target_face) {
+        const auto& target_face_indices = face_vertices[
+            static_cast<std::size_t>(target_face)];
+        const std::array<Vec3, 3> target_triangle{{
+            target_vertices[static_cast<std::size_t>(target_face_indices[0])],
+            target_vertices[static_cast<std::size_t>(target_face_indices[1])],
+            target_vertices[static_cast<std::size_t>(target_face_indices[2])],
+        }};
+        for (int source_face = 0; source_face < 4; ++source_face) {
+            const auto& source_face_indices = face_vertices[
+                static_cast<std::size_t>(source_face)];
+            const std::array<Vec3, 3> source_triangle{{
+                source.vertices[static_cast<std::size_t>(source_face_indices[0])],
+                source.vertices[static_cast<std::size_t>(source_face_indices[1])],
+                source.vertices[static_cast<std::size_t>(source_face_indices[2])],
+            }};
+            const double integral = detail::triangle_triangle_laplace_integral(
+                target_triangle, source_triangle);
+            const Vec3& target_normal = target_normals[
+                static_cast<std::size_t>(target_face)];
+            const Vec3& source_normal = source_normals[
+                static_cast<std::size_t>(source_face)];
+            for (int row = 0; row < 3; ++row) {
+                for (int column = 0; column < 3; ++column) {
+                    tensor.value[row][column] += integral *
+                        target_normal[row] * source_normal[column];
+                }
+            }
+        }
+    }
+
+    const long double normalisation = -1.0L /
+        (four_pi * static_cast<long double>(source_volume) *
+         static_cast<long double>(target_volume));
+    for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            tensor.value[row][column] = static_cast<double>(
+                normalisation * static_cast<long double>(
+                    tensor.value[row][column]));
+            if (!std::isfinite(tensor.value[row][column])) {
+                throw std::domain_error(
+                    "tetrahedron-to-tetrahedron tensor is not finite");
+            }
+        }
+    }
+    // The Hessian of 1/R is symmetric.  Face-pair evaluation can leave only
+    // last-bit antisymmetry, and PairTensor stores the six symmetric entries.
+    for (int row = 0; row < 3; ++row) {
+        for (int column = row + 1; column < 3; ++column) {
+            const double average = 0.5 * (tensor.value[row][column] +
+                                          tensor.value[column][row]);
+            tensor.value[row][column] = average;
+            tensor.value[column][row] = average;
+        }
+    }
+    return to_pair_tensor(tensor);
 }
 
 } // namespace cdfmm

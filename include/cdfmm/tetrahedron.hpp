@@ -87,10 +87,12 @@ struct Tetrahedron {
     const Tetrahedron& tetrahedron);
 
 /**
- * @brief Deliberately unsupported finite tetrahedron-to-tetrahedron P2P pair.
+ * @brief Exact uniformly magnetised tetrahedron-to-tetrahedron pair tensor.
  *
- * No quadrature fallback is provided.  Callers should use the exact target
- * L2P path or report this construction-time limitation to the user.
+ * The displacement is target representative minus source representative and
+ * the result maps the total source moment to the field averaged over the
+ * target volume.  The pair is reduced to analytical constant-density
+ * triangle Galerkin integrals, including finite self and touching cases.
  */
 [[nodiscard]] PairTensor tetrahedron_tetrahedron_tensor(
     const Vec3& target_minus_source_representative,
