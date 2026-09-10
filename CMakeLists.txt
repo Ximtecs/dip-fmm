@@ -64,7 +64,8 @@ add_library(cdfmm_core
     src/tree/common/morton.cpp
     src/tree/common/indexing.cpp
     src/tree/uniform/uniform_tree.cpp
-    src/static_topology.cpp
+    src/tree/common/static_topology.cpp
+    src/tree/uniform/static_topology_adapter.cpp
     src/tree/adaptive/adaptive_tree.cpp
     src/uniform_fmm.cpp
     src/cache.cpp

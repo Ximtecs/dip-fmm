@@ -8,6 +8,8 @@
 
 #include "cdfmm/static_topology.hpp"
 #include "cdfmm/static_operators.hpp"
+#include "cdfmm/tree/static_topology.hpp"
+#include "cdfmm/tree/uniform_topology.hpp"
 
 using namespace cdfmm;
 

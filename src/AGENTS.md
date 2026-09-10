@@ -11,11 +11,13 @@ src/
 |-- math/                                  Taylor, Laplace, spherical mathematics
 |-- geometry/primitives/                   exact prism and tetrahedron analysis
 |-- tree/{common,uniform,adaptive}/        spatial hierarchy and topology
+|-- tree/common/static_topology.cpp        canonical topology validation/storage
+|-- tree/uniform/static_topology_adapter.cpp UniformTree topology adapter
 |-- operators.cpp                           flat compatibility wrappers only
 |-- cuboid.cpp                              transitional geometry/direct code
 |-- operators/                              authoritative operator construction
 |                                          and dynamic application
-|-- static_topology.cpp, periodic.cpp      deferred adapters and periodic code
+|-- periodic.cpp                            periodic support code
 |-- static_operators.cpp                   operators, plans, packings, CPU work
 |-- {near_field,far_field}.cpp              execution stages
 |-- uniform_fmm.cpp                        construction and orchestration

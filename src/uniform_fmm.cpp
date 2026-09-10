@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cdfmm/uniform_fmm.hpp"
+#include "cdfmm/tree/uniform_topology.hpp"
 
 #include <algorithm>
 #include <chrono>

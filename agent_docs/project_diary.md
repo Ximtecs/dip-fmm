@@ -1,5 +1,25 @@
 # Project diary
 
+## 2026-09-10 — static topology and UniformTree adapter closure
+
+Accepted the source/include-only split between canonical static topology and
+the UniformTree adapter. `StaticFmmTopology` declarations now live in
+`include/cdfmm/tree/static_topology.hpp`, validation/storage in
+`src/tree/common/static_topology.cpp`, and UniformTree construction in
+`include/cdfmm/tree/uniform_topology.hpp` plus
+`src/tree/uniform/static_topology_adapter.cpp`. The flat
+`include/cdfmm/static_topology.hpp` remains a compatibility forwarding header;
+the old `src/static_topology.cpp` source home is removed.
+
+Function bodies were verified byte-identical apart from split context. Fresh
+development configure/build, independent focused CTest (23/23 with one
+expected CUDA skip), full CTest (178 total, 174 passed, four expected skips
+#16/#51/#59/#63, zero failures), canonical-only and legacy-header compile
+probes, and `git diff --check` all passed. Python tests were not rerun for this
+source/include-only change. The accepted changes are recorded in a focused
+topology-refactor commit; `Article1/` and unrelated parent-worktree changes are
+preserved.
+
 ## 2026-09-10 — dynamic operator ownership closure
 
 Completed the accepted mathematical operator ownership refactor. P2M, M2M,

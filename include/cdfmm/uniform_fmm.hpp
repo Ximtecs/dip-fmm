@@ -19,8 +19,8 @@
 #include "cdfmm/spherical_harmonics.hpp"
 #include "cdfmm/tetrahedron.hpp"
 #include "cdfmm/timings.hpp"
-#include "cdfmm/uniform_tree.hpp"
-#include "cdfmm/static_topology.hpp"
+#include "cdfmm/tree/uniform_tree.hpp"
+#include "cdfmm/tree/static_topology.hpp"
 
 namespace cdfmm {
 

@@ -1,27 +1,39 @@
 # Project progress
 
-Status recorded 2026-09-10 after closing the accepted dynamic-operator
-ownership refactor from the nested checkout, current worktree, and available
-validation artifacts.
+Status recorded 2026-09-10 after accepting the static-topology/UniformTree
+adapter split in the nested checkout. The accepted changes are recorded in a
+focused topology-refactor commit.
 
-## Topology to P2P leaf-packing closure
+## Static topology and UniformTree adapter closure
 
-The accepted topology/P2P refactor is present in the current worktree. The
-`StaticFmmTopology` boundary now owns topology-native P2P leaf interaction
-records (occupied source/target ranges, leaf IDs, source shifts, periodic
-image identities, and self-identity flags); it no longer depends on or embeds
-`StaticP2PLeafPair`. The FMM plan-building boundary converts those records to
-the derived P2P leaf-packing representation. Interaction ordering, range
-boundaries, periodic image ordering, and identity semantics are preserved.
+The accepted current change separates static topology from the uniform-tree
+adapter:
 
-Accepted verification: clean development configure/build; focused topology,
-P2P, periodic, and self-identity checks (63/63); full CTest 178/178 with
-expected skips #16, #51, #59, and #63; Python 137 passed and 7 skipped using
-`PYTHONPATH=build`; and a dependency/include trace confirming no
-`plan/p2p/leaf.hpp` or `StaticP2PLeafPair` use in topology files. CUDA runtime
-validation was not required for this task. The current nested worktree is
-intentionally uncommitted and unstaged; preserve the modified comparison
-notebook and untracked `Article1/` checkout/artifacts.
+- `include/cdfmm/tree/static_topology.hpp` is the canonical topology-only
+  interface and `src/tree/common/static_topology.cpp` owns validation/storage
+  behaviour;
+- `include/cdfmm/tree/uniform_topology.hpp` declares the UniformTree adapter and
+  `src/tree/uniform/static_topology_adapter.cpp` builds canonical topology from
+  a UniformTree; and
+- `include/cdfmm/static_topology.hpp` remains a compatibility forwarding
+  header, while the removed `src/static_topology.cpp` is no longer a source
+  home.
+
+The function bodies were verified byte-identical apart from split context, so
+the refactor preserves behaviour while clarifying ownership and dependencies.
+
+Trusted validation evidence for this source/include-only change:
+
+- development fresh configure/build passed;
+- independent focused CTest passed 23/23, with one expected CUDA skip;
+- full CTest reported 178 total, 174 passed, four expected skips (#16, #51,
+  #59, and #63), and zero failures;
+- standalone canonical-only and legacy-header compile probes passed; and
+- `git diff --check` passed.
+
+Python tests were not rerun because this change only moves source and include
+ownership. No CUDA runtime result is claimed beyond the expected focused-test
+skip.
 
 ## Repository and refactor state
 
@@ -33,20 +45,19 @@ notebook and untracked `Article1/` checkout/artifacts.
   pre-refactor baseline. The current branch follows the v0.2 architecture
   contract and has completed the foundational Step-2 organisation of core,
   math, geometry, and tree layers.
-- Pre-existing nested-worktree changes are a modified
-  `examples/simple_notebooks/simple_geometry_magtense_compare.ipynb` and an
-  untracked `Article1/` checkout/artifact. They are outside this documentation
-  task and must remain untouched.
+- The nested checkout has an untracked `Article1/` checkout/artifact. It is
+  outside this documentation task and must remain untouched. The parent
+  MagTense worktree also contains unrelated user changes; do not fold them
+  into the nested refactor.
 
 - The accepted dynamic P2M/M2M/M2L/L2L/L2P/P2P mathematics now lives in
   responsibility-specific operator sources. M2P has a narrow reference
   header/source, P2P's direct sum is namespaced, and `src/operators.cpp`
   contains only thin compatibility wrappers. Direct namespaced-vs-flat
   compatibility coverage is included in the foundational header test.
-- The final operator migration, CMake registration, boundary test, focused
-  architecture/validation/guidance corrections, and this session's memory
-  updates are committed in the closure commit reported with this handoff.
-  Continue preserving the unrelated notebook and `Article1/` work.
+- The operator/plan history remains committed before this session; the current
+  topology split and these memory updates are recorded in a focused commit.
+  Preserve `Article1/` and all unrelated parent-worktree changes.
 
 ## Implemented foundation and operator/plan step
 
@@ -63,8 +74,9 @@ P2M/M2M/M2L/L2L/L2P/P2P construction explicit homes under
 precision conversion, and deterministic P2P packings explicit homes under
 `include/cdfmm/plan/` and `src/plan/`; and portable static-plan application an
 explicit `backend/cpu/` boundary. The legacy flat operator headers remain
-compatibility umbrellas. `StaticFmmTopology` still contains transitional
-tree-to-plan adaptation and is the main seam for a later FMM/topology step.
+compatibility umbrellas. `StaticFmmTopology` is now the canonical topology
+boundary; the separate UniformTree adapter remains the transitional tree-
+to-topology construction seam for a later FMM/topology step.
 
 ## Current strategic work and gaps
 
@@ -84,17 +96,11 @@ with tests and Python, run CTest, install the package, then run Python tests.
 
 ## Validation and remaining gaps
 
-The clean dev configure/build passed. CTest completed all 178/178 entries with
-only the expected unavailable-feature skips (#16, #51, #59, and #63). The full
-Python suite completed with 137 passed and 7 skipped using `PYTHONPATH=build`.
-Independent verification reproduced CTest 178/178, targeted operator tests
-64/64, and Python operator-binding tests 10/10. A symbol/`rg` audit confirmed
-flat-wrapper to namespaced linkage and no forbidden operator dependencies.
-CUDA was unavailable because the NVIDIA driver probe (`nvidia-smi`) was
-unavailable; CUDA execution is therefore not claimed. No stray temporary,
-reject, backup, secret, or untracked build/cache files were added. The modified
-comparison notebook and untracked `Article1/` (including generated research
-artifacts) remain preserved and outside the closure commit.
+The accepted topology-split evidence is the configure/build, focused CTest,
+full CTest, compile probes, body comparison, and diff-check results listed
+above. Python tests were not rerun. A read-only artifact audit found no stray
+temporary, reject, backup, secret, or task-artifact files outside `Article1/`;
+that directory was not scanned or altered.
 
 ## Earlier session handoff — 2026-09-10
 

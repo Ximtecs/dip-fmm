@@ -333,8 +333,10 @@ future repair by itself.
 The initial audit found these concrete boundary violations in the remaining
 transitional layout:
 
-- `static_topology.hpp` still includes `uniform_tree.hpp`, and the topology
-  adapter remains a transitional seam between tree facts and static plans.
+- `tree/static_topology.hpp` is the canonical topology-only interface;
+  `tree/uniform_topology.hpp` keeps the UniformTree adapter as a separate
+  transitional seam between tree facts and static plans. The flat
+  `static_topology.hpp` remains a compatibility forwarding header.
 - `adaptive_tree.hpp` returns `StaticFmmTopology` directly, coupling adaptive
   construction to the current static-plan representation.
 - `cuboid.hpp` combines finite geometry operations with `DenseDirectPlan` and

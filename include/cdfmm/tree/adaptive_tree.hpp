@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "cdfmm/math/vec3.hpp"
-#include "cdfmm/static_topology.hpp"
+#include "cdfmm/tree/static_topology.hpp"
 
 namespace cdfmm {
 

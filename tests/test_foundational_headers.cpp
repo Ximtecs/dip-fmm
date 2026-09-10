@@ -42,7 +42,9 @@
 #include "cdfmm/tree/morton.hpp"
 #include "cdfmm/tree/node.hpp"
 #include "cdfmm/tree/statistics.hpp"
+#include "cdfmm/tree/static_topology.hpp"
 #include "cdfmm/tree/uniform_tree.hpp"
+#include "cdfmm/tree/uniform_topology.hpp"
 
 // Pre-v0.2 compatibility include paths.
 #include "cdfmm/adaptive_tree.hpp"
@@ -62,6 +64,7 @@
 #include "cdfmm/vec3.hpp"
 #include "cdfmm/operators.hpp"
 #include "cdfmm/static_operators.hpp"
+#include "cdfmm/static_topology.hpp"
 
 TEST_CASE("Canonical foundational headers coexist with compatibility shims")
 {

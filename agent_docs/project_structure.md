@@ -11,13 +11,15 @@ permission to create empty directories or perform an unauthorised refactor.
 
 ```text
 include/cdfmm/
-  cdfmm.hpp, uniform_fmm.hpp, uniform_tree.hpp, static_*.hpp  public and
+  cdfmm.hpp, uniform_fmm.hpp, static_*.hpp                    public and
                                                                compatibility APIs
   core/                                                        precision/output/timing
   math/                                                        vectors, indices,
                                                                derivatives, bases
   geometry/                                                    models/primitives
   tree/                                                        uniform/adaptive tree
+  tree/static_topology.hpp                                    canonical topology data
+  tree/uniform_topology.hpp                                   UniformTree adapter API
   operators/                                                   P2M/M2M/M2L/L2L/L2P/M2P/P2P interfaces
   plan/                                                        immutable static data and P2P packings
   backend/cpu/                                                 portable static-plan application interface
@@ -31,7 +33,9 @@ src/
                                                                and dynamic application
   plan/                                                         precision conversion and P2P packing builders
   backend/cpu/                                                  portable static-plan application
-  static_topology.cpp, uniform_fmm.cpp                          orchestration
+  tree/common/static_topology.cpp                              canonical topology validation
+  tree/uniform/static_topology_adapter.cpp                     UniformTree topology adapter
+  uniform_fmm.cpp                                               FMM orchestration
   near_field.cpp, far_field.cpp                                transitional execution stages
   periodic.cpp, cache.cpp, validation.cpp                       support boundaries
   cuda_fmm.cu, cuda_*_plan.hpp, cuda_fmm_stub.cpp                CUDA implementation/stub
@@ -93,8 +97,9 @@ packings. `StaticFmmTopology` owns topology-native P2P leaf interaction
 records: occupied source/target ranges, leaf IDs, source shifts, periodic
 image identities, and self-identity flags. It no longer includes or embeds
 `StaticP2PLeafPair`. The FMM plan-building boundary converts these records
-into the derived P2P leaf-packing representation; topology remains a
-transitional adapter rather than a packing owner.
+into the derived P2P leaf-packing representation. The canonical topology
+boundary is separate from the UniformTree adapter, which remains a
+transitional tree-to-topology construction seam.
 
 ## Validation and documentation areas
 

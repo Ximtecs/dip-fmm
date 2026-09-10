@@ -6,7 +6,7 @@
 
 #include "cdfmm/backend/cpu/static_plan_apply.hpp"
 #include "cdfmm/operators.hpp"
-#include "cdfmm/static_topology.hpp"
+#include "cdfmm/tree/static_topology.hpp"
 
 namespace cdfmm::detail {
 
