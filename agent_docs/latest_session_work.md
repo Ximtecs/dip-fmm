@@ -1,5 +1,25 @@
 # Latest session work
 
+## 2026-09-10 — dynamic operator ownership closure
+
+The accepted refactor is closed. Responsibility-specific sources under
+`src/operators/` now own dynamic P2M/M2M/M2L/L2L/L2P/P2P mathematics, with a
+narrow M2P reference source/header and namespaced P2P summation. Flat
+`src/operators.cpp` is a compatibility-wrapper translation unit only. CMake,
+public operator umbrella/header guidance, architecture/validation docs, and a
+direct namespaced-vs-flat compatibility test were updated accordingly.
+
+Verification: clean dev configure/build; CTest 178/178 with expected skips
+#16/#51/#59/#63; Python 137 passed and 7 skipped with `PYTHONPATH=build`;
+independent CTest 178/178; targeted operator tests 64/64; Python operator
+bindings 10/10; and symbol/`rg` audit clean. CUDA was unavailable (`nvidia-smi`
+could not access an NVIDIA driver), so CUDA runtime validation remains open.
+
+The closure commit is the only new task commit. Preserve the pre-existing
+modified `examples/simple_notebooks/simple_geometry_magtense_compare.ipynb`
+and untracked `Article1/`; do not stage them. Next work, if authorised, is
+optional CUDA/oneMKL validation or later backend/FMM orchestration decomposition.
+
 ## 2026-09-10 — operators and static plans refactor handoff
 
 The committed `refactor/architecture-v0.2` series now separates the
@@ -10,16 +30,12 @@ remaining intentional seam is `StaticFmmTopology`, which still adapts tree
 interaction data to FMM plan records; CUDA/backend decomposition and FMM
 orchestration remain future work.
 
-Validation completed through the dev path: full CTest 177/177 passed with the
-expected unavailable-feature skips; Python regressions were 137 passed and 7
-skipped; public/header, install-tree, and vectorisation-report checks passed.
+Earlier validation completed through the dev path: full CTest 177/177 passed
+with expected unavailable-feature skips; Python regressions were 137 passed and
+7 skipped; public/header, install-tree, and vectorisation-report checks passed.
 The CTest evidence is retained in `build/Testing/Temporary/LastTest.log`.
-
-An independent tester was interrupted by the user before its final report.
-Resume with a fresh independent audit, including an explicit CUDA availability
-probe and representative comparison with the preserved `v0.1.0` /
-`release/v0.1` baseline. The implementation and boundary tests were committed
-as `4395f4a`, `d1dcfd7`, `14a94d6`, and `21cb5b1`; preserve the modified
+The implementation and boundary tests were committed as `4395f4a`, `d1dcfd7`,
+`14a94d6`, and `21cb5b1`; preserve the modified
 `examples/simple_notebooks/simple_geometry_magtense_compare.ipynb` and the
 untracked `Article1/` checkout/artifacts that predated this work. Ignored build,
 cache, and pytest-cache directories remain local artifacts; no stray temporary

@@ -37,12 +37,14 @@ The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor
 implementation. Architectural work occurs on `refactor/architecture-v0.2`.
 Never move, recreate, or rewrite the tag or preserved branch.
 
-Step 2 has organised the foundational `core`, `math`, `geometry`, and `tree`
-layers. Preserve the flat forwarding headers until an explicit compatibility
-cleanup. The next production step may address operators and plans only when it
-is explicitly authorised; do not pre-emptively split backends, orchestration,
-cache, or bindings. Geometry packing, grain generation/discretisation, and
-prism/tetrahedron refinement remain future work.
+The foundational `core`, `math`, `geometry`, and `tree` layers, followed by the
+operator/static-plan step, are now organised. Preserve the flat forwarding
+headers until an explicit compatibility cleanup. Dynamic mathematical
+operator implementations live under `src/operators/*`; `src/operators.cpp`
+is compatibility-only. Future work may address backends, orchestration, cache,
+or bindings only when explicitly authorised. Geometry packing, grain
+generation/discretisation, and prism/tetrahedron refinement remain future
+work.
 
 ## Repository memory
 

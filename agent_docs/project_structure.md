@@ -18,16 +18,17 @@ include/cdfmm/
                                                                derivatives, bases
   geometry/                                                    models/primitives
   tree/                                                        uniform/adaptive tree
-  operators/                                                   P2M/M2M/M2L/L2L/L2P/P2P interfaces
+  operators/                                                   P2M/M2M/M2L/L2L/L2P/M2P/P2P interfaces
   plan/                                                        immutable static data and P2P packings
   backend/cpu/                                                 portable static-plan application interface
 src/
   math/                                                        mathematical kernels
   geometry/primitives/                                         prism/tetrahedron
   tree/{common,uniform,adaptive}/                             hierarchy/topology
-  operators.cpp                                                 legacy dynamic operator API
+  operators.cpp                                                 thin flat compatibility wrappers only
   cuboid.cpp, static_operators.cpp                              transitional adapters/compatibility TU
-  operators/                                                    mathematical operator construction
+  operators/                                                    authoritative mathematical construction
+                                                               and dynamic application
   plan/                                                         precision conversion and P2P packing builders
   backend/cpu/                                                  portable static-plan application
   static_topology.cpp, uniform_fmm.cpp                          orchestration
@@ -78,8 +79,8 @@ identity without replicating the central tree.
 The operator/plan step makes the following homes concrete:
 
 ```text
-include/cdfmm/operators/       mathematical operator interfaces
-src/operators/                  operator construction and geometry dispatch
+include/cdfmm/operators/       mathematical operator interfaces, including M2P
+src/operators/                  operator construction and dynamic application
 include/cdfmm/plan/             canonical static data and derived representations
 src/plan/                       FP32 conversion and deterministic P2P builders
 include/cdfmm/backend/cpu/      portable application interface

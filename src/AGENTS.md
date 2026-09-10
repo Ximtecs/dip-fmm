@@ -11,7 +11,10 @@ src/
 |-- math/                                  Taylor, Laplace, spherical mathematics
 |-- geometry/primitives/                   exact prism and tetrahedron analysis
 |-- tree/{common,uniform,adaptive}/        spatial hierarchy and topology
-|-- operators.cpp, cuboid.cpp              deferred mixed operator/direct code
+|-- operators.cpp                           flat compatibility wrappers only
+|-- cuboid.cpp                              transitional geometry/direct code
+|-- operators/                              authoritative operator construction
+|                                          and dynamic application
 |-- static_topology.cpp, periodic.cpp      deferred adapters and periodic code
 |-- static_operators.cpp                   operators, plans, packings, CPU work
 |-- {near_field,far_field}.cpp              execution stages
@@ -31,7 +34,7 @@ src/
 |-- math/
 |-- geometry/{primitives,generation,refinement}/
 |-- tree/{uniform,adaptive}/
-|-- operators/{p2m,m2m,m2l,l2l,l2p,p2p}/
+|-- operators/{p2m,m2m,m2l,l2l,l2p,m2p,p2p}/
 |-- plan/p2p/
 |-- backend/{cpu,mkl,cuda/{common,direct,p2p,far_field,fmm}}/
 |-- fmm/

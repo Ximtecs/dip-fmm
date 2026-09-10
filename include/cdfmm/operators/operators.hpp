@@ -6,6 +6,7 @@
 // responsibility-specific interfaces for new code.
 #include "cdfmm/operators/l2l.hpp"
 #include "cdfmm/operators/l2p.hpp"
+#include "cdfmm/operators/m2p.hpp"
 #include "cdfmm/operators/m2l.hpp"
 #include "cdfmm/operators/m2m.hpp"
 #include "cdfmm/operators/p2m.hpp"

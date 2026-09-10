@@ -58,8 +58,9 @@ them.  Unit tests cover multi-index counts and ordering, Taylor-jet algebra,
 Laplace derivatives, output modes, axial and transverse direct dipoles, tree
 topology, sorting, ranges, and interaction lists.
 
-Cartesian static M2L is checked against the independently retained `m2l_add()`
-traversal. Select that validation path explicitly with a Cartesian plan and
+Cartesian static M2L is checked through the flat compatibility `m2l_add()`
+wrapper, which forwards to the authoritative responsibility-specific M2L
+implementation. Select that validation path explicitly with a Cartesian plan and
 `UniformFmmOptions::m2l_backend = M2LBackend::Reference`. Spherical dense M2L
 has focused translation, convergence, full-traversal, precision, and backend
 agreement tests.

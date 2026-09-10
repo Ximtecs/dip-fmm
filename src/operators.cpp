@@ -2,221 +2,73 @@
 
 #include "cdfmm/operators.hpp"
 
-#include <cmath>
-#include <numbers>
-
-#include "cdfmm/laplace_derivatives.hpp"
+#include "cdfmm/operators/l2l.hpp"
+#include "cdfmm/operators/l2p.hpp"
+#include "cdfmm/operators/m2l.hpp"
+#include "cdfmm/operators/m2m.hpp"
+#include "cdfmm/operators/m2p.hpp"
+#include "cdfmm/operators/p2m.hpp"
+#include "cdfmm/operators/p2p.hpp"
 
 namespace cdfmm {
 
-//------------------------------------------------------------------------------
-// Multipole and local expansion operators
-//------------------------------------------------------------------------------
+// These flat entry points are retained for source and Python compatibility.
+// Mathematical ownership lives in the responsibility-specific namespaces.
 
-CoeffVector p2m_dipole(const MultiIndexSet &basis, const Vec3 &centre,
+CoeffVector p2m_dipole(const MultiIndexSet& basis, const Vec3& centre,
                        std::span<const Vec3> source_positions,
-                       std::span<const Vec3> dipole_moments) {
-  CoeffVector M(basis.size(), 0.0);
-
-  // Dipole sources contribute via first derivatives, hence alpha-e_k terms.
-  // For alpha=(0,0,0) all components are excluded, so M_0 is zero by
-  // construction for pure dipole input.
-  for (size_t j = 0; j < source_positions.size(); ++j) {
-    const Vec3 dx = source_positions[j] - centre;
-
-    for (int i = 0; i < basis.size(); ++i) {
-      const MultiIndex alpha = basis[i];
-      double value = 0.0;
-
-      // M_alpha depends on shifted terms alpha-e_k from dipole components m_k.
-      if (alpha.ax > 0) {
-        value += dipole_moments[j].x * MultiIndexSet::monomial_over_factorial(
-                                          dx, {alpha.ax - 1, alpha.ay, alpha.az});
-      }
-      if (alpha.ay > 0) {
-        value += dipole_moments[j].y * MultiIndexSet::monomial_over_factorial(
-                                          dx, {alpha.ax, alpha.ay - 1, alpha.az});
-      }
-      if (alpha.az > 0) {
-        value += dipole_moments[j].z * MultiIndexSet::monomial_over_factorial(
-                                          dx, {alpha.ax, alpha.ay, alpha.az - 1});
-      }
-
-      // (-1)^|alpha| matches the repository dipole-potential convention.
-      const double sign = (alpha.degree() % 2 == 0) ? 1.0 : -1.0;
-      M[i] += sign * value;
-    }
-  }
-
-  return M;
+                       std::span<const Vec3> dipole_moments)
+{
+    return operators::p2m::evaluate(
+        basis, centre, source_positions, dipole_moments);
 }
 
-void m2m_add(const MultiIndexSet &basis, const Vec3 &d,
-             std::span<const double> child, std::span<double> parent) {
-  // Translate a child multipole expansion to the parent centre using
-  // d = c_parent - c_child and a multi-index Taylor shift.
-  for (int ia = 0; ia < basis.size(); ++ia) {
-    const MultiIndex alpha = basis[ia];
-
-    for (int ig = 0; ig < basis.size(); ++ig) {
-      const MultiIndex gamma = basis[ig];
-      if (!leq(gamma, alpha)) {
-        continue;
-      }
-
-      parent[ia] += MultiIndexSet::monomial_over_factorial(d, gamma) *
-                    child[basis.index(sub(alpha, gamma))];
-    }
-  }
+void m2m_add(const MultiIndexSet& basis, const Vec3& displacement,
+             std::span<const double> child, std::span<double> parent)
+{
+    operators::m2m::apply(basis, displacement, child, parent);
 }
 
-void m2l_add(const MultiIndexSet &basis, const Vec3 &R,
-             std::span<const double> M, std::span<double> L) {
-  // Convert source multipole coefficients M to target local coefficients L
-  // with R = c_target - c_source.
-  // For order p, alpha+beta reaches total degree 2p.
-  MultiIndexSet deriv_basis(2 * basis.order());
-  const auto D = laplace_derivatives_raw(deriv_basis, R);
-
-  for (int ib = 0; ib < basis.size(); ++ib) {
-    const MultiIndex beta = basis[ib];
-
-    for (int ia = 0; ia < basis.size(); ++ia) {
-      const MultiIndex alpha = basis[ia];
-      L[ib] += M[ia] * D[deriv_basis.index(add(alpha, beta))];
-    }
-  }
+void m2l_add(const MultiIndexSet& basis, const Vec3& displacement,
+             std::span<const double> multipole, std::span<double> local)
+{
+    operators::m2l::apply(basis, displacement, multipole, local);
 }
 
-void l2l_add(const MultiIndexSet &basis, const Vec3 &d,
-             std::span<const double> parent, std::span<double> child) {
-  // Shift local coefficients from parent target box to child target box using
-  // d = c_child - c_parent.
-  for (int ib = 0; ib < basis.size(); ++ib) {
-    const MultiIndex beta = basis[ib];
-
-    for (int ig = 0; ig < basis.size(); ++ig) {
-      const MultiIndex gamma = basis[ig];
-      const MultiIndex sum = add(beta, gamma);
-      if (sum.degree() > basis.order()) {
-        continue;
-      }
-
-      child[ib] += MultiIndexSet::monomial_over_factorial(d, gamma) *
-                   parent[basis.index(sum)];
-    }
-  }
+void l2l_add(const MultiIndexSet& basis, const Vec3& displacement,
+             std::span<const double> parent, std::span<double> child)
+{
+    operators::l2l::apply(basis, displacement, parent, child);
 }
 
-PotentialField l2p_eval(const MultiIndexSet &basis, const Vec3 &centre,
-                        const Vec3 &target, std::span<const double> L,
-                        OutputFlags output) {
-  PotentialField result;
-  const Vec3 dx = target - centre;
-
-  for (int ib = 0; ib < basis.size(); ++ib) {
-    const MultiIndex beta = basis[ib];
-
-    if (has_flag(output, OutputFlags::Potential)) {
-      result.phi += L[ib] * MultiIndexSet::monomial_over_factorial(dx, beta);
-    }
-
-    if (has_flag(output, OutputFlags::Field)) {
-      // Field is H = -grad(phi), hence the explicit minus signs.
-      if (beta.ax > 0) {
-        result.H.x -= L[ib] * MultiIndexSet::monomial_over_factorial(
-                                  dx, {beta.ax - 1, beta.ay, beta.az});
-      }
-      if (beta.ay > 0) {
-        result.H.y -= L[ib] * MultiIndexSet::monomial_over_factorial(
-                                  dx, {beta.ax, beta.ay - 1, beta.az});
-      }
-      if (beta.az > 0) {
-        result.H.z -= L[ib] * MultiIndexSet::monomial_over_factorial(
-                                  dx, {beta.ax, beta.ay, beta.az - 1});
-      }
-    }
-  }
-
-  return result;
+PotentialField l2p_eval(const MultiIndexSet& basis, const Vec3& centre,
+                        const Vec3& target, std::span<const double> local,
+                        OutputFlags output)
+{
+    return operators::l2p::evaluate(basis, centre, target, local, output);
 }
 
-PotentialField m2p_eval(const MultiIndexSet &basis_p, const CoeffVector &M,
-                        const Vec3 &source_centre,
-                        const Vec3 &target_position, OutputFlags output) {
-  PotentialField result;
-  const Vec3 R = target_position - source_centre;
-  // This direct far-field evaluation is mainly used to validate P2M/M2M
-  // independently of M2L/L2L/L2P.
-
-  // Field evaluation needs D_(alpha+e_k), so request one additional order.
-  MultiIndexSet deriv_basis(basis_p.order() + 1);
-  const auto D = laplace_derivatives_raw(deriv_basis, R);
-
-  for (int ia = 0; ia < basis_p.size(); ++ia) {
-    const MultiIndex alpha = basis_p[ia];
-    const double M_alpha = M[ia];
-
-    if (has_flag(output, OutputFlags::Potential)) {
-      result.phi += M_alpha * D[deriv_basis.index(alpha)];
-    }
-
-    if (has_flag(output, OutputFlags::Field)) {
-      result.H.x -= M_alpha * D[deriv_basis.index(add(alpha, {1, 0, 0}))];
-      result.H.y -= M_alpha * D[deriv_basis.index(add(alpha, {0, 1, 0}))];
-      result.H.z -= M_alpha * D[deriv_basis.index(add(alpha, {0, 0, 1}))];
-    }
-  }
-
-  return result;
+PotentialField m2p_eval(const MultiIndexSet& basis, const CoeffVector& multipole,
+                        const Vec3& source_centre, const Vec3& target,
+                        OutputFlags output)
+{
+    return operators::m2p::evaluate(
+        basis, multipole, source_centre, target, output);
 }
 
-//------------------------------------------------------------------------------
-// Direct near-field operators
-//------------------------------------------------------------------------------
-
-PotentialField p2p_dipole_pair(const Vec3 &target, const Vec3 &source,
-                               const Vec3 &moment, OutputFlags output) {
-  PotentialField result;
-  const Vec3 r = target - source;
-  const double r2 = dot(r, r);
-  const double rinv = 1.0 / std::sqrt(r2);
-  const double rinv3 = rinv * rinv * rinv;
-  const double c = 1.0 / (4.0 * std::numbers::pi);
-  const double m_dot_r = dot(moment, r);
-
-  if (has_flag(output, OutputFlags::Potential)) {
-    result.phi = c * m_dot_r * rinv3;
-  }
-
-  if (has_flag(output, OutputFlags::Field)) {
-    const double rinv5 = rinv3 * rinv * rinv;
-    // H_ij = 1/(4*pi) * [3*r*(m.r)/|r|^5 - m/|r|^3]
-    result.H = (r * (3.0 * m_dot_r * rinv5) - moment * rinv3) * c;
-  }
-
-  return result;
+PotentialField p2p_dipole_pair(const Vec3& target, const Vec3& source,
+                               const Vec3& moment, OutputFlags output)
+{
+    return operators::p2p::evaluate_pair(target, source, moment, output);
 }
 
-PotentialField p2p_dipole_sum(const Vec3 &target, std::span<const Vec3> sources,
-                              std::span<const Vec3> moments, OutputFlags output,
-                              int self_index) {
-  PotentialField result;
-
-  for (size_t i = 0; i < sources.size(); ++i) {
-    // WARNING(cdfmm): Self-interactions must be excluded when targets are
-    // source points to avoid singular |r|=0 evaluation.
-    if (static_cast<int>(i) == self_index) {
-      continue;
-    }
-
-    const PotentialField pair =
-        p2p_dipole_pair(target, sources[i], moments[i], output);
-    result.phi += pair.phi;
-    result.H += pair.H;
-  }
-
-  return result;
+PotentialField p2p_dipole_sum(const Vec3& target,
+                              std::span<const Vec3> sources,
+                              std::span<const Vec3> moments,
+                              OutputFlags output, int self_index)
+{
+    return operators::p2p::evaluate_sum(
+        target, sources, moments, output, self_index);
 }
 
 } // namespace cdfmm

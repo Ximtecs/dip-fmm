@@ -65,7 +65,21 @@ void apply(const MultiIndexSet& basis,
            const std::span<const double> child,
            const std::span<double> parent)
 {
-    m2m_add(basis, displacement, child, parent);
+    // Translate a child multipole expansion to the parent centre using
+    // d = c_parent - c_child and a multi-index Taylor shift.
+    for (int ia = 0; ia < basis.size(); ++ia) {
+        const MultiIndex alpha = basis[ia];
+
+        for (int ig = 0; ig < basis.size(); ++ig) {
+            const MultiIndex gamma = basis[ig];
+            if (!leq(gamma, alpha)) {
+                continue;
+            }
+
+            parent[ia] += MultiIndexSet::monomial_over_factorial(displacement, gamma) *
+                          child[basis.index(sub(alpha, gamma))];
+        }
+    }
 }
 
 } // namespace cdfmm::operators::m2m

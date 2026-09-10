@@ -239,7 +239,8 @@ dip-fmm/
 |   |-- tree/
 |   |   |-- uniform/
 |   |   `-- adaptive/
-|   |-- operators/       # p2m.cpp, m2m.cpp, m2l.cpp, l2l.cpp, l2p.cpp, p2p.cpp
+|   |-- operators/       # authoritative construction and dynamic application
+|   |                    # p2m.cpp, m2m.cpp, m2l.cpp, l2l.cpp, l2p.cpp, m2p.cpp, p2p.cpp
 |   |-- plan/            # precision.cpp and p2p packing builders
 |   |-- backend/
 |   |   |-- cpu/
@@ -281,6 +282,7 @@ include/cdfmm/
 |   |-- m2l.hpp       M2L matrices and dynamic translation
 |   |-- l2l.hpp       L2L translation
 |   |-- l2p.hpp       L2P rows and evaluation
+|   |-- m2p.hpp       direct multipole evaluation reference
 |   |-- p2p.hpp       pair semantics and canonical P2P construction
 |   `-- operators.hpp operator umbrella
 |-- plan/
@@ -297,7 +299,8 @@ include/cdfmm/
 `-- backend/cpu/static_plan_apply.hpp  CPU application boundary
 
 src/
-|-- operators/{p2m,m2m,m2l,l2l,l2p,p2p}.cpp  mathematical construction
+|-- operators/{p2m,m2m,m2l,l2l,l2p,m2p,p2p}.cpp  authoritative construction
+|                                                  and dynamic application
 |-- plan/{precision,p2p}                     conversion and packing builders
 `-- backend/cpu/static_plan_apply.cpp        CPU plan application
 ```
@@ -308,6 +311,12 @@ not define a second operator or plan representation. `StaticFmmTopology`
 still carries transitional topology-to-plan adaptation, including the current
 leaf interaction metadata, and is the principal seam remaining for a later
 FMM/topology integration step.
+
+The responsibility-specific files under `src/operators/` are the authoritative
+homes for both mathematical operator construction and dynamic application.
+The flat `src/operators.cpp` translation unit is retained only for thin
+compatibility wrappers around those implementations; it does not own a second
+set of operator formulas.
 
 `generation/` will eventually own physical grain generation. `refinement/`
 will eventually own prism and tetrahedron refinement. Geometry packing belongs

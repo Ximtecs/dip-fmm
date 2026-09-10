@@ -284,7 +284,34 @@ PotentialField evaluate(
     const MultiIndexSet& basis, const Vec3& centre, const Vec3& target,
     const std::span<const double> local, const OutputFlags output)
 {
-    return l2p_eval(basis, centre, target, local, output);
+    PotentialField result;
+    const Vec3 dx = target - centre;
+
+    for (int ib = 0; ib < basis.size(); ++ib) {
+        const MultiIndex beta = basis[ib];
+
+        if (has_flag(output, OutputFlags::Potential)) {
+            result.phi += local[ib] * MultiIndexSet::monomial_over_factorial(dx, beta);
+        }
+
+        if (has_flag(output, OutputFlags::Field)) {
+            // Field is H = -grad(phi), hence the explicit minus signs.
+            if (beta.ax > 0) {
+                result.H.x -= local[ib] * MultiIndexSet::monomial_over_factorial(
+                    dx, {beta.ax - 1, beta.ay, beta.az});
+            }
+            if (beta.ay > 0) {
+                result.H.y -= local[ib] * MultiIndexSet::monomial_over_factorial(
+                    dx, {beta.ax, beta.ay - 1, beta.az});
+            }
+            if (beta.az > 0) {
+                result.H.z -= local[ib] * MultiIndexSet::monomial_over_factorial(
+                    dx, {beta.ax, beta.ay, beta.az - 1});
+            }
+        }
+    }
+
+    return result;
 }
 
 } // namespace cdfmm::operators::l2p

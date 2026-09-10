@@ -332,7 +332,38 @@ CoeffVector evaluate(
     const std::span<const Vec3> source_positions,
     const std::span<const Vec3> dipole_moments)
 {
-    return p2m_dipole(basis, centre, source_positions, dipole_moments);
+    CoeffVector M(basis.size(), 0.0);
+
+    // Dipole sources contribute via first derivatives, hence alpha-e_k terms.
+    // For alpha=(0,0,0) all components are excluded, so M_0 is zero by
+    // construction for pure dipole input.
+    for (size_t j = 0; j < source_positions.size(); ++j) {
+        const Vec3 dx = source_positions[j] - centre;
+
+        for (int i = 0; i < basis.size(); ++i) {
+            const MultiIndex alpha = basis[i];
+            double value = 0.0;
+
+            if (alpha.ax > 0) {
+                value += dipole_moments[j].x * MultiIndexSet::monomial_over_factorial(
+                    dx, {alpha.ax - 1, alpha.ay, alpha.az});
+            }
+            if (alpha.ay > 0) {
+                value += dipole_moments[j].y * MultiIndexSet::monomial_over_factorial(
+                    dx, {alpha.ax, alpha.ay - 1, alpha.az});
+            }
+            if (alpha.az > 0) {
+                value += dipole_moments[j].z * MultiIndexSet::monomial_over_factorial(
+                    dx, {alpha.ax, alpha.ay, alpha.az - 1});
+            }
+
+            // (-1)^|alpha| matches the repository dipole-potential convention.
+            const double sign = (alpha.degree() % 2 == 0) ? 1.0 : -1.0;
+            M[i] += sign * value;
+        }
+    }
+
+    return M;
 }
 
 } // namespace cdfmm::operators::p2m

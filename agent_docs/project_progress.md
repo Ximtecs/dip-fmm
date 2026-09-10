@@ -1,7 +1,8 @@
 # Project progress
 
-Status recorded 2026-09-10 from the nested checkout, current worktree, and
-available validation artifacts.
+Status recorded 2026-09-10 after closing the accepted dynamic-operator
+ownership refactor from the nested checkout, current worktree, and available
+validation artifacts.
 
 ## Repository and refactor state
 
@@ -18,7 +19,14 @@ available validation artifacts.
   untracked `Article1/` checkout/artifact. They are outside this documentation
   task and must remain untouched.
 
-- The operators/static-plans implementation and boundary tests are committed.
+- The accepted dynamic P2M/M2M/M2L/L2L/L2P/P2P mathematics now lives in
+  responsibility-specific operator sources. M2P has a narrow reference
+  header/source, P2P's direct sum is namespaced, and `src/operators.cpp`
+  contains only thin compatibility wrappers. Direct namespaced-vs-flat
+  compatibility coverage is included in the foundational header test.
+- The final operator migration, CMake registration, boundary test, focused
+  architecture/validation/guidance corrections, and this session's memory
+  updates are committed in the closure commit reported with this handoff.
   Continue preserving the unrelated notebook and `Article1/` work.
 
 ## Implemented foundation and operator/plan step
@@ -55,26 +63,19 @@ oneMKL/CUDA/Fortran paths requiring their respective environments/toolchains.
 The current branch's checked-in CI is portable CPU: configure a Release build
 with tests and Python, run CTest, install the package, then run Python tests.
 
-## Validation and remaining audit
+## Validation and remaining gaps
 
-The implementation is green through the `dev` configure/build. The full CTest
-run completed with 177/177 tests passing and only expected unavailable-feature
-skips. The Python regression run completed with 137 passed and 7 skipped.
-Public/new-header checks, install-tree verification, and the vectorisation
-report check also passed. These results establish the portable development
-path; they do not establish CUDA runtime availability or equivalence to the
-preserved v0.1 implementation.
-
-An independent tester was interrupted by the user before its final report.
-The next session should perform a fresh independent audit, explicitly checking
-CUDA availability and comparing representative behaviour against `v0.1.0` /
-`release/v0.1`.
-
-The implementation was recorded as four focused commits before the final
-architecture/memory documentation commit. No stray temporary, reject, or
-backup files were found outside intentionally ignored build/cache directories. The
-modified comparison notebook and untracked `Article1/` (including its generated
-research artifacts) were present at session start and remain preserved.
+The clean dev configure/build passed. CTest completed all 178/178 entries with
+only the expected unavailable-feature skips (#16, #51, #59, and #63). The full
+Python suite completed with 137 passed and 7 skipped using `PYTHONPATH=build`.
+Independent verification reproduced CTest 178/178, targeted operator tests
+64/64, and Python operator-binding tests 10/10. A symbol/`rg` audit confirmed
+flat-wrapper to namespaced linkage and no forbidden operator dependencies.
+CUDA was unavailable because the NVIDIA driver probe (`nvidia-smi`) was
+unavailable; CUDA execution is therefore not claimed. No stray temporary,
+reject, backup, secret, or untracked build/cache files were added. The modified
+comparison notebook and untracked `Article1/` (including generated research
+artifacts) remain preserved and outside the closure commit.
 
 ## Earlier session handoff — 2026-09-10
 

@@ -44,6 +44,7 @@ add_library(cdfmm_core
     src/operators/p2m.cpp
     src/operators/m2m.cpp
     src/operators/m2l.cpp
+    src/operators/m2p.cpp
     src/operators/l2l.cpp
     src/operators/l2p.cpp
     src/operators/p2p.cpp

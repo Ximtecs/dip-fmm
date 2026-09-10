@@ -1,5 +1,24 @@
 # Project diary
 
+## 2026-09-10 — dynamic operator ownership closure
+
+Completed the accepted mathematical operator ownership refactor. P2M, M2M,
+M2L, L2L, L2P, and P2P construction/application now have responsibility-
+specific homes under `src/operators/`; M2P is a narrow direct multipole
+reference operator; P2P direct summation is namespaced; and the flat
+`src/operators.cpp` translation unit is compatibility wrappers only. The
+direct namespaced-vs-flat test covers all dynamic operators and output/self
+semantics.
+
+Clean dev configure/build and independent audits are green: CTest 178/178 with
+expected skips #16/#51/#59/#63, Python 137 passed and 7 skipped via
+`PYTHONPATH=build`, targeted operators 64/64, and Python operator bindings
+10/10. Symbol/`rg` checks found only wrapper-to-namespaced linkage and no
+forbidden operator dependencies. CUDA was not available because `nvidia-smi`
+could not access an NVIDIA driver, so CUDA runtime equivalence remains
+unverified. The final focused closure commit contains only task files;
+the comparison notebook and `Article1/` remain untouched.
+
 ## 2026-09-10 — operators and static plans refactor
 
 The committed architecture-v0.2 series now has explicit operator homes for
@@ -10,12 +29,9 @@ flat headers remain compatibility umbrellas. The tree-to-plan adaptation in
 `StaticFmmTopology` is intentionally still transitional, while CUDA/backend
 decomposition and FMM orchestration are deferred.
 
-The dev build and full CTest run are green: 177/177 tests passed with expected
-unavailable-feature skips. Python regressions passed 137 tests with 7 skips;
-public/header, install-tree, and vectorisation checks also passed. The
-independent tester was interrupted by the user before its final report, so a
-fresh audit with an explicit CUDA-availability check and a representative
-comparison with `v0.1.0` / `release/v0.1` remains the next step.
+The earlier dev build and CTest run were green: 177/177 tests passed with
+expected unavailable-feature skips. Python regressions passed 137 tests with 7
+skips; public/header, install-tree, and vectorisation checks also passed.
 
 The implementation and boundary tests were recorded as four focused commits:
 `4395f4a`, `d1dcfd7`, `14a94d6`, and `21cb5b1`. The modified comparison

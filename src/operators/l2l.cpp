@@ -65,7 +65,22 @@ void apply(const MultiIndexSet& basis,
            const std::span<const double> parent,
            const std::span<double> child)
 {
-    l2l_add(basis, displacement, parent, child);
+    // Shift local coefficients from parent target box to child target box using
+    // d = c_child - c_parent.
+    for (int ib = 0; ib < basis.size(); ++ib) {
+        const MultiIndex beta = basis[ib];
+
+        for (int ig = 0; ig < basis.size(); ++ig) {
+            const MultiIndex gamma = basis[ig];
+            const MultiIndex sum = add(beta, gamma);
+            if (sum.degree() > basis.order()) {
+                continue;
+            }
+
+            child[ib] += MultiIndexSet::monomial_over_factorial(displacement, gamma) *
+                         parent[basis.index(sum)];
+        }
+    }
 }
 
 } // namespace cdfmm::operators::l2l

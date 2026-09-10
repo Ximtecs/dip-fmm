@@ -176,7 +176,20 @@ void apply(const MultiIndexSet& basis,
            const std::span<const double> multipole,
            const std::span<double> local)
 {
-    m2l_add(basis, displacement, multipole, local);
+    // Convert source multipole coefficients M to target local coefficients L
+    // with R = c_target - c_source.
+    // For order p, alpha+beta reaches total degree 2p.
+    MultiIndexSet deriv_basis(2 * basis.order());
+    const auto D = laplace_derivatives_raw(deriv_basis, displacement);
+
+    for (int ib = 0; ib < basis.size(); ++ib) {
+        const MultiIndex beta = basis[ib];
+
+        for (int ia = 0; ia < basis.size(); ++ia) {
+            const MultiIndex alpha = basis[ia];
+            local[ib] += multipole[ia] * D[deriv_basis.index(add(alpha, beta))];
+        }
+    }
 }
 
 } // namespace cdfmm::operators::m2l

@@ -301,7 +301,50 @@ PotentialField evaluate_pair(
     const Vec3& target, const Vec3& source, const Vec3& moment,
     const OutputFlags output)
 {
-    return p2p_dipole_pair(target, source, moment, output);
+    PotentialField result;
+    const Vec3 r = target - source;
+    const double r2 = dot(r, r);
+    const double rinv = 1.0 / std::sqrt(r2);
+    const double rinv3 = rinv * rinv * rinv;
+    const double c = 1.0 / (4.0 * std::numbers::pi);
+    const double m_dot_r = dot(moment, r);
+
+    if (has_flag(output, OutputFlags::Potential)) {
+        result.phi = c * m_dot_r * rinv3;
+    }
+
+    if (has_flag(output, OutputFlags::Field)) {
+        const double rinv5 = rinv3 * rinv * rinv;
+        // H_ij = 1/(4*pi) * [3*r*(m.r)/|r|^5 - m/|r|^3]
+        result.H = (r * (3.0 * m_dot_r * rinv5) - moment * rinv3) * c;
+    }
+
+    return result;
+}
+
+PotentialField evaluate_sum(
+    const Vec3& target,
+    const std::span<const Vec3> sources,
+    const std::span<const Vec3> moments,
+    const OutputFlags output,
+    const int self_index)
+{
+    PotentialField result;
+
+    for (size_t i = 0; i < sources.size(); ++i) {
+        // WARNING(cdfmm): Self-interactions must be excluded when targets are
+        // source points to avoid singular |r|=0 evaluation.
+        if (static_cast<int>(i) == self_index) {
+            continue;
+        }
+
+        const PotentialField pair =
+            evaluate_pair(target, sources[i], moments[i], output);
+        result.phi += pair.phi;
+        result.H += pair.H;
+    }
+
+    return result;
 }
 
 CanonicalOperator build(

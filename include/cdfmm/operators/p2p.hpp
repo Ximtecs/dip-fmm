@@ -51,6 +51,14 @@ using CanonicalOperator = cdfmm::StaticP2POperator;
                                            OutputFlags output =
                                                OutputFlags::Field);
 
+/** @brief Sums direct point-dipole contributions at one target. */
+[[nodiscard]] PotentialField evaluate_sum(
+    const Vec3& target,
+    std::span<const Vec3> sources,
+    std::span<const Vec3> moments,
+    OutputFlags output = OutputFlags::Field,
+    int self_index = -1);
+
 /**
  * @brief Builds canonical target-row P2P data from explicit pair records.
  *
