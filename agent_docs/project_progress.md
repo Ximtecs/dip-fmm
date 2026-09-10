@@ -1,8 +1,35 @@
 # Project progress
 
-Status recorded 2026-09-10 after accepting the static-topology/UniformTree
-adapter split in the nested checkout. The accepted changes are recorded in a
-focused topology-refactor commit.
+Status recorded 2026-09-10 after completing the shared tree root-box
+extraction in the nested checkout. The implementation and documentation are
+recorded in this focused change/commit.
+
+## Shared tree root-box resolution
+
+- `src/tree/common/root_box.{hpp,cpp}` is the internal shared boundary for
+  resolving and validating common cubic roots used by both UniformTree and
+  AdaptiveTree.
+- AdaptiveTree no longer depends on or constructs UniformTree.
+- Shared resolution retains an inferred coincident half-width of `0`; AdaptiveTree
+  applies its existing fallback half-width of `1` at its call site. Their
+  validation differences remain unchanged.
+- The helper is not installed and introduces no public API.
+
+Trusted validation evidence for this change:
+
+- fresh development configure with
+  `/home/mihaa/.conda/envs/cdfmm/bin/cmake` succeeded and the build passed
+  48/48;
+- focused UniformTree CTest passed 6/6;
+- focused adaptive/integration C++ tests passed 5/5;
+- `python_tests/test_adaptive_tree.py` passed 10 tests with `PYTHONPATH=build`;
+- full CTest passed 182/182, with four expected CUDA/oneMKL optional skips;
+- `git diff --check` passed, and dependency/source and symbol searches were
+  clean; and
+- the internal helper is absent from the install tree.
+
+CUDA runtime validation and the full Python suite were not run and are not
+claimed. `Article1/` and unrelated parent-worktree changes remain untouched.
 
 ## Static topology and UniformTree adapter closure
 

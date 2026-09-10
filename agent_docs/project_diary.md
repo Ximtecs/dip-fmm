@@ -1,5 +1,22 @@
 # Project diary
 
+## 2026-09-10 — shared tree root-box resolution
+
+Completed the internal root-box extraction for both tree modes. Shared
+resolution and validation now live in `src/tree/common/root_box.{hpp,cpp}`;
+AdaptiveTree no longer depends on or constructs UniformTree. Shared resolution
+retains an inferred coincident half-width of `0`; AdaptiveTree applies its
+existing fallback `1` at its call site, and their validation differences are
+preserved. The helper is not installed and does not change the public API.
+
+Fresh development configure/build passed 48/48; focused UniformTree tests
+passed 6/6; focused adaptive/integration C++ tests passed 5/5; the adaptive
+Python test passed 10/10 with `PYTHONPATH=build`; and full CTest passed
+182/182 with four expected CUDA/oneMKL optional skips. Diff, dependency/source,
+and symbol checks were clean. CUDA runtime validation and the full Python suite
+were not run. The implementation is recorded in this focused change/commit.
+`Article1/` and unrelated parent changes remain untouched.
+
 ## 2026-09-10 — static topology and UniformTree adapter closure
 
 Accepted the source/include-only split between canonical static topology and

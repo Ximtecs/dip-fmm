@@ -2,10 +2,11 @@
 
 #include "cdfmm/tree/uniform_tree.hpp"
 
+#include "../common/root_box.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <limits>
 #include <stdexcept>
 #include <tuple>
 
@@ -16,10 +17,6 @@ namespace cdfmm {
 //------------------------------------------------------------------------------
 
 namespace {
-
-// Permit round-off at a user-specified root boundary.  Coordinates accepted
-// through this tolerance are clamped into the first or final leaf below.
-constexpr double kBoundaryTolerance = 1.0e-12;
 
 int boxes_per_dim(const int level)
 {
@@ -60,80 +57,27 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
     if (options.max_level < 0) {
         throw std::invalid_argument("UniformTreeOptions.max_level must be >= 0");
     }
-    if (options.root_half_width.has_value() && options.root_half_width.value() <= 0.0) {
-        throw std::invalid_argument("UniformTreeOptions.root_half_width must be positive");
-    }
 
     max_level_ = options.max_level;
     const auto bounds_start = Clock::now();
 
-    // One common root encloses both populations.  This permits independent
-    // source and target sorting while retaining shared box coordinates.
-    const std::vector<Vec3>* combined_ptrs[2] = {&source_positions, &target_positions};
-    Vec3 minimum{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()};
-    Vec3 maximum{-std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity(), -std::numeric_limits<double>::infinity()};
-    bool has_points = false;
-    for (const auto* pts : combined_ptrs) {
-        for (const Vec3& point : *pts) {
-            has_points = true;
-            minimum.x = std::min(minimum.x, point.x);
-            minimum.y = std::min(minimum.y, point.y);
-            minimum.z = std::min(minimum.z, point.z);
-            maximum.x = std::max(maximum.x, point.x);
-            maximum.y = std::max(maximum.y, point.y);
-            maximum.z = std::max(maximum.z, point.z);
-        }
-    }
-    if (!has_points) {
-        minimum = {0.0, 0.0, 0.0};
-        maximum = {0.0, 0.0, 0.0};
-    }
-
-    if (options.root_centre.has_value()) {
-        root_centre_ = options.root_centre.value();
-    } else {
-        root_centre_ = (minimum + maximum) * 0.5;
-    }
-
-    if (options.root_half_width.has_value()) {
-        root_half_width_ = options.root_half_width.value();
-    } else {
-        const Vec3 delta_max = maximum - root_centre_;
-        const Vec3 delta_min = root_centre_ - minimum;
-        // A single half-width makes the root cubic even for an anisotropic
-        // point cloud.  The centre need not be the inferred bounding-box centre
-        // when a caller supplies it, so inspect both sides independently.
-        root_half_width_ = std::max({
-            delta_max.x,
-            delta_max.y,
-            delta_max.z,
-            delta_min.x,
-            delta_min.y,
-            delta_min.z
-        });
-        if (!has_points) {
-            root_half_width_ = 1.0;
-        }
-    }
-
-    const Vec3 root_min = root_centre_ - Vec3{root_half_width_, root_half_width_, root_half_width_};
-    const Vec3 root_max = root_centre_ + Vec3{root_half_width_, root_half_width_, root_half_width_};
+    const RootBox root_box = resolve_root_box(
+        source_positions, target_positions,
+        options.root_centre, options.root_half_width);
+    root_centre_ = root_box.centre;
+    root_half_width_ = root_box.half_width;
     build_timings_.root_bounds.add(
         std::chrono::duration<double>(Clock::now() - bounds_start).count()
     );
 
     const auto assign_leaf = [&](const Vec3& point) {
-        const auto in_range = [&](double value, double lo, double hi) {
-            return value >= lo - kBoundaryTolerance && value <= hi + kBoundaryTolerance;
-        };
-        if (!in_range(point.x, root_min.x, root_max.x) || !in_range(point.y, root_min.y, root_max.y) || !in_range(point.z, root_min.z, root_max.z)) {
-            throw std::invalid_argument("Point lies outside the requested root box");
-        }
         if (max_level_ == 0) {
             return std::array<int, 3>{0, 0, 0};
         }
         const int n = boxes_per_dim(max_level_);
         const double cell_width = (2.0 * root_half_width_) / static_cast<double>(n);
+        const Vec3 root_min = root_centre_ -
+            Vec3{root_half_width_, root_half_width_, root_half_width_};
         const auto index_for = [&](double value, double lo) {
             // floor assigns internal boundaries to the box on their positive
             // side.  Clamp the closed upper root face to index n-1.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "cdfmm/tree/adaptive_tree.hpp"
-#include "cdfmm/tree/uniform_tree.hpp"
+
+#include "../common/root_box.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -47,14 +48,10 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
         (options.root_half_width && !std::isfinite(*options.root_half_width))) {
         throw std::invalid_argument("adaptive root geometry must be finite");
     }
-    // Reuse the uniform root validation only; depth zero allocates one box.
-    UniformTreeOptions root_options;
-    root_options.max_level = 0;
-    root_options.root_centre = options.root_centre;
-    root_options.root_half_width = options.root_half_width;
-    const UniformTree root_tree(sources, targets, root_options);
-    const double root_half_width = root_tree.root_half_width() > 0.0
-        ? root_tree.root_half_width() : 1.0;
+    const RootBox root_box = resolve_root_box(
+        sources, targets, options.root_centre, options.root_half_width);
+    const double root_half_width = root_box.half_width > 0.0
+        ? root_box.half_width : 1.0;
     auto topology = std::make_shared<StaticFmmTopology>();
     auto& t = *topology;
     t.source_permutation.resize(sources.size());
@@ -114,7 +111,7 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
         }
         return id;
     };
-    build(-1, 0, root_tree.root_centre(), root_half_width,
+    build(-1, 0, root_box.centre, root_half_width,
           0, sources.size(), 0, targets.size());
     const auto reorder = [](const auto& positions, const auto& permutation,
                             auto& sorted, auto& inverse) {
@@ -217,7 +214,7 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
         while (cursor < t.p2p_leaf_records.size() && t.p2p_leaf_records[cursor].target_leaf == leaf.node) ++cursor;
         t.p2p_target_leaf_offsets.push_back(static_cast<int>(cursor));
     }
-    t.coordinate_origin = root_tree.root_centre();
+    t.coordinate_origin = root_box.centre;
     t.coordinate_scale = 2.0 * root_half_width;
     for (auto& node : t.nodes) {
         node.centre = (node.centre - t.coordinate_origin) * (1.0 / t.coordinate_scale);

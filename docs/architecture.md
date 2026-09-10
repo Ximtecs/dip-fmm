@@ -375,6 +375,10 @@ work; they do not require mechanical splitting.
   selection, without an artificial marker type.
 - Common node, Morton, indexing, and tree-statistics concepts are separated
   from uniform and adaptive implementations.
+- Internal cubic root-box resolution and validation is shared by UniformTree
+  and AdaptiveTree in `src/tree/common/root_box.{hpp,cpp}`. Shared resolution
+  retains zero for coincident roots; AdaptiveTree applies its existing fallback
+  half-width `1` at its call site. The helper is not part of the public API.
 - `StaticFmmTopology`, dense-direct policy, pair dispatch, and adaptive plan
   adaptation remain transitional seams for the operator/plan/backend phases.
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 
 #include <set>
 
@@ -109,4 +110,98 @@ TEST_CASE("Uniform tree topology and lists", "[uniform_tree]")
         }
         REQUIRE(node.target_count() == expected_target_count);
     }
+}
+
+TEST_CASE("Uniform tree resolves a shared cubic root", "[uniform_tree][root_box]")
+{
+    const std::vector<Vec3> sources{{-2.0, 0.0, 1.0}};
+    const std::vector<Vec3> targets{{4.0, 1.0, -3.0}};
+    UniformTree tree(sources, targets, UniformTreeOptions{.max_level = 0});
+
+    CHECK(tree.root_centre().x == 1.0);
+    CHECK(tree.root_centre().y == 0.5);
+    CHECK(tree.root_centre().z == -1.0);
+    CHECK(tree.root_half_width() == 3.0);
+    CHECK(tree.nodes().front().source_count() == sources.size());
+    CHECK(tree.nodes().front().target_count() == targets.size());
+}
+
+TEST_CASE("Uniform tree honours explicit root geometry", "[uniform_tree][root_box]")
+{
+    const std::vector<Vec3> sources{{-2.0, -1.0, 0.0}};
+    const std::vector<Vec3> targets{{3.0, -5.0, 2.0}};
+
+    UniformTreeOptions centre_only;
+    centre_only.max_level = 1;
+    centre_only.root_centre = Vec3{1.0, -2.0, 0.5};
+    const UniformTree centred_tree(
+        sources,
+        targets,
+        centre_only);
+    CHECK(centred_tree.root_centre().x == 1.0);
+    CHECK(centred_tree.root_centre().y == -2.0);
+    CHECK(centred_tree.root_centre().z == 0.5);
+    CHECK(centred_tree.root_half_width() == 3.0);
+
+    UniformTreeOptions width_only;
+    width_only.max_level = 1;
+    width_only.root_half_width = 4.0;
+    const UniformTree width_tree(
+        sources,
+        targets,
+        width_only);
+    CHECK(width_tree.root_centre().x == 0.5);
+    CHECK(width_tree.root_centre().y == -3.0);
+    CHECK(width_tree.root_centre().z == 1.0);
+    CHECK(width_tree.root_half_width() == 4.0);
+
+    UniformTreeOptions both;
+    both.max_level = 1;
+    both.root_centre = Vec3{1.0, -2.0, 0.5};
+    both.root_half_width = 4.0;
+    const UniformTree tree(
+        sources,
+        targets,
+        both);
+
+    CHECK(tree.root_centre().x == 1.0);
+    CHECK(tree.root_centre().y == -2.0);
+    CHECK(tree.root_centre().z == 0.5);
+    CHECK(tree.root_half_width() == 4.0);
+}
+
+TEST_CASE("Uniform tree resolves empty and degenerate roots", "[uniform_tree][root_box]")
+{
+    const std::vector<Vec3> empty;
+    const UniformTree empty_tree(empty, UniformTreeOptions{.max_level = 0});
+    CHECK(empty_tree.root_centre().x == 0.0);
+    CHECK(empty_tree.root_centre().y == 0.0);
+    CHECK(empty_tree.root_centre().z == 0.0);
+    CHECK(empty_tree.root_half_width() == 1.0);
+
+    const UniformTree coincident_tree(
+        std::vector<Vec3>{{2.0, -1.0, 0.5}, {2.0, -1.0, 0.5}},
+        UniformTreeOptions{.max_level = 0});
+    CHECK(coincident_tree.root_centre().x == 2.0);
+    CHECK(coincident_tree.root_centre().y == -1.0);
+    CHECK(coincident_tree.root_centre().z == 0.5);
+    CHECK(coincident_tree.root_half_width() == 0.0);
+}
+
+TEST_CASE("Uniform tree validates requested root bounds", "[uniform_tree][root_box]")
+{
+    UniformTreeOptions invalid_width;
+    invalid_width.root_half_width = 0.0;
+    REQUIRE_THROWS_WITH(
+        UniformTree(std::vector<Vec3>{{0.0, 0.0, 0.0}}, invalid_width),
+        "UniformTreeOptions.root_half_width must be positive");
+
+    UniformTreeOptions requested_box;
+    requested_box.root_centre = Vec3{};
+    requested_box.root_half_width = 1.0;
+    REQUIRE_NOTHROW(UniformTree(
+        std::vector<Vec3>{{1.0 + 5.0e-13, 0.0, 0.0}}, requested_box));
+    REQUIRE_THROWS_WITH(
+        UniformTree(std::vector<Vec3>{{1.0 + 2.0e-12, 0.0, 0.0}}, requested_box),
+        "Point lies outside the requested root box");
 }
