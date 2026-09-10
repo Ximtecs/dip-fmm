@@ -1,10 +1,11 @@
 # Developer architecture
 
 This document is the architectural contract for the `v0.2` refactor. It
-describes the intended ownership and dependency boundaries. Step 2 has made
-the foundational `core`, `math`, `geometry`, and `tree` layout concrete; higher
-layers remain in their transitional flat layout. The contract does not by
-itself authorise further production changes.
+describes the ownership and dependency boundaries now implemented in the
+repository. Step 2 made the foundational `core`, `math`, `geometry`, and
+`tree` layout concrete; the operators, static plans, and portable CPU apply
+boundary are now also structured. FMM orchestration, cache, and most backend
+execution remain transitional layers.
 
 ## Design rules
 
@@ -196,12 +197,14 @@ Measure performance-sensitive changes against the pre-refactor baseline.
 
 ## Current and target repository structure
 
-The current production layout after the foundational Step 2 migration is:
+The current production layout after the operator/plan step is:
 
 ```text
 dip-fmm/
-|-- include/cdfmm/    canonical core/math/geometry/tree plus compatibility shims
-|-- src/              math/geometry/tree plus transitional flat higher layers
+|-- include/cdfmm/    canonical core/math/geometry/tree/operators/plan/backend
+|                    plus compatibility shims
+|-- src/              structured operators/plan/backend/cpu plus transitional
+|                    FMM, topology, and support layers
 |-- tests/            C++ and optional Fortran tests
 |-- python_tests/     Python and notebook regression tests
 |-- benchmarks/       C++ drivers and Python runners
@@ -223,9 +226,9 @@ dip-fmm/
 |   |-- math/
 |   |-- geometry/
 |   |-- tree/
-|   |-- operators/
-|   |-- plan/
-|   |-- backend/
+|   |-- operators/       # implemented responsibility-specific interfaces
+|   |-- plan/            # implemented immutable static representations
+|   |-- backend/         # CPU static-plan apply plus transitional CUDA APIs
 |   `-- fmm/
 |-- src/
 |   |-- math/
@@ -236,15 +239,8 @@ dip-fmm/
 |   |-- tree/
 |   |   |-- uniform/
 |   |   `-- adaptive/
-|   |-- operators/
-|   |   |-- p2m/
-|   |   |-- m2m/
-|   |   |-- m2l/
-|   |   |-- l2l/
-|   |   |-- l2p/
-|   |   `-- p2p/
-|   |-- plan/
-|   |   `-- p2p/
+|   |-- operators/       # p2m.cpp, m2m.cpp, m2l.cpp, l2l.cpp, l2p.cpp, p2p.cpp
+|   |-- plan/            # precision.cpp and p2p packing builders
 |   |-- backend/
 |   |   |-- cpu/
 |   |   |-- mkl/
@@ -275,17 +271,55 @@ support areas such as `python_tests/`, `python/`, `fortran/`, and `tools/`
 remain valid until the later bindings/build step deliberately reorganises
 them.
 
+The implemented operator and plan homes are:
+
+```text
+include/cdfmm/
+|-- operators/
+|   |-- p2m.hpp       P2M construction and dynamic application
+|   |-- m2m.hpp       M2M translation
+|   |-- m2l.hpp       M2L matrices and dynamic translation
+|   |-- l2l.hpp       L2L translation
+|   |-- l2p.hpp       L2P rows and evaluation
+|   |-- p2p.hpp       pair semantics and canonical P2P construction
+|   `-- operators.hpp operator umbrella
+|-- plan/
+|   |-- static_coefficient.hpp  sparse P2M/translation maps
+|   |-- m2l.hpp                 immutable M2L schedules and matrices
+|   |-- l2p.hpp                 immutable L2P rows
+|   `-- p2p/
+|       |-- canonical.hpp       authoritative target-row P2P data
+|       |-- compact.hpp         derived particle-row SoA packing
+|       |-- leaf.hpp            derived dense leaf packing
+|       |-- dictionary.hpp      derived Tensor6 dictionary packing
+|       |-- signed_dictionary.hpp derived signed/reduced packing
+|       `-- bsr.hpp              backend-neutral BSR(3) packing
+`-- backend/cpu/static_plan_apply.hpp  CPU application boundary
+
+src/
+|-- operators/{p2m,m2m,m2l,l2l,l2p,p2p}.cpp  mathematical construction
+|-- plan/{precision,p2p}                     conversion and packing builders
+`-- backend/cpu/static_plan_apply.cpp        CPU plan application
+```
+
+The compatibility headers `cdfmm/operators.hpp` and
+`cdfmm/static_operators.hpp` remain supported forwarding umbrellas; they do
+not define a second operator or plan representation. `StaticFmmTopology`
+still carries transitional topology-to-plan adaptation, including the current
+leaf interaction metadata, and is the principal seam remaining for a later
+FMM/topology integration step.
+
 `generation/` will eventually own physical grain generation. `refinement/`
 will eventually own prism and tetrahedron refinement. Geometry packing belongs
 with plan construction or a geometry-to-plan adapter according to whether it
-is canonical geometry data or an execution representation. None of packing,
-generation, discretisation, or refinement is implemented by the foundational
-Step 2 layout.
+is canonical geometry data or an execution representation. The P2P execution
+packings listed above are implemented; grain generation, discretisation, and
+geometric refinement remain outside this step.
 
 ## Deferred refactor inventory
 
-This inventory records pressure points; it does not authorise their repair in
-the architecture-contract step.
+This inventory records remaining pressure points; it does not authorise a
+future repair by itself.
 
 The initial audit found these concrete boundary violations in the remaining
 transitional layout:
@@ -297,9 +331,9 @@ transitional layout:
   construction to the current static-plan representation.
 - `cuboid.hpp` combines finite geometry operations with `DenseDirectPlan` and
   matrix-backend policy; geometry consequently owns plan/backend concepts.
-- `static_operators.hpp/.cpp` combine operator mathematics, canonical plans,
-  geometry-specific construction, every derived P2P packing, CPU execution,
-  SIMD/device-callable helpers, and FP32 conversion.
+- compatibility `static_operators.hpp/.cpp` remain as forwarding umbrellas;
+  their former mixed implementation has been separated into operators, plans,
+  and the portable CPU apply boundary described below.
 - `uniform_fmm.hpp/.cpp` combine public policy, geometry normalisation,
   topology and operator construction, cache use, backend selection, packing,
   mutable state, CUDA upload, evaluation, and inspection.
@@ -318,10 +352,9 @@ transitional layout:
   from `cdfmm_core` to consumers.
 
 The largest responsibility-review candidates are `cuda_fmm.cu` (about 5,200
-lines), `uniform_fmm.cpp` (about 3,600), `static_operators.cpp` (about 3,000),
-`cache.cpp` (about 1,800), `python/bindings.cpp` (about 1,500), and
-`static_operators.hpp` (about 900). These measurements locate audit work; they
-do not require mechanical splitting.
+lines), `uniform_fmm.cpp` (about 3,600), `cache.cpp` (about 1,800), and
+`python/bindings.cpp` (about 1,500). These measurements locate remaining audit
+work; they do not require mechanical splitting.
 
 ### Foundational layout: core, math, geometry, and tree
 
@@ -335,14 +368,30 @@ do not require mechanical splitting.
 - `StaticFmmTopology`, dense-direct policy, pair dispatch, and adaptive plan
   adaptation remain transitional seams for the operator/plan/backend phases.
 
-### Later: operators and plans
+### Implemented: operators and static plans
 
-- Decompose `static_operators.hpp` and `static_operators.cpp` by mathematical
-  operator and by canonical-plan construction responsibility.
-- Separate canonical P2P tensors from each derived SoA, compact, dictionary,
-  reduced/signed, leaf-packed, and BSR execution representation.
-- Clarify ownership between static topology, geometry adapters, translation
-  banks, precision-specific storage, and immutable execution plans.
+- Mathematical P2M, M2M, M2L, L2L, L2P, and P2P construction now lives under
+  `include/cdfmm/operators/` and `src/operators/`. Geometry-specific P2M/L2P
+  and P2P dispatch remains below the operator layer and uses the established
+  geometry primitives.
+- Canonical static data is represented under `include/cdfmm/plan/`, with
+  FP64-to-FP32 conversion in `src/plan/precision.cpp`. Static M2L data owns
+  immutable matrices, scaling, and interaction schedules without backend
+  resources.
+- `plan/p2p/canonical.hpp` is authoritative for target-row P2P tensors and
+  identity markers. Compact/SoA, leaf, tensor dictionary, signed/reduced
+  dictionary, and BSR forms are deterministic derived packings under
+  `plan/p2p/`; BSR construction is backend-neutral and does not depend on
+  CUDA or cuSPARSE.
+- Portable CPU application is isolated at
+  `backend/cpu/static_plan_apply.cpp`. It consumes canonical or derived plans;
+  it does not redefine pair or translation mathematics.
+
+The remaining transitional seam is `StaticFmmTopology`: it still adapts tree
+interaction topology to the static-plan records consumed by FMM orchestration.
+Tree ownership remains spatial hierarchy/topology, while the eventual FMM
+step should move derived schedule assembly behind the plan boundary without
+making the tree depend on a particular P2P packing.
 
 ### Later: backend and CUDA
 

@@ -1,9 +1,11 @@
 # Project structure and ownership
 
-The current checkout is the post-Step-2 foundational layout. Higher FMM,
-operator, plan, backend, cache, and binding layers remain partly flat; the
-target taxonomy in `docs/architecture.md` is not permission to create empty
-directories or perform an unauthorised refactor.
+The current checkout is the post-Step-2 foundational layout plus the
+operators/static-plans step. Operator construction, static plan data, P2P
+packings, and portable CPU application now have substantive subsystem homes.
+Higher FMM orchestration, CUDA/backend execution, cache, and binding layers
+remain partly flat; the target taxonomy in `docs/architecture.md` is not
+permission to create empty directories or perform an unauthorised refactor.
 
 ## Current map
 
@@ -16,13 +18,20 @@ include/cdfmm/
                                                                derivatives, bases
   geometry/                                                    models/primitives
   tree/                                                        uniform/adaptive tree
+  operators/                                                   P2M/M2M/M2L/L2L/L2P/P2P interfaces
+  plan/                                                        immutable static data and P2P packings
+  backend/cpu/                                                 portable static-plan application interface
 src/
   math/                                                        mathematical kernels
   geometry/primitives/                                         prism/tetrahedron
   tree/{common,uniform,adaptive}/                             hierarchy/topology
-  operators.cpp, cuboid.cpp, static_operators.cpp              operators/plans
+  operators.cpp                                                 legacy dynamic operator API
+  cuboid.cpp, static_operators.cpp                              transitional adapters/compatibility TU
+  operators/                                                    mathematical operator construction
+  plan/                                                         precision conversion and P2P packing builders
+  backend/cpu/                                                  portable static-plan application
   static_topology.cpp, uniform_fmm.cpp                          orchestration
-  near_field.cpp, far_field.cpp                                execution stages
+  near_field.cpp, far_field.cpp                                transitional execution stages
   periodic.cpp, cache.cpp, validation.cpp                       support boundaries
   cuda_fmm.cu, cuda_*_plan.hpp, cuda_fmm_stub.cpp                CUDA implementation/stub
   c_api.cpp                                                     C ABI adapter
@@ -54,6 +63,7 @@ source/target geometry
   -> UniformTree or shared AdaptiveTree topology
   -> canonical static topology and operators
   -> CPU/oneMKL/CUDA derived packing
+  -> portable CPU static-plan application or existing optional backend path
   -> changing moments -> P2M -> M2M -> M2L -> L2L -> L2P
                          \-> exact list-1 P2P
   -> near + far field -> original target order
@@ -64,6 +74,22 @@ source/target permutations and half-open occupied-leaf ranges. Free-space
 `list1` is the clipped same-level 3x3x3 neighbourhood; `list2` is the
 well-separated children-of-parent-list1 remainder. Periodic records add image
 identity without replicating the central tree.
+
+The operator/plan step makes the following homes concrete:
+
+```text
+include/cdfmm/operators/       mathematical operator interfaces
+src/operators/                  operator construction and geometry dispatch
+include/cdfmm/plan/             canonical static data and derived representations
+src/plan/                       FP32 conversion and deterministic P2P builders
+include/cdfmm/backend/cpu/      portable application interface
+src/backend/cpu/                portable application implementation
+```
+
+Canonical P2P target rows remain authoritative. Compact/SoA, leaf, tensor
+dictionary, signed/reduced dictionary, and BSR data are deterministic derived
+packings. `StaticFmmTopology` remains a transitional adapter rather than a new
+packing owner.
 
 ## Validation and documentation areas
 

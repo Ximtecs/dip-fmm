@@ -1,5 +1,30 @@
 # Latest session work
 
+## 2026-09-10 — operators and static plans refactor handoff
+
+The committed `refactor/architecture-v0.2` series now separates the
+mathematical P2M/M2M/M2L/L2L/L2P/P2P operators, canonical static plan data,
+derived P2P execution packings, FP32 conversion, and portable CPU static-plan
+application. Compatibility flat headers remain forwarding interfaces. The
+remaining intentional seam is `StaticFmmTopology`, which still adapts tree
+interaction data to FMM plan records; CUDA/backend decomposition and FMM
+orchestration remain future work.
+
+Validation completed through the dev path: full CTest 177/177 passed with the
+expected unavailable-feature skips; Python regressions were 137 passed and 7
+skipped; public/header, install-tree, and vectorisation-report checks passed.
+The CTest evidence is retained in `build/Testing/Temporary/LastTest.log`.
+
+An independent tester was interrupted by the user before its final report.
+Resume with a fresh independent audit, including an explicit CUDA availability
+probe and representative comparison with the preserved `v0.1.0` /
+`release/v0.1` baseline. The implementation and boundary tests were committed
+as `4395f4a`, `d1dcfd7`, `14a94d6`, and `21cb5b1`; preserve the modified
+`examples/simple_notebooks/simple_geometry_magtense_compare.ipynb` and the
+untracked `Article1/` checkout/artifacts that predated this work. Ignored build,
+cache, and pytest-cache directories remain local artifacts; no stray temporary
+or reject files were found.
+
 ## 2026-09-10 — repository-memory bootstrap
 
 Inspected the nested root guidance, source/include ownership, CMake presets and

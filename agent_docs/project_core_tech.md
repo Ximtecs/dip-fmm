@@ -44,6 +44,12 @@ near-field chains, combines near/far fields, and restores caller target order.
 One evaluator is not re-entrant; OpenMP parallelism is internal to an
 evaluation. Empty complete-tree nodes remain explicit and zero-valued.
 
+In the current architecture, the mathematical maps are constructed under the
+operator layer, immutable canonical and derived representations under the plan
+layer, and portable static-plan application under the CPU backend boundary.
+This separation is structural: it does not change the coefficient, ordering,
+identity, precision, or accumulation contracts below.
+
 Canonical mathematical data is the backend-independent truth. Portable CPU SoA,
 oneMKL gather/GEMM/scatter, CUDA canonical/BSR, tensor-dictionary, and other
 packings are derived execution representations and must not redefine operators.
