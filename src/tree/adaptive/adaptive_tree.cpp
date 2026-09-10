@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-#include "cdfmm/adaptive_tree.hpp"
+#include "cdfmm/tree/adaptive_tree.hpp"
 
 #include <algorithm>
 #include <chrono>

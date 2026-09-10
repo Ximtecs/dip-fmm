@@ -46,9 +46,12 @@ add_library(cdfmm_core
     src/geometry/primitives/tetrahedron.cpp
     src/static_operators.cpp
     src/validation.cpp
-    src/uniform_tree.cpp
+    src/tree/common/node.cpp
+    src/tree/common/morton.cpp
+    src/tree/common/indexing.cpp
+    src/tree/uniform/uniform_tree.cpp
     src/static_topology.cpp
-    src/adaptive_tree.cpp
+    src/tree/adaptive/adaptive_tree.cpp
     src/uniform_fmm.cpp
     src/cache.cpp
     src/far_field.cpp

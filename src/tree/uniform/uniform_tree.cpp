@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "cdfmm/uniform_tree.hpp"
+#include "cdfmm/tree/uniform_tree.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -38,79 +38,6 @@ std::size_t total_nodes(const int max_level)
 }
 
 } // namespace
-
-//------------------------------------------------------------------------------
-// Tree-node queries
-//------------------------------------------------------------------------------
-
-bool TreeNode::is_leaf() const
-{
-    return std::all_of(
-        children.begin(),
-        children.end(),
-        [](const int child) {
-            return child < 0;
-        }
-    );
-}
-
-std::size_t TreeNode::source_count() const
-{
-    return source_end - source_begin;
-}
-
-std::size_t TreeNode::target_count() const
-{
-    return target_end - target_begin;
-}
-
-//------------------------------------------------------------------------------
-// Morton and flat-index utilities
-//------------------------------------------------------------------------------
-
-std::uint64_t morton_encode(const int ix, const int iy, const int iz)
-{
-    std::uint64_t morton = 0;
-    // A 64-bit Morton key accommodates 21 bits per coordinate (63 bits total).
-    // Each group of three output bits contains x, y, and z respectively.
-    for (int bit = 0; bit < 21; ++bit) {
-        const std::uint64_t xb = (static_cast<std::uint64_t>(ix) >> bit) & 1ULL;
-        const std::uint64_t yb = (static_cast<std::uint64_t>(iy) >> bit) & 1ULL;
-        const std::uint64_t zb = (static_cast<std::uint64_t>(iz) >> bit) & 1ULL;
-        morton |= (xb << (3 * bit));
-        morton |= (yb << (3 * bit + 1));
-        morton |= (zb << (3 * bit + 2));
-    }
-    return morton;
-}
-
-std::array<int, 3> morton_decode(const std::uint64_t morton)
-{
-    int ix = 0;
-    int iy = 0;
-    int iz = 0;
-    for (int bit = 0; bit < 21; ++bit) {
-        ix |= static_cast<int>((morton >> (3 * bit)) & 1ULL) << bit;
-        iy |= static_cast<int>((morton >> (3 * bit + 1)) & 1ULL) << bit;
-        iz |= static_cast<int>((morton >> (3 * bit + 2)) & 1ULL) << bit;
-    }
-    return {ix, iy, iz};
-}
-
-int level_offset(const int level)
-{
-    // Complete levels preceding level l contain sum_{k=0}^{l-1} 8^k nodes.
-    std::size_t numerator = 1;
-    for (int i = 0; i < level; ++i) {
-        numerator *= 8;
-    }
-    return static_cast<int>((numerator - 1) / 7);
-}
-
-int node_index(const int level, const int ix, const int iy, const int iz)
-{
-    return level_offset(level) + static_cast<int>(morton_encode(ix, iy, iz));
-}
 
 UniformTree::UniformTree(const std::vector<Vec3>& source_positions, const UniformTreeOptions& options)
 {

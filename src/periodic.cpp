@@ -7,7 +7,7 @@
 #include <numbers>
 #include <stdexcept>
 
-#include "cdfmm/uniform_tree.hpp"
+#include "cdfmm/tree/indexing.hpp"
 
 namespace cdfmm {
 
