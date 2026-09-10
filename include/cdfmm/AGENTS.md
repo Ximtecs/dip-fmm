@@ -5,18 +5,17 @@ installed C++/C interface, not a convenient home for shared implementation.
 
 ## Current structure
 
-The public headers are currently flat:
+The foundational public headers now have canonical subsystem homes, while
+legacy flat paths remain as forwarding compatibility headers:
 
 ```text
 include/cdfmm/
 |-- cdfmm.hpp                         umbrella include
-|-- vec3.hpp, precision.hpp, ...      core and mathematics
-|-- geometry.hpp, cuboid.hpp,
-|   rectangular_prism.hpp,
-|   tetrahedron.hpp                   geometry and exact models
-|-- tree_node.hpp, uniform_tree.hpp,
-|   adaptive_tree.hpp,
-|   static_topology.hpp               trees and topology
+|-- core/                             precision, output flags, basic timing
+|-- math/                             vectors, indices, derivatives, expansions
+|-- geometry/                         models and exact physical primitives
+|-- tree/                             common, uniform, and adaptive interfaces
+|-- *.hpp                             legacy shims and deferred higher layers
 |-- operators.hpp,
 |   static_operators.hpp              operators and static plans
 |-- uniform_fmm.hpp                   solver API and options
@@ -27,7 +26,8 @@ include/cdfmm/
 `-- c_api.h                           stable C boundary
 ```
 
-Target structure, introduced only as cohesive code moves in later steps:
+Remaining target structure, introduced only as cohesive code moves in later
+steps:
 
 ```text
 include/cdfmm/

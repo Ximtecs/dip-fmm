@@ -37,11 +37,12 @@ The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor
 implementation. Architectural work occurs on `refactor/architecture-v0.2`.
 Never move, recreate, or rewrite the tag or preserved branch.
 
-Step 1 is documentation and agent scaffolding only. During this step, do not
-move or split production code, change CMake source layout, redesign APIs,
-change algorithms or defaults, optimise kernels, prune validation assets, or
-implement geometry packing, grain generation/discretisation, or prism/tetrahedron
-refinement. A later explicitly scoped step must authorise production changes.
+Step 2 has organised the foundational `core`, `math`, `geometry`, and `tree`
+layers. Preserve the flat forwarding headers until an explicit compatibility
+cleanup. The next production step may address operators and plans only when it
+is explicitly authorised; do not pre-emptively split backends, orchestration,
+cache, or bindings. Geometry packing, grain generation/discretisation, and
+prism/tetrahedron refinement remain future work.
 
 ## Navigation
 
@@ -49,8 +50,8 @@ Current structure:
 
 ```text
 dip-fmm/
-|-- include/cdfmm/    flat public C++ and C headers
-|-- src/              flat CPU/CUDA implementation and internal headers
+|-- include/cdfmm/    structured core/math/geometry/tree plus compatibility headers
+|-- src/              structured math/geometry/tree plus deferred flat higher layers
 |-- tests/            C++ tests and optional Fortran smoke test
 |-- python_tests/     Python, runner, and notebook regression tests
 |-- benchmarks/       C++ benchmarks and Python benchmark runners
@@ -311,9 +312,9 @@ unavailable optional dependency/device and must say why.
 - Before and after a behaviour-preserving step, run the same relevant tests.
 - Compare against `v0.1.0` and inspect both the stat and full diff. Never alter
   `v0.1.0` or `release/v0.1`.
-- For Step 1, the final task-owned diff contains only architecture
-  documentation and `AGENTS.md` guidance. Stop after acceptance; do not begin
-  the production refactor.
+- Keep each production-code step within its explicitly authorised layers and
+  stop after its acceptance criteria pass. Preserve compatibility shims until
+  their removal is separately approved.
 
 The authoritative rationale, dependency table, target tree, and deferred-work
 inventory are in `docs/architecture.md`.

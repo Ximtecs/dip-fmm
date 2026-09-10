@@ -1,19 +1,18 @@
 # Implementation guidance
 
-Inherit `../AGENTS.md`. This directory currently contains all implementation
-layers in a flat layout. The target hierarchy in `../docs/architecture.md` is
-future structure, not a description of directories that already exist.
+Inherit `../AGENTS.md`. Foundational math, geometry, and tree implementations
+now have subsystem directories. Higher solver layers remain flat until their
+own explicitly scoped refactor steps.
 
 ## Current structure
 
 ```text
 src/
-|-- {taylor_jet,laplace_derivatives,
-|   spherical_harmonics,operators}.cpp     mathematics/reference operators
-|-- {cuboid,rectangular_prism,
-|   tetrahedron}.cpp                       finite geometry/exact interactions
-|-- {uniform_tree,adaptive_tree,
-|   static_topology,periodic}.cpp          trees and topology
+|-- math/                                  Taylor, Laplace, spherical mathematics
+|-- geometry/primitives/                   exact prism and tetrahedron analysis
+|-- tree/{common,uniform,adaptive}/        spatial hierarchy and topology
+|-- operators.cpp, cuboid.cpp              deferred mixed operator/direct code
+|-- static_topology.cpp, periodic.cpp      deferred adapters and periodic code
 |-- static_operators.cpp                   operators, plans, packings, CPU work
 |-- {near_field,far_field}.cpp              execution stages
 |-- uniform_fmm.cpp                        construction and orchestration
@@ -45,7 +44,8 @@ Do not create target directories before substantive code belongs in them.
 ## Boundaries and pressure points
 
 - `cuda_fmm.cu`, `uniform_fmm.cpp`, `static_operators.cpp`, and `cache.cpp`
-  are known decomposition candidates. Do not split them during Step 1.
+  are known decomposition candidates. Do not split them without a later
+  explicitly scoped step.
 - Separate mathematical operator construction, canonical plans, derived
   execution packings, and backend execution in that order during later work.
 - Tree code owns spatial hierarchy/topology, not CUDA execution or

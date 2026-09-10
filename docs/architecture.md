@@ -1,9 +1,10 @@
 # Developer architecture
 
 This document is the architectural contract for the `v0.2` refactor. It
-describes the intended ownership and dependency boundaries; the source tree is
-still in the pre-refactor, largely flat layout. The contract does not by itself
-authorise moving or changing production code.
+describes the intended ownership and dependency boundaries. Step 2 has made
+the foundational `core`, `math`, `geometry`, and `tree` layout concrete; higher
+layers remain in their transitional flat layout. The contract does not by
+itself authorise further production changes.
 
 ## Design rules
 
@@ -195,12 +196,12 @@ Measure performance-sensitive changes against the pre-refactor baseline.
 
 ## Current and target repository structure
 
-The current production layout is deliberately flat during Step 1:
+The current production layout after the foundational Step 2 migration is:
 
 ```text
 dip-fmm/
-|-- include/cdfmm/    public headers, currently flat
-|-- src/              CPU, CUDA, plans, cache, and orchestration, currently flat
+|-- include/cdfmm/    canonical core/math/geometry/tree plus compatibility shims
+|-- src/              math/geometry/tree plus transitional flat higher layers
 |-- tests/            C++ and optional Fortran tests
 |-- python_tests/     Python and notebook regression tests
 |-- benchmarks/       C++ drivers and Python runners
@@ -278,15 +279,16 @@ them.
 will eventually own prism and tetrahedron refinement. Geometry packing belongs
 with plan construction or a geometry-to-plan adapter according to whether it
 is canonical geometry data or an execution representation. None of packing,
-generation, discretisation, or refinement is implemented in Step 1.
+generation, discretisation, or refinement is implemented by the foundational
+Step 2 layout.
 
 ## Deferred refactor inventory
 
 This inventory records pressure points; it does not authorise their repair in
 the architecture-contract step.
 
-The Step 1 audit found these concrete boundary violations in the current flat
-layout:
+The initial audit found these concrete boundary violations in the remaining
+transitional layout:
 
 - `static_topology.hpp` includes both `static_operators.hpp` and
   `uniform_tree.hpp`, and the topology stores P2P leaf-plan records. Tree data
@@ -321,17 +323,17 @@ lines), `uniform_fmm.cpp` (about 3,600), `static_operators.cpp` (about 3,000),
 `static_operators.hpp` (about 900). These measurements locate audit work; they
 do not require mechanical splitting.
 
-### Next: core, math, geometry, and tree
+### Foundational layout: core, math, geometry, and tree
 
-- Extract foundational types and mathematical machinery from the flat public
-  and source layouts while preserving include compatibility.
-- Separate point, rectangular-prism, cuboid compatibility, and tetrahedron
-  geometry from operator and orchestration concerns.
-- Split uniform and adaptive tree construction from static-plan adaptation;
-  remove timing/solver ownership from tree interfaces where that boundary is
-  currently blurred.
-- Review `tetrahedron.cpp` and the public geometry headers for mixed geometry,
-  quadrature, exact-interaction, and expansion responsibilities.
+- Foundational precision, output, vector, index, derivative, Cartesian, and
+  spherical interfaces have canonical subsystem headers with flat shims.
+- Geometry models and exact rectangular-prism/tetrahedron primitives have
+  canonical homes; point geometry remains its representative `Vec3` plus model
+  selection, without an artificial marker type.
+- Common node, Morton, indexing, and tree-statistics concepts are separated
+  from uniform and adaptive implementations.
+- `StaticFmmTopology`, dense-direct policy, pair dispatch, and adaptive plan
+  adaptation remain transitional seams for the operator/plan/backend phases.
 
 ### Later: operators and plans
 
@@ -373,7 +375,6 @@ cache behaviour, and supported CPU/oneMKL/CUDA paths. Performance-sensitive
 backend changes additionally compare plan reuse, transfers, allocations,
 launches, synchronisation, and representative benchmark results.
 
-Step 1 changes documentation and agent guidance only, so its runtime
-implementation is identical by construction. Production source moves, API
-redesign, algorithm changes, CUDA decomposition, packing, generation,
-discretisation, and refinement are all deferred.
+Step 2 changes file ownership and include structure without changing runtime
+algorithms or public names. API redesign, CUDA decomposition, packing,
+generation, discretisation, and refinement remain deferred.
