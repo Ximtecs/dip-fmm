@@ -10,7 +10,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "cdfmm/tetrahedron.hpp"
-#include "tetrahedron_detail.hpp"
+#include "geometry/primitives/tetrahedron_detail.hpp"
 
 using namespace cdfmm;
 

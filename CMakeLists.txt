@@ -42,8 +42,8 @@ add_library(cdfmm_core
     src/math/laplace_derivatives.cpp
     src/operators.cpp
     src/cuboid.cpp
-    src/rectangular_prism.cpp
-    src/tetrahedron.cpp
+    src/geometry/primitives/rectangular_prism.cpp
+    src/geometry/primitives/tetrahedron.cpp
     src/static_operators.cpp
     src/validation.cpp
     src/uniform_tree.cpp

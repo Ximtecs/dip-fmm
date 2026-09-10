@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "cdfmm/tetrahedron.hpp"
+#include "cdfmm/geometry/primitives/tetrahedron.hpp"
 
 #include "tetrahedron_detail.hpp"
 

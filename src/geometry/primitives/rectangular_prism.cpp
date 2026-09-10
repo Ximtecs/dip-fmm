@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "cdfmm/rectangular_prism.hpp"
+#include "cdfmm/geometry/primitives/rectangular_prism.hpp"
 
 #include <algorithm>
 #include <array>

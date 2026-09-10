@@ -3,7 +3,7 @@
 
 #include <array>
 
-#include "cdfmm/vec3.hpp"
+#include "cdfmm/math/vec3.hpp"
 
 namespace cdfmm::detail {
 
