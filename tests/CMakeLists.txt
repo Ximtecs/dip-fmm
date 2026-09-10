@@ -1,4 +1,5 @@
 add_executable(cdfmm_tests
+  test_foundational_headers.cpp
   test_multi_index.cpp
   test_p2p.cpp
   test_taylor_jet.cpp
