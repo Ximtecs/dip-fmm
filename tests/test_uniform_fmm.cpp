@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "cdfmm/operators.hpp"
+#include "cdfmm/operators/p2p.hpp"
 #include "cdfmm/adaptive_tree.hpp"
 #include "cdfmm/rectangular_prism.hpp"
 #include "cdfmm/tetrahedron.hpp"

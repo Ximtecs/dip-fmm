@@ -4,6 +4,25 @@ Status recorded 2026-09-10 after closing the accepted dynamic-operator
 ownership refactor from the nested checkout, current worktree, and available
 validation artifacts.
 
+## Topology to P2P leaf-packing closure
+
+The accepted topology/P2P refactor is present in the current worktree. The
+`StaticFmmTopology` boundary now owns topology-native P2P leaf interaction
+records (occupied source/target ranges, leaf IDs, source shifts, periodic
+image identities, and self-identity flags); it no longer depends on or embeds
+`StaticP2PLeafPair`. The FMM plan-building boundary converts those records to
+the derived P2P leaf-packing representation. Interaction ordering, range
+boundaries, periodic image ordering, and identity semantics are preserved.
+
+Accepted verification: clean development configure/build; focused topology,
+P2P, periodic, and self-identity checks (63/63); full CTest 178/178 with
+expected skips #16, #51, #59, and #63; Python 137 passed and 7 skipped using
+`PYTHONPATH=build`; and a dependency/include trace confirming no
+`plan/p2p/leaf.hpp` or `StaticP2PLeafPair` use in topology files. CUDA runtime
+validation was not required for this task. The current nested worktree is
+intentionally uncommitted and unstaged; preserve the modified comparison
+notebook and untracked `Article1/` checkout/artifacts.
+
 ## Repository and refactor state
 
 - Branch: `refactor/architecture-v0.2`.

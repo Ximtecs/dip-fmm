@@ -255,8 +255,8 @@ void StaticFmmTopology::validate() const {
       const StaticP2PLeafRecord& pair =
           p2p_leaf_records[static_cast<std::size_t>(record)];
       if (pair.target_leaf != target_leaf ||
-          pair.pair.target_begin != static_cast<int>(target_range->begin) ||
-          pair.pair.target_count != static_cast<int>(target_range->count)) {
+          pair.target_begin != target_range->begin ||
+          pair.target_count != target_range->count) {
         throw std::invalid_argument("static topology P2P target row is invalid");
       }
     }
@@ -288,25 +288,25 @@ void StaticFmmTopology::validate() const {
     }
   }
   for (const StaticP2PLeafRecord& record : p2p_leaf_records) {
-    if (record.target_leaf < 0 || record.source_leaf < 0 ||
-        record.pair.target_begin < 0 || record.pair.target_count < 0 ||
-        record.pair.source_begin < 0 || record.pair.source_count < 0) {
+    if (record.target_leaf < 0 || record.source_leaf < 0) {
       throw std::invalid_argument("static topology P2P leaf record is invalid");
     }
     if (record.target_leaf >= static_cast<int>(nodes.size()) ||
         record.source_leaf >= static_cast<int>(nodes.size()) ||
-        static_cast<std::size_t>(record.pair.target_begin +
-                                 record.pair.target_count) >
-            sorted_target_positions.size() ||
-        static_cast<std::size_t>(record.pair.source_begin +
-                                 record.pair.source_count) >
-            sorted_source_positions.size()) {
+        record.target_begin > sorted_target_positions.size() ||
+        record.source_begin > sorted_source_positions.size() ||
+        (record.target_begin <= sorted_target_positions.size() &&
+         record.target_count >
+             sorted_target_positions.size() - record.target_begin) ||
+        (record.source_begin <= sorted_source_positions.size() &&
+         record.source_count >
+             sorted_source_positions.size() - record.source_begin)) {
       throw std::invalid_argument("static topology P2P leaf range is invalid");
     }
     const auto source_range = find_source_leaf(record.source_leaf);
     if (source_range == source_leaves.end() ||
-        record.pair.source_begin != static_cast<int>(source_range->begin) ||
-        record.pair.source_count != static_cast<int>(source_range->count)) {
+        record.source_begin != source_range->begin ||
+        record.source_count != source_range->count) {
       throw std::invalid_argument("static topology P2P source row is invalid");
     }
   }
@@ -468,11 +468,8 @@ StaticFmmTopology build_uniform_fmm_topology(
         const TreeNode& source = nodes[static_cast<std::size_t>(identity.node)];
         if (source.source_count() == 0) continue;
         result.p2p_leaf_records.push_back({
-            {static_cast<int>(target_leaf.begin),
-             static_cast<int>(target_leaf.count),
-             static_cast<int>(source.source_begin),
-             static_cast<int>(source.source_count())},
-            target.index, source.index,
+            target.index, source.index, target_leaf.begin, target_leaf.count,
+            source.source_begin, source.source_count(),
             {periodic.lengths.x * identity.image_shift[0],
              periodic.lengths.y * identity.image_shift[1],
              periodic.lengths.z * identity.image_shift[2]},
@@ -484,11 +481,8 @@ StaticFmmTopology build_uniform_fmm_topology(
         const TreeNode& source = nodes[static_cast<std::size_t>(source_index)];
         if (source.source_count() == 0) continue;
         result.p2p_leaf_records.push_back({
-            {static_cast<int>(target_leaf.begin),
-             static_cast<int>(target_leaf.count),
-             static_cast<int>(source.source_begin),
-             static_cast<int>(source.source_count())},
-            target.index, source.index, {}, {}, true});
+            target.index, source.index, target_leaf.begin, target_leaf.count,
+            source.source_begin, source.source_count(), {}, {}, true});
       }
     }
     result.p2p_target_leaf_offsets.push_back(

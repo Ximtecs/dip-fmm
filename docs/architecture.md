@@ -308,9 +308,9 @@ src/
 The compatibility headers `cdfmm/operators.hpp` and
 `cdfmm/static_operators.hpp` remain supported forwarding umbrellas; they do
 not define a second operator or plan representation. `StaticFmmTopology`
-still carries transitional topology-to-plan adaptation, including the current
-leaf interaction metadata, and is the principal seam remaining for a later
-FMM/topology integration step.
+stores topology-native occupied leaf interaction metadata; conversion to
+derived leaf-packing records occurs at the P2P plan boundary. It remains the
+principal seam for a later FMM/topology integration step.
 
 The responsibility-specific files under `src/operators/` are the authoritative
 homes for both mathematical operator construction and dynamic application.
@@ -333,9 +333,8 @@ future repair by itself.
 The initial audit found these concrete boundary violations in the remaining
 transitional layout:
 
-- `static_topology.hpp` includes both `static_operators.hpp` and
-  `uniform_tree.hpp`, and the topology stores P2P leaf-plan records. Tree data
-  and execution-plan interaction data are therefore not physically separated.
+- `static_topology.hpp` still includes `uniform_tree.hpp`, and the topology
+  adapter remains a transitional seam between tree facts and static plans.
 - `adaptive_tree.hpp` returns `StaticFmmTopology` directly, coupling adaptive
   construction to the current static-plan representation.
 - `cuboid.hpp` combines finite geometry operations with `DenseDirectPlan` and
@@ -396,11 +395,11 @@ work; they do not require mechanical splitting.
   `backend/cpu/static_plan_apply.cpp`. It consumes canonical or derived plans;
   it does not redefine pair or translation mathematics.
 
-The remaining transitional seam is `StaticFmmTopology`: it still adapts tree
-interaction topology to the static-plan records consumed by FMM orchestration.
-Tree ownership remains spatial hierarchy/topology, while the eventual FMM
-step should move derived schedule assembly behind the plan boundary without
-making the tree depend on a particular P2P packing.
+The remaining transitional seam is `StaticFmmTopology`: it adapts tree
+interaction topology to topology-native records consumed by FMM orchestration
+and the P2P plan boundary. Tree ownership remains spatial
+hierarchy/topology, while derived schedule assembly stays behind the plan
+boundary without making the tree depend on a particular P2P packing.
 
 ### Later: backend and CUDA
 

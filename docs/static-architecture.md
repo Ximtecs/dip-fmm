@@ -46,8 +46,10 @@ far field + near field -> target unsorting -> target field
 `UniformTree` remains the uniform builder and inspection object. The immutable
 `StaticFmmTopology` adapter copies its normalized geometry and permutations,
 assigns compact node IDs, and records leaf ranges, translation edges, M2L rows,
-and P2P leaf pairs with periodic image identities. M2L interactions include
-canonical target-row offsets and endpoint levels. Executors consume those
+and topology-native P2P leaf interactions with periodic image identities. The
+P2P plan boundary converts those interactions into its derived leaf-pair
+packing representation. M2L interactions include canonical target-row offsets
+and endpoint levels. Executors consume those
 records; `list1`/`list2` and
 analytical level offsets stay inside uniform construction. `UniformFmm` owns
 the topology, static operators, and mutable per-evaluation arrays: sorted

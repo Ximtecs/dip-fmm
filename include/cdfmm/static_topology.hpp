@@ -7,8 +7,6 @@
 #include <vector>
 
 #include "cdfmm/periodic.hpp"
-#include "cdfmm/operators/p2p.hpp"
-#include "cdfmm/plan/p2p/leaf.hpp"
 #include "cdfmm/uniform_tree.hpp"
 
 namespace cdfmm {
@@ -51,15 +49,19 @@ struct StaticM2LInteraction {
 };
 
 /**
- * @brief One leaf pair and its optional periodic source image.
+ * @brief One topology-native occupied source/target leaf interaction.
  *
- * The dense rectangle is deliberately the existing StaticP2PLeafPair type;
- * image metadata is kept beside it so Tensor6 packings remain unchanged.
+ * This record describes the occupied ranges and periodic identity metadata
+ * owned by topology.  Derived P2P execution packings convert it to their own
+ * representation at the plan boundary.
  */
 struct StaticP2PLeafRecord {
-  StaticP2PLeafPair pair{};
   int target_leaf{-1};
   int source_leaf{-1};
+  std::size_t target_begin{0};
+  std::size_t target_count{0};
+  std::size_t source_begin{0};
+  std::size_t source_count{0};
   Vec3 source_shift{};
   /// Integer periodic image identity; zero denotes the central image.
   std::array<int, 3> image_shift{{0, 0, 0}};

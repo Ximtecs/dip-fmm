@@ -89,8 +89,12 @@ src/backend/cpu/                portable application implementation
 
 Canonical P2P target rows remain authoritative. Compact/SoA, leaf, tensor
 dictionary, signed/reduced dictionary, and BSR data are deterministic derived
-packings. `StaticFmmTopology` remains a transitional adapter rather than a new
-packing owner.
+packings. `StaticFmmTopology` owns topology-native P2P leaf interaction
+records: occupied source/target ranges, leaf IDs, source shifts, periodic
+image identities, and self-identity flags. It no longer includes or embeds
+`StaticP2PLeafPair`. The FMM plan-building boundary converts these records
+into the derived P2P leaf-packing representation; topology remains a
+transitional adapter rather than a packing owner.
 
 ## Validation and documentation areas
 

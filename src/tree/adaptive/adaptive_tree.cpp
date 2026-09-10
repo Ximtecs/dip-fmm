@@ -182,9 +182,8 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
         const bool sl = is_leaf(source), tl = is_leaf(target);
         if (sl && tl) {
             t.p2p_leaf_records.push_back({
-                {static_cast<int>(target.target_begin), static_cast<int>(target.target_count()),
-                 static_cast<int>(source.source_begin), static_cast<int>(source.source_count())},
-                target_id, source_id, {}, {}, true});
+                target_id, source_id, target.target_begin, target.target_count(),
+                source.source_begin, source.source_count(), {}, {}, true});
         } else if (!sl && !tl && source.level == target.level) {
             for (int target_child : target.children) {
                 if (target_child < 0) continue;

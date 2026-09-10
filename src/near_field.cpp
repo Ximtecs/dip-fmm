@@ -60,25 +60,24 @@ void evaluate_reference_near_field(
       for (int row = row_begin; row < row_end; ++row) {
         const StaticP2PLeafRecord &record = topology.p2p_leaf_records[
             static_cast<std::size_t>(row)];
-        if (record.pair.source_count == 0) {
+        if (record.source_count == 0) {
           continue;
         }
 
         int local_self_index = -1;
         if (record.skip_for_identity &&
-            self_sorted_index >= record.pair.source_begin &&
-            self_sorted_index < record.pair.source_begin + record.pair.source_count) {
+            self_sorted_index >= static_cast<int>(record.source_begin) &&
+            self_sorted_index <
+                static_cast<int>(record.source_begin + record.source_count)) {
           local_self_index =
-              self_sorted_index - record.pair.source_begin;
+              self_sorted_index - static_cast<int>(record.source_begin);
         }
 
         const PotentialField near = p2p_dipole_sum(
             targets[target_index],
-            sources.subspan(static_cast<std::size_t>(record.pair.source_begin),
-                            static_cast<std::size_t>(record.pair.source_count)),
+            sources.subspan(record.source_begin, record.source_count),
             sorted_dipole_moments.subspan(
-                static_cast<std::size_t>(record.pair.source_begin),
-                static_cast<std::size_t>(record.pair.source_count)),
+                record.source_begin, record.source_count),
             output, local_self_index);
         result.phi += near.phi;
         result.H += near.H;

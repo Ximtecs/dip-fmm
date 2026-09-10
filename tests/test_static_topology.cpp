@@ -219,10 +219,18 @@ TEST_CASE("compact topology schedules leaf operators and unequal P2P rectangles"
   topology.p2p_target_leaves = {1, 2};
   topology.p2p_target_leaf_offsets = {0, 1, 2};
   topology.p2p_leaf_records = {
-      {{0, 1, 0, 2}, 1, 1, {}, {}, true},
-      {{1, 3, 2, 1}, 2, 2, {}, {}, true}};
+      {1, 1, 0, 1, 0, 2, {}, {}, true},
+      {2, 2, 1, 3, 2, 1, {}, {}, true}};
   topology.maximum_level = 1;
   REQUIRE_NOTHROW(topology.validate());
+  REQUIRE(topology.p2p_leaf_records[0].target_begin == 0);
+  REQUIRE(topology.p2p_leaf_records[0].target_count == 1);
+  REQUIRE(topology.p2p_leaf_records[0].source_begin == 0);
+  REQUIRE(topology.p2p_leaf_records[0].source_count == 2);
+  REQUIRE(topology.p2p_leaf_records[1].target_begin == 1);
+  REQUIRE(topology.p2p_leaf_records[1].target_count == 3);
+  REQUIRE(topology.p2p_leaf_records[1].source_begin == 2);
+  REQUIRE(topology.p2p_leaf_records[1].source_count == 1);
 
   const MultiIndexSet basis(1);
   const StaticCoefficientOperator p2m = build_static_p2m_operator(

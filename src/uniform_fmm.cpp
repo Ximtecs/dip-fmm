@@ -1196,7 +1196,10 @@ void UniformFmm::build_reduced_symmetry_p2p_packing() {
   std::vector<StaticP2PLeafPair> leaf_pairs;
   leaf_pairs.reserve(topology_->p2p_leaf_records.size());
   for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
-    leaf_pairs.push_back(record.pair);
+    leaf_pairs.push_back({static_cast<int>(record.target_begin),
+                          static_cast<int>(record.target_count),
+                          static_cast<int>(record.source_begin),
+                          static_cast<int>(record.source_count)});
   }
 
   if (geometry_cache_loaded_direct_float_) {
@@ -2182,10 +2185,12 @@ void UniformFmm::build_static_plan() {
   if (periodic_.enabled) {
     std::vector<StaticP2PInteraction> near_interactions;
     for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
-      for (int target = record.pair.target_begin;
-           target < record.pair.target_begin + record.pair.target_count; ++target) {
-        for (int source = record.pair.source_begin;
-             source < record.pair.source_begin + record.pair.source_count; ++source) {
+      for (int target = static_cast<int>(record.target_begin);
+           target < static_cast<int>(record.target_begin + record.target_count);
+           ++target) {
+        for (int source = static_cast<int>(record.source_begin);
+             source < static_cast<int>(record.source_begin + record.source_count);
+             ++source) {
           near_interactions.push_back({target, source, record.source_shift,
                                        record.skip_for_identity});
         }
@@ -2199,10 +2204,12 @@ void UniformFmm::build_static_plan() {
   } else {
     std::vector<std::array<int, 2>> near_interactions;
     for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
-      for (int target = record.pair.target_begin;
-           target < record.pair.target_begin + record.pair.target_count; ++target) {
-        for (int source = record.pair.source_begin;
-             source < record.pair.source_begin + record.pair.source_count; ++source) {
+      for (int target = static_cast<int>(record.target_begin);
+           target < static_cast<int>(record.target_begin + record.target_count);
+           ++target) {
+        for (int source = static_cast<int>(record.source_begin);
+             source < static_cast<int>(record.source_begin + record.source_count);
+             ++source) {
           near_interactions.push_back({target, source});
         }
       }
