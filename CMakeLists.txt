@@ -272,8 +272,12 @@ install(TARGETS cdfmm_c
 if(CDFMM_BUILD_TOOLS)
   install(TARGETS cdfmm-precompute RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
-install(FILES include/cdfmm/c_api.h
-  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cdfmm)
+install(DIRECTORY include/cdfmm/
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/cdfmm
+  FILES_MATCHING
+  PATTERN "*.h"
+  PATTERN "*.hpp"
+  PATTERN "AGENTS.md" EXCLUDE)
 install(FILES fortran/cdfmm_fortran.f90 DESTINATION ${CMAKE_INSTALL_DATADIR}/cdfmm/fortran)
 
 # A normal rebuild must not require users to remove a previous installation by

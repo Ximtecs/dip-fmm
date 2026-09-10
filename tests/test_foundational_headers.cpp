@@ -36,6 +36,7 @@
 #include "cdfmm/spherical_harmonics.hpp"
 #include "cdfmm/taylor_jet.hpp"
 #include "cdfmm/tetrahedron.hpp"
+#include "cdfmm/timings.hpp"
 #include "cdfmm/tree_node.hpp"
 #include "cdfmm/uniform_tree.hpp"
 #include "cdfmm/vec3.hpp"

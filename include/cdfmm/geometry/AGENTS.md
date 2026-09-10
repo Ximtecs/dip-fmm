@@ -1,6 +1,6 @@
 # Geometry public interfaces
 
-Inherit `../../../../AGENTS.md` and `../AGENTS.md`. `models.hpp` owns source and
+Inherit `../../../AGENTS.md` and `../AGENTS.md`. `models.hpp` owns source and
 target evaluation choices; `primitives/` owns physical point, rectangular-prism,
 and tetrahedron integration geometry. Geometry may depend on `math` and `core`,
 never plans, FMM orchestration, CUDA, or vendor execution libraries.
