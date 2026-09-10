@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "cdfmm/output_flags.hpp"
-#include "cdfmm/static_operators.hpp"
+#include "cdfmm/plan/static_plan.hpp"
 #include "cdfmm/timings.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 

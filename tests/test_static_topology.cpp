@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include "cdfmm/static_topology.hpp"
+#include "cdfmm/static_operators.hpp"
 
 using namespace cdfmm;
 

@@ -29,7 +29,7 @@ option(CDFMM_ENABLE_CUDA "Enable optional NVIDIA CUDA execution backends" OFF)
 option(CDFMM_ENABLE_PROFILING
        "Enable NVTX ranges for perf and NVIDIA Nsight captures" OFF)
 option(CDFMM_ENABLE_VECTORIZATION_REPORTS
-       "Emit compiler vectorization diagnostics for static_operators.cpp" OFF)
+       "Emit compiler vectorization diagnostics for CPU static-plan apply" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,10 +41,23 @@ add_library(cdfmm_core
     src/math/taylor_jet.cpp
     src/math/laplace_derivatives.cpp
     src/operators.cpp
+    src/operators/p2m.cpp
+    src/operators/m2m.cpp
+    src/operators/m2l.cpp
+    src/operators/l2l.cpp
+    src/operators/l2p.cpp
+    src/operators/p2p.cpp
     src/cuboid.cpp
     src/geometry/primitives/rectangular_prism.cpp
     src/geometry/primitives/tetrahedron.cpp
-    src/static_operators.cpp
+    src/plan/precision.cpp
+    src/plan/p2p/packing_memory.cpp
+    src/plan/p2p/compact.cpp
+    src/plan/p2p/leaf.cpp
+    src/plan/p2p/dictionary.cpp
+    src/plan/p2p/signed_dictionary.cpp
+    src/plan/p2p/bsr.cpp
+    src/backend/cpu/static_plan_apply.cpp
     src/validation.cpp
     src/tree/common/node.cpp
     src/tree/common/morton.cpp
@@ -114,17 +127,17 @@ endif()
 
 if(CDFMM_ENABLE_VECTORIZATION_REPORTS)
   set(CDFMM_VECTORIZATION_REPORT
-      "${CMAKE_CURRENT_BINARY_DIR}/cdfmm-static-operators.vec")
+      "${CMAKE_CURRENT_BINARY_DIR}/cdfmm-static-plan-apply.vec")
   if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    set_property(SOURCE src/static_operators.cpp APPEND PROPERTY COMPILE_OPTIONS
+    set_property(SOURCE src/backend/cpu/static_plan_apply.cpp APPEND PROPERTY COMPILE_OPTIONS
       "-fopt-info-vec-optimized-missed=${CDFMM_VECTORIZATION_REPORT}")
   elseif(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
-    set_property(SOURCE src/static_operators.cpp APPEND PROPERTY COMPILE_OPTIONS
+    set_property(SOURCE src/backend/cpu/static_plan_apply.cpp APPEND PROPERTY COMPILE_OPTIONS
       "-qopt-report=3"
       "-qopt-report-phase=vec"
       "-qopt-report-file=${CDFMM_VECTORIZATION_REPORT}")
   elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    set_property(SOURCE src/static_operators.cpp APPEND PROPERTY COMPILE_OPTIONS
+    set_property(SOURCE src/backend/cpu/static_plan_apply.cpp APPEND PROPERTY COMPILE_OPTIONS
       "-Rpass=loop-vectorize"
       "-Rpass-missed=loop-vectorize"
       "-Rpass-analysis=loop-vectorize")

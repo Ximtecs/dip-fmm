@@ -15,7 +15,7 @@
 #include "cdfmm/output_flags.hpp"
 #include "cdfmm/periodic.hpp"
 #include "cdfmm/precision.hpp"
-#include "cdfmm/static_operators.hpp"
+#include "cdfmm/plan/static_plan.hpp"
 #include "cdfmm/spherical_harmonics.hpp"
 #include "cdfmm/tetrahedron.hpp"
 #include "cdfmm/timings.hpp"

@@ -4,8 +4,8 @@
 #include <span>
 #include <vector>
 
+#include "cdfmm/backend/cpu/static_plan_apply.hpp"
 #include "cdfmm/operators.hpp"
-#include "cdfmm/static_operators.hpp"
 #include "cdfmm/static_topology.hpp"
 
 namespace cdfmm::detail {

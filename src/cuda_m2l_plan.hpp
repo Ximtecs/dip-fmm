@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "cdfmm/timings.hpp"
-#include "cdfmm/static_operators.hpp"
+#include "cdfmm/plan/m2l.hpp"
 
 namespace cdfmm {
 

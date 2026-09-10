@@ -3,7 +3,7 @@
 
 #include <span>
 
-#include "cdfmm/static_operators.hpp"
+#include "cdfmm/plan/static_plan.hpp"
 #include "cdfmm/timings.hpp"
 
 namespace cdfmm {

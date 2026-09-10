@@ -26,7 +26,9 @@
 #endif
 
 #include "cdfmm/operators.hpp"
-#include "cdfmm/static_operators.hpp"
+#include "cdfmm/backend/cpu/static_plan_apply.hpp"
+#include "cdfmm/operators/operators.hpp"
+#include "cdfmm/plan/static_plan.hpp"
 #include "cuda_fmm_plan.hpp"
 #include "cuda_m2l_plan.hpp"
 #include "cuda_p2p_plan.hpp"

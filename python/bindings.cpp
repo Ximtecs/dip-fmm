@@ -16,6 +16,7 @@
 #include "cdfmm/cuboid.hpp"
 #include "cdfmm/geometry.hpp"
 #include "cdfmm/operators.hpp"
+#include "cdfmm/operators/m2l.hpp"
 #include "cdfmm/parameter_selection.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/uniform_tree.hpp"

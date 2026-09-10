@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "cdfmm/periodic.hpp"
+#include "cdfmm/static_operators.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 
 using namespace cdfmm;

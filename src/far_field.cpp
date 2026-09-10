@@ -15,6 +15,7 @@
 #endif
 
 #include "cdfmm/operators.hpp"
+#include "cdfmm/backend/cpu/static_plan_apply.hpp"
 #include "cuda_m2l_plan.hpp"
 #include "profile.hpp"
 #include "uniform_fmm_internal.hpp"

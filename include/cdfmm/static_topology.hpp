@@ -7,7 +7,8 @@
 #include <vector>
 
 #include "cdfmm/periodic.hpp"
-#include "cdfmm/static_operators.hpp"
+#include "cdfmm/operators/p2p.hpp"
+#include "cdfmm/plan/p2p/leaf.hpp"
 #include "cdfmm/uniform_tree.hpp"
 
 namespace cdfmm {

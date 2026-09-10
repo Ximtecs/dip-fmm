@@ -11,6 +11,7 @@
 #include "cdfmm/cuda_direct.hpp"
 #include "cdfmm/cuda_cuboid.hpp"
 #include "cdfmm/cuda_p2p.hpp"
+#include "cdfmm/static_operators.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
 
