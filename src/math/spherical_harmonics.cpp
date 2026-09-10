@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "cdfmm/spherical_harmonics.hpp"
+#include "cdfmm/math/spherical_harmonics.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -10,7 +10,7 @@
 #include <stdexcept>
 #include <tuple>
 
-#include "cdfmm/laplace_derivatives.hpp"
+#include "cdfmm/math/laplace_derivatives.hpp"
 
 namespace cdfmm {
 

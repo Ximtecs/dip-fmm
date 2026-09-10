@@ -37,9 +37,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(cdfmm_core
     src/periodic.cpp
-    src/spherical_harmonics.cpp
-    src/taylor_jet.cpp
-    src/laplace_derivatives.cpp
+    src/math/spherical_harmonics.cpp
+    src/math/taylor_jet.cpp
+    src/math/laplace_derivatives.cpp
     src/operators.cpp
     src/cuboid.cpp
     src/rectangular_prism.cpp

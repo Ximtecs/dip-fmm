@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "cdfmm/laplace_derivatives.hpp"
+#include "cdfmm/math/laplace_derivatives.hpp"
 
 #include <numbers>
 
-#include "cdfmm/taylor_jet.hpp"
+#include "cdfmm/math/taylor_jet.hpp"
 
 namespace cdfmm {
 
