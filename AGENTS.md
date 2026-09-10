@@ -44,6 +44,16 @@ is explicitly authorised; do not pre-emptively split backends, orchestration,
 cache, or bindings. Geometry packing, grain generation/discretisation, and
 prism/tetrahedron refinement remain future work.
 
+## Repository memory
+
+The project-specific memory in `agent_docs/` supplements this architectural
+constitution. Read the relevant `agent_docs/` files before work, and maintain
+the current-state, diary, and latest-session entries when a change materially
+alters architecture, validation evidence, or repository status. Keep global
+orchestration instructions inherited rather than copying them into these
+project files. Preserve the nested repository boundary: this checkout is a
+separate Git repository from its MagTense parent.
+
 ## Navigation
 
 Current structure:
