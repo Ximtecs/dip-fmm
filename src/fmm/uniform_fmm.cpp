@@ -33,7 +33,7 @@
 #include "cuda_fmm_plan.hpp"
 #include "cuda_m2l_plan.hpp"
 #include "cuda_p2p_plan.hpp"
-#include "near_field.hpp"
+#include "backend/cpu/near_field.hpp"
 #include "profile.hpp"
 #include "uniform_fmm_internal.hpp"
 

@@ -71,10 +71,10 @@ add_library(cdfmm_core
     src/tree/common/static_topology.cpp
     src/tree/uniform/static_topology_adapter.cpp
     src/tree/adaptive/adaptive_tree.cpp
-    src/uniform_fmm.cpp
+    src/fmm/uniform_fmm.cpp
     src/cache.cpp
-    src/far_field.cpp
-    src/near_field.cpp
+    src/fmm/far_field.cpp
+    src/backend/cpu/near_field.cpp
     src/parameter_selection.cpp
 )
 if(CDFMM_ENABLE_CUDA)
