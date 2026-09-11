@@ -1,15 +1,32 @@
 # Project progress
 
-## Dense-direct plan ownership
+## Dense-direct plan/backend separation
 
-The dense direct plan now has an explicit plan-layer home:
+The dense direct plan has an explicit plan-layer home:
 `include/cdfmm/plan/direct/dense.hpp` is the canonical public declaration and
-`src/plan/direct/dense.cpp` owns construction, evaluation, backend selection,
-and tensor-memory accounting. `include/cdfmm/cuboid.hpp` remains a
-compatibility umbrella and `src/cuboid.cpp` retains cuboid monomial and pair
-tensor mathematics. Portable and oneMKL GEMV mechanics intentionally remain
-co-located with the plan; extraction to dedicated direct backends is the next
-focused dense-direct step.
+`src/plan/direct/dense.cpp` owns geometry validation, pair dispatch, tensor
+construction, precision storage, backend selection, and tensor-memory
+accounting. `include/cdfmm/cuboid.hpp` remains a compatibility umbrella and
+`src/cuboid.cpp` retains cuboid monomial and pair tensor mathematics.
+
+Portable execution and oneMKL execution now have dedicated internal homes at
+`src/backend/cpu/direct/dense.cpp` and `src/backend/mkl/direct/dense.cpp`.
+Reusable staging arrays live in a private shared dense-direct workspace owned
+by the façade's pimpl. The public plan retains its constructor, evaluate API,
+matrix accessors, backend enum, and deep-copy/value move semantics.
+
+Validation evidence for this step:
+
+- fresh portable `dev` configure/build passed 66/66;
+- focused dense/direct/geometry/precision CTest passed 28/28;
+- full portable CTest passed 183/183 with expected CUDA/optional skips #16,
+  #51, #59, and #63;
+- existing oneMKL configuration reconfigured and rebuilt successfully,
+  focused direct/cuboid/oneMKL/precision tests passed 31/31, and full oneMKL
+  CTest passed 183/183 with
+  expected skips #16, #59, and #63; and
+- `git diff --check` and ownership searches found no plan-side vendor or
+  portable GEMV mechanics. CUDA runtime paths remain deferred by scope.
 
 Validation for this source/include ownership move:
 

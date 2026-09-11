@@ -302,9 +302,11 @@ include/cdfmm/
 src/
 |-- operators/{p2m,m2m,m2l,l2l,l2p,m2p,p2p}.cpp  authoritative construction
 |                                                  and dynamic application
-|-- plan/{precision,direct,p2p}               plan preparation and application
+|-- plan/{precision,direct,p2p}               plan preparation and representations
 |-- cuboid.cpp                                compatibility geometry/pair math
-`-- backend/cpu/static_plan_apply.cpp         CPU static-plan application
+|-- backend/cpu/{static_plan_apply,direct/dense}.cpp
+|                                               portable static and dense-direct execution
+`-- backend/mkl/direct/dense.cpp               oneMKL dense-direct execution
 ```
 
 The compatibility headers `cdfmm/operators.hpp` and
@@ -319,6 +321,14 @@ homes for both mathematical operator construction and dynamic application.
 The flat `src/operators.cpp` translation unit is retained only for thin
 compatibility wrappers around those implementations; it does not own a second
 set of operator formulas.
+
+Dense direct follows the same plan/backend boundary. `plan/direct/dense.cpp`
+validates geometry and prepares the six immutable target-major matrices;
+`backend/cpu/direct/dense.cpp` owns the portable row-major nine-GEMV path;
+and `backend/mkl/direct/dense.cpp` owns the guarded SGEMV/DGEMV calls and
+availability query. The private dense-direct workspace keeps reusable staging
+arrays beside execution while the public `DenseDirectPlan` remains a
+source-compatible façade with value semantics.
 
 `generation/` will eventually own physical grain generation. `refinement/`
 will eventually own prism and tetrahedron refinement. Geometry packing belongs
@@ -343,9 +353,10 @@ transitional layout:
   construction to the current static-plan representation.
 - `cuboid.hpp` remains a compatibility umbrella for finite geometry/pair math
   and the dense-direct public API. `DenseDirectPlan` is now declared by
-  `plan/direct/dense.hpp` and implemented by `src/plan/direct/dense.cpp`;
-  portable and oneMKL execution mechanics remain co-located temporarily, with
-  backend extraction deferred to a later step.
+  `plan/direct/dense.hpp` and implemented by `src/plan/direct/dense.cpp`.
+  Portable and oneMKL execution now have dedicated internal direct-backend
+  homes under `src/backend`; the façade retains only validation, dispatch, and
+  immutable matrix ownership.
 - compatibility `static_operators.hpp/.cpp` remain as forwarding umbrellas;
   their former mixed implementation has been separated into operators, plans,
   and the portable CPU apply boundary described below.
@@ -385,8 +396,7 @@ work; they do not require mechanical splitting.
   retains zero for coincident roots; AdaptiveTree applies its existing fallback
   half-width `1` at its call site. The helper is not part of the public API.
 - `StaticFmmTopology`, dense-direct pair dispatch, and adaptive plan adaptation
-  remain transitional seams for the operator/plan/backend phases. Dense-direct
-  backend extraction remains a subsequent focused step.
+  remain transitional seams for the operator/plan/backend phases.
 
 ### Implemented: operators and static plans
 
@@ -406,6 +416,10 @@ work; they do not require mechanical splitting.
 - Portable CPU application is isolated at
   `backend/cpu/static_plan_apply.cpp`. It consumes canonical or derived plans;
   it does not redefine pair or translation mathematics.
+- Dense-direct plan preparation remains under `plan/direct`; portable execution
+  is in `backend/cpu/direct`, oneMKL execution is in `backend/mkl/direct`, and
+  reusable staging is private backend execution state. CUDA and FMM backend
+  decomposition remain separate follow-on work.
 
 The remaining transitional seam is `StaticFmmTopology`: it adapts tree
 interaction topology to topology-native records consumed by FMM orchestration
@@ -420,8 +434,8 @@ boundary without making the tree depend on a particular P2P packing.
   work merely along source-file boundaries.
 - Isolate persistent CUDA plans, buffers, streams/events, and cuBLAS/cuSPARSE
   resources from public mathematical interfaces.
-- Move oneMKL execution mechanics out of `uniform_fmm.cpp`, `far_field.cpp`,
-  and geometry-related implementation files into the oneMKL backend.
+- Move remaining oneMKL execution mechanics out of `uniform_fmm.cpp` and
+  `far_field.cpp` into the oneMKL backend.
 - Preserve and benchmark all transfer, launch, overlap, and reuse semantics.
 
 ### Later: FMM, cache, bindings, and build

@@ -50,6 +50,8 @@ add_library(cdfmm_core
     src/operators/p2p.cpp
     src/cuboid.cpp
     src/plan/direct/dense.cpp
+    src/backend/cpu/direct/dense.cpp
+    src/backend/mkl/direct/dense.cpp
     src/geometry/primitives/rectangular_prism.cpp
     src/geometry/primitives/tetrahedron.cpp
     src/plan/precision.cpp
@@ -99,6 +101,7 @@ else()
   target_sources(cdfmm_core PRIVATE src/cuda_fmm_stub.cpp)
 endif()
 target_include_directories(cdfmm_core PUBLIC include)
+target_include_directories(cdfmm_core PRIVATE src)
 target_compile_definitions(cdfmm_core PRIVATE
   CDFMM_DEFAULT_CACHE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/caches")
 set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)

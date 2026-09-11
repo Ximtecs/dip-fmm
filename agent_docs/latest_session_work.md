@@ -1,28 +1,32 @@
 # Latest session work
 
-## 2026-09-11 — dense-direct plan ownership
+## 2026-09-11 — dense-direct plan/backend separation
 
-The dense-direct plan ownership move is complete: the canonical declaration is
-`include/cdfmm/plan/direct/dense.hpp`, the implementation is
-`src/plan/direct/dense.cpp`, and CMake builds the new source. The legacy
+The dense-direct plan/backend separation is complete: the canonical declaration
+is `include/cdfmm/plan/direct/dense.hpp`, preparation is in
+`src/plan/direct/dense.cpp`, portable execution is in
+`src/backend/cpu/direct/dense.cpp`, and oneMKL execution plus availability is
+in `src/backend/mkl/direct/dense.cpp`. A private shared workspace keeps FP32
+and FP64 staging arrays reusable without exposing backend state in the public
+header. Explicit deep-copy and move members preserve prior value semantics and
+ensure copies do not share mutable workspace. The legacy
 `include/cdfmm/cuboid.hpp` path remains a compatibility umbrella; cuboid math
-and pair tensors remain in `src/cuboid.cpp`. Portable and oneMKL GEMV mechanics
-remain intentionally co-located with the plan pending the next focused backend
-extraction step.
+and pair tensors remain in `src/cuboid.cpp`.
 
-Trusted validation:
+Trusted validation for this completed step:
 
-- fresh dev configure/build: 64/64;
-- focused geometry/direct/precision CTest: 41/41 passed;
-- full portable CTest: 182/182 passed with expected skips #16/#51/#59/#63;
-- CPU+oneMKL build and dense/cuboid focused CTest: 25/25 passed;
-- canonical-only and legacy-header compile probes passed; and
-- installed canonical header presence, `git diff --check`, and ownership
-  searches passed.
+- fresh dev configure/build: 66/66;
+- focused geometry/direct/precision CTest: 28/28 passed;
+- full portable CTest: 183/183 passed with expected skips #16/#51/#59/#63;
+- CPU+oneMKL reconfigure/build and focused direct/cuboid/oneMKL/precision
+  CTest: 31/31 passed;
+- full oneMKL CTest: 183/183 passed with expected skips #16/#59/#63;
+- canonical-only and legacy-header compile probes remain covered by the public
+  header suite; and
+- `git diff --check` and backend ownership searches passed.
 
-CUDA runtime validation was not available. oneMKL was already present and was
-exercised without installing anything. `Article1/` and unrelated parent-worktree
-changes remain untouched.
+CUDA runtime validation was not part of this CPU/oneMKL subphase. `Article1/`
+and unrelated parent-worktree changes remain untouched.
 
 ## 2026-09-10 — shared tree root-box resolution
 

@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <span>
 #include <variant>
 #include <vector>
@@ -32,7 +33,7 @@ enum class DenseDirectBackend {
  * @brief Six-matrix dense direct plan for fixed, independently selected geometry.
  *
  * Matrices are target-major with shape Nt x Ns. Construction performs all
- * geometry work; repeated evaluations contain only packing and nine GEMVs.
+ * geometry work; repeated evaluations reuse private execution staging.
  */
 class DenseDirectPlan {
 public:
@@ -50,6 +51,12 @@ public:
         SourceModel source_model = SourceModel::ExactGeometry,
         TargetModel target_model = TargetModel::ExactGeometry
     );
+
+    DenseDirectPlan(const DenseDirectPlan& other);
+    DenseDirectPlan& operator=(const DenseDirectPlan& other);
+    DenseDirectPlan(DenseDirectPlan&& other) noexcept;
+    DenseDirectPlan& operator=(DenseDirectPlan&& other) noexcept;
+    ~DenseDirectPlan();
 
     /**
      * @brief Applies the cached tensors to one total-moment state.
@@ -88,17 +95,17 @@ public:
     }
 
 private:
+    struct Impl;
+
     std::size_t ns_{0};
     std::size_t nt_{0};
     using FloatMatrices = std::array<std::vector<float>, 6>;
     using DoubleMatrices = std::array<std::vector<double>, 6>;
     StaticPrecision static_precision_{StaticPrecision::Float32};
     std::variant<FloatMatrices, DoubleMatrices> matrices_{FloatMatrices{}};
-    // Component staging is retained and reused across repeated evaluations.
-    mutable std::array<std::vector<float>, 3> float_moments_{};
-    mutable std::array<std::vector<float>, 3> float_fields_{};
-    mutable std::array<std::vector<double>, 3> double_moments_{};
-    mutable std::array<std::vector<double>, 3> double_fields_{};
+    // Mutable staging belongs to the private execution state and is reused
+    // across evaluations without changing the immutable matrices above.
+    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace cdfmm

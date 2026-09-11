@@ -1,5 +1,21 @@
 # Project diary
 
+## 2026-09-11 — dense-direct plan/backend separation
+
+Completed dense-direct execution ownership separation. The plan layer retains
+geometry validation, deterministic pair-tensor construction, six target-major
+matrices, precision storage, dispatch, and memory accounting. Portable row-major
+nine-GEMV execution now lives in `src/backend/cpu/direct/dense.cpp`; guarded
+oneMKL SGEMV/DGEMV execution and availability live in
+`src/backend/mkl/direct/dense.cpp`. A private pimpl workspace retains reusable
+FP32/FP64 staging arrays while explicit special members preserve deep-copy and
+move value semantics. CUDA/FMM backend decomposition remains deferred.
+
+Fresh portable and oneMKL builds passed after the move. Focused direct tests,
+full portable CTest, and full oneMKL CTest passed with only the expected
+CUDA/optional skips; repeated evaluation and copy/move regression coverage is
+included. `Article1/` and unrelated parent-worktree changes remain untouched.
+
 ## 2026-09-11 — dense-direct plan ownership
 
 Moved the authoritative `DenseDirectPlan` interface to

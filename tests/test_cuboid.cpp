@@ -5,6 +5,7 @@
 #include <cmath>
 #include <numbers>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 #include <catch2/catch_approx.hpp>
@@ -57,19 +58,81 @@ TEST_CASE("dense direct stores six rectangular matrices and reuses them")
     }
     const std::array<Vec3, 2> moments{{{1.0, 2.0, 3.0}, {-2.0, 1.0, 0.5}}};
     const auto first = plan.evaluate(moments);
-    const auto second = plan.evaluate(moments, DenseDirectBackend::Portable);
-    REQUIRE(first[2].x == second[2].x);
-    REQUIRE(first[2].y == second[2].y);
-    REQUIRE(first[2].z == second[2].z);
+    const auto portable_first =
+        plan.evaluate(moments, DenseDirectBackend::Portable);
+    const auto portable_second =
+        plan.evaluate(moments, DenseDirectBackend::Portable);
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+        REQUIRE(portable_second[target].x == portable_first[target].x);
+        REQUIRE(portable_second[target].y == portable_first[target].y);
+        REQUIRE(portable_second[target].z == portable_first[target].z);
+        REQUIRE(first[target].x == Catch::Approx(portable_first[target].x));
+        REQUIRE(first[target].y == Catch::Approx(portable_first[target].y));
+        REQUIRE(first[target].z == Catch::Approx(portable_first[target].z));
+    }
 
     if (dense_direct_mkl_available()) {
         const auto mkl = plan.evaluate(moments, DenseDirectBackend::OneMkl);
-        REQUIRE(mkl[2].x == Catch::Approx(first[2].x));
-        REQUIRE(mkl[2].y == Catch::Approx(first[2].y));
-        REQUIRE(mkl[2].z == Catch::Approx(first[2].z));
+        const auto portable_after_mkl =
+            plan.evaluate(moments, DenseDirectBackend::Portable);
+        for (std::size_t target = 0; target < targets.size(); ++target) {
+            REQUIRE(portable_after_mkl[target].x == portable_first[target].x);
+            REQUIRE(portable_after_mkl[target].y == portable_first[target].y);
+            REQUIRE(portable_after_mkl[target].z == portable_first[target].z);
+            REQUIRE(mkl[target].x == Catch::Approx(portable_first[target].x));
+            REQUIRE(mkl[target].y == Catch::Approx(portable_first[target].y));
+            REQUIRE(mkl[target].z == Catch::Approx(portable_first[target].z));
+        }
     } else {
-    REQUIRE_THROWS_AS(plan.evaluate(moments, DenseDirectBackend::OneMkl),
-            std::runtime_error);
+        REQUIRE_THROWS_AS(plan.evaluate(moments, DenseDirectBackend::OneMkl),
+                          std::runtime_error);
+    }
+}
+
+TEST_CASE("dense direct plan copies and moves preserve value semantics")
+{
+    const std::array<Vec3, 2> sources{{{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}}};
+    const std::array<Vec3, 2> targets{{{0.0, 0.0, 2.0}, {0.0, 1.0, 2.0}}};
+    const std::array<Vec3, 2> moments_a{{{1.0, 2.0, 3.0}, {-2.0, 1.0, 0.5}}};
+    const std::array<Vec3, 2> moments_b{{{-0.4, 0.3, 1.2}, {2.0, -1.0, 0.1}}};
+    const DenseDirectPlan original(
+        sources, targets, SourceGeometry::PointDipole, TargetGeometry::Point,
+        {}, {}, {}, StaticPrecision::Float64);
+
+    DenseDirectPlan copy = original;
+    const auto original_a = original.evaluate(moments_a,
+                                               DenseDirectBackend::Portable);
+    const auto copy_b = copy.evaluate(moments_b, DenseDirectBackend::Portable);
+    const auto original_a_again =
+        original.evaluate(moments_a, DenseDirectBackend::Portable);
+    const auto copy_a = copy.evaluate(moments_a, DenseDirectBackend::Portable);
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+        REQUIRE(original_a_again[target].x == original_a[target].x);
+        REQUIRE(original_a_again[target].y == original_a[target].y);
+        REQUIRE(original_a_again[target].z == original_a[target].z);
+        REQUIRE(copy_a[target].x == original_a[target].x);
+        REQUIRE(copy_a[target].y == original_a[target].y);
+        REQUIRE(copy_a[target].z == original_a[target].z);
+        REQUIRE(copy_b[target].x != original_a[target].x);
+    }
+
+    DenseDirectPlan moved = std::move(copy);
+    const auto moved_a = moved.evaluate(moments_a, DenseDirectBackend::Portable);
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+        REQUIRE(moved_a[target].x == original_a[target].x);
+        REQUIRE(moved_a[target].y == original_a[target].y);
+        REQUIRE(moved_a[target].z == original_a[target].z);
+    }
+
+    DenseDirectPlan assigned(
+        sources, targets, SourceGeometry::PointDipole, TargetGeometry::Point);
+    assigned = original;
+    const auto assigned_a =
+        assigned.evaluate(moments_a, DenseDirectBackend::Portable);
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+        REQUIRE(assigned_a[target].x == original_a[target].x);
+        REQUIRE(assigned_a[target].y == original_a[target].y);
+        REQUIRE(assigned_a[target].z == original_a[target].z);
     }
 }
 

@@ -54,8 +54,9 @@ Those mathematical conventions are defined in
 ## Direct plans and memory reporting
 
 `DenseDirectPlan` applies the same selected storage/execution scalar to its six
-immutable pair-tensor matrices and reusable component staging. Portable GEMV
-and oneMKL SGEMV/DGEMV are alternative executors over those same matrices.
+immutable pair-tensor matrices and private reusable component staging. The
+portable CPU GEMV and oneMKL SGEMV/DGEMV backends are alternative executors
+over those same matrices.
 Analytical cuboid construction remains FP64 because its logarithm, inverse
 hyperbolic sine, arctangent, square-root, and cancellation-sensitive formulas
 need that setup precision.

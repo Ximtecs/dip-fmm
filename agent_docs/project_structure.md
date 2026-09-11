@@ -1,11 +1,12 @@
 # Project structure and ownership
 
 The current checkout is the post-Step-2 foundational layout plus the
-operators/static-plans step. Operator construction, static plan data, P2P
-packings, and portable CPU application now have substantive subsystem homes.
-Higher FMM orchestration, CUDA/backend execution, cache, and binding layers
-remain partly flat; the target taxonomy in `docs/architecture.md` is not
-permission to create empty directories or perform an unauthorised refactor.
+operators/static-plans and dense-direct backend steps. Operator construction,
+static plan data, P2P packings, portable CPU application, and dense-direct CPU
+and oneMKL execution now have substantive subsystem homes. Higher FMM
+orchestration, CUDA/backend execution, cache, and binding layers remain partly
+flat; the target taxonomy in `docs/architecture.md` is not permission to
+create empty directories or perform an unauthorised refactor.
 
 ## Current map
 
@@ -23,7 +24,8 @@ include/cdfmm/
   operators/                                                   P2M/M2M/M2L/L2L/L2P/M2P/P2P interfaces
   plan/                                                        immutable static data, direct plans,
                                                                and P2P packings
-  backend/cpu/                                                 portable static-plan application interface
+  backend/cpu/                                                 portable static and dense-direct application
+  backend/mkl/                                                 oneMKL dense-direct application
 src/
   math/                                                        mathematical kernels
   geometry/primitives/                                         prism/tetrahedron
@@ -32,9 +34,11 @@ src/
   cuboid.cpp                                                    compatibility geometry/pair math
   operators/                                                    authoritative mathematical construction
                                                                and dynamic application
-  plan/                                                         precision conversion, direct-plan,
-                                                               and P2P packing builders
+  plan/direct/dense.cpp                                         dense-direct preparation/dispatch
+  plan/                                                         precision conversion and P2P packing builders
+  backend/cpu/direct/dense.cpp                                  portable dense-direct application
   backend/cpu/                                                  portable static-plan application
+  backend/mkl/direct/dense.cpp                                  oneMKL dense-direct application
   tree/common/static_topology.cpp                              canonical topology validation
   tree/uniform/static_topology_adapter.cpp                     UniformTree topology adapter
   uniform_fmm.cpp                                               FMM orchestration
@@ -88,9 +92,10 @@ The operator/plan step makes the following homes concrete:
 include/cdfmm/operators/       mathematical operator interfaces, including M2P
 src/operators/                  operator construction and dynamic application
 include/cdfmm/plan/             canonical static data and derived representations
-src/plan/                       FP32 conversion and deterministic P2P builders
+src/plan/                       FP32 conversion, direct preparation, and deterministic P2P builders
 include/cdfmm/backend/cpu/      portable application interface
-src/backend/cpu/                portable application implementation
+src/backend/cpu/                portable static and dense-direct application
+src/backend/mkl/                oneMKL dense-direct application
 ```
 
 Canonical P2P target rows remain authoritative. Compact/SoA, leaf, tensor

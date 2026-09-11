@@ -3,18 +3,18 @@
 #include "cdfmm/plan/direct/dense.hpp"
 
 #include "cdfmm/cuboid.hpp"
+#include "backend/cpu/direct/dense.hpp"
+#include "backend/direct/dense_workspace.hpp"
+#include "backend/mkl/direct/dense.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <exception>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
-
-#ifdef CDFMM_USE_MKL
-#include <mkl.h>
-#endif
+#include <utility>
 
 namespace cdfmm {
 namespace {
@@ -28,67 +28,48 @@ void validate_size(const CuboidSize& h, const char* name)
     }
 }
 
-template <typename Scalar>
-void portable_gemv(const std::vector<Scalar>& matrix, const std::size_t rows,
-                   const std::size_t columns,
-                   const std::vector<Scalar>& input,
-                   std::vector<Scalar>& output, const bool add)
-{
-    if (!add) {
-        std::fill(output.begin(), output.end(), 0.0);
-    }
-    for (std::size_t row = 0; row < rows; ++row) {
-        Scalar value = Scalar{0};
-        for (std::size_t column = 0; column < columns; ++column) {
-            value += matrix[row * columns + column] * input[column];
-        }
-        output[row] += value;
-    }
-}
-
-template <typename Scalar>
-void gemv(const std::vector<Scalar>& matrix, const std::size_t rows,
-          const std::size_t columns, const std::vector<Scalar>& input,
-          std::vector<Scalar>& output, const bool add,
-          const DenseDirectBackend backend)
-{
-    if (backend == DenseDirectBackend::Portable) {
-        portable_gemv(matrix, rows, columns, input, output, add);
-        return;
-    }
-
-#ifdef CDFMM_USE_MKL
-    if (backend == DenseDirectBackend::OneMkl) {
-        if constexpr (std::is_same_v<Scalar, float>) {
-            cblas_sgemv(CblasRowMajor, CblasNoTrans,
-                        static_cast<MKL_INT>(rows),
-                        static_cast<MKL_INT>(columns), 1.0F, matrix.data(),
-                        static_cast<MKL_INT>(columns), input.data(), 1,
-                        add ? 1.0F : 0.0F, output.data(), 1);
-        } else {
-            cblas_dgemv(CblasRowMajor, CblasNoTrans,
-                        static_cast<MKL_INT>(rows),
-                        static_cast<MKL_INT>(columns), 1.0, matrix.data(),
-                        static_cast<MKL_INT>(columns), input.data(), 1,
-                        add ? 1.0 : 0.0, output.data(), 1);
-        }
-        return;
-    }
-#endif
-
-    throw std::invalid_argument("unsupported dense direct backend");
-}
-
 } // namespace
 
-bool dense_direct_mkl_available() noexcept
+struct DenseDirectPlan::Impl {
+    detail::dense_direct::DenseDirectWorkspace workspace;
+};
+
+DenseDirectPlan::DenseDirectPlan(const DenseDirectPlan& other)
+    : ns_(other.ns_), nt_(other.nt_), static_precision_(other.static_precision_),
+      matrices_(other.matrices_),
+      impl_(other.impl_ ? std::make_unique<Impl>(*other.impl_) : nullptr)
 {
-#ifdef CDFMM_USE_MKL
-    return true;
-#else
-    return false;
-#endif
 }
+
+DenseDirectPlan& DenseDirectPlan::operator=(const DenseDirectPlan& other)
+{
+    if (this != &other) {
+        DenseDirectPlan copy(other);
+        *this = std::move(copy);
+    }
+    return *this;
+}
+
+DenseDirectPlan::DenseDirectPlan(DenseDirectPlan&& other) noexcept
+    : ns_(other.ns_), nt_(other.nt_),
+      static_precision_(other.static_precision_),
+      matrices_(std::move(other.matrices_)), impl_(std::move(other.impl_))
+{
+}
+
+DenseDirectPlan& DenseDirectPlan::operator=(DenseDirectPlan&& other) noexcept
+{
+    if (this != &other) {
+        ns_ = other.ns_;
+        nt_ = other.nt_;
+        static_precision_ = other.static_precision_;
+        matrices_ = std::move(other.matrices_);
+        impl_ = std::move(other.impl_);
+    }
+    return *this;
+}
+
+DenseDirectPlan::~DenseDirectPlan() = default;
 
 DenseDirectPlan::DenseDirectPlan(
     const std::span<const Vec3> source_positions,
@@ -104,7 +85,7 @@ DenseDirectPlan::DenseDirectPlan(
     const SourceModel source_model,
     const TargetModel target_model)
     : ns_(source_positions.size()), nt_(target_positions.size()),
-      static_precision_(static_precision)
+      static_precision_(static_precision), impl_(std::make_unique<Impl>())
 {
     const SourceGeometry effective_source_geometry =
         source_model == SourceModel::ExactGeometry
@@ -320,48 +301,19 @@ std::vector<Vec3> DenseDirectPlan::evaluate(
         throw std::runtime_error(
             "oneMKL dense direct backend is not enabled in this build");
     }
+    if (backend != DenseDirectBackend::Portable &&
+        backend != DenseDirectBackend::OneMkl) {
+        throw std::invalid_argument("unsupported dense direct backend");
+    }
 
-    std::vector<Vec3> result(nt_);
+    std::vector<Vec3> result;
     std::visit([&](const auto& matrices) {
-        using Scalar = typename std::decay_t<decltype(matrices)>::value_type::value_type;
-        auto& moments = [&]() -> auto& {
-            if constexpr (std::is_same_v<Scalar, float>) {
-                return float_moments_;
-            } else {
-                return double_moments_;
-            }
-        }();
-        auto& fields = [&]() -> auto& {
-            if constexpr (std::is_same_v<Scalar, float>) {
-                return float_fields_;
-            } else {
-                return double_fields_;
-            }
-        }();
-        for (auto& component : moments) {
-            component.resize(ns_);
-        }
-        for (auto& component : fields) {
-            component.resize(nt_);
-        }
-        for (std::size_t source = 0; source < ns_; ++source) {
-            moments[0][source] = static_cast<Scalar>(total_moments[source].x);
-            moments[1][source] = static_cast<Scalar>(total_moments[source].y);
-            moments[2][source] = static_cast<Scalar>(total_moments[source].z);
-        }
-        gemv(matrices[0], nt_, ns_, moments[0], fields[0], false, backend);
-        gemv(matrices[1], nt_, ns_, moments[1], fields[0], true, backend);
-        gemv(matrices[2], nt_, ns_, moments[2], fields[0], true, backend);
-        gemv(matrices[1], nt_, ns_, moments[0], fields[1], false, backend);
-        gemv(matrices[3], nt_, ns_, moments[1], fields[1], true, backend);
-        gemv(matrices[4], nt_, ns_, moments[2], fields[1], true, backend);
-        gemv(matrices[2], nt_, ns_, moments[0], fields[2], false, backend);
-        gemv(matrices[4], nt_, ns_, moments[1], fields[2], true, backend);
-        gemv(matrices[5], nt_, ns_, moments[2], fields[2], true, backend);
-        for (std::size_t target = 0; target < nt_; ++target) {
-            result[target] = {static_cast<double>(fields[0][target]),
-                              static_cast<double>(fields[1][target]),
-                              static_cast<double>(fields[2][target])};
+        if (backend == DenseDirectBackend::Portable) {
+            detail::dense_direct::cpu::apply(
+                matrices, nt_, ns_, total_moments, impl_->workspace, result);
+        } else {
+            detail::dense_direct::mkl::apply(
+                matrices, nt_, ns_, total_moments, impl_->workspace, result);
         }
     }, matrices_);
     return result;
