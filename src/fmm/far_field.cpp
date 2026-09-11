@@ -6,10 +6,6 @@
 #include <chrono>
 #include <cmath>
 
-#ifdef CDFMM_USE_MKL
-#include <mkl.h>
-#endif
-
 #ifdef CDFMM_USE_OPENMP
 #include <omp.h>
 #endif
@@ -65,105 +61,11 @@ void UniformFmm::static_m2l(const int level) {
     last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
     return;
   }
-  const int n = coefficient_count();
-  const std::ptrdiff_t group_count =
-      static_cast<std::ptrdiff_t>(m2l_groups_.size());
-  const double *local_scale =
-      m2l_plan_.local_scaling.data() + static_cast<std::size_t>(level) * n;
-
-  auto phase_start = Clock::now();
-  // oneMKL works most effectively on columns sharing one transfer matrix.
-  // Gather applies multipole scaling while preserving the canonical plan.
-#pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
-  for (std::ptrdiff_t group_index = 0; group_index < group_count;
-       ++group_index) {
-    M2LGroup &group = m2l_groups_[static_cast<std::size_t>(group_index)];
-    for (std::size_t column = 0; column < group.sources.size(); ++column) {
-      if (group.levels[column] != level) {
-        continue;
-      }
-      const auto M = multipole_for_node(group.sources[column]);
-      const double *source_scale = m2l_plan_.multipole_scaling.data() +
-          static_cast<std::size_t>(group.source_levels.empty()
-              ? level : group.source_levels[column]) * n;
-      for (int alpha = 0; alpha < n; ++alpha) {
-        group.gathered[static_cast<std::size_t>(alpha) + column * n] =
-            source_scale[alpha] * M[static_cast<std::size_t>(alpha)];
-      }
-    }
-  }
-  last_timings_.m2l_gather.add(elapsed_seconds(phase_start));
-
-  phase_start = Clock::now();
-#ifdef CDFMM_USE_MKL
-  if (static_matrix_backend_ == StaticMatrixBackend::OneMkl) {
-#pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
-    for (std::ptrdiff_t group_index = 0; group_index < group_count;
-         ++group_index) {
-      M2LGroup &group = m2l_groups_[static_cast<std::size_t>(group_index)];
-      const auto first =
-          std::lower_bound(group.levels.begin(), group.levels.end(), level);
-      const auto last = std::upper_bound(first, group.levels.end(), level);
-      const int columns = static_cast<int>(last - first);
-      if (columns == 0) {
-        continue;
-      }
-      const std::size_t column_offset =
-          static_cast<std::size_t>(first - group.levels.begin());
-      const double *matrix = m2l_plan_.matrices.data() +
-                             static_cast<std::size_t>(group.matrix_id) * n * n;
-      const int previous_mkl_threads = mkl_set_num_threads_local(1);
-      cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, columns, n, 1.0,
-                  matrix, n, group.gathered.data() + column_offset * n, n, 0.0,
-                  group.translated.data() + column_offset * n, n);
-      mkl_set_num_threads_local(previous_mkl_threads);
-    }
-  } else
-#endif
-  {
-#pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
-    for (std::ptrdiff_t group_index = 0; group_index < group_count;
-         ++group_index) {
-      M2LGroup &group = m2l_groups_[static_cast<std::size_t>(group_index)];
-      const double *matrix = m2l_plan_.matrices.data() +
-                             static_cast<std::size_t>(group.matrix_id) * n * n;
-      for (std::size_t column = 0; column < group.sources.size(); ++column) {
-        if (group.levels[column] != level) {
-          continue;
-        }
-        double *translated = group.translated.data() + column * n;
-        std::fill(translated, translated + n, 0.0);
-        for (int alpha = 0; alpha < n; ++alpha) {
-          const double value =
-              group.gathered[static_cast<std::size_t>(alpha) + column * n];
-          for (int beta = 0; beta < n; ++beta) {
-            translated[beta] +=
-                matrix[static_cast<std::size_t>(beta + alpha * n)] * value;
-          }
-        }
-      }
-    }
-  }
-  last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
-
-  phase_start = Clock::now();
-  for (M2LGroup &group : m2l_groups_) {
-    // Scatter is deliberately serial across groups: different transfer
-    // classes can address the same target local, so parallel groups would
-    // otherwise require atomics or private reduction buffers.
-    for (std::size_t column = 0; column < group.targets.size(); ++column) {
-      if (group.levels[column] != level) {
-        continue;
-      }
-      const auto L = local_for_node(group.targets[column]);
-      for (int beta = 0; beta < n; ++beta) {
-        L[static_cast<std::size_t>(beta)] +=
-            local_scale[beta] *
-            group.translated[static_cast<std::size_t>(beta) + column * n];
-      }
-    }
-  }
-  last_timings_.m2l_scatter.add(elapsed_seconds(phase_start));
+  const detail::mkl::M2LApplyTimings timings = mkl_m2l_plan_->apply(
+      m2l_plan_, level, multipoles_, locals_);
+  last_timings_.m2l_gather.add(timings.gather_seconds);
+  last_timings_.m2l_multiply.add(timings.multiply_seconds);
+  last_timings_.m2l_scatter.add(timings.scatter_seconds);
 }
 
 void UniformFmm::static_m2l_float(const int level) {
@@ -176,78 +78,11 @@ void UniformFmm::static_m2l_float(const int level) {
     return;
   }
 
-  const int n = coefficient_count();
-  const std::ptrdiff_t group_count =
-      static_cast<std::ptrdiff_t>(m2l_groups_float_.size());
-  const float *local_scale = m2l_plan_float_.local_scaling.data() +
-      static_cast<std::size_t>(level) * n;
-
-  auto phase_start = Clock::now();
-#pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
-  for (std::ptrdiff_t group_index = 0; group_index < group_count;
-       ++group_index) {
-    FloatM2LGroup &group =
-        m2l_groups_float_[static_cast<std::size_t>(group_index)];
-    for (std::size_t column = 0; column < group.sources.size(); ++column) {
-      if (group.levels[column] != level) {
-        continue;
-      }
-      const auto M = multipole_float_for_node(group.sources[column]);
-      const float *source_scale = m2l_plan_float_.multipole_scaling.data() +
-          static_cast<std::size_t>(group.source_levels.empty()
-              ? level : group.source_levels[column]) * n;
-      for (int alpha = 0; alpha < n; ++alpha) {
-        group.gathered[static_cast<std::size_t>(alpha) + column * n] =
-            source_scale[alpha] * M[static_cast<std::size_t>(alpha)];
-      }
-    }
-  }
-  last_timings_.m2l_gather.add(elapsed_seconds(phase_start));
-
-  phase_start = Clock::now();
-#ifdef CDFMM_USE_MKL
-#pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
-  for (std::ptrdiff_t group_index = 0; group_index < group_count;
-       ++group_index) {
-    FloatM2LGroup &group =
-        m2l_groups_float_[static_cast<std::size_t>(group_index)];
-    const auto first =
-        std::lower_bound(group.levels.begin(), group.levels.end(), level);
-    const auto last = std::upper_bound(first, group.levels.end(), level);
-    const int columns = static_cast<int>(last - first);
-    if (columns == 0) {
-      continue;
-    }
-    const std::size_t column_offset =
-        static_cast<std::size_t>(first - group.levels.begin());
-    const float *matrix = m2l_plan_float_.matrices.data() +
-        static_cast<std::size_t>(group.matrix_id) * n * n;
-    const int previous_mkl_threads = mkl_set_num_threads_local(1);
-    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans, n, columns, n,
-                1.0F, matrix, n,
-                group.gathered.data() + column_offset * n, n, 0.0F,
-                group.translated.data() + column_offset * n, n);
-    mkl_set_num_threads_local(previous_mkl_threads);
-  }
-#else
-  throw std::runtime_error("The oneMKL FP32 backend is unavailable");
-#endif
-  last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
-
-  phase_start = Clock::now();
-  for (FloatM2LGroup &group : m2l_groups_float_) {
-    for (std::size_t column = 0; column < group.targets.size(); ++column) {
-      if (group.levels[column] != level) {
-        continue;
-      }
-      const auto L = local_float_for_node(group.targets[column]);
-      for (int beta = 0; beta < n; ++beta) {
-        L[static_cast<std::size_t>(beta)] += local_scale[beta] *
-            group.translated[static_cast<std::size_t>(beta) + column * n];
-      }
-    }
-  }
-  last_timings_.m2l_scatter.add(elapsed_seconds(phase_start));
+  const detail::mkl::M2LApplyTimings timings = mkl_m2l_plan_->apply(
+      m2l_plan_float_, level, multipoles_float_, locals_float_);
+  last_timings_.m2l_gather.add(timings.gather_seconds);
+  last_timings_.m2l_multiply.add(timings.multiply_seconds);
+  last_timings_.m2l_scatter.add(timings.scatter_seconds);
 }
 
 //------------------------------------------------------------------------------

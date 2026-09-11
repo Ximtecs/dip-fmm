@@ -3,9 +3,9 @@
 This document is the architectural contract for the `v0.2` refactor. It
 describes the ownership and dependency boundaries now implemented in the
 repository. Step 2 made the foundational `core`, `math`, `geometry`, and
-`tree` layout concrete; the operators, static plans, and portable CPU apply
-boundary are now also structured. FMM orchestration, cache, and most backend
-execution remain transitional layers.
+`tree` layout concrete; operators, static plans, FMM orchestration, portable
+CPU execution, and oneMKL execution are now also structured. Cache, bindings,
+and CUDA remain transitional layers.
 
 ## Design rules
 
@@ -304,8 +304,10 @@ src/
 |                                                  and dynamic application
 |-- plan/{precision,direct,p2p}               plan preparation and representations
 |-- cuboid.cpp                                compatibility geometry/pair math
-|-- backend/cpu/{static_plan_apply,direct/dense}.cpp
-|                                               portable static and dense-direct execution
+|-- fmm/{uniform_fmm,far_field}.cpp            lifecycle and pass orchestration
+|-- backend/cpu/{static_plan_apply,near_field,direct/dense}.cpp
+|                                               portable static, list-1, and direct execution
+|-- backend/mkl/m2l.cpp                        grouped oneMKL M2L execution
 `-- backend/mkl/direct/dense.cpp               oneMKL dense-direct execution
 ```
 
@@ -329,6 +331,15 @@ and `backend/mkl/direct/dense.cpp` owns the guarded SGEMV/DGEMV calls and
 availability query. The private dense-direct workspace keeps reusable staging
 arrays beside execution while the public `DenseDirectPlan` remains a
 source-compatible façade with value semantics.
+
+The FMM layer follows the same orchestration/execution boundary.
+`fmm/far_field.cpp` retains P2M, M2M, M2L backend dispatch, L2L, and L2P
+sequencing. `backend/mkl/m2l.cpp` derives stable transfer-class groups once
+from the canonical `StaticM2LPlan`, owns reusable FP32/FP64 gather and
+translation buffers, and performs the guarded SGEMM/DGEMM gather/multiply/
+serial-scatter path. `UniformFmm` references that state through an opaque
+internal owner; no vendor-oriented group or scratch layout appears in the
+installed header. CPU list-1 execution lives in `backend/cpu/near_field.cpp`.
 
 `generation/` will eventually own physical grain generation. `refinement/`
 will eventually own prism and tetrahedron refinement. Geometry packing belongs
@@ -360,11 +371,13 @@ transitional layout:
 - compatibility `static_operators.hpp/.cpp` remain as forwarding umbrellas;
   their former mixed implementation has been separated into operators, plans,
   and the portable CPU apply boundary described below.
-- `uniform_fmm.hpp/.cpp` combine public policy, geometry normalisation,
-  topology and operator construction, cache use, backend selection, packing,
-  mutable state, CUDA upload, evaluation, and inspection.
-- `far_field.cpp` contains CPU stages while directly including oneMKL and CUDA
-  execution internals. `periodic.cpp` includes `uniform_tree.hpp`, and
+- `uniform_fmm.hpp` and `fmm/uniform_fmm.cpp` combine public policy, geometry
+  normalisation, topology and operator construction, cache use, backend
+  selection, mutable state, CUDA upload, evaluation, and inspection. The
+  oneMKL execution packing is now delegated behind an opaque backend owner.
+- `fmm/far_field.cpp` contains high-level CPU expansion sequencing and still
+  invokes transitional CUDA owners, but no longer contains oneMKL vendor
+  mechanics. `periodic.cpp` includes `uniform_tree.hpp`, and
   `parameter_selection.hpp` includes the complete `uniform_fmm.hpp` API.
 - `cache.cpp` implements low-level persistence, identities and validation as
   methods of `UniformFmm`, giving cache mechanics intimate ownership knowledge
@@ -378,7 +391,7 @@ transitional layout:
   from `cdfmm_core` to consumers.
 
 The largest responsibility-review candidates are `cuda_fmm.cu` (about 5,200
-lines), `uniform_fmm.cpp` (about 3,600), `cache.cpp` (about 1,800), and
+lines), `fmm/uniform_fmm.cpp` (about 3,600), `cache.cpp` (about 1,800), and
 `python/bindings.cpp` (about 1,500). These measurements locate remaining audit
 work; they do not require mechanical splitting.
 
@@ -398,7 +411,7 @@ work; they do not require mechanical splitting.
 - `StaticFmmTopology`, dense-direct pair dispatch, and adaptive plan adaptation
   remain transitional seams for the operator/plan/backend phases.
 
-### Implemented: operators and static plans
+### Implemented: operators, static plans, and CPU/oneMKL FMM boundaries
 
 - Mathematical P2M, M2M, M2L, L2L, L2P, and P2P construction now lives under
   `include/cdfmm/operators/` and `src/operators/`. Geometry-specific P2M/L2P
@@ -418,8 +431,12 @@ work; they do not require mechanical splitting.
   it does not redefine pair or translation mathematics.
 - Dense-direct plan preparation remains under `plan/direct`; portable execution
   is in `backend/cpu/direct`, oneMKL execution is in `backend/mkl/direct`, and
-  reusable staging is private backend execution state. CUDA and FMM backend
-  decomposition remain separate follow-on work.
+  reusable staging is private backend execution state.
+- High-level FMM lifecycle and far-field pass orchestration live under
+  `src/fmm`; portable list-1 and static-plan execution live under
+  `src/backend/cpu`; and grouped oneMKL M2L packing, reusable scratch, vendor
+  calls, thread control, and availability live under `src/backend/mkl`.
+  CUDA decomposition remains separate follow-on work.
 
 The remaining transitional seam is `StaticFmmTopology`: it adapts tree
 interaction topology to topology-native records consumed by FMM orchestration
@@ -434,14 +451,12 @@ boundary without making the tree depend on a particular P2P packing.
   work merely along source-file boundaries.
 - Isolate persistent CUDA plans, buffers, streams/events, and cuBLAS/cuSPARSE
   resources from public mathematical interfaces.
-- Move remaining oneMKL execution mechanics out of `uniform_fmm.cpp` and
-  `far_field.cpp` into the oneMKL backend.
 - Preserve and benchmark all transfer, launch, overlap, and reuse semantics.
 
 ### Later: FMM, cache, bindings, and build
 
-- Reduce `uniform_fmm.cpp` to high-level lifecycle and orchestration after its
-  lower layers have stable homes.
+- Reduce `fmm/uniform_fmm.cpp` to high-level lifecycle and orchestration after
+  its lower layers have stable homes.
 - Decompose `cache.cpp` into keys, metadata/validation, and serialisation while
   keeping cache formats and invalidation behaviour stable.
 - Keep Python, C, and Fortran layers as adapters; split the large pybind11

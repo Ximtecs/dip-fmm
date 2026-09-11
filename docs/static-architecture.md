@@ -72,7 +72,10 @@ source/target-level arrays.
 That representation gives each target row a contiguous interaction range and
 lets portable CPU and CUDA executors consume identical mathematical data. The
 oneMKL executor derives a gather/multiply/scatter packing from it without
-changing the canonical plan.
+changing the canonical plan. That packing, its persistent FP32/FP64 scratch,
+the guarded SGEMM/DGEMM calls, and serial scatter live under
+`src/backend/mkl`; the FMM layer retains only pass sequencing and backend
+dispatch through an opaque internal owner.
 
 P2P follows the same separation. `StaticP2POperator` is the exact canonical
 target-row tensor. Execution experiments derive source-only SoA, compact dense

@@ -28,6 +28,9 @@ and P2P packing rather than leaving `Auto` ambiguous.
 oneMKL accelerates M2L only: interactions sharing a normalised transfer matrix
 are gathered into columns, multiplied with SGEMM or DGEMM, and scattered to
 target locals. The other stages retain the portable static executors.
+The persistent grouping and scratch plus all oneMKL calls are internal to
+`src/backend/mkl`; high-level P2M/M2M/M2L-dispatch/L2L/L2P sequencing remains
+in `src/fmm`.
 
 `CpuReference` is the independent Cartesian mathematical traversal used for
 validation and education. `CpuStatic` is the portable production default.

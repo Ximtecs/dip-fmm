@@ -441,6 +441,7 @@ public:
 
 private:
   struct NormalisedGeometry;
+  class MklM2LPlanOwner;
   class CudaM2LPlanOwner;
   class CudaP2PPlanOwner;
   class CudaFullPlanOwner;
@@ -464,33 +465,6 @@ private:
     std::size_t count{0};
     FloatStaticCoefficientOperator operator_map{};
   };
-  /**
-   * @brief oneMKL-only gather/GEMM/scatter packing for one transfer class.
-   *
-   * Source, target, and level metadata is fixed; gathered and translated are
-   * persistent scratch reused by evaluations. Portable and CUDA paths consume
-   * the canonical `StaticM2LPlan` directly and do not allocate these buffers.
-   */
-  struct M2LGroup {
-    int matrix_id{0};
-    std::vector<int> sources{};
-    std::vector<int> targets{};
-    std::vector<int> source_levels{};
-    std::vector<int> levels{};
-    std::vector<double> gathered{};
-    std::vector<double> translated{};
-  };
-  /** @brief FP32 oneMKL gather/GEMM/scatter packing. */
-  struct FloatM2LGroup {
-    int matrix_id{0};
-    std::vector<int> sources{};
-    std::vector<int> targets{};
-    std::vector<int> source_levels{};
-    std::vector<int> levels{};
-    std::vector<float> gathered{};
-    std::vector<float> translated{};
-  };
-
   void initialise_execution(const UniformFmmOptions& options);
   void build_static_plan();
   void initialise_cache_keys(const UniformFmmOptions& options);
@@ -600,8 +574,7 @@ private:
   std::unique_ptr<CudaM2LPlanOwner> cuda_m2l_plan_{};
   std::unique_ptr<CudaP2PPlanOwner> cuda_p2p_plan_{};
   std::unique_ptr<CudaFullPlanOwner> cuda_full_plan_{};
-  std::vector<M2LGroup> m2l_groups_{};
-  std::vector<FloatM2LGroup> m2l_groups_float_{};
+  std::unique_ptr<MklM2LPlanOwner> mkl_m2l_plan_{};
   std::vector<P2MPlan> p2m_plans_{};
   std::vector<FloatP2MPlan> p2m_plans_float_{};
   std::array<StaticCoefficientOperator, 8> m2m_operators_{};

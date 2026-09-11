@@ -1,5 +1,31 @@
 # Latest session work
 
+## 2026-09-11 — FMM, CPU, and oneMKL execution boundaries
+
+The two-package FMM boundary refactor is complete. Commit `f8218fc` moved
+`UniformFmm` and far-field orchestration under `src/fmm` and CPU list-1
+execution under `src/backend/cpu`. The follow-up oneMKL package places grouped
+M2L preparation, reusable FP32/FP64 scratch, SGEMM/DGEMM, thread-local MKL
+control, serial scatter, storage accounting, phase timing, and availability in
+`src/backend/mkl/m2l.{hpp,cpp}`. `src/fmm/far_field.cpp` retains the expansion
+pass order and timing aggregation, while an opaque internal owner removes the
+group/scratch layout from `include/cdfmm/uniform_fmm.hpp`.
+
+Fresh portable construction passed 52/52 build steps. Focused portable checks
+completed 21 cases (20 passed, one expected oneMKL skip), and full portable
+CTest completed 184 cases (180 passed, expected skips #16/#51/#59/#63). The
+CPU+oneMKL build reconfigured and rebuilt successfully; focused M2L, spherical,
+cache, and precision checks completed 50 cases (48 passed, CUDA skips #16/#59),
+and full oneMKL CTest completed 184 cases (181 passed, CUDA skips
+#16/#59/#63). Source-level scaling, mixed-level stable grouping, persistent
+scratch accounting, phase timing, repeated execution, and move semantics have
+focused regression coverage. Ownership, symbol, source-duplication, and diff
+audits passed.
+
+CUDA runtime, Python, Fortran, and documentation builds were not run. No CUDA
+source was changed. The untracked `Article1/` directory and unrelated parent
+MagTense work remain untouched.
+
 ## 2026-09-11 — dense-direct plan/backend separation
 
 The dense-direct plan/backend separation is complete: the canonical declaration

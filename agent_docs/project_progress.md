@@ -1,5 +1,44 @@
 # Project progress
 
+## FMM, CPU, and oneMKL execution boundaries
+
+High-level FMM implementation now lives under `src/fmm`: construction and
+lifecycle remain in `uniform_fmm.cpp`, while `far_field.cpp` retains the
+P2M/M2M/M2L-dispatch/L2L/L2P sequence and public timing integration. CPU
+list-1 execution lives in `src/backend/cpu/near_field.cpp`; portable canonical
+static-plan application remains in `src/backend/cpu/static_plan_apply.cpp`.
+
+The oneMKL M2L executor is isolated in `src/backend/mkl/m2l.{hpp,cpp}`. It
+derives stable transfer-class groups once from `StaticM2LPlan`, owns reusable
+FP32/FP64 gathered and translated buffers behind an opaque `UniformFmm` owner,
+and provides narrow apply, storage-statistics, and phase-timing interfaces.
+All guarded vendor includes, MKL integer types, SGEMM/DGEMM calls, thread-local
+MKL control, grouping, gather, multiplication, and serial scatter now live in
+the backend. The installed header no longer exposes `M2LGroup` layouts.
+
+Validation evidence for this boundary:
+
+- fresh portable `dev` configure/build passed 52/52 build steps;
+- focused near/far/static-plan/FP32/FP64 tests completed 21 cases: 20 passed
+  and the oneMKL cache case was expectedly skipped;
+- full portable CTest completed 184 cases: 180 passed and four unavailable
+  oneMKL/CUDA cases skipped (#16, #51, #59, and #63);
+- the existing CPU+oneMKL configuration reconfigured and rebuilt, and focused
+  static-M2L/spherical/cache/precision tests completed 50 cases: 48 passed and
+  two CUDA cases skipped (#16 and #59);
+- full oneMKL CTest completed 184 cases: 181 passed and three CUDA cases
+  skipped (#16, #59, and #63); and
+- focused coverage verifies source/target level separation, stable mixed-level
+  grouping, FP32 and FP64 execution, persistent storage statistics, timing
+  calls, repeated application, and `UniformFmm` move behaviour.
+
+Ownership searches, the old/new implementation comparison, symbol inspection,
+and `git diff --check` confirmed the vendor mechanics are confined to
+`src/backend/mkl`, the root-level FMM files remain absent, and Package 1 was a
+move rather than a duplicate. CUDA runtime, Python, Fortran, and documentation
+builds were not exercised; CUDA sources were not changed. `Article1/` and
+unrelated parent-worktree changes remain untouched.
+
 ## Dense-direct plan/backend separation
 
 The dense direct plan has an explicit plan-layer home:

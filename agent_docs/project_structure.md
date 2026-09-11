@@ -1,12 +1,10 @@
 # Project structure and ownership
 
-The current checkout is the post-Step-2 foundational layout plus the
-operators/static-plans and dense-direct backend steps. Operator construction,
-static plan data, P2P packings, portable CPU application, and dense-direct CPU
-and oneMKL execution now have substantive subsystem homes. Higher FMM
-orchestration, CUDA/backend execution, cache, and binding layers remain partly
-flat; the target taxonomy in `docs/architecture.md` is not permission to
-create empty directories or perform an unauthorised refactor.
+The current checkout has substantive homes for foundational layers,
+operators/static plans, high-level FMM orchestration, portable CPU execution,
+and oneMKL dense-direct and M2L execution. CUDA, cache, and binding layers
+remain partly flat; the target taxonomy in `docs/architecture.md` is not
+permission to create empty directories or perform an unauthorised refactor.
 
 ## Current map
 
@@ -24,8 +22,7 @@ include/cdfmm/
   operators/                                                   P2M/M2M/M2L/L2L/L2P/M2P/P2P interfaces
   plan/                                                        immutable static data, direct plans,
                                                                and P2P packings
-  backend/cpu/                                                 portable static and dense-direct application
-  backend/mkl/                                                 oneMKL dense-direct application
+  backend/cpu/                                                 portable static and dense-direct interfaces
 src/
   math/                                                        mathematical kernels
   geometry/primitives/                                         prism/tetrahedron
@@ -37,12 +34,13 @@ src/
   plan/direct/dense.cpp                                         dense-direct preparation/dispatch
   plan/                                                         precision conversion and P2P packing builders
   backend/cpu/direct/dense.cpp                                  portable dense-direct application
-  backend/cpu/                                                  portable static-plan application
+  backend/cpu/{static_plan_apply,near_field}.cpp                 portable static-plan/list-1 application
   backend/mkl/direct/dense.cpp                                  oneMKL dense-direct application
+  backend/mkl/m2l.{hpp,cpp}                                     opaque grouped M2L execution state
+  fmm/{uniform_fmm,far_field}.cpp                               lifecycle and pass orchestration
+  fmm/uniform_fmm_internal.hpp                                  opaque backend owner adapters
   tree/common/static_topology.cpp                              canonical topology validation
   tree/uniform/static_topology_adapter.cpp                     UniformTree topology adapter
-  uniform_fmm.cpp                                               FMM orchestration
-  near_field.cpp, far_field.cpp                                transitional execution stages
   periodic.cpp, cache.cpp, validation.cpp                       support boundaries
   cuda_fmm.cu, cuda_*_plan.hpp, cuda_fmm_stub.cpp                CUDA implementation/stub
   c_api.cpp                                                     C ABI adapter
@@ -95,7 +93,8 @@ include/cdfmm/plan/             canonical static data and derived representation
 src/plan/                       FP32 conversion, direct preparation, and deterministic P2P builders
 include/cdfmm/backend/cpu/      portable application interface
 src/backend/cpu/                portable static and dense-direct application
-src/backend/mkl/                oneMKL dense-direct application
+src/fmm/                        UniformFmm lifecycle and far-field sequencing
+src/backend/mkl/                oneMKL dense-direct and grouped M2L application
 ```
 
 Canonical P2P target rows remain authoritative. Compact/SoA, leaf, tensor
@@ -107,6 +106,11 @@ image identities, and self-identity flags. It no longer includes or embeds
 into the derived P2P leaf-packing representation. The canonical topology
 boundary is separate from the UniformTree adapter, which remains a
 transitional tree-to-topology construction seam.
+
+The grouped oneMKL M2L executor is built once from the canonical plan. Its
+stable transfer-class metadata and reusable gathered/translated buffers remain
+private behind an opaque owner, while FMM orchestration adds the backend's
+gather/multiply/scatter timings to the existing public timing record.
 
 ## Validation and documentation areas
 

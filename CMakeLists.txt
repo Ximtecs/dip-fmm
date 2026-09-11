@@ -62,6 +62,7 @@ add_library(cdfmm_core
     src/plan/p2p/signed_dictionary.cpp
     src/plan/p2p/bsr.cpp
     src/backend/cpu/static_plan_apply.cpp
+    src/backend/mkl/m2l.cpp
     src/validation.cpp
     src/tree/common/node.cpp
     src/tree/common/morton.cpp

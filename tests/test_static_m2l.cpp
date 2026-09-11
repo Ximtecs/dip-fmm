@@ -6,13 +6,19 @@
 #include <cmath>
 #include <numeric>
 #include <random>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
+#include "backend/mkl/m2l.hpp"
 #include "cdfmm/operators.hpp"
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 
 using namespace cdfmm;
+
+static_assert(std::is_nothrow_move_constructible_v<UniformFmm>);
+static_assert(std::is_nothrow_move_assignable_v<UniformFmm>);
 
 TEST_CASE("compact static P2P matches list1-style direct pairs") {
   const std::vector<Vec3> sources{
@@ -559,7 +565,12 @@ TEST_CASE("static grouped M2L matches the independent reference traversal") {
 
 TEST_CASE("oneMKL and portable static matrices agree when oneMKL is enabled") {
   if (!one_mkl_available()) {
-    SUCCEED("This build does not include oneMKL");
+    UniformFmmOptions unavailable_options;
+    unavailable_options.backend = ExecutionBackend::CpuStatic;
+    unavailable_options.static_matrix_backend = StaticMatrixBackend::OneMkl;
+    REQUIRE_THROWS_AS(
+        UniformFmm(std::vector<Vec3>{{0.0, 0.0, 0.0}}, unavailable_options),
+        std::runtime_error);
     return;
   }
 
@@ -585,6 +596,10 @@ TEST_CASE("oneMKL and portable static matrices agree when oneMKL is enabled") {
   const auto mkl_values = mkl.evaluate(moments, OutputFlags::Field, identities);
 
   REQUIRE(mkl.static_matrix_backend() == StaticMatrixBackend::OneMkl);
+  REQUIRE(mkl.static_plan_statistics().scratch_bytes > 0);
+  REQUIRE(mkl.last_timings().m2l_gather.calls > 0);
+  REQUIRE(mkl.last_timings().m2l_multiply.calls > 0);
+  REQUIRE(mkl.last_timings().m2l_scatter.calls > 0);
   for (std::size_t index = 0; index < positions.size(); ++index) {
         REQUIRE(mkl_values[index].H.x ==
                 Catch::Approx(portable_values[index].H.x).epsilon(2.0e-13));
@@ -593,4 +608,71 @@ TEST_CASE("oneMKL and portable static matrices agree when oneMKL is enabled") {
         REQUIRE(mkl_values[index].H.z ==
                 Catch::Approx(portable_values[index].H.z).epsilon(2.0e-13));
     }
+
+  const std::size_t persistent_bytes =
+      mkl.static_plan_statistics().scratch_bytes;
+  UniformFmm moved = std::move(mkl);
+  const auto moved_values =
+      moved.evaluate(moments, OutputFlags::Field, identities);
+  REQUIRE(moved.static_plan_statistics().scratch_bytes == persistent_bytes);
+  for (std::size_t index = 0; index < positions.size(); ++index) {
+    REQUIRE(moved_values[index].H.x ==
+            Catch::Approx(portable_values[index].H.x).epsilon(2.0e-13));
+    REQUIRE(moved_values[index].H.y ==
+            Catch::Approx(portable_values[index].H.y).epsilon(2.0e-13));
+    REQUIRE(moved_values[index].H.z ==
+            Catch::Approx(portable_values[index].H.z).epsilon(2.0e-13));
+  }
+}
+
+TEST_CASE("oneMKL grouped executor retains canonical levels and scratch") {
+  StaticM2LPlan plan;
+  plan.coefficient_count = 1;
+  plan.matrix_count = 1;
+  plan.level_count = 2;
+  plan.matrices = {4.0};
+  plan.multipole_scaling = {2.0, 3.0};
+  plan.local_scaling = {5.0, 7.0};
+  plan.target_row_offsets = {0, 0, 1, 2};
+  plan.source_nodes = {0, 1};
+  plan.matrix_ids = {0, 0};
+  plan.source_levels = {0, 1};
+  plan.target_levels = {1, 0};
+  plan.interaction_levels = {1, 0};
+  plan.node_levels = {0, 1, 0};
+
+  detail::mkl::M2LExecutor executor(plan);
+  const detail::mkl::M2LStorageStatistics storage = executor.statistics();
+  REQUIRE(storage.metadata_bytes == 8 * sizeof(int));
+  REQUIRE(storage.scratch_bytes == 4 * sizeof(double));
+
+  if (!one_mkl_available()) {
+    SUCCEED("This build does not include oneMKL");
+    return;
+  }
+
+  const std::vector<double> multipoles{11.0, 13.0, 0.0};
+  std::vector<double> locals(3, 0.0);
+  const detail::mkl::M2LApplyTimings level_zero =
+      executor.apply(plan, 0, multipoles, locals);
+  REQUIRE(locals[0] == 0.0);
+  REQUIRE(locals[1] == 0.0);
+  REQUIRE(locals[2] == 780.0);
+  REQUIRE(level_zero.gather_seconds >= 0.0);
+  REQUIRE(level_zero.multiply_seconds >= 0.0);
+  REQUIRE(level_zero.scatter_seconds >= 0.0);
+
+  const detail::mkl::M2LApplyTimings level_one =
+      executor.apply(plan, 1, multipoles, locals);
+  REQUIRE(locals[0] == 0.0);
+  REQUIRE(locals[1] == 616.0);
+  REQUIRE(locals[2] == 780.0);
+  REQUIRE(level_one.gather_seconds >= 0.0);
+  REQUIRE(level_one.multiply_seconds >= 0.0);
+  REQUIRE(level_one.scatter_seconds >= 0.0);
+
+  const detail::mkl::M2LStorageStatistics repeated_storage =
+      executor.statistics();
+  REQUIRE(repeated_storage.metadata_bytes == storage.metadata_bytes);
+  REQUIRE(repeated_storage.scratch_bytes == storage.scratch_bytes);
 }

@@ -18,10 +18,6 @@
 
 #include "cdfmm/laplace_derivatives.hpp"
 
-#ifdef CDFMM_USE_MKL
-#include <mkl.h>
-#endif
-
 #ifdef CDFMM_USE_OPENMP
 #include <omp.h>
 #endif
@@ -1428,81 +1424,16 @@ void UniformFmm::build_backend_packing() {
     return;
   }
   const auto start = Clock::now();
-  const auto pack = [this](const auto& plan, auto& groups,
-                           const std::size_t scalar_bytes) {
-    groups.clear();
-    groups.resize(static_cast<std::size_t>(plan.matrix_count));
-    for (int id = 0; id < plan.matrix_count; ++id) {
-      groups[static_cast<std::size_t>(id)].matrix_id = id;
-    }
-    for (std::size_t target = 0;
-         target + 1 < plan.target_row_offsets.size(); ++target) {
-      const int begin = plan.target_row_offsets[target];
-      const int end = plan.target_row_offsets[target + 1];
-      for (int interaction = begin; interaction < end; ++interaction) {
-        const std::size_t slot = static_cast<std::size_t>(interaction);
-        auto& group =
-            groups[static_cast<std::size_t>(plan.matrix_ids[slot])];
-        group.sources.push_back(plan.source_nodes[slot]);
-        group.targets.push_back(static_cast<int>(target));
-        const int target_level = plan.target_levels.empty()
-            ? (plan.interaction_levels.empty()
-                   ? topology_->nodes[target].level
-                   : plan.interaction_levels[slot])
-            : plan.target_levels[slot];
-        const int source_level = plan.source_levels.empty()
-            ? (plan.node_levels.empty()
-                   ? target_level
-                   : plan.node_levels[static_cast<std::size_t>(
-                         plan.source_nodes[slot])])
-            : plan.source_levels[slot];
-        group.source_levels.push_back(source_level);
-        group.levels.push_back(target_level);
-      }
-    }
-    for (auto& group : groups) {
-      // oneMKL consumes contiguous columns for one target level.  Uniform
-      // extraction is already level ordered; stable sorting makes that
-      // contract explicit for a future compact/mixed-depth producer while
-      // preserving the original order within each level.
-      if (!std::is_sorted(group.levels.begin(), group.levels.end())) {
-        std::vector<std::size_t> order(group.levels.size());
-        std::iota(order.begin(), order.end(), std::size_t{0});
-        std::stable_sort(order.begin(), order.end(), [&group](const std::size_t a,
-                                                               const std::size_t b) {
-          return group.levels[a] < group.levels[b];
-        });
-        const auto reorder = [&order](std::vector<int>& values) {
-          std::vector<int> sorted;
-          sorted.reserve(values.size());
-          for (const std::size_t index : order) {
-            sorted.push_back(values[index]);
-          }
-          values = std::move(sorted);
-        };
-        reorder(group.sources);
-        reorder(group.targets);
-        reorder(group.source_levels);
-        reorder(group.levels);
-      }
-      const std::size_t values =
-          static_cast<std::size_t>(coefficient_count()) * group.sources.size();
-      group.gathered.resize(values);
-      group.translated.resize(values);
-      const std::size_t metadata_bytes =
-          (group.sources.size() + group.targets.size() +
-           group.source_levels.size() + group.levels.size()) *
-          sizeof(int);
-      static_plan_statistics_.interaction_bytes += metadata_bytes;
-      static_plan_statistics_.m2l_interaction_bytes += metadata_bytes;
-      static_plan_statistics_.scratch_bytes += 2 * values * scalar_bytes;
-    }
-  };
   if (precision_ == StaticPrecision::Float32) {
-    pack(m2l_plan_float_, m2l_groups_float_, sizeof(float));
+    mkl_m2l_plan_ = std::make_unique<MklM2LPlanOwner>(m2l_plan_float_);
   } else {
-    pack(m2l_plan_, m2l_groups_, sizeof(double));
+    mkl_m2l_plan_ = std::make_unique<MklM2LPlanOwner>(m2l_plan_);
   }
+  const detail::mkl::M2LStorageStatistics storage =
+      mkl_m2l_plan_->statistics();
+  static_plan_statistics_.interaction_bytes += storage.metadata_bytes;
+  static_plan_statistics_.m2l_interaction_bytes += storage.metadata_bytes;
+  static_plan_statistics_.scratch_bytes += storage.scratch_bytes;
   static_plan_statistics_.backend_packing.add(elapsed_seconds(start));
 }
 
@@ -2425,10 +2356,6 @@ void UniformFmm::quantise_static_plan_to_float() {
         p2p_tensor_dictionary_plan_float_->memory().total_bytes();
   }
   static_plan_statistics_.scratch_bytes = 0;
-  for (const FloatM2LGroup &group : m2l_groups_float_) {
-    static_plan_statistics_.scratch_bytes +=
-        (group.gathered.size() + group.translated.size()) * sizeof(float);
-  }
 
   // Drop analytical FP64 construction temporaries. An FP32 plan therefore
   // retains no hidden double-precision operator or expansion representation.
@@ -2442,8 +2369,6 @@ void UniformFmm::quantise_static_plan_to_float() {
   p2p_compact_plan_ = {};
   p2p_tensor_dictionary_plan_.reset();
   m2l_plan_ = {};
-  m2l_groups_.clear();
-  m2l_groups_.shrink_to_fit();
 }
 
 void UniformFmm::build_cuda_full_plan() {
@@ -3543,14 +3468,6 @@ void UniformFmm::reset_timings() { aggregate_timings_ = {}; }
 UniformFmm::~UniformFmm() = default;
 UniformFmm::UniformFmm(UniformFmm &&) noexcept = default;
 UniformFmm &UniformFmm::operator=(UniformFmm &&) noexcept = default;
-
-bool one_mkl_available() noexcept {
-#ifdef CDFMM_USE_MKL
-  return true;
-#else
-  return false;
-#endif
-}
 
 bool cuda_available() noexcept { return cuda_runtime_available(); }
 

@@ -1,5 +1,24 @@
 # Project diary
 
+## 2026-09-11 — FMM, CPU, and oneMKL execution boundaries
+
+Established explicit execution boundaries without changing the public FMM
+API or pass sequencing. `src/fmm` owns lifecycle and the
+P2M/M2M/M2L-dispatch/L2L/L2P chain, `src/backend/cpu` owns list-1 and portable
+static-plan execution, and `src/backend/mkl` owns grouped oneMKL M2L execution.
+An opaque internal owner now retains stable transfer grouping and reusable
+FP32/FP64 gather/translation buffers; the canonical plan continues to own the
+matrices, scaling, and mathematical interaction schedule.
+
+Fresh portable and reconfigured oneMKL builds passed. Full portable CTest
+completed 184 cases with 180 passes and four expected optional skips; full
+oneMKL CTest completed 184 cases with 181 passes and three expected CUDA skips.
+Focused tests cover cache sharing, spherical and Cartesian M2L, both
+precisions, source-level scaling, sorting, buffer reuse statistics, timings,
+and move behaviour. Ownership and diff audits passed. CUDA runtime and other
+optional interface/documentation paths were not exercised, and no CUDA source
+was changed. `Article1/` and parent-repository work remain untouched.
+
 ## 2026-09-11 — dense-direct plan/backend separation
 
 Completed dense-direct execution ownership separation. The plan layer retains

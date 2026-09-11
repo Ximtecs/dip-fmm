@@ -1,8 +1,9 @@
 # Implementation guidance
 
-Inherit `../AGENTS.md`. Foundational math, geometry, and tree implementations
-now have subsystem directories. Higher solver layers remain flat until their
-own explicitly scoped refactor steps.
+Inherit `../AGENTS.md`. Foundational math, geometry, tree, operator, and plan
+implementations now have subsystem directories. High-level FMM orchestration
+and CPU/oneMKL execution also have explicit homes; cache, bindings, and CUDA
+remain transitional.
 
 ## Current structure
 
@@ -18,9 +19,11 @@ src/
 |-- operators/                              authoritative operator construction
 |                                          and dynamic application
 |-- periodic.cpp                            periodic support code
-|-- static_operators.cpp                   operators, plans, packings, CPU work
-|-- {near_field,far_field}.cpp              execution stages
-|-- uniform_fmm.cpp                        construction and orchestration
+|-- fmm/{uniform_fmm,far_field}.cpp         lifecycle and pass orchestration
+|-- fmm/uniform_fmm_internal.hpp            opaque backend owner adapters
+|-- backend/cpu/near_field.cpp              CPU list-1 execution
+|-- backend/cpu/static_plan_apply.cpp       portable static-plan execution
+|-- backend/mkl/{m2l,direct/dense}.cpp      oneMKL execution
 |-- cache.cpp                              cache identity and persistence
 |-- cuda_fmm.cu                            all CUDA implementation
 |-- cuda_fmm_stub.cpp                      non-CUDA API stubs
@@ -48,9 +51,9 @@ Do not create target directories before substantive code belongs in them.
 
 ## Boundaries and pressure points
 
-- `cuda_fmm.cu`, `uniform_fmm.cpp`, `static_operators.cpp`, and `cache.cpp`
-  are known decomposition candidates. Do not split them without a later
-  explicitly scoped step.
+- `cuda_fmm.cu`, `fmm/uniform_fmm.cpp`, and `cache.cpp` are known
+  decomposition candidates. Do not split them without a later explicitly
+  scoped step.
 - Separate mathematical operator construction, canonical plans, derived
   execution packings, and backend execution in that order during later work.
 - Tree code owns spatial hierarchy/topology, not CUDA execution or
@@ -61,6 +64,9 @@ Do not create target directories before substantive code belongs in them.
   mathematics.
 - `UniformFmm` should eventually express lifecycle and orchestration while
   delegating construction and execution mechanics downward.
+- `fmm/far_field.cpp` owns P2M/M2M/M2L-dispatch/L2L/L2P sequencing. Grouped
+  gather/GEMM/scatter execution, persistent M2L scratch, and vendor includes
+  belong under `backend/mkl`.
 
 CUDA restructuring must preserve the event graph, near/far stream overlap,
 persistent allocations and uploads, cuBLAS/cuSPARSE resource lifetime, launch
