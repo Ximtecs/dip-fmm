@@ -1,5 +1,22 @@
 # Project diary
 
+## 2026-09-11 — dense-direct plan ownership
+
+Moved the authoritative `DenseDirectPlan` interface to
+`include/cdfmm/plan/direct/dense.hpp` and its implementation to
+`src/plan/direct/dense.cpp`. The legacy `cuboid.hpp` include remains supported
+as a compatibility umbrella, while `src/cuboid.cpp` now retains only cuboid
+monomial and pair-tensor mathematics. Portable and oneMKL GEMV execution stays
+with the plan by design; dedicated backend extraction is the next dense-direct
+step.
+
+Fresh dev configure/build passed, focused geometry/direct/precision tests passed
+41/41, and full portable CTest passed 182/182 with four expected optional
+skips. A separate CPU+oneMKL build passed and its dense/cuboid focused tests
+passed 25/25. Canonical and legacy header probes, installed-header presence,
+diff checks, and symbol/source ownership searches passed. CUDA runtime was not
+available and was not claimed; no oneMKL dependency was installed.
+
 ## 2026-09-10 — shared tree root-box resolution
 
 Completed the internal root-box extraction for both tree modes. Shared

@@ -21,17 +21,19 @@ include/cdfmm/
   tree/static_topology.hpp                                    canonical topology data
   tree/uniform_topology.hpp                                   UniformTree adapter API
   operators/                                                   P2M/M2M/M2L/L2L/L2P/M2P/P2P interfaces
-  plan/                                                        immutable static data and P2P packings
+  plan/                                                        immutable static data, direct plans,
+                                                               and P2P packings
   backend/cpu/                                                 portable static-plan application interface
 src/
   math/                                                        mathematical kernels
   geometry/primitives/                                         prism/tetrahedron
   tree/{common,uniform,adaptive}/                             hierarchy/topology
   operators.cpp                                                 thin flat compatibility wrappers only
-  cuboid.cpp, static_operators.cpp                              transitional adapters/compatibility TU
+  cuboid.cpp                                                    compatibility geometry/pair math
   operators/                                                    authoritative mathematical construction
                                                                and dynamic application
-  plan/                                                         precision conversion and P2P packing builders
+  plan/                                                         precision conversion, direct-plan,
+                                                               and P2P packing builders
   backend/cpu/                                                  portable static-plan application
   tree/common/static_topology.cpp                              canonical topology validation
   tree/uniform/static_topology_adapter.cpp                     UniformTree topology adapter

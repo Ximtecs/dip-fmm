@@ -49,6 +49,7 @@ add_library(cdfmm_core
     src/operators/l2p.cpp
     src/operators/p2p.cpp
     src/cuboid.cpp
+    src/plan/direct/dense.cpp
     src/geometry/primitives/rectangular_prism.cpp
     src/geometry/primitives/tetrahedron.cpp
     src/plan/precision.cpp

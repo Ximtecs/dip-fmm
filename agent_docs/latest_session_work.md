@@ -1,5 +1,29 @@
 # Latest session work
 
+## 2026-09-11 — dense-direct plan ownership
+
+The dense-direct plan ownership move is complete: the canonical declaration is
+`include/cdfmm/plan/direct/dense.hpp`, the implementation is
+`src/plan/direct/dense.cpp`, and CMake builds the new source. The legacy
+`include/cdfmm/cuboid.hpp` path remains a compatibility umbrella; cuboid math
+and pair tensors remain in `src/cuboid.cpp`. Portable and oneMKL GEMV mechanics
+remain intentionally co-located with the plan pending the next focused backend
+extraction step.
+
+Trusted validation:
+
+- fresh dev configure/build: 64/64;
+- focused geometry/direct/precision CTest: 41/41 passed;
+- full portable CTest: 182/182 passed with expected skips #16/#51/#59/#63;
+- CPU+oneMKL build and dense/cuboid focused CTest: 25/25 passed;
+- canonical-only and legacy-header compile probes passed; and
+- installed canonical header presence, `git diff --check`, and ownership
+  searches passed.
+
+CUDA runtime validation was not available. oneMKL was already present and was
+exercised without installing anything. `Article1/` and unrelated parent-worktree
+changes remain untouched.
+
 ## 2026-09-10 — shared tree root-box resolution
 
 The root-box extraction is complete and recorded in this focused change/commit.

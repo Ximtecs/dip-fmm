@@ -289,6 +289,7 @@ include/cdfmm/
 |   |-- static_coefficient.hpp  sparse P2M/translation maps
 |   |-- m2l.hpp                 immutable M2L schedules and matrices
 |   |-- l2p.hpp                 immutable L2P rows
+|   |-- direct/dense.hpp        persistent dense-direct plan interface
 |   `-- p2p/
 |       |-- canonical.hpp       authoritative target-row P2P data
 |       |-- compact.hpp         derived particle-row SoA packing
@@ -301,8 +302,9 @@ include/cdfmm/
 src/
 |-- operators/{p2m,m2m,m2l,l2l,l2p,m2p,p2p}.cpp  authoritative construction
 |                                                  and dynamic application
-|-- plan/{precision,p2p}                     conversion and packing builders
-`-- backend/cpu/static_plan_apply.cpp        CPU plan application
+|-- plan/{precision,direct,p2p}               plan preparation and application
+|-- cuboid.cpp                                compatibility geometry/pair math
+`-- backend/cpu/static_plan_apply.cpp         CPU static-plan application
 ```
 
 The compatibility headers `cdfmm/operators.hpp` and
@@ -339,8 +341,11 @@ transitional layout:
   `static_topology.hpp` remains a compatibility forwarding header.
 - `adaptive_tree.hpp` returns `StaticFmmTopology` directly, coupling adaptive
   construction to the current static-plan representation.
-- `cuboid.hpp` combines finite geometry operations with `DenseDirectPlan` and
-  matrix-backend policy; geometry consequently owns plan/backend concepts.
+- `cuboid.hpp` remains a compatibility umbrella for finite geometry/pair math
+  and the dense-direct public API. `DenseDirectPlan` is now declared by
+  `plan/direct/dense.hpp` and implemented by `src/plan/direct/dense.cpp`;
+  portable and oneMKL execution mechanics remain co-located temporarily, with
+  backend extraction deferred to a later step.
 - compatibility `static_operators.hpp/.cpp` remain as forwarding umbrellas;
   their former mixed implementation has been separated into operators, plans,
   and the portable CPU apply boundary described below.
@@ -379,8 +384,9 @@ work; they do not require mechanical splitting.
   and AdaptiveTree in `src/tree/common/root_box.{hpp,cpp}`. Shared resolution
   retains zero for coincident roots; AdaptiveTree applies its existing fallback
   half-width `1` at its call site. The helper is not part of the public API.
-- `StaticFmmTopology`, dense-direct policy, pair dispatch, and adaptive plan
-  adaptation remain transitional seams for the operator/plan/backend phases.
+- `StaticFmmTopology`, dense-direct pair dispatch, and adaptive plan adaptation
+  remain transitional seams for the operator/plan/backend phases. Dense-direct
+  backend extraction remains a subsequent focused step.
 
 ### Implemented: operators and static plans
 

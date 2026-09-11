@@ -1,5 +1,32 @@
 # Project progress
 
+## Dense-direct plan ownership
+
+The dense direct plan now has an explicit plan-layer home:
+`include/cdfmm/plan/direct/dense.hpp` is the canonical public declaration and
+`src/plan/direct/dense.cpp` owns construction, evaluation, backend selection,
+and tensor-memory accounting. `include/cdfmm/cuboid.hpp` remains a
+compatibility umbrella and `src/cuboid.cpp` retains cuboid monomial and pair
+tensor mathematics. Portable and oneMKL GEMV mechanics intentionally remain
+co-located with the plan; extraction to dedicated direct backends is the next
+focused dense-direct step.
+
+Validation for this source/include ownership move:
+
+- fresh `dev` configure/build passed (64/64 build steps);
+- focused geometry/direct/precision CTest passed 41/41;
+- full portable CTest passed 182/182, with expected skips #16, #51, #59,
+  and #63;
+- a separate CPU+oneMKL configure/build passed, and its dense/cuboid focused
+  CTest passed 25/25;
+- canonical-only and legacy-header compile probes passed, including a safe
+  temporary-prefix install check for `plan/direct/dense.hpp`; and
+- `git diff --check` and authoritative declaration/source searches were clean.
+
+CUDA runtime paths were not exercised in this CPU-only environment. The
+oneMKL path was exercised from the existing environment; no dependency was
+installed.
+
 Status recorded 2026-09-10 after completing the shared tree root-box
 extraction in the nested checkout. The implementation and documentation are
 recorded in this focused change/commit.
