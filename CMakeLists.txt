@@ -81,7 +81,11 @@ add_library(cdfmm_core
 if(CDFMM_ENABLE_CUDA)
   enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
-  target_sources(cdfmm_core PRIVATE src/cuda_fmm.cu)
+  target_sources(cdfmm_core PRIVATE
+    src/cuda_fmm.cu
+    src/backend/cuda/common/runtime.cu
+    src/backend/cuda/direct/direct.cu
+    src/backend/cuda/direct/dense.cu)
   target_link_libraries(cdfmm_core PUBLIC CUDA::cudart CUDA::cublas CUDA::cusparse)
   if(CDFMM_ENABLE_PROFILING)
     if(NOT TARGET CUDA::nvtx3)
@@ -99,7 +103,9 @@ if(CDFMM_ENABLE_CUDA)
     CUDA_STANDARD_REQUIRED ON
   )
 else()
-  target_sources(cdfmm_core PRIVATE src/cuda_fmm_stub.cpp)
+  target_sources(cdfmm_core PRIVATE
+    src/cuda_fmm_stub.cpp
+    src/backend/cuda/stub/direct.cpp)
 endif()
 target_include_directories(cdfmm_core PUBLIC include)
 target_include_directories(cdfmm_core PRIVATE src)

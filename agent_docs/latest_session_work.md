@@ -1,5 +1,31 @@
 # Latest session work
 
+## 2026-09-14 — CUDA direct backend extraction closure
+
+The accepted CUDA direct extraction is complete. The
+canonical public headers are
+`include/cdfmm/backend/cuda/{direct,dense_direct}.hpp`; the old
+`include/cdfmm/cuda_direct.hpp` and `include/cdfmm/cuda_cuboid.hpp` paths are
+compatibility façades. Shared internal error/runtime handling is in
+`src/backend/cuda/common/`, point O(N^2) and dense cuBLAS direct execution are
+in `src/backend/cuda/direct/`, and non-CUDA direct stubs are in
+`src/backend/cuda/stub/direct.cpp`. `src/cuda_fmm.cu` still owns P2P, M2L, and
+full-FMM execution. No behaviour/performance change is intended and no
+P2P/M2L/full decomposition was attempted.
+
+Validation handoff: fresh dev configure/build 59 targets; focused
+direct/header/stub coverage 8/8, including the exact disabled-stub behaviour
+case; full CPU CTest 189/189 with expected skips #16/#51/#59/#63; fresh CUDA
+13.2 configure with explicit arch 75 and cached Catch2 source; and a full
+198-target CUDA build covering tests, Python, and benchmarks. Independent full
+CUDA CTest reported 189/189, but CUDA numerical/runtime
+runtime cases only took unavailable-device guards because `/dev/nvidia` was
+absent and `nvidia-smi` could not reach the driver. Ownership/`nm` searches
+and `git diff --check` were clean. `Article1/` remains untouched.
+
+No implementation follow-up is implied beyond the deferred P2P/M2L/full-FMM
+CUDA decomposition.
+
 ## 2026-09-11 — FMM, CPU, and oneMKL execution boundaries
 
 The two-package FMM boundary refactor is complete. Commit `f8218fc` moved

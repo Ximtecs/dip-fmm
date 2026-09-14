@@ -2,9 +2,10 @@
 
 The current checkout has substantive homes for foundational layers,
 operators/static plans, high-level FMM orchestration, portable CPU execution,
-and oneMKL dense-direct and M2L execution. CUDA, cache, and binding layers
-remain partly flat; the target taxonomy in `docs/architecture.md` is not
-permission to create empty directories or perform an unauthorised refactor.
+oneMKL execution, and CUDA direct/common execution. CUDA P2P/M2L/full-FMM,
+cache, and binding layers remain partly flat; the target taxonomy in
+`docs/architecture.md` is not permission to create empty directories or perform
+an unauthorised refactor.
 
 ## Current map
 
@@ -23,6 +24,7 @@ include/cdfmm/
   plan/                                                        immutable static data, direct plans,
                                                                and P2P packings
   backend/cpu/                                                 portable static and dense-direct interfaces
+  backend/cuda/{direct,dense_direct}.hpp                       canonical CUDA direct interfaces
 src/
   math/                                                        mathematical kernels
   geometry/primitives/                                         prism/tetrahedron
@@ -37,12 +39,17 @@ src/
   backend/cpu/{static_plan_apply,near_field}.cpp                 portable static-plan/list-1 application
   backend/mkl/direct/dense.cpp                                  oneMKL dense-direct application
   backend/mkl/m2l.{hpp,cpp}                                     opaque grouped M2L execution state
+  backend/cuda/common/error.hpp                                 shared CUDA error helpers
+  backend/cuda/common/runtime.{hpp,cu}                          CUDA runtime helpers
+  backend/cuda/direct/{direct,dense}.cu                         CUDA direct execution
+  backend/cuda/stub/direct.cpp                                  non-CUDA direct stubs
   fmm/{uniform_fmm,far_field}.cpp                               lifecycle and pass orchestration
   fmm/uniform_fmm_internal.hpp                                  opaque backend owner adapters
   tree/common/static_topology.cpp                              canonical topology validation
   tree/uniform/static_topology_adapter.cpp                     UniformTree topology adapter
   periodic.cpp, cache.cpp, validation.cpp                       support boundaries
-  cuda_fmm.cu, cuda_*_plan.hpp, cuda_fmm_stub.cpp                CUDA implementation/stub
+  cuda_fmm.cu, cuda_*_plan.hpp, cuda_fmm_stub.cpp                transitional CUDA
+                                                                P2P/M2L/full-FMM and stubs
   c_api.cpp                                                     C ABI adapter
 python/bindings.cpp                                             pybind11 module
 fortran/cdfmm_fortran.f90                                       ISO_C_BINDING wrapper
@@ -95,6 +102,10 @@ include/cdfmm/backend/cpu/      portable application interface
 src/backend/cpu/                portable static and dense-direct application
 src/fmm/                        UniformFmm lifecycle and far-field sequencing
 src/backend/mkl/                oneMKL dense-direct and grouped M2L application
+include/cdfmm/backend/cuda/     canonical CUDA direct public interfaces
+src/backend/cuda/common/        shared internal CUDA error/runtime helpers
+src/backend/cuda/direct/        CUDA point and dense direct execution
+src/backend/cuda/stub/          non-CUDA direct stubs
 ```
 
 Canonical P2P target rows remain authoritative. Compact/SoA, leaf, tensor

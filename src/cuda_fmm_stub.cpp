@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "cdfmm/cuda_direct.hpp"
-#include "cdfmm/cuda_cuboid.hpp"
 #include "cuda_fmm_plan.hpp"
 #include "cuda_m2l_plan.hpp"
 #include "cuda_p2p_plan.hpp"
@@ -14,10 +12,6 @@ bool cuda_compiled() noexcept { return false; }
 
 bool cuda_runtime_available() noexcept { return false; }
 
-bool cuda_direct_available() noexcept { return false; }
-
-bool cuda_dense_direct_available() noexcept { return false; }
-
 bool cuda_m2l_available() noexcept { return cuda_m2l_p2p_available(); }
 
 bool cuda_m2l_p2p_available() noexcept { return false; }
@@ -26,71 +20,6 @@ bool cuda_full_available() noexcept { return false; }
 
 std::string cuda_runtime_description() {
   return "CUDA support is not enabled in this build";
-}
-
-CudaDirectPlan::CudaDirectPlan(std::span<const Vec3>, std::span<const Vec3>,
-                               std::span<const int>) {
-  throw std::runtime_error(
-      "CUDA backend requested, but CDFMM_ENABLE_CUDA is OFF");
-}
-
-CudaDirectPlan::~CudaDirectPlan() = default;
-
-CudaDenseDirectPlan::CudaDenseDirectPlan(
-    std::span<const Vec3>, std::span<const Vec3>, SourceGeometry,
-    TargetGeometry, std::span<const CuboidSize>,
-    std::span<const CuboidSize>, std::span<const int>, StaticPrecision,
-    std::span<const Tetrahedron>, std::span<const Tetrahedron>, SourceModel,
-    TargetModel)
-{
-  throw std::runtime_error(
-      "CUDA dense direct backend requested, but CDFMM_ENABLE_CUDA is OFF");
-}
-
-CudaDenseDirectPlan::~CudaDenseDirectPlan() = default;
-
-std::vector<Vec3> CudaDenseDirectPlan::evaluate(std::span<const Vec3>)
-{
-  throw std::runtime_error("CUDA dense direct backend is unavailable");
-}
-
-std::size_t CudaDenseDirectPlan::source_count() const noexcept { return 0; }
-
-std::size_t CudaDenseDirectPlan::target_count() const noexcept { return 0; }
-
-std::size_t CudaDenseDirectPlan::tensor_memory_bytes() const noexcept
-{
-  return 0;
-}
-
-std::size_t CudaDenseDirectPlan::persistent_device_bytes() const noexcept
-{
-  return 0;
-}
-
-StaticPrecision CudaDenseDirectPlan::static_precision() const noexcept
-{
-  return StaticPrecision::Float64;
-}
-
-void CudaDirectPlan::evaluate(std::span<const Vec3>,
-                              std::span<PotentialField>, OutputFlags) {
-  throw std::runtime_error("CUDA backend is unavailable");
-}
-
-std::size_t CudaDirectPlan::source_count() const noexcept { return 0; }
-
-std::size_t CudaDirectPlan::target_count() const noexcept { return 0; }
-
-const CudaPlanStatistics &CudaDirectPlan::statistics() const noexcept {
-  static const CudaPlanStatistics empty{};
-  return empty;
-}
-
-const CudaEvaluationTimings &
-CudaDirectPlan::evaluation_timings() const noexcept {
-  static const CudaEvaluationTimings empty{};
-  return empty;
 }
 
 CudaFullPlan::CudaFullPlan(const CudaFullPlanData &) {
@@ -250,15 +179,6 @@ const CudaPlanStatistics &CudaP2PPlan::statistics() const noexcept {
 const CudaEvaluationTimings &CudaP2PPlan::timings() const noexcept {
   static const CudaEvaluationTimings empty{};
   return empty;
-}
-
-std::vector<PotentialField> cuda_direct_p2p_reference(std::span<const Vec3>,
-                                                      std::span<const Vec3>,
-                                                      std::span<const Vec3>,
-                                                      OutputFlags,
-                                                      std::span<const int>) {
-  throw std::runtime_error(
-      "CUDA direct P2P requested, but CDFMM_ENABLE_CUDA is OFF");
 }
 
 void CudaFullPlan::copy_far_fields(std::span<Vec3>) const {

@@ -1,5 +1,9 @@
 add_executable(cdfmm_tests
   test_foundational_headers.cpp
+  test_cuda_direct_headers.cpp
+  test_cuda_dense_direct_headers.cpp
+  test_cuda_legacy_direct_header.cpp
+  test_cuda_legacy_cuboid_header.cpp
   test_multi_index.cpp
   test_p2p.cpp
   test_taylor_jet.cpp

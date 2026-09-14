@@ -9,6 +9,7 @@
 #include "cdfmm/plan/static_plan.hpp"
 #include "cdfmm/timings.hpp"
 #include "cdfmm/uniform_fmm.hpp"
+#include "backend/cuda/common/runtime.hpp"
 
 namespace cdfmm {
 
@@ -127,8 +128,5 @@ private:
     struct Implementation;
     Implementation* implementation_{nullptr};
 };
-
-[[nodiscard]] bool cuda_runtime_available() noexcept;
-[[nodiscard]] std::string cuda_runtime_description();
 
 } // namespace cdfmm

@@ -7,6 +7,10 @@
 #include <cmath>
 #include <vector>
 
+// Canonical CUDA direct interfaces.
+#include "cdfmm/backend/cuda/direct.hpp"
+#include "cdfmm/backend/cuda/dense_direct.hpp"
+
 // Canonical foundational interfaces.
 #include "cdfmm/core/output_flags.hpp"
 #include "cdfmm/core/precision.hpp"
@@ -49,6 +53,8 @@
 // Pre-v0.2 compatibility include paths.
 #include "cdfmm/adaptive_tree.hpp"
 #include "cdfmm/coefficients.hpp"
+#include "cdfmm/cuda_cuboid.hpp"
+#include "cdfmm/cuda_direct.hpp"
 #include "cdfmm/geometry.hpp"
 #include "cdfmm/laplace_derivatives.hpp"
 #include "cdfmm/multi_index.hpp"

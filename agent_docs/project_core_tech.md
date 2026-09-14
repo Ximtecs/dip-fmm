@@ -79,6 +79,13 @@ portable production static plan. oneMKL accelerates only grouped static M2L
 M2M, L2L, and L2P on the CPU while CUDA executes static M2L and list-1 P2P.
 `CudaFull` keeps the complete repeated field path and static state on the
 device. `DenseDirectPlan` and `CudaDirectPlan` are exact O(N^2) references.
+The CUDA direct references now have canonical public interfaces under
+`include/cdfmm/backend/cuda/`; point execution and dense cuBLAS execution are
+implemented under `src/backend/cuda/direct/`, shared CUDA error/runtime
+facilities under `src/backend/cuda/common/`, and non-CUDA stubs under
+`src/backend/cuda/stub/`. The legacy flat CUDA direct/cuboid headers remain
+compatibility façades. P2P, M2L, and full-FMM execution remain in
+`src/cuda_fmm.cu`.
 
 For repeated CUDA-full evaluation, geometry/operators/scratch are uploaded at
 construction; only changing moments cross H2D and only the final user-ordered

@@ -38,11 +38,14 @@ implementation. Architectural work occurs on `refactor/architecture-v0.2`.
 Never move, recreate, or rewrite the tag or preserved branch.
 
 The foundational `core`, `math`, `geometry`, and `tree` layers, followed by the
-operator/static-plan step, are now organised. Preserve the flat forwarding
-headers until an explicit compatibility cleanup. Dynamic mathematical
-operator implementations live under `src/operators/*`; `src/operators.cpp`
-is compatibility-only. Future work may address backends, orchestration, cache,
-or bindings only when explicitly authorised. Geometry packing, grain
+operator/static-plan step and initial backend boundaries, are now organised.
+Preserve the flat forwarding headers until an explicit compatibility cleanup.
+Dynamic mathematical operator implementations live under `src/operators/*`;
+`src/operators.cpp` is compatibility-only. CUDA direct execution and shared
+CUDA runtime/error infrastructure now have explicit homes under
+`src/backend/cuda/`; P2P, M2L, and full-FMM CUDA decomposition remain future
+backend work. Further backend, orchestration, cache, or binding changes are
+authorised only when explicitly scoped. Geometry packing, grain
 generation/discretisation, and prism/tetrahedron refinement remain future
 work.
 
@@ -196,7 +199,7 @@ Use `include/cdfmm/` primarily for deliberately public, supported interfaces.
 Keep implementation-only headers and facilities below `src/`. Do not expose a
 header merely because multiple translation units use it. CUDA `.cuh` files,
 device helpers, kernels, launch helpers, and RAII implementation should
-normally remain internal below the future `src/backend/cuda/` hierarchy.
+normally remain internal below the `src/backend/cuda/` hierarchy.
 
 Preserve source and binary compatibility during the behaviour-preserving
 refactor unless a separate API change is explicitly approved.

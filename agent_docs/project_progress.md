@@ -1,5 +1,38 @@
 # Project progress
 
+## CUDA direct backend extraction closure — 2026-09-14
+
+The accepted CUDA direct extraction gives point and dense direct execution
+explicit backend homes without changing intended behaviour or performance:
+
+- `include/cdfmm/backend/cuda/direct.hpp` and
+  `include/cdfmm/backend/cuda/dense_direct.hpp` are the canonical public
+  headers;
+- `include/cdfmm/cuda_direct.hpp` and `include/cdfmm/cuda_cuboid.hpp` remain
+  compatibility façades;
+- `src/backend/cuda/common/` owns shared internal CUDA error/runtime helpers;
+- `src/backend/cuda/direct/` owns point O(N^2) and dense cuBLAS direct
+  execution; and
+- `src/backend/cuda/stub/direct.cpp` owns non-CUDA direct stubs.
+
+`src/cuda_fmm.cu` retains P2P, M2L, and full-FMM execution. No decomposition
+of those paths was performed, and no behaviour/performance change is intended.
+
+Trusted validation for this closure:
+
+- fresh development configure/build: 59 targets;
+- focused direct/header/stub coverage: 8/8, including the exact disabled-stub
+  behaviour case;
+- full CPU CTest: 189/189, with expected skips #16, #51, #59, and #63;
+- fresh CUDA 13.2 configure with explicit architecture 75 and cached Catch2
+  source; and
+- full CUDA build: 198 targets, including tests, Python, and benchmarks.
+
+The independent full CUDA CTest run reported 189/189, but CUDA numerical/runtime
+cases only exercised their unavailable-device guards because `/dev/nvidia` was
+absent and `nvidia-smi` could not reach the driver. Ownership and `nm` audits,
+and `git diff --check`, were clean. `Article1/` remains untouched.
+
 ## FMM, CPU, and oneMKL execution boundaries
 
 High-level FMM implementation now lives under `src/fmm`: construction and

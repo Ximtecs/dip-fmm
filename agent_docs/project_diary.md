@@ -1,5 +1,27 @@
 # Project diary
 
+## 2026-09-14 — CUDA direct backend extraction closure
+
+Accepted the CUDA direct/common ownership split. Canonical public interfaces
+are `include/cdfmm/backend/cuda/direct.hpp` and
+`include/cdfmm/backend/cuda/dense_direct.hpp`; flat
+`cuda_direct.hpp`/`cuda_cuboid.hpp` remain compatibility façades. Shared CUDA
+error/runtime facilities live in `src/backend/cuda/common/`, point O(N^2) and
+dense cuBLAS execution in `src/backend/cuda/direct/`, and non-CUDA direct
+stubs in `src/backend/cuda/stub/direct.cpp`. `src/cuda_fmm.cu` retains P2P,
+M2L, and full-FMM execution. No behaviour or performance change is intended.
+
+Trusted validation: fresh dev configure/build completed 59 targets; focused
+direct/header/stub coverage passed 8/8, including the exact disabled-stub
+behaviour case; full CPU CTest passed 189/189 with expected skips
+#16/#51/#59/#63. A fresh CUDA 13.2 configure with explicit architecture 75 and
+cached Catch2 source succeeded, followed by a 198-target CUDA build including
+tests, Python, and benchmarks. Independent full CUDA CTest reported 189/189,
+but numerical/runtime
+cases only reached unavailable-device guards because `/dev/nvidia` was absent
+and `nvidia-smi` could not reach the driver. Ownership/`nm` audits and
+`git diff --check` were clean. `Article1/` was untouched.
+
 ## 2026-09-11 — FMM, CPU, and oneMKL execution boundaries
 
 Established explicit execution boundaries without changing the public FMM

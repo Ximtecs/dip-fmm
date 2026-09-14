@@ -2,6 +2,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers.hpp>
 
 #include <array>
 #include <cmath>
@@ -16,6 +17,30 @@
 #include "cdfmm/validation.hpp"
 
 using namespace cdfmm;
+
+TEST_CASE("CUDA direct stubs preserve disabled-build behaviour", "[cuda]")
+{
+    if (cuda_compiled()) {
+        SUCCEED("CUDA is compiled in; disabled-build stubs are not active");
+        return;
+    }
+
+    REQUIRE_FALSE(cuda_direct_available());
+    REQUIRE_FALSE(cuda_dense_direct_available());
+
+    REQUIRE_THROWS_WITH(
+        CudaDirectPlan(std::span<const Vec3>{}, std::span<const Vec3>{}),
+        "CUDA backend requested, but CDFMM_ENABLE_CUDA is OFF");
+    REQUIRE_THROWS_WITH(
+        CudaDenseDirectPlan(
+            std::span<const Vec3>{}, std::span<const Vec3>{}),
+        "CUDA dense direct backend requested, but CDFMM_ENABLE_CUDA is OFF");
+    REQUIRE_THROWS_WITH(
+        cuda_direct_p2p_reference(
+            std::span<const Vec3>{}, std::span<const Vec3>{},
+            std::span<const Vec3>{}),
+        "CUDA direct P2P requested, but CDFMM_ENABLE_CUDA is OFF");
+}
 
 TEST_CASE("CUDA M2L/P2P compatibility names resolve to one backend", "[cuda]")
 {

@@ -2,8 +2,9 @@
 
 Inherit `../AGENTS.md`. Foundational math, geometry, tree, operator, and plan
 implementations now have subsystem directories. High-level FMM orchestration
-and CPU/oneMKL execution also have explicit homes; cache, bindings, and CUDA
-remain transitional.
+and CPU/oneMKL execution also have explicit homes. CUDA direct execution and
+shared CUDA runtime/error infrastructure now have explicit homes; P2P, M2L,
+and full-FMM CUDA code remain transitional.
 
 ## Current structure
 
@@ -24,8 +25,12 @@ src/
 |-- backend/cpu/near_field.cpp              CPU list-1 execution
 |-- backend/cpu/static_plan_apply.cpp       portable static-plan execution
 |-- backend/mkl/{m2l,direct/dense}.cpp      oneMKL execution
+|-- backend/cuda/common/error.hpp           shared CUDA error helpers
+|-- backend/cuda/common/runtime.{hpp,cu}    CUDA runtime helpers
+|-- backend/cuda/direct/{direct,dense}.cu   CUDA point/dense direct execution
+|-- backend/cuda/stub/direct.cpp            non-CUDA direct stubs
 |-- cache.cpp                              cache identity and persistence
-|-- cuda_fmm.cu                            all CUDA implementation
+|-- cuda_fmm.cu                            transitional P2P/M2L/full-FMM CUDA
 |-- cuda_fmm_stub.cpp                      non-CUDA API stubs
 |-- c_api.cpp                              C adapter
 |-- parameter_selection.cpp, validation.cpp
@@ -52,7 +57,8 @@ Do not create target directories before substantive code belongs in them.
 ## Boundaries and pressure points
 
 - `cuda_fmm.cu`, `fmm/uniform_fmm.cpp`, and `cache.cpp` are known
-  decomposition candidates. Do not split them without a later explicitly
+  decomposition candidates. The direct CUDA extraction is accepted; do not
+  split the remaining CUDA P2P/M2L/full-FMM code without a later explicitly
   scoped step.
 - Separate mathematical operator construction, canonical plans, derived
   execution packings, and backend execution in that order during later work.
