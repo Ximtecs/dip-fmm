@@ -42,15 +42,17 @@ operator/static-plan step and backend boundaries, are now organised. Preserve
 the flat forwarding headers until an explicit compatibility cleanup. Dynamic
 mathematical operator implementations live under `src/operators/*`;
 `src/operators.cpp` is compatibility-only. CUDA direct execution, complete
-P2P and M2L backends, shared CUDA runtime/error infrastructure, and far-field
-execution now have explicit homes under `src/backend/cuda/`. `CudaFullPlan`
-still owns changing evaluation state, stream/event/timing and near/far
-orchestration, combination/reordering, and D2H transfer; simplifying that
-orchestration/resource boundary is the next explicitly scoped task, so the
-full-FMM decomposition is not complete. Further backend, orchestration, cache,
-or binding changes are authorised only when explicitly scoped. Geometry
-packing, grain generation/discretisation, and prism/tetrahedron refinement
-remain future work.
+P2P, M2L, far-field, and full-FMM backends now have explicit homes under
+`src/backend/cuda/`: far-field execution is under
+`src/backend/cuda/far_field/`, while complete FMM declarations and orchestration
+are under `src/backend/cuda/fmm/`. `CudaFullPlan` still owns changing
+evaluation state, stream/event/timing and near/far orchestration,
+combination/reordering, and D2H transfer. The next Phase 1 backend task is the
+CPU decomposition, approximately under
+`src/backend/cpu/{direct,p2p,m2l,far_field}/`, before final high-level
+`UniformFmm` cleanup. Further backend, orchestration, cache, or binding changes
+are authorised only when explicitly scoped. Geometry packing, grain
+generation/discretisation, and prism/tetrahedron refinement remain future work.
 
 ## Repository memory
 

@@ -1,5 +1,30 @@
 # Latest session work
 
+## 2026-09-14 — CUDA full-FMM backend ownership
+
+Moved complete CUDA FMM declarations and orchestration to
+`src/backend/cuda/fmm/{internal.hpp,plan.cu}` and moved non-CUDA full-FMM stubs
+to `src/backend/cuda/stub/fmm.cpp`. The root `cuda_fmm.cu` and
+`cuda_fmm_stub.cpp` implementation homes are removed; `cuda_fmm_plan.hpp` is
+now a forwarding shim. Far-field shared P2M/L2P mechanics live in
+`entries.cuh`, M2M/L2L mechanics in `translation.cuh`, and the far-field
+internal header owns `CudaTranslationInteraction` without depending on the
+full-FMM header. CPU decomposition remains the next backend task.
+
+Validation handoff for this completed closure: the initial far-field sanity
+and ownership audit was clean, with the focused CUDA-configured probe passing
+5/5; a fresh CPU `dev` configure/build completed 55 targets and full CTest
+completed 193/193 with expected optional skips #16, #51, #59, and #63. A
+fresh CUDA 13.2 SM75 configure produced a successful 205-step build covering
+`cdfmm_core`, `cdfmm_tests`, the Python extension, `cdfmm-precompute`,
+`benchmark_uniform_fmm`, `benchmark_p2p`, and
+`benchmark_cache_initialisation`. Full CUDA-configured CTest completed
+193/193; runtime CUDA cases took their unavailable-device skips because
+`nvidia-smi` could not communicate with the driver. The built Python module
+imported successfully, and diff/ownership audits were clean. No GPU numerical
+runtime result is claimed. Unrelated `Article1/` and notebook changes remain
+preserved and outside this task.
+
 ## 2026-09-14 — CUDA far-field execution extraction closure
 
 The accepted CUDA far-field execution extraction is complete. Internal

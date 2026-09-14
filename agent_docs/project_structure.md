@@ -2,8 +2,8 @@
 
 The current checkout has substantive homes for foundational layers,
 operators/static plans, high-level FMM orchestration, portable CPU execution,
-oneMKL execution, and CUDA common/direct/P2P/M2L/far-field execution. Full-FMM,
-cache, and binding layers remain partly flat; the target taxonomy in
+oneMKL execution, and the complete CUDA common/direct/P2P/M2L/far-field/FMM
+backend hierarchy. Cache and binding layers remain partly flat; the target taxonomy in
 `docs/architecture.md` is not permission to create empty directories or perform
 an unauthorised refactor.
 
@@ -47,15 +47,15 @@ src/
   backend/cuda/stub/p2p.cpp                                     non-CUDA P2P stubs
   backend/cuda/m2l/{internal.hpp,plan.cu}                       CUDA M2L backend
   backend/cuda/stub/m2l.cpp                                     non-CUDA M2L stubs
-  backend/cuda/far_field/{internal.hpp,executor.cu}              CUDA far-field backend
+  backend/cuda/far_field/{internal.hpp,executor.cu,entries.cuh,translation.cuh}
+                                                                CUDA far-field backend
+  backend/cuda/fmm/{internal.hpp,plan.cu}                       complete CUDA FMM
   fmm/{uniform_fmm,far_field}.cpp                               lifecycle and pass orchestration
   fmm/uniform_fmm_internal.hpp                                  opaque backend owner adapters
   tree/common/static_topology.cpp                              canonical topology validation
   tree/uniform/static_topology_adapter.cpp                     UniformTree topology adapter
   periodic.cpp, cache.cpp, validation.cpp                       support boundaries
-  cuda_fmm.cu, cuda_*_plan.hpp, cuda_fmm_stub.cpp                changing full-FMM
-                                                                state, orchestration,
-                                                                and stubs
+  cuda_fmm_plan.hpp                                              compatibility shim
   c_api.cpp                                                     C ABI adapter
 python/bindings.cpp                                             pybind11 module
 fortran/cdfmm_fortran.f90                                       ISO_C_BINDING wrapper
@@ -143,12 +143,20 @@ a forwarding compatibility shim. `src/backend/cuda/m2l/{internal.hpp,plan.cu}`
 owns the reusable FP64/FP32 device representation, kernels, bounded scratch
 policy, lifecycle, and statistics used by both standalone `CudaM2LPlan` and
 `CudaFullPlan`. The far-field executor at
-`src/backend/cuda/far_field/{internal.hpp,executor.cu}` owns immutable FP32/
+`src/backend/cuda/far_field/{internal.hpp,executor.cu,entries.cuh,translation.cuh}` owns immutable FP32/
 FP64 P2M/L2P entries, coefficient degrees, M2M/L2L matrices/interactions/
-metadata, uploads, lifecycle/statistics, and kernels. It has no public API,
-stub, or new library. `cuda_fmm.cu` retains changing moments/coefficient/field
-buffers, permutations, P2P and separate M2L executor wiring, streams/events/
-timing, near/far overlap, combination/reordering, and D2H transfer.
+metadata, uploads, lifecycle/statistics, and kernels. `entries.cuh` groups the
+shared P2M/L2P entry application mechanics and `translation.cuh` groups shared
+M2M/L2L translation mechanics. It has no public API, stub, or new library.
+Complete CUDA FMM declarations and orchestration now live in
+`src/backend/cuda/fmm/{internal.hpp,plan.cu}`, which retains changing moments/
+coefficient/field buffers, permutations, P2P and separate M2L executor wiring,
+streams/events/timing, near/far overlap, combination/reordering, and D2H
+transfer. `src/cuda_fmm_plan.hpp` is a forwarding shim only.
+
+The CPU backend remains a later Phase 1 architecture task. Its intended
+responsibility taxonomy is `backend/cpu/{direct,p2p,m2l,far_field}/`; no CPU
+files are moved by this CUDA step.
 
 ## Validation and documentation areas
 

@@ -5,8 +5,7 @@ implementations now have subsystem directories. High-level FMM orchestration
 and CPU/oneMKL execution also have explicit homes. CUDA direct execution,
 complete CUDA P2P execution, shared CUDA runtime/error infrastructure, and
 far-field execution now have explicit homes, including the extracted M2L
-backend; remaining `CudaFullPlan` orchestration and resource ownership remain
-transitional.
+backend; complete CUDA FMM orchestration now has an explicit backend home.
 
 ## Current structure
 
@@ -35,13 +34,13 @@ src/
 |-- backend/cuda/stub/p2p.cpp               non-CUDA P2P stubs
 |-- backend/cuda/m2l/{internal.hpp,plan.cu} CUDA M2L plan, kernels, and state
 |-- backend/cuda/stub/m2l.cpp               non-CUDA M2L stubs
-|-- backend/cuda/far_field/{internal.hpp,executor.cu}
+|-- backend/cuda/far_field/{internal.hpp,executor.cu,entries.cuh,translation.cuh}
 |                                          CUDA P2M/L2P entries and M2M/L2L
-|                                          execution state and kernels
+|                                          execution state and shared kernels
+|-- backend/cuda/fmm/{internal.hpp,plan.cu} complete CUDA FMM orchestration
+|-- backend/cuda/stub/fmm.cpp                 non-CUDA full-FMM stubs
 |-- cache.cpp                              cache identity and persistence
-|-- cuda_fmm.cu                            changing full-FMM state, backend
-|                                          wiring, and orchestration
-|-- cuda_fmm_stub.cpp                      non-CUDA API stubs
+|-- cuda_fmm_plan.hpp                      forwarding compatibility shim
 |-- c_api.cpp                              C adapter
 |-- parameter_selection.cpp, validation.cpp
 `-- *.hpp                                  implementation-only support
@@ -66,11 +65,10 @@ Do not create target directories before substantive code belongs in them.
 
 ## Boundaries and pressure points
 
-- `cuda_fmm.cu`, `fmm/uniform_fmm.cpp`, and `cache.cpp` are known
-  decomposition candidates. CUDA direct, complete P2P, M2L, and far-field
-  execution extraction are accepted; do not simplify the remaining
-  `CudaFullPlan` orchestration/resource ownership without a later explicitly
-  scoped step.
+- `fmm/uniform_fmm.cpp` and `cache.cpp` remain known decomposition candidates.
+  CUDA direct, complete P2P, M2L, far-field, and full-FMM execution now have
+  explicit homes; do not simplify their resource ownership without a later
+  explicitly scoped step.
 - Separate mathematical operator construction, canonical plans, derived
   execution packings, and backend execution in that order during later work.
 - Tree code owns spatial hierarchy/topology, not CUDA execution or

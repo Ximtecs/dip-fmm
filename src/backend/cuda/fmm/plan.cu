@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "cuda_fmm_plan.hpp"
+#include "backend/cuda/fmm/internal.hpp"
 #include "profile.hpp"
 #include "cuda_m2l_plan.hpp"
 #include "backend/cuda/common/error.hpp"

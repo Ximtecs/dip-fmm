@@ -6,9 +6,9 @@ repository. Step 2 made the foundational `core`, `math`, `geometry`, and
 `tree` layout concrete; operators, static plans, FMM orchestration, portable
 CPU and oneMKL execution are now also structured. Cache and bindings remain
 transitional layers. CUDA direct execution, complete P2P and M2L execution,
-shared CUDA infrastructure, and far-field execution now have explicit
-internal homes. The remaining `CudaFullPlan` orchestration and resource
-simplification remain deferred; the full-FMM decomposition is not complete.
+shared CUDA infrastructure, far-field execution, and complete FMM orchestration
+now have explicit internal homes. CPU backend decomposition and final
+high-level cleanup remain deferred.
 
 ## Design rules
 
@@ -256,7 +256,7 @@ dip-fmm/
 |   |       |-- p2p/          # complete extracted P2P backend
 |   |       |-- m2l/          # reusable extracted M2L backend
 |   |       |-- far_field/    # extracted CUDA far-field execution
-|   |       `-- fmm/          # future full-FMM backend
+|   |       `-- fmm/          # complete CUDA FMM orchestration
 |   |-- fmm/
 |   |-- cache/
 |   `-- bindings/
@@ -317,8 +317,9 @@ src/
 |-- backend/mkl/direct/dense.cpp               oneMKL dense-direct execution
 |-- backend/cuda/p2p/{internal.hpp,plan.cu}    complete CUDA P2P backend
 |-- backend/cuda/m2l/{internal.hpp,plan.cu}    reusable CUDA M2L backend
-`-- backend/cuda/far_field/{internal.hpp,executor.cu}
+|-- backend/cuda/far_field/{internal.hpp,executor.cu,entries.cuh,translation.cuh}
                                                 CUDA far-field execution
+`-- backend/cuda/fmm/{internal.hpp,plan.cu}     complete CUDA FMM orchestration
 ```
 
 The compatibility headers `cdfmm/operators.hpp` and
@@ -366,11 +367,15 @@ lifecycles; standalone `CudaM2LPlan` and `CudaFullPlan` consume that same
 executor. The non-CUDA boundary is `src/backend/cuda/stub/m2l.cpp`.
 The far-field backend is internal only: `src/backend/cuda/far_field/` owns the
 immutable FP32/FP64 P2M and L2P entries, coefficient degrees, M2M/L2L matrices,
-interactions and metadata, uploads, lifecycle, statistics, and kernels. It
-adds no public API, stub, or new library. `src/cuda_fmm.cu` retains changing
-moments/coefficient/field buffers, permutations, P2P and separate M2L executor
-wiring, streams/events/timing, near/far overlap, combination/reordering, and
-D2H transfer. Direct, P2P, and M2L remain their authoritative backends.
+interactions and metadata, uploads, lifecycle, statistics, and kernels.
+`entries.cuh` owns shared P2M/L2P entry application mechanics, while
+`translation.cuh` owns shared M2M/L2L translation mechanics. It adds no public
+API, stub, or new library. Complete CUDA FMM declarations and orchestration are
+in `src/backend/cuda/fmm/{internal.hpp,plan.cu}`; changing moments/coefficient/
+field buffers, permutations, P2P and separate M2L executor wiring,
+streams/events/timing, near/far overlap, combination/reordering, and D2H
+transfer remain there. Direct, P2P, M2L, and far-field remain authoritative
+execution backends.
 These moves preserve behaviour and performance, including resource lifetime,
 precision, launch, and transfer semantics.
 
@@ -417,7 +422,8 @@ transitional layout:
   selection, mutable state, CUDA upload, evaluation, and inspection. The
   oneMKL execution packing is now delegated behind an opaque backend owner.
 - `fmm/far_field.cpp` contains CPU expansion sequencing and no longer contains
-  oneMKL vendor mechanics; CUDA-full orchestration remains in `cuda_fmm.cu`.
+  oneMKL vendor mechanics; complete CUDA FMM orchestration is in
+  `backend/cuda/fmm/plan.cu`.
   `periodic.cpp` includes `uniform_tree.hpp`, and `parameter_selection.hpp`
   includes the complete `uniform_fmm.hpp` API.
 - `cache.cpp` implements low-level persistence, identities and validation as
@@ -429,12 +435,11 @@ transitional layout:
 - `python/bindings.cpp` adapts nearly every layer in one translation unit, and
   the C API implementation depends directly on the high-level FMM type.
 - the root CMake target registers the CPU subsystems together with explicit
-  CUDA common/direct/P2P/M2L/far-field units, while `cuda_fmm.cu` retains
-  changing full-FMM state and far-field orchestration; CUDA libraries are
-  currently propagated from `cdfmm_core` to consumers.
+  CUDA common/direct/P2P/M2L/far-field/FMM units; CUDA libraries are currently
+  propagated from `cdfmm_core` to consumers.
 
-The largest responsibility-review candidates are `cuda_fmm.cu` (retaining
-full-FMM orchestration and resource wiring), `fmm/uniform_fmm.cpp` (about 3,600),
+The largest responsibility-review candidates are `backend/cuda/fmm/plan.cu`
+(retaining full-FMM orchestration and resource wiring), `fmm/uniform_fmm.cpp` (about 3,600),
 `cache.cpp` (about 1,800), and
 `python/bindings.cpp` (about 1,500). These measurements locate remaining audit
 work; they do not require mechanical splitting.
@@ -481,13 +486,13 @@ work; they do not require mechanical splitting.
   `src/backend/cpu`; and grouped oneMKL M2L packing, reusable scratch, vendor
   calls, thread control, and availability live under `src/backend/mkl`.
 - CUDA direct/common execution now lives under `src/backend/cuda/{common,direct}`
-  and the complete P2P, M2L, and far-field backends under
-  `src/backend/cuda/{p2p,m2l,far_field}/`,
+  and the complete P2P, M2L, far-field, and full-FMM backends under
+  `src/backend/cuda/{p2p,m2l,far_field,fmm}/`,
   with canonical public headers under `include/cdfmm/backend/cuda/` and
   legacy forwarding façades retained. The reusable M2L executor is consumed
-  by both standalone `CudaM2LPlan` and `CudaFullPlan`; `cuda_fmm.cu` coordinates
-  and enqueues the P2M/M2M/L2L/L2P stages and full-FMM orchestration plus
-  internal backend wiring, while static execution lives in
+  by both standalone `CudaM2LPlan` and `CudaFullPlan`; `backend/cuda/fmm/plan.cu`
+  coordinates and enqueues the P2M/M2M/L2L/L2P stages and full-FMM orchestration
+  plus internal backend wiring, while static execution lives in
   `backend/cuda/far_field`.
 
 The remaining transitional seam is `StaticFmmTopology`: it adapts tree
@@ -498,9 +503,9 @@ boundary without making the tree depend on a particular P2P packing.
 
 ### Later: remaining backend and CUDA work
 
-- Keep the accepted direct/common/P2P/M2L/far-field extraction stable while
-  simplifying the remaining `CudaFullPlan` orchestration and resource
-  ownership in `cuda_fmm.cu`; this next task is not yet complete.
+- Keep the accepted direct/common/P2P/M2L/far-field/full-FMM extraction stable.
+  The next backend-architecture task is the CPU decomposition, approximately
+  under `backend/cpu/{direct,p2p,m2l,far_field}/`.
 - Preserve the separation of immutable far-field execution state from mutable
   moments, coefficient/field buffers, streams/events, timing, overlap,
   combination/reordering, and D2H resources as that work proceeds.

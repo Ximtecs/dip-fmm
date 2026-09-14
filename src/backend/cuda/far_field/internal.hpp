@@ -1,16 +1,33 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#ifdef CDFMM_ENABLE_CUDA
 #include <cuda_runtime_api.h>
+#else
+// Keep the internal declaration header usable by the structured non-CUDA
+// full-FMM stub without requiring a CUDA toolkit during host-only builds.
+using cudaStream_t = void *;
+#endif
 
 #include <span>
 #include <vector>
 
 #include "cdfmm/plan/static_coefficient.hpp"
 #include "cdfmm/timings.hpp"
-#include "cuda_fmm_plan.hpp"
 
-namespace cdfmm::cuda_far_field_detail {
+namespace cdfmm {
+
+/** @brief One compact node-to-node translation using a shared matrix. */
+struct CudaTranslationInteraction {
+  int source_node{0};
+  int target_node{0};
+  int matrix_id{0};
+  int level{0};
+};
+
+namespace cuda_far_field_detail {
+
+inline constexpr int far_field_threads = 256;
 
 /** @brief Host view of immutable CUDA P2M/M2M/L2L/L2P execution data. */
 template <typename Entry> struct CudaFarFieldStaticData {
@@ -66,4 +83,5 @@ extern template class CudaFarFieldExecutionPlan<double, StaticOperatorEntry>;
 extern template class CudaFarFieldExecutionPlan<float,
                                                 FloatStaticOperatorEntry>;
 
-} // namespace cdfmm::cuda_far_field_detail
+} // namespace cuda_far_field_detail
+} // namespace cdfmm

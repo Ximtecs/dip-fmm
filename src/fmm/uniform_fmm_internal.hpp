@@ -3,7 +3,7 @@
 
 #include "cdfmm/uniform_fmm.hpp"
 #include "backend/mkl/m2l.hpp"
-#include "cuda_fmm_plan.hpp"
+#include "backend/cuda/fmm/internal.hpp"
 #include "cuda_m2l_plan.hpp"
 #include "cuda_p2p_plan.hpp"
 

@@ -3,7 +3,7 @@
 #include "cdfmm/cuda_direct.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
-#include "cuda_fmm_plan.hpp"
+#include "backend/cuda/fmm/internal.hpp"
 
 #include <algorithm>
 #include <chrono>
