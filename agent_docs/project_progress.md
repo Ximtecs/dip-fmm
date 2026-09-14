@@ -1,5 +1,41 @@
 # Project progress
 
+## CUDA far-field execution extraction closure — 2026-09-14
+
+The accepted CUDA far-field ownership split is complete. The internal
+`src/backend/cuda/far_field/{internal.hpp,executor.cu}` package owns immutable
+FP32/FP64 P2M and L2P entries, coefficient degrees, M2M/L2L matrices,
+interactions and metadata, uploads/lifecycle/statistics, and the associated
+kernels. It adds no public API, stub, or new library. `CudaFullPlan` retains
+changing moments/coefficient/field buffers, permutations, P2P and separate M2L
+executor wiring, streams/events/timing, near/far overlap,
+combination/reordering, and D2H transfer. Direct, P2P, and M2L remain their
+authoritative backends. This is not the end of the `CudaFullPlan`
+decomposition: orchestration and resource simplification are the next scoped
+task.
+
+Validation truth for this closure:
+
+- the initial M2L sanity ownership audit was clean and its focused 14-case
+  probe passed;
+- a fresh CPU development configure/build completed 55 steps, followed by
+  full CTest 193/193 with expected skips #16, #51, #59, and #63;
+- a fresh CUDA configure used `module cuda/13.2` (`nvcc 13.2.78`) for SM75;
+  the preset presented a 206-step graph and compiled the requested
+  `cdfmm_core`, tests, Python extension, `cdfmm-precompute`, and three benchmark
+  targets, but failed at its final install step because the Conda
+  site-packages directory was read-only in the sandbox; explicitly requested
+  target builds then succeeded;
+- focused CUDA CTest completed 30/30 with expected unavailable-device skips
+  #16, #59, and #63, and full CUDA-configured CTest completed 193/193 with
+  expected skips #16, #51, #59, and #63;
+- `git diff --check` and the independent code/ownership review passed; and
+- `nvidia-smi` could not communicate with the driver, so no numerical GPU
+  runtime execution is claimed.
+
+The untracked `Article1/` directory and unrelated notebook changes remain
+untouched and outside this task.
+
 ## CUDA M2L backend extraction closure — 2026-09-14
 
 The accepted CUDA M2L ownership split is complete. The canonical public

@@ -90,8 +90,17 @@ compatibility façades. The complete P2P backend is in
 `include/cdfmm/backend/cuda/m2l.hpp`, a forwarding compatibility shim at
 `src/cuda_m2l_plan.hpp`, and non-CUDA stubs at
 `src/backend/cuda/stub/m2l.cpp`. Its shared executor is consumed by both
-standalone `CudaM2LPlan` and `CudaFullPlan`; `src/cuda_fmm.cu` retains
-P2M/M2M/L2L/L2P and full-FMM orchestration.
+standalone `CudaM2LPlan` and `CudaFullPlan`; `src/cuda_fmm.cu` coordinates the
+full-FMM stages and orchestration and consumes the separate executors for
+static execution. The internal CUDA far-field
+executor is in `src/backend/cuda/far_field/{internal.hpp,executor.cu}`. It
+owns immutable FP32/FP64 P2M/L2P entries, coefficient degrees, M2M/L2L
+matrices/interactions/metadata, uploads, lifecycle/statistics, and kernels;
+it introduces no public API, stub, or new library. `CudaFullPlan` retains
+changing moments/coefficient/field buffers, permutations, P2P and separate M2L
+executor wiring, streams/events/timing, near/far overlap,
+combination/reordering, and D2H transfer. Direct, P2P, and M2L remain their
+authoritative backends.
 
 For repeated CUDA-full evaluation, geometry/operators/scratch are uploaded at
 construction; only changing moments cross H2D and only the final user-ordered

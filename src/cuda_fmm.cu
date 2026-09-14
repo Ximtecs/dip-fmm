@@ -5,6 +5,7 @@
 #include "cuda_m2l_plan.hpp"
 #include "backend/cuda/common/error.hpp"
 #include "backend/cuda/common/runtime.hpp"
+#include "backend/cuda/far_field/internal.hpp"
 #include "backend/cuda/m2l/internal.hpp"
 #include "backend/cuda/p2p/internal.hpp"
 
@@ -30,12 +31,13 @@ using cuda_p2p_detail::upload_cuda_bsr;
 using cuda_p2p_detail::upload_cuda_canonical;
 using cuda_p2p_detail::upload_cuda_signed_dictionary;
 using cuda_m2l_detail::CudaM2LExecutionPlan;
+using cuda_far_field_detail::CudaFarFieldExecutionPlan;
 
 namespace {
 
-// This translation unit retains far-field kernels and complete FMM
-// orchestration. List-1 execution is provided by the CUDA P2P backend while
-// the separate streams retain near/far overlap.
+// This translation unit retains complete FMM orchestration. Far-field kernels
+// are provided by the CUDA far-field backend, while list-1 execution is
+// provided by the CUDA P2P backend; separate streams retain near/far overlap.
 
 using cuda_detail::check_cuda;
 
@@ -48,60 +50,6 @@ __global__ void permute_moments_kernel(const Vector *input,
     sorted[index] = input[permutation[index]];
     }
 }
-
-template <typename Entry, typename Scalar>
-__global__ void apply_entries_kernel(const Entry *entries,
-                                     const std::size_t count,
-                                     const Scalar *input, Scalar *output) {
-  const std::size_t index = blockIdx.x * blockDim.x + threadIdx.x;
-  if (index < count) {
-    const Entry entry = entries[index];
-        atomicAdd(output + entry.output, entry.value * input[entry.input]);
-  }
-}
-
-template <typename Entry, typename Scalar>
-__global__ void
-apply_shared_translation_kernel(const Entry *matrices,
-                                const CudaTranslationInteraction *interactions,
-                                const std::size_t interaction_count,
-                                const int entries_per_matrix,
-                                const int coefficient_count,
-                                const int* coefficient_degrees,
-                                const int level,
-                                const Scalar *input, Scalar *output) {
-  const std::size_t item = blockIdx.x * blockDim.x + threadIdx.x;
-  const std::size_t item_count = interaction_count * entries_per_matrix;
-  if (item >= item_count) {
-    return;
-  }
-  const std::size_t interaction_index = item / entries_per_matrix;
-  const CudaTranslationInteraction interaction =
-      interactions[interaction_index];
-  if (interaction.level != level) {
-    return;
-  }
-  const int matrix_entry = static_cast<int>(item % entries_per_matrix);
-  const Entry entry =
-      matrices[static_cast<std::size_t>(interaction.matrix_id) *
-                   entries_per_matrix +
-               matrix_entry];
-  const int degree_difference =
-      coefficient_degrees[entry.output] - coefficient_degrees[entry.input];
-  const int power = degree_difference < 0 ? -degree_difference
-                                         : degree_difference;
-  const Scalar scaled_value =
-      ldexp(static_cast<Scalar>(entry.value), -(level - 1) * power);
-  atomicAdd(output +
-                static_cast<std::size_t>(interaction.target_node) *
-                    coefficient_count +
-                entry.output,
-            scaled_value *
-                input[static_cast<std::size_t>(interaction.source_node) *
-                          coefficient_count +
-                      entry.input]);
-}
-
 
 template <typename Vector>
 __global__ void combine_order_kernel(const Vector *far_fields,
@@ -139,7 +87,7 @@ struct CudaFullPlan::Implementation {
     int target_count{0};
     int* source_permutation{nullptr};
     int* target_permutation{nullptr};
-    int* coefficient_degrees{nullptr};
+  CudaFarFieldExecutionPlan<double, StaticOperatorEntry> *far_field{nullptr};
     int* self_indices{nullptr};
     CudaP2PDeviceView<StaticDipoleBlock> p2p{};
     CudaBsrP2PDeviceView<double> p2p_bsr{};
@@ -150,18 +98,9 @@ struct CudaFullPlan::Implementation {
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
   bool p2p_dictionary_power2_microtiles{false};
-  StaticOperatorEntry *entries{nullptr};
-  StaticOperatorEntry *m2m_matrices{nullptr};
-  StaticOperatorEntry *l2l_matrices{nullptr};
-  CudaTranslationInteraction *m2m_interactions{nullptr};
-  CudaTranslationInteraction *l2l_interactions{nullptr};
   CudaM2LExecutionPlan<double, StaticM2LPlan> *m2l{nullptr};
-  FloatStaticOperatorEntry *entries_float{nullptr};
-  FloatStaticOperatorEntry *m2m_matrices_float{nullptr};
-  FloatStaticOperatorEntry *l2l_matrices_float{nullptr};
+  CudaFarFieldExecutionPlan<float, FloatStaticOperatorEntry> *far_field_float{nullptr};
   CudaM2LExecutionPlan<float, FloatStaticM2LPlan> *m2l_float{nullptr};
-  std::vector<std::size_t> offsets{};
-  std::vector<std::size_t> counts{};
   Vec3 *moments{nullptr};
     Vec3* sorted_moments{nullptr};
     double* multipoles{nullptr};
@@ -199,13 +138,6 @@ struct CudaFullPlan::Implementation {
     CudaEvaluationTimings timings{};
   std::vector<int> fixed_self_indices{};
   bool identity_initialised{false};
-  int p2m_stage{0};
-  int maximum_level{0};
-  int m2m_entries_per_matrix{0};
-  int l2l_entries_per_matrix{0};
-  std::size_t m2m_interaction_count{0};
-  std::size_t l2l_interaction_count{0};
-  int l2p_stage{0};
   std::size_t p2p_block_count{0};
 };
 
@@ -233,21 +165,6 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
       ? data.p2p_dictionary.token_count()
       : (data.use_p2p_bsr ? data.p2p_bsr.source_indices.size()
                           : data.p2p.blocks.size());
-    std::vector<StaticOperatorEntry> entries;
-    const auto append_stage = [&](const auto& stage_entries) {
-        plan.offsets.push_back(entries.size());
-        plan.counts.push_back(stage_entries.size());
-        entries.insert(entries.end(), stage_entries.begin(), stage_entries.end());
-    return static_cast<int>(plan.offsets.size() - 1);
-  };
-  plan.p2m_stage = append_stage(data.p2m);
-  plan.l2p_stage = append_stage(data.l2p);
-  plan.maximum_level = data.m2l.level_count - 1;
-  plan.m2m_entries_per_matrix = data.m2m.entries_per_matrix;
-  plan.l2l_entries_per_matrix = data.l2l.entries_per_matrix;
-  plan.m2m_interaction_count = data.m2m.interactions.size();
-  plan.l2l_interaction_count = data.l2l.interactions.size();
-
   check_cuda(cudaStreamCreateWithFlags(&plan.far_field_stream,
                                        cudaStreamNonBlocking),
              "create full FMM far-field stream");
@@ -288,8 +205,6 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
            data.source_permutation.size() * sizeof(int));
   allocate(&plan.target_permutation,
            data.target_permutation.size() * sizeof(int));
-  allocate(&plan.coefficient_degrees,
-           data.coefficient_degrees.size() * sizeof(int));
   if (plan.use_p2p_dictionary) {
     upload_cuda_signed_dictionary(
         data.p2p_dictionary,
@@ -301,15 +216,6 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
     allocate(&plan.self_indices,
              static_cast<std::size_t>(plan.target_count) * sizeof(int));
   }
-  allocate(&plan.entries, entries.size() * sizeof(StaticOperatorEntry));
-  allocate(&plan.m2m_matrices,
-           data.m2m.matrices.size() * sizeof(StaticOperatorEntry));
-  allocate(&plan.l2l_matrices,
-           data.l2l.matrices.size() * sizeof(StaticOperatorEntry));
-  allocate(&plan.m2m_interactions,
-           data.m2m.interactions.size() * sizeof(CudaTranslationInteraction));
-  allocate(&plan.l2l_interactions,
-           data.l2l.interactions.size() * sizeof(CudaTranslationInteraction));
   allocate(&plan.moments, source_bytes);
   allocate(&plan.sorted_moments, source_bytes);
   allocate(&plan.multipoles, coefficient_bytes);
@@ -337,8 +243,6 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
            data.source_permutation.size() * sizeof(int));
     upload(plan.target_permutation, data.target_permutation.data(),
            data.target_permutation.size() * sizeof(int));
-    upload(plan.coefficient_degrees, data.coefficient_degrees.data(),
-           data.coefficient_degrees.size() * sizeof(int));
   if (plan.use_p2p_dictionary) {
     // The dictionary metadata and values were uploaded together above.
   } else if (!plan.use_p2p_bsr) {
@@ -353,16 +257,21 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
         "create full FMM cuSPARSE P2P BSR descriptor");
     plan.statistics.p2p_scratch_bytes = plan.p2p_bsr.workspace_size;
   }
-  upload(plan.entries, entries.data(),
-         entries.size() * sizeof(StaticOperatorEntry));
-  upload(plan.m2m_matrices, data.m2m.matrices.data(),
-         data.m2m.matrices.size() * sizeof(StaticOperatorEntry));
-  upload(plan.l2l_matrices, data.l2l.matrices.data(),
-         data.l2l.matrices.size() * sizeof(StaticOperatorEntry));
-  upload(plan.m2m_interactions, data.m2m.interactions.data(),
-         data.m2m.interactions.size() * sizeof(CudaTranslationInteraction));
-  upload(plan.l2l_interactions, data.l2l.interactions.data(),
-         data.l2l.interactions.size() * sizeof(CudaTranslationInteraction));
+  plan.far_field = new CudaFarFieldExecutionPlan<double, StaticOperatorEntry>(
+      {data.coefficient_count,
+       data.m2l.level_count - 1,
+       data.coefficient_degrees,
+       data.p2m,
+       data.l2p,
+       data.m2m.matrices,
+       data.m2m.interactions,
+       data.m2m.entries_per_matrix,
+       data.m2m.matrix_count,
+       data.l2l.matrices,
+       data.l2l.interactions,
+       data.l2l.entries_per_matrix,
+       data.l2l.matrix_count},
+      plan.far_field_stream);
   if (data.has_fixed_self_indices) {
     plan.fixed_self_indices = data.fixed_self_indices;
     plan.identity_initialised = true;
@@ -376,9 +285,11 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
       data.m2l, plan.far_field_stream);
   check_cuda(cudaStreamSynchronize(plan.far_field_stream),
              "finish full FMM setup upload");
-  plan.statistics.m2m_unique_matrix_count = data.m2m.matrix_count;
-  plan.statistics.m2m_matrix_bytes =
-      data.m2m.matrices.size() * sizeof(StaticOperatorEntry);
+  const CudaPlanStatistics &far_field_statistics =
+      plan.far_field->statistics();
+  plan.statistics.m2m_unique_matrix_count =
+      far_field_statistics.m2m_unique_matrix_count;
+  plan.statistics.m2m_matrix_bytes = far_field_statistics.m2m_matrix_bytes;
   const CudaPlanStatistics &m2l_statistics = plan.m2l->statistics();
   plan.statistics.m2l_unique_matrix_count =
       m2l_statistics.m2l_unique_matrix_count;
@@ -393,9 +304,10 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   plan.statistics.m2l_threads_per_block =
       m2l_statistics.m2l_threads_per_block;
   plan.statistics.setup_h2d_bytes += m2l_statistics.setup_h2d_bytes;
-  plan.statistics.l2l_unique_matrix_count = data.l2l.matrix_count;
-  plan.statistics.l2l_matrix_bytes =
-      data.l2l.matrices.size() * sizeof(StaticOperatorEntry);
+  plan.statistics.setup_h2d_bytes += far_field_statistics.setup_h2d_bytes;
+  plan.statistics.l2l_unique_matrix_count =
+      far_field_statistics.l2l_unique_matrix_count;
+  plan.statistics.l2l_matrix_bytes = far_field_statistics.l2l_matrix_bytes;
   plan.statistics.persistent_device_bytes =
       plan.statistics.setup_h2d_bytes + 2 * source_bytes + 3 * target_bytes +
       2 * coefficient_bytes +
@@ -463,21 +375,6 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
       : (data.use_p2p_bsr ? data.p2p_bsr.source_indices.size()
                           : data.p2p.blocks.size());
 
-  std::vector<FloatStaticOperatorEntry> entries;
-  const auto append_stage = [&](const auto &stage_entries) {
-    plan.offsets.push_back(entries.size());
-    plan.counts.push_back(stage_entries.size());
-    entries.insert(entries.end(), stage_entries.begin(), stage_entries.end());
-    return static_cast<int>(plan.offsets.size() - 1);
-  };
-  plan.p2m_stage = append_stage(data.p2m);
-  plan.l2p_stage = append_stage(data.l2p);
-  plan.maximum_level = data.m2l.level_count - 1;
-  plan.m2m_entries_per_matrix = data.m2m.entries_per_matrix;
-  plan.l2l_entries_per_matrix = data.l2l.entries_per_matrix;
-  plan.m2m_interaction_count = data.m2m.interactions.size();
-  plan.l2l_interaction_count = data.l2l.interactions.size();
-
   check_cuda(cudaStreamCreateWithFlags(&plan.far_field_stream,
                                        cudaStreamNonBlocking),
              "create FP32 full FMM far-field stream");
@@ -509,8 +406,6 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
            data.source_permutation.size() * sizeof(int));
   allocate(&plan.target_permutation,
            data.target_permutation.size() * sizeof(int));
-  allocate(&plan.coefficient_degrees,
-           data.coefficient_degrees.size() * sizeof(int));
   if (plan.use_p2p_dictionary) {
     upload_cuda_signed_dictionary(
         data.p2p_dictionary,
@@ -522,16 +417,6 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
     allocate(&plan.self_indices,
              static_cast<std::size_t>(plan.target_count) * sizeof(int));
   }
-  allocate(&plan.entries_float,
-           entries.size() * sizeof(FloatStaticOperatorEntry));
-  allocate(&plan.m2m_matrices_float,
-           data.m2m.matrices.size() * sizeof(FloatStaticOperatorEntry));
-  allocate(&plan.l2l_matrices_float,
-           data.l2l.matrices.size() * sizeof(FloatStaticOperatorEntry));
-  allocate(&plan.m2m_interactions,
-           data.m2m.interactions.size() * sizeof(CudaTranslationInteraction));
-  allocate(&plan.l2l_interactions,
-           data.l2l.interactions.size() * sizeof(CudaTranslationInteraction));
   allocate(&plan.moments_float, source_bytes);
   allocate(&plan.sorted_moments_float, source_bytes);
   allocate(&plan.multipoles_float, coefficient_bytes);
@@ -560,8 +445,6 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
          data.source_permutation.size() * sizeof(int));
   upload(plan.target_permutation, data.target_permutation.data(),
          data.target_permutation.size() * sizeof(int));
-  upload(plan.coefficient_degrees, data.coefficient_degrees.data(),
-         data.coefficient_degrees.size() * sizeof(int));
   if (plan.use_p2p_dictionary) {
     // The dictionary metadata and values were uploaded together above.
   } else if (!plan.use_p2p_bsr) {
@@ -577,16 +460,22 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
         "create FP32 full FMM cuSPARSE P2P BSR descriptor");
     plan.statistics.p2p_scratch_bytes = plan.p2p_bsr_float.workspace_size;
   }
-  upload(plan.entries_float, entries.data(),
-         entries.size() * sizeof(FloatStaticOperatorEntry));
-  upload(plan.m2m_matrices_float, data.m2m.matrices.data(),
-         data.m2m.matrices.size() * sizeof(FloatStaticOperatorEntry));
-  upload(plan.l2l_matrices_float, data.l2l.matrices.data(),
-         data.l2l.matrices.size() * sizeof(FloatStaticOperatorEntry));
-  upload(plan.m2m_interactions, data.m2m.interactions.data(),
-         data.m2m.interactions.size() * sizeof(CudaTranslationInteraction));
-  upload(plan.l2l_interactions, data.l2l.interactions.data(),
-         data.l2l.interactions.size() * sizeof(CudaTranslationInteraction));
+  plan.far_field_float =
+      new CudaFarFieldExecutionPlan<float, FloatStaticOperatorEntry>(
+          {data.coefficient_count,
+           data.m2l.level_count - 1,
+           data.coefficient_degrees,
+           data.p2m,
+           data.l2p,
+           data.m2m.matrices,
+           data.m2m.interactions,
+           data.m2m.entries_per_matrix,
+           data.m2m.matrix_count,
+           data.l2l.matrices,
+           data.l2l.interactions,
+           data.l2l.entries_per_matrix,
+           data.l2l.matrix_count},
+          plan.far_field_stream);
   if (data.has_fixed_self_indices) {
     plan.fixed_self_indices = data.fixed_self_indices;
     plan.identity_initialised = true;
@@ -603,9 +492,11 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
              "finish FP32 full FMM setup upload");
 
   plan.statistics.scalar_bytes = sizeof(float);
-  plan.statistics.m2m_unique_matrix_count = data.m2m.matrix_count;
-  plan.statistics.m2m_matrix_bytes =
-      data.m2m.matrices.size() * sizeof(FloatStaticOperatorEntry);
+  const CudaPlanStatistics &far_field_statistics =
+      plan.far_field_float->statistics();
+  plan.statistics.m2m_unique_matrix_count =
+      far_field_statistics.m2m_unique_matrix_count;
+  plan.statistics.m2m_matrix_bytes = far_field_statistics.m2m_matrix_bytes;
   const CudaPlanStatistics &m2l_statistics = plan.m2l_float->statistics();
   plan.statistics.m2l_unique_matrix_count =
       m2l_statistics.m2l_unique_matrix_count;
@@ -620,9 +511,10 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
   plan.statistics.m2l_threads_per_block =
       m2l_statistics.m2l_threads_per_block;
   plan.statistics.setup_h2d_bytes += m2l_statistics.setup_h2d_bytes;
-  plan.statistics.l2l_unique_matrix_count = data.l2l.matrix_count;
-  plan.statistics.l2l_matrix_bytes =
-      data.l2l.matrices.size() * sizeof(FloatStaticOperatorEntry);
+  plan.statistics.setup_h2d_bytes += far_field_statistics.setup_h2d_bytes;
+  plan.statistics.l2l_unique_matrix_count =
+      far_field_statistics.l2l_unique_matrix_count;
+  plan.statistics.l2l_matrix_bytes = far_field_statistics.l2l_matrix_bytes;
   plan.statistics.persistent_device_bytes =
       plan.statistics.setup_h2d_bytes + 2 * source_bytes + 3 * target_bytes +
       2 * coefficient_bytes +
@@ -677,16 +569,9 @@ CudaFullPlan::~CudaFullPlan() {
   release_p2p_device_view(plan.p2p_float);
   release_p2p_device_view(plan.p2p_bsr_float);
   release_p2p_device_view(plan.p2p_dictionary_float);
-  cudaFree(plan.entries);
-  cudaFree(plan.coefficient_degrees);
-  cudaFree(plan.m2m_matrices);
-  cudaFree(plan.l2l_matrices);
-  cudaFree(plan.m2m_interactions);
-  cudaFree(plan.l2l_interactions);
+  delete plan.far_field;
   delete plan.m2l;
-  cudaFree(plan.entries_float);
-  cudaFree(plan.m2m_matrices_float);
-  cudaFree(plan.l2l_matrices_float);
+  delete plan.far_field_float;
   delete plan.m2l_float;
   cudaFree(plan.moments);
   cudaFree(plan.sorted_moments);
@@ -758,15 +643,6 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   }
   std::copy(moments.begin(), moments.end(), plan.pinned_moments);
   constexpr int threads = 256;
-  const auto launch_stage = [&](const int stage, const double *input,
-                                double *output) {
-    const std::size_t count = plan.counts[static_cast<std::size_t>(stage)];
-    if (count != 0) {
-      apply_entries_kernel<<<(count + threads - 1) / threads, threads, 0,
-                             plan.far_field_stream>>>(
-          plan.entries + plan.offsets[stage], count, input, output);
-    }
-  };
   check_cuda(cudaEventRecord(plan.evaluation_start, plan.far_field_stream),
              "record full FMM start");
   {
@@ -820,9 +696,9 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
                                    plan.coefficient_count * sizeof(double),
                                plan.far_field_stream),
                "clear full FMM multipoles");
-    launch_stage(plan.p2m_stage,
-                 reinterpret_cast<double *>(plan.sorted_moments),
-                 plan.multipoles);
+    plan.far_field->enqueue_p2m(
+        reinterpret_cast<double *>(plan.sorted_moments), plan.multipoles,
+        plan.far_field_stream);
     p2m_range.end();
   }
   check_cuda(cudaEventRecord(plan.p2m_complete, plan.far_field_stream),
@@ -831,17 +707,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   // parent level must not consume them early. Launching levels into one stream
   // supplies the required child-to-parent ordering without a host barrier.
   detail::ProfileRange m2m_range{"cdfmm/far_field/m2m"};
-  for (int level = plan.maximum_level; level >= 1; --level) {
-    const std::size_t items =
-        plan.m2m_interaction_count * plan.m2m_entries_per_matrix;
-    if (items != 0) {
-      apply_shared_translation_kernel<<<(items + threads - 1) / threads,
-                                        threads, 0, plan.far_field_stream>>>(
-          plan.m2m_matrices, plan.m2m_interactions, plan.m2m_interaction_count,
-          plan.m2m_entries_per_matrix, plan.coefficient_count,
-          plan.coefficient_degrees, level, plan.multipoles, plan.multipoles);
-    }
-  }
+  plan.far_field->enqueue_m2m(plan.multipoles, plan.multipoles,
+                              plan.far_field_stream);
   check_cuda(cudaEventRecord(plan.m2m_complete, plan.far_field_stream),
              "record M2M");
   m2m_range.end();
@@ -859,17 +726,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
   // The downward dependency is the reverse: each parent local must be complete
   // before the next level translates it to children. Stream order enforces it.
-  for (int level = 1; level <= plan.maximum_level; ++level) {
-    const std::size_t items =
-        plan.l2l_interaction_count * plan.l2l_entries_per_matrix;
-    if (items != 0) {
-      apply_shared_translation_kernel<<<(items + threads - 1) / threads,
-                                        threads, 0, plan.far_field_stream>>>(
-          plan.l2l_matrices, plan.l2l_interactions, plan.l2l_interaction_count,
-          plan.l2l_entries_per_matrix, plan.coefficient_count,
-          plan.coefficient_degrees, level, plan.locals, plan.locals);
-    }
-  }
+  plan.far_field->enqueue_l2l(plan.locals, plan.locals,
+                              plan.far_field_stream);
   check_cuda(cudaEventRecord(plan.l2l_complete, plan.far_field_stream),
              "record L2L");
   l2l_range.end();
@@ -879,8 +737,9 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
                                  sizeof(Vec3),
                              plan.far_field_stream),
              "clear far fields");
-  launch_stage(plan.l2p_stage, plan.locals,
-               reinterpret_cast<double *>(plan.far_fields));
+  plan.far_field->enqueue_l2p(
+      plan.locals, reinterpret_cast<double *>(plan.far_fields),
+      plan.far_field_stream);
   check_cuda(cudaEventRecord(plan.l2p_complete, plan.far_field_stream),
              "record L2P");
   l2p_range.end();
@@ -990,15 +849,6 @@ void CudaFullPlan::evaluate(
   }
   std::copy(moments.begin(), moments.end(), plan.pinned_moments_float);
   constexpr int threads = 256;
-  const auto launch_stage = [&](const int stage, const float *input,
-                                float *output) {
-    const std::size_t count = plan.counts[static_cast<std::size_t>(stage)];
-    if (count != 0) {
-      apply_entries_kernel<<<(count + threads - 1) / threads, threads, 0,
-                             plan.far_field_stream>>>(
-          plan.entries_float + plan.offsets[stage], count, input, output);
-    }
-  };
 
   check_cuda(cudaEventRecord(plan.evaluation_start, plan.far_field_stream),
              "record FP32 full FMM start");
@@ -1041,26 +891,14 @@ void CudaFullPlan::evaluate(
                              coefficient_values * sizeof(float),
                              plan.far_field_stream),
              "clear FP32 full FMM multipoles");
-  launch_stage(plan.p2m_stage,
-               reinterpret_cast<float *>(plan.sorted_moments_float),
-               plan.multipoles_float);
+  plan.far_field_float->enqueue_p2m(
+      reinterpret_cast<float *>(plan.sorted_moments_float),
+      plan.multipoles_float, plan.far_field_stream);
   check_cuda(cudaEventRecord(plan.p2m_complete, plan.far_field_stream),
              "record FP32 P2M");
 
-  for (int level = plan.maximum_level; level >= 1; --level) {
-    const std::size_t items =
-        plan.m2m_interaction_count * plan.m2m_entries_per_matrix;
-    if (items != 0) {
-      apply_shared_translation_kernel<<<
-          (items + threads - 1) / threads, threads, 0,
-          plan.far_field_stream>>>(
-          plan.m2m_matrices_float, plan.m2m_interactions,
-          plan.m2m_interaction_count, plan.m2m_entries_per_matrix,
-          plan.coefficient_count, plan.coefficient_degrees, level,
-          plan.multipoles_float,
-          plan.multipoles_float);
-    }
-  }
+  plan.far_field_float->enqueue_m2m(
+      plan.multipoles_float, plan.multipoles_float, plan.far_field_stream);
   check_cuda(cudaEventRecord(plan.m2m_complete, plan.far_field_stream),
              "record FP32 M2M");
 
@@ -1074,20 +912,8 @@ void CudaFullPlan::evaluate(
   check_cuda(cudaEventRecord(plan.m2l_complete, plan.far_field_stream),
              "record FP32 M2L");
 
-  for (int level = 1; level <= plan.maximum_level; ++level) {
-    const std::size_t items =
-        plan.l2l_interaction_count * plan.l2l_entries_per_matrix;
-    if (items != 0) {
-      apply_shared_translation_kernel<<<
-          (items + threads - 1) / threads, threads, 0,
-          plan.far_field_stream>>>(
-          plan.l2l_matrices_float, plan.l2l_interactions,
-          plan.l2l_interaction_count, plan.l2l_entries_per_matrix,
-          plan.coefficient_count, plan.coefficient_degrees, level,
-          plan.locals_float,
-          plan.locals_float);
-    }
-  }
+  plan.far_field_float->enqueue_l2l(
+      plan.locals_float, plan.locals_float, plan.far_field_stream);
   check_cuda(cudaEventRecord(plan.l2l_complete, plan.far_field_stream),
              "record FP32 L2L");
 
@@ -1096,8 +922,9 @@ void CudaFullPlan::evaluate(
                                  sizeof(FloatVec3),
                              plan.far_field_stream),
              "clear FP32 far fields");
-  launch_stage(plan.l2p_stage, plan.locals_float,
-               reinterpret_cast<float *>(plan.far_fields_float));
+  plan.far_field_float->enqueue_l2p(
+      plan.locals_float, reinterpret_cast<float *>(plan.far_fields_float),
+      plan.far_field_stream);
   check_cuda(cudaEventRecord(plan.l2p_complete, plan.far_field_stream),
              "record FP32 L2P");
 

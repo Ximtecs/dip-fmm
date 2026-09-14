@@ -42,9 +42,12 @@ operator/static-plan step and backend boundaries, are now organised. Preserve
 the flat forwarding headers until an explicit compatibility cleanup. Dynamic
 mathematical operator implementations live under `src/operators/*`;
 `src/operators.cpp` is compatibility-only. CUDA direct execution, complete
-P2P and M2L backends, and shared CUDA runtime/error infrastructure now have
-explicit homes under `src/backend/cuda/`; only the remaining full-FMM
-decomposition is future backend work. Further backend, orchestration, cache,
+P2P and M2L backends, shared CUDA runtime/error infrastructure, and far-field
+execution now have explicit homes under `src/backend/cuda/`. `CudaFullPlan`
+still owns changing evaluation state, stream/event/timing and near/far
+orchestration, combination/reordering, and D2H transfer; simplifying that
+orchestration/resource boundary is the next explicitly scoped task, so the
+full-FMM decomposition is not complete. Further backend, orchestration, cache,
 or binding changes are authorised only when explicitly scoped. Geometry
 packing, grain generation/discretisation, and prism/tetrahedron refinement
 remain future work.

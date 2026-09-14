@@ -6,8 +6,9 @@ repository. Step 2 made the foundational `core`, `math`, `geometry`, and
 `tree` layout concrete; operators, static plans, FMM orchestration, portable
 CPU and oneMKL execution are now also structured. Cache and bindings remain
 transitional layers. CUDA direct execution, complete P2P and M2L execution,
-and shared CUDA infrastructure now have explicit internal homes; only the
-remaining full-FMM CUDA decomposition remains deferred.
+shared CUDA infrastructure, and far-field execution now have explicit
+internal homes. The remaining `CudaFullPlan` orchestration and resource
+simplification remain deferred; the full-FMM decomposition is not complete.
 
 ## Design rules
 
@@ -199,14 +200,16 @@ Measure performance-sensitive changes against the pre-refactor baseline.
 
 ## Current and target repository structure
 
-The current production layout after the CUDA direct, P2P, and M2L extractions is:
+The current production layout after the CUDA direct, P2P, M2L, and far-field
+extractions is:
 
 ```text
 dip-fmm/
 |-- include/cdfmm/    canonical core/math/geometry/tree/operators/plan/backend
 |                    plus compatibility shims
 |-- src/              structured operators/plan/backend/cpu plus extracted
-|                    CUDA common/direct/P2P/M2L code and transitional FMM layers
+|                    CUDA common/direct/P2P/M2L/far-field code and transitional
+|                    full-FMM orchestration
 |-- tests/            C++ and optional Fortran tests
 |-- python_tests/     Python and notebook regression tests
 |-- benchmarks/       C++ drivers and Python runners
@@ -252,7 +255,7 @@ dip-fmm/
 |   |       |-- direct/
 |   |       |-- p2p/          # complete extracted P2P backend
 |   |       |-- m2l/          # reusable extracted M2L backend
-|   |       |-- far_field/    # future additional far-field backend work
+|   |       |-- far_field/    # extracted CUDA far-field execution
 |   |       `-- fmm/          # future full-FMM backend
 |   |-- fmm/
 |   |-- cache/
@@ -313,7 +316,9 @@ src/
 |-- backend/mkl/m2l.cpp                        grouped oneMKL M2L execution
 |-- backend/mkl/direct/dense.cpp               oneMKL dense-direct execution
 |-- backend/cuda/p2p/{internal.hpp,plan.cu}    complete CUDA P2P backend
-`-- backend/cuda/m2l/{internal.hpp,plan.cu}    reusable CUDA M2L backend
+|-- backend/cuda/m2l/{internal.hpp,plan.cu}    reusable CUDA M2L backend
+`-- backend/cuda/far_field/{internal.hpp,executor.cu}
+                                                CUDA far-field execution
 ```
 
 The compatibility headers `cdfmm/operators.hpp` and
@@ -359,13 +364,18 @@ device/host state, and shared full-plan primitives. The non-CUDA boundary is
 metadata, kernels, bounded scaled-multipole scratch, and both FP64/FP32
 lifecycles; standalone `CudaM2LPlan` and `CudaFullPlan` consume that same
 executor. The non-CUDA boundary is `src/backend/cuda/stub/m2l.cpp`.
-`src/cuda_fmm.cu` now retains P2M, M2M, L2L, L2P, and full-FMM orchestration
-and consumes the P2P and M2L internal primitives.
+The far-field backend is internal only: `src/backend/cuda/far_field/` owns the
+immutable FP32/FP64 P2M and L2P entries, coefficient degrees, M2M/L2L matrices,
+interactions and metadata, uploads, lifecycle, statistics, and kernels. It
+adds no public API, stub, or new library. `src/cuda_fmm.cu` retains changing
+moments/coefficient/field buffers, permutations, P2P and separate M2L executor
+wiring, streams/events/timing, near/far overlap, combination/reordering, and
+D2H transfer. Direct, P2P, and M2L remain their authoritative backends.
 These moves preserve behaviour and performance, including resource lifetime,
 precision, launch, and transfer semantics.
 
-The FMM layer follows the same orchestration/execution boundary.
-`fmm/far_field.cpp` retains P2M, M2M, M2L backend dispatch, L2L, and L2P
+The CPU FMM layer follows the same orchestration/execution boundary.
+`fmm/far_field.cpp` retains CPU-side P2M, M2M, M2L backend dispatch, L2L, and L2P
 sequencing. `backend/mkl/m2l.cpp` derives stable transfer-class groups once
 from the canonical `StaticM2LPlan`, owns reusable FP32/FP64 gather and
 translation buffers, and performs the guarded SGEMM/DGEMM gather/multiply/
@@ -406,10 +416,10 @@ transitional layout:
   normalisation, topology and operator construction, cache use, backend
   selection, mutable state, CUDA upload, evaluation, and inspection. The
   oneMKL execution packing is now delegated behind an opaque backend owner.
-- `fmm/far_field.cpp` contains high-level CPU expansion sequencing and still
-  invokes transitional CUDA owners, but no longer contains oneMKL vendor
-  mechanics. `periodic.cpp` includes `uniform_tree.hpp`, and
-  `parameter_selection.hpp` includes the complete `uniform_fmm.hpp` API.
+- `fmm/far_field.cpp` contains CPU expansion sequencing and no longer contains
+  oneMKL vendor mechanics; CUDA-full orchestration remains in `cuda_fmm.cu`.
+  `periodic.cpp` includes `uniform_tree.hpp`, and `parameter_selection.hpp`
+  includes the complete `uniform_fmm.hpp` API.
 - `cache.cpp` implements low-level persistence, identities and validation as
   methods of `UniformFmm`, giving cache mechanics intimate ownership knowledge
   of all topology/operator representations.
@@ -419,12 +429,12 @@ transitional layout:
 - `python/bindings.cpp` adapts nearly every layer in one translation unit, and
   the C API implementation depends directly on the high-level FMM type.
 - the root CMake target registers the CPU subsystems together with explicit
-  CUDA common/direct/P2P/M2L units, while `cuda_fmm.cu` retains P2M, M2M, L2L,
-  L2P, and far-field/full-FMM orchestration; CUDA libraries are currently
-  propagated from `cdfmm_core` to consumers.
+  CUDA common/direct/P2P/M2L/far-field units, while `cuda_fmm.cu` retains
+  changing full-FMM state and far-field orchestration; CUDA libraries are
+  currently propagated from `cdfmm_core` to consumers.
 
 The largest responsibility-review candidates are `cuda_fmm.cu` (retaining
-far-field/full-FMM work), `fmm/uniform_fmm.cpp` (about 3,600),
+full-FMM orchestration and resource wiring), `fmm/uniform_fmm.cpp` (about 3,600),
 `cache.cpp` (about 1,800), and
 `python/bindings.cpp` (about 1,500). These measurements locate remaining audit
 work; they do not require mechanical splitting.
@@ -471,11 +481,14 @@ work; they do not require mechanical splitting.
   `src/backend/cpu`; and grouped oneMKL M2L packing, reusable scratch, vendor
   calls, thread control, and availability live under `src/backend/mkl`.
 - CUDA direct/common execution now lives under `src/backend/cuda/{common,direct}`
-  and the complete P2P and M2L backends under `src/backend/cuda/{p2p,m2l}/`,
+  and the complete P2P, M2L, and far-field backends under
+  `src/backend/cuda/{p2p,m2l,far_field}/`,
   with canonical public headers under `include/cdfmm/backend/cuda/` and
   legacy forwarding façades retained. The reusable M2L executor is consumed
-  by both standalone `CudaM2LPlan` and `CudaFullPlan`; `cuda_fmm.cu` retains
-  P2M/M2M/L2L/L2P and full-FMM orchestration plus internal backend wiring.
+  by both standalone `CudaM2LPlan` and `CudaFullPlan`; `cuda_fmm.cu` coordinates
+  and enqueues the P2M/M2M/L2L/L2P stages and full-FMM orchestration plus
+  internal backend wiring, while static execution lives in
+  `backend/cuda/far_field`.
 
 The remaining transitional seam is `StaticFmmTopology`: it adapts tree
 interaction topology to topology-native records consumed by FMM orchestration
@@ -485,10 +498,12 @@ boundary without making the tree depend on a particular P2P packing.
 
 ### Later: remaining backend and CUDA work
 
-- Keep the accepted direct/common/P2P/M2L extraction stable while decomposing
-  the remaining `cuda_fmm.cu` full-FMM responsibilities.
-- Isolate persistent CUDA plans, buffers, streams/events, and cuBLAS/cuSPARSE
-  resources from public mathematical interfaces as those stages move.
+- Keep the accepted direct/common/P2P/M2L/far-field extraction stable while
+  simplifying the remaining `CudaFullPlan` orchestration and resource
+  ownership in `cuda_fmm.cu`; this next task is not yet complete.
+- Preserve the separation of immutable far-field execution state from mutable
+  moments, coefficient/field buffers, streams/events, timing, overlap,
+  combination/reordering, and D2H resources as that work proceeds.
 - Preserve and benchmark all transfer, launch, overlap, and reuse semantics;
   source boundaries must not add runtime work.
 

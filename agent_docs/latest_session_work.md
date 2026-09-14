@@ -1,5 +1,32 @@
 # Latest session work
 
+## 2026-09-14 — CUDA far-field execution extraction closure
+
+The accepted CUDA far-field execution extraction is complete. Internal
+`src/backend/cuda/far_field/{internal.hpp,executor.cu}` owns immutable FP32/
+FP64 P2M/L2P entries, coefficient degrees, M2M/L2L matrices/interactions/
+metadata, uploads/lifecycle/statistics, and kernels; there is no public API,
+stub, or new library. `CudaFullPlan` retains changing moments/coefficient/
+field buffers, permutations, P2P and separate M2L executor wiring,
+streams/events/timing, near/far overlap, combination/reordering, and D2H.
+Direct, P2P, and M2L remain authoritative in their existing backends. The
+next task is orchestration/resource simplification; the `CudaFullPlan`
+decomposition is not complete.
+
+Validation handoff: initial M2L sanity ownership audit clean and focused
+14-case probe passed; fresh CPU development configure/build 55 steps and full
+CTest 193/193 with expected skips #16/#51/#59/#63; fresh CUDA configuration
+with `module cuda/13.2` (`nvcc 13.2.78`) for SM75; the preset presented a
+206-step graph and compiled the requested `cdfmm_core`, tests, Python
+extension, `cdfmm-precompute`, and three benchmark targets, but failed at its
+final install step on sandbox read-only Conda site-packages; explicitly
+requested target builds then succeeded; focused CUDA CTest 30/30 with expected
+unavailable-device skips #16/#59/#63; full
+CUDA-configured CTest 193/193 with expected skips #16/#51/#59/#63;
+`git diff --check` and independent code/ownership review passed. `nvidia-smi`
+could not communicate with the driver, so no numerical GPU runtime execution
+is claimed. Unrelated `Article1/` and notebook changes remain untouched.
+
 ## 2026-09-14 — CUDA M2L backend extraction closure
 
 The accepted CUDA M2L ownership split is complete. The canonical public
