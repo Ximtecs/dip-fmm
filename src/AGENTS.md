@@ -4,7 +4,8 @@ Inherit `../AGENTS.md`. Foundational math, geometry, tree, operator, and plan
 implementations now have subsystem directories. High-level FMM orchestration
 and CPU/oneMKL execution also have explicit homes. CUDA direct execution,
 complete CUDA P2P execution, and shared CUDA runtime/error infrastructure now
-have explicit homes; M2L and remaining full-FMM CUDA code remain transitional.
+have explicit homes, including the extracted M2L backend; remaining full-FMM
+CUDA orchestration remains transitional.
 
 ## Current structure
 
@@ -31,9 +32,11 @@ src/
 |-- backend/cuda/stub/direct.cpp            non-CUDA direct stubs
 |-- backend/cuda/p2p/{internal.hpp,plan.cu} CUDA P2P plans, kernels, and state
 |-- backend/cuda/stub/p2p.cpp               non-CUDA P2P stubs
+|-- backend/cuda/m2l/{internal.hpp,plan.cu} CUDA M2L plan, kernels, and state
+|-- backend/cuda/stub/m2l.cpp               non-CUDA M2L stubs
 |-- cache.cpp                              cache identity and persistence
-|-- cuda_fmm.cu                            M2L/full-FMM orchestration and
-|                                          P2P internal-primitive consumers
+|-- cuda_fmm.cu                            P2M/M2M/L2L/L2P/full-FMM
+|                                          orchestration and P2P consumers
 |-- cuda_fmm_stub.cpp                      non-CUDA API stubs
 |-- c_api.cpp                              C adapter
 |-- parameter_selection.cpp, validation.cpp
@@ -49,7 +52,7 @@ src/
 |-- tree/{uniform,adaptive}/
 |-- operators/{p2m,m2m,m2l,l2l,l2p,m2p,p2p}/
 |-- plan/p2p/
-|-- backend/{cpu,mkl,cuda/{common,direct,p2p,far_field,fmm}}/
+|-- backend/{cpu,mkl,cuda/{common,direct,p2p,m2l,far_field,fmm}}/
 |-- fmm/
 |-- cache/
 `-- bindings/
@@ -60,9 +63,9 @@ Do not create target directories before substantive code belongs in them.
 ## Boundaries and pressure points
 
 - `cuda_fmm.cu`, `fmm/uniform_fmm.cpp`, and `cache.cpp` are known
-  decomposition candidates. CUDA direct and complete P2P extraction are
-  accepted; do not split the remaining CUDA M2L/full-FMM code without a later
-  explicitly scoped step.
+  decomposition candidates. CUDA direct, complete P2P, and M2L extraction are
+  accepted; do not split the remaining full-FMM CUDA orchestration without a
+  later explicitly scoped step.
 - Separate mathematical operator construction, canonical plans, derived
   execution packings, and backend execution in that order during later work.
 - Tree code owns spatial hierarchy/topology, not CUDA execution or

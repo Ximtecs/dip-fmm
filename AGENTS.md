@@ -41,13 +41,13 @@ The foundational `core`, `math`, `geometry`, and `tree` layers, followed by the
 operator/static-plan step and backend boundaries, are now organised. Preserve
 the flat forwarding headers until an explicit compatibility cleanup. Dynamic
 mathematical operator implementations live under `src/operators/*`;
-`src/operators.cpp` is compatibility-only. CUDA direct execution, the complete
-P2P backend, and shared CUDA runtime/error infrastructure now have explicit
-homes under `src/backend/cuda/`; CUDA M2L and remaining full-FMM decomposition
-remain future backend work. Further backend, orchestration, cache, or binding
-changes are authorised only when explicitly scoped. Geometry packing, grain
-generation/discretisation, and prism/tetrahedron refinement remain future
-work.
+`src/operators.cpp` is compatibility-only. CUDA direct execution, complete
+P2P and M2L backends, and shared CUDA runtime/error infrastructure now have
+explicit homes under `src/backend/cuda/`; only the remaining full-FMM
+decomposition is future backend work. Further backend, orchestration, cache,
+or binding changes are authorised only when explicitly scoped. Geometry
+packing, grain generation/discretisation, and prism/tetrahedron refinement
+remain future work.
 
 ## Repository memory
 
@@ -67,7 +67,7 @@ Current structure:
 dip-fmm/
 |-- include/cdfmm/    structured core/math/geometry/tree plus compatibility headers
 |-- src/              structured math/geometry/tree/backend plus deferred
-|                    flat higher layers
+|                    flat higher-level orchestration
 |-- tests/            C++ tests and optional Fortran smoke test
 |-- python_tests/     Python, runner, and notebook regression tests
 |-- benchmarks/       C++ benchmarks and Python benchmark runners
@@ -98,7 +98,7 @@ The target taxonomy is documented in `docs/architecture.md`. In summary:
 include/cdfmm/{core,math,geometry,tree,operators,plan,backend,fmm}
 src/{math,geometry,tree,operators,plan,backend,fmm,cache,bindings}
 src/backend/{cpu,mkl,cuda}
-src/backend/cuda/{common,direct,p2p,far_field,fmm}
+src/backend/cuda/{common,direct,p2p,m2l,far_field,fmm}
 tests/{unit,backend,integration}
 benchmarks/{direct,p2p,far_field,fmm}
 ```

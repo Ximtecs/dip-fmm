@@ -1,17 +1,43 @@
 # Latest session work
 
+## 2026-09-14 — CUDA M2L backend extraction closure
+
+The accepted CUDA M2L ownership split is complete. The canonical public
+`CudaM2LPlan` declaration is `include/cdfmm/backend/cuda/m2l.hpp`, with
+`src/cuda_m2l_plan.hpp` retained as a forwarding compatibility shim.
+`src/backend/cuda/m2l/{internal.hpp,plan.cu}` owns the reusable FP64/FP32
+device representation, kernels, bounded scaled-multipole scratch policy,
+persistent resources, lifecycle, and statistics. Standalone `CudaM2LPlan` and
+`CudaFullPlan` consume the same internal executor; `src/cuda_fmm.cu` retains
+P2M/M2M/L2L/L2P and full-FMM/far-field orchestration. The non-CUDA boundary is
+`src/backend/cuda/stub/m2l.cpp`.
+
+Validation truth: fresh CPU configure/build 194/194; fresh CPU full CTest
+193/193 with expected skips #16/#51/#59/#63; fresh CUDA 13.2 SM75 build
+204/204 covering core, tests, Python, tools, and benchmarks; focused CUDA
+M2L/header/stub coverage 23/23 with unavailable runtime-device cases skipped
+as expected; full CUDA CTest 193/193 with the same four skips; and install,
+ownership, complete-diff, and `git diff --check` audits passed. `nvidia-smi`
+could not reach a driver/device, so no numerical GPU runtime result is
+claimed.
+
+The untracked `Article1/` directory and unrelated
+`examples/simple_notebooks/tetrahedron_target_average_comsol_compare_sampling_and_gauss.ipynb`
+remain untouched and outside this task.
+
 ## 2026-09-14 — complete CUDA P2P backend extraction closure
 
-The complete CUDA P2P extraction is complete in the current uncommitted
-checkout. `include/cdfmm/backend/cuda/p2p.hpp` is the canonical public header
+The complete CUDA P2P extraction was accepted as the preceding step and is
+included in the current CUDA backend series. `include/cdfmm/backend/cuda/p2p.hpp` is the canonical public header
 for `CudaP2PPlan`; `include/cdfmm/cuda_p2p.hpp` remains a legacy forwarding
 façade. `src/backend/cuda/p2p/{internal.hpp,plan.cu}` owns all list-1 CUDA P2P
 variants and lifecycle/state: canonical AoS, compact/source-only SoA,
 leaf-block, signed tensor dictionary (source-warp, target-owned, and
 power-of-two microtiles), and cuSPARSE BSR(3), in FP64 and FP32. The package
 also owns shared full-plan primitives and the non-CUDA path is
-`src/backend/cuda/stub/p2p.cpp`. `src/cuda_fmm.cu` now retains M2L and
-far-field/full-FMM orchestration and consumes P2P internal primitives.
+`src/backend/cuda/stub/p2p.cpp`. At that checkpoint, `src/cuda_fmm.cu`
+retained M2L and far-field/full-FMM orchestration and consumed P2P internal
+primitives; the accepted M2L extraction is recorded above.
 
 Validation truth for this closure:
 
@@ -25,8 +51,8 @@ Validation truth for this closure:
 
 The untracked `Article1/` directory and unrelated
 `examples/simple_notebooks/tetrahedron_target_average_comsol_compare.ipynb`
-were preserved untouched and are outside this task. No commit was made; the
-main agent must inspect the complete nested diff before committing.
+were preserved untouched and are outside this task. Its focused validation
+was recorded before the combined CUDA M2L closure.
 
 ## 2026-09-14 — CUDA direct backend extraction closure
 

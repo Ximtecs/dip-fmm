@@ -6,6 +6,7 @@ add_executable(cdfmm_tests
   test_cuda_legacy_cuboid_header.cpp
   test_cuda_p2p_headers.cpp
   test_cuda_legacy_p2p_header.cpp
+  test_cuda_m2l_headers.cpp
   test_cuda_p2p_stub.cpp
   test_multi_index.cpp
   test_p2p.cpp

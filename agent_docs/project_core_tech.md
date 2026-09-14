@@ -84,8 +84,14 @@ The CUDA direct references now have canonical public interfaces under
 implemented under `src/backend/cuda/direct/`, shared CUDA error/runtime
 facilities under `src/backend/cuda/common/`, and non-CUDA stubs under
 `src/backend/cuda/stub/`. The legacy flat CUDA direct/cuboid headers remain
-compatibility façades. P2P, M2L, and full-FMM execution remain in
-`src/cuda_fmm.cu`.
+compatibility façades. The complete P2P backend is in
+`src/backend/cuda/p2p/`. The reusable CUDA M2L backend is in
+`src/backend/cuda/m2l/`, with canonical public interface
+`include/cdfmm/backend/cuda/m2l.hpp`, a forwarding compatibility shim at
+`src/cuda_m2l_plan.hpp`, and non-CUDA stubs at
+`src/backend/cuda/stub/m2l.cpp`. Its shared executor is consumed by both
+standalone `CudaM2LPlan` and `CudaFullPlan`; `src/cuda_fmm.cu` retains
+P2M/M2M/L2L/L2P and full-FMM orchestration.
 
 For repeated CUDA-full evaluation, geometry/operators/scratch are uploaded at
 construction; only changing moments cross H2D and only the final user-ordered
