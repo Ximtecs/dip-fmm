@@ -2,7 +2,7 @@
 
 The current checkout has substantive homes for foundational layers,
 operators/static plans, high-level FMM orchestration, portable CPU execution,
-oneMKL execution, and CUDA direct/common execution. CUDA P2P/M2L/full-FMM,
+oneMKL execution, and CUDA common/direct/P2P execution. CUDA M2L/full-FMM,
 cache, and binding layers remain partly flat; the target taxonomy in
 `docs/architecture.md` is not permission to create empty directories or perform
 an unauthorised refactor.
@@ -24,7 +24,7 @@ include/cdfmm/
   plan/                                                        immutable static data, direct plans,
                                                                and P2P packings
   backend/cpu/                                                 portable static and dense-direct interfaces
-  backend/cuda/{direct,dense_direct}.hpp                       canonical CUDA direct interfaces
+  backend/cuda/{direct,dense_direct,p2p}.hpp                   canonical CUDA direct/P2P interfaces
 src/
   math/                                                        mathematical kernels
   geometry/primitives/                                         prism/tetrahedron
@@ -43,13 +43,15 @@ src/
   backend/cuda/common/runtime.{hpp,cu}                          CUDA runtime helpers
   backend/cuda/direct/{direct,dense}.cu                         CUDA direct execution
   backend/cuda/stub/direct.cpp                                  non-CUDA direct stubs
+  backend/cuda/p2p/{internal.hpp,plan.cu}                       CUDA P2P backend
+  backend/cuda/stub/p2p.cpp                                     non-CUDA P2P stubs
   fmm/{uniform_fmm,far_field}.cpp                               lifecycle and pass orchestration
   fmm/uniform_fmm_internal.hpp                                  opaque backend owner adapters
   tree/common/static_topology.cpp                              canonical topology validation
   tree/uniform/static_topology_adapter.cpp                     UniformTree topology adapter
   periodic.cpp, cache.cpp, validation.cpp                       support boundaries
-  cuda_fmm.cu, cuda_*_plan.hpp, cuda_fmm_stub.cpp                transitional CUDA
-                                                                P2P/M2L/full-FMM and stubs
+  cuda_fmm.cu, cuda_*_plan.hpp, cuda_fmm_stub.cpp                M2L/full-FMM
+                                                                orchestration and stubs
   c_api.cpp                                                     C ABI adapter
 python/bindings.cpp                                             pybind11 module
 fortran/cdfmm_fortran.f90                                       ISO_C_BINDING wrapper
@@ -79,7 +81,7 @@ source/target geometry
   -> UniformTree or shared AdaptiveTree topology
   -> canonical static topology and operators
   -> CPU/oneMKL/CUDA derived packing
-  -> portable CPU static-plan application or existing optional backend path
+  -> portable CPU static-plan application or CUDA P2P/direct backend
   -> changing moments -> P2M -> M2M -> M2L -> L2L -> L2P
                          \-> exact list-1 P2P
   -> near + far field -> original target order
@@ -102,10 +104,11 @@ include/cdfmm/backend/cpu/      portable application interface
 src/backend/cpu/                portable static and dense-direct application
 src/fmm/                        UniformFmm lifecycle and far-field sequencing
 src/backend/mkl/                oneMKL dense-direct and grouped M2L application
-include/cdfmm/backend/cuda/     canonical CUDA direct public interfaces
+include/cdfmm/backend/cuda/     canonical CUDA direct/P2P public interfaces
 src/backend/cuda/common/        shared internal CUDA error/runtime helpers
 src/backend/cuda/direct/        CUDA point and dense direct execution
 src/backend/cuda/stub/          non-CUDA direct stubs
+src/backend/cuda/p2p/           complete CUDA P2P plans, kernels, and state
 ```
 
 Canonical P2P target rows remain authoritative. Compact/SoA, leaf, tensor
@@ -122,6 +125,14 @@ The grouped oneMKL M2L executor is built once from the canonical plan. Its
 stable transfer-class metadata and reusable gathered/translated buffers remain
 private behind an opaque owner, while FMM orchestration adds the backend's
 gather/multiply/scatter timings to the existing public timing record.
+
+The CUDA P2P backend is built once from a canonical or derived static plan.
+`CudaP2PPlan` is declared by `include/cdfmm/backend/cuda/p2p.hpp`, with the
+legacy flat header forwarding to it. `src/backend/cuda/p2p/` owns the FP64 and
+FP32 canonical, compact, leaf, signed tensor-dictionary, and BSR(3) executors,
+their asynchronous lifecycle, persistent resources, and shared full-plan
+primitives. `cuda_fmm.cu` retains M2L/far-field/full-FMM orchestration and
+consumes those internal P2P primitives.
 
 ## Validation and documentation areas
 

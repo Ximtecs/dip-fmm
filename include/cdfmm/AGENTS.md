@@ -19,8 +19,8 @@ include/cdfmm/
 |-- operators.hpp,
 |   static_operators.hpp              operators and static plans
 |-- uniform_fmm.hpp                   solver API and options
-|-- backend/cuda/{direct,dense_direct}.hpp
-|                                      canonical CUDA direct interfaces
+|-- backend/cuda/{direct,dense_direct,p2p}.hpp
+|                                      canonical CUDA direct and P2P interfaces
 |-- cuda_direct.hpp, cuda_p2p.hpp,
 |   cuda_cuboid.hpp                   legacy CUDA-facing compatibility façades
 |-- timings.hpp, validation.hpp,

@@ -1,5 +1,34 @@
 # Project progress
 
+## CUDA P2P backend extraction closure — 2026-09-14
+
+The complete CUDA P2P backend extraction is complete in the current
+uncommitted nested checkout. The canonical public declaration is
+`include/cdfmm/backend/cuda/p2p.hpp`; `include/cdfmm/cuda_p2p.hpp` remains a
+legacy forwarding façade. `src/backend/cuda/p2p/{internal.hpp,plan.cu}` owns
+the P2P plan lifecycle, asynchronous evaluation, persistent device/host state,
+and all list-1 execution variants: canonical AoS, compact/source-only SoA,
+leaf-block, signed tensor dictionary (source-warp, target-owned, and
+power-of-two microtiles), and cuSPARSE BSR(3), in both FP64 and FP32. It also
+owns the shared full-plan primitives. Non-CUDA builds use
+`src/backend/cuda/stub/p2p.cpp`. `src/cuda_fmm.cu` now retains M2L and
+far-field/full-FMM orchestration and consumes the P2P internal primitives.
+
+Trusted validation for this closure:
+
+- fresh CPU full CTest completed 192/192 with four expected skips;
+- fresh CUDA 13.2 SM75 configuration completed a 206-step build covering the
+  core, tests, Python, examples, tools, and benchmarks;
+- the CUDA-configured full CTest completed 192/192;
+- runtime numerical GPU validation was unavailable because `nvidia-smi` could
+  not communicate with the driver; and
+- ownership, `nm`, and `git diff --check` audits were clean.
+
+The untracked `Article1/` directory and unrelated
+`examples/simple_notebooks/tetrahedron_target_average_comsol_compare.ipynb`
+remain untouched and outside this task. No commit was made; the main agent
+must inspect the complete nested diff before committing any implementation.
+
 ## CUDA direct backend extraction closure — 2026-09-14
 
 The accepted CUDA direct extraction gives point and dense direct execution
@@ -15,8 +44,9 @@ explicit backend homes without changing intended behaviour or performance:
   execution; and
 - `src/backend/cuda/stub/direct.cpp` owns non-CUDA direct stubs.
 
-`src/cuda_fmm.cu` retains P2P, M2L, and full-FMM execution. No decomposition
-of those paths was performed, and no behaviour/performance change is intended.
+At that earlier checkpoint, `src/cuda_fmm.cu` retained P2P, M2L, and full-FMM
+execution. No decomposition of those paths was performed at that checkpoint,
+and no behaviour/performance change was intended.
 
 Trusted validation for this closure:
 

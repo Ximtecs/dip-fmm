@@ -5,9 +5,9 @@ describes the ownership and dependency boundaries now implemented in the
 repository. Step 2 made the foundational `core`, `math`, `geometry`, and
 `tree` layout concrete; operators, static plans, FMM orchestration, portable
 CPU and oneMKL execution are now also structured. Cache and
-bindings remain transitional layers. CUDA direct execution and shared CUDA
-infrastructure now have explicit internal homes; P2P, M2L, and full-FMM CUDA
-decomposition remain deferred.
+bindings remain transitional layers. CUDA direct execution, complete P2P
+execution, and shared CUDA infrastructure now have explicit internal homes;
+M2L and remaining full-FMM CUDA decomposition remain deferred.
 
 ## Design rules
 
@@ -199,14 +199,14 @@ Measure performance-sensitive changes against the pre-refactor baseline.
 
 ## Current and target repository structure
 
-The current production layout after the CUDA direct extraction is:
+The current production layout after the CUDA direct and P2P extractions is:
 
 ```text
 dip-fmm/
 |-- include/cdfmm/    canonical core/math/geometry/tree/operators/plan/backend
 |                    plus compatibility shims
 |-- src/              structured operators/plan/backend/cpu plus extracted
-|                    CUDA direct/common code and transitional FMM/support layers
+|                    CUDA common/direct/P2P code and transitional FMM layers
 |-- tests/            C++ and optional Fortran tests
 |-- python_tests/     Python and notebook regression tests
 |-- benchmarks/       C++ drivers and Python runners
@@ -230,7 +230,7 @@ dip-fmm/
 |   |-- tree/
 |   |-- operators/       # implemented responsibility-specific interfaces
 |   |-- plan/            # implemented immutable static representations
-|   |-- backend/         # CPU static-plan apply and canonical CUDA direct APIs
+|   |-- backend/         # CPU static-plan apply and canonical CUDA APIs
 |   `-- fmm/
 |-- src/
 |   |-- math/
@@ -250,9 +250,9 @@ dip-fmm/
 |   |   `-- cuda/
 |   |       |-- common/
 |   |       |-- direct/
-|   |       |-- p2p/
-|   |       |-- far_field/
-|   |       `-- fmm/
+|   |       |-- p2p/          # complete extracted P2P backend
+|   |       |-- far_field/    # future M2L backend
+|   |       `-- fmm/          # future full-FMM backend
 |   |-- fmm/
 |   |-- cache/
 |   `-- bindings/
@@ -310,7 +310,8 @@ src/
 |-- backend/cpu/{static_plan_apply,near_field,direct/dense}.cpp
 |                                               portable static, list-1, and direct execution
 |-- backend/mkl/m2l.cpp                        grouped oneMKL M2L execution
-`-- backend/mkl/direct/dense.cpp               oneMKL dense-direct execution
+|-- backend/mkl/direct/dense.cpp               oneMKL dense-direct execution
+`-- backend/cuda/p2p/{internal.hpp,plan.cu}    complete CUDA P2P backend
 ```
 
 The compatibility headers `cdfmm/operators.hpp` and
@@ -342,10 +343,17 @@ compatibility façades. Shared internal CUDA error and runtime handling lives
 under `src/backend/cuda/common/`. Point O(N^2) direct execution and dense
 cuBLAS direct execution live under `src/backend/cuda/direct/`, while
 `src/backend/cuda/stub/direct.cpp` supplies the non-CUDA direct stubs. The
-remaining `src/cuda_fmm.cu` implementation retains P2P, M2L, and full-FMM
-execution; no decomposition of those paths is implied by the direct move.
-The extraction is intended to preserve behaviour and performance, including
-resource lifetime, precision, launch, and transfer semantics.
+extracted P2P execution follows the same boundary: the canonical public
+`include/cdfmm/backend/cuda/p2p.hpp` owns `CudaP2PPlan`, while
+`include/cdfmm/cuda_p2p.hpp` remains a forwarding compatibility façade.
+`src/backend/cuda/p2p/{internal.hpp,plan.cu}` owns all canonical, compact,
+leaf, signed tensor-dictionary, and cuSPARSE BSR(3) executors in FP64 and
+FP32, together with plan lifecycle, asynchronous evaluation, persistent
+device/host state, and shared full-plan primitives. The non-CUDA boundary is
+`src/backend/cuda/stub/p2p.cpp`. `src/cuda_fmm.cu` now retains M2L and
+far-field/full-FMM orchestration and consumes the P2P internal primitives.
+These moves preserve behaviour and performance, including resource lifetime,
+precision, launch, and transfer semantics.
 
 The FMM layer follows the same orchestration/execution boundary.
 `fmm/far_field.cpp` retains P2M, M2M, M2L backend dispatch, L2L, and L2P
@@ -397,17 +405,17 @@ transitional layout:
   methods of `UniformFmm`, giving cache mechanics intimate ownership knowledge
   of all topology/operator representations.
 - the remaining public CUDA/FMM headers expose transitional plan concepts and
-  depend on broad operator or geometry headers; direct CUDA APIs now have
-  canonical `backend/cuda/` headers with legacy forwarding façades.
+  depend on broad operator or geometry headers; direct and P2P CUDA APIs now
+  have canonical `backend/cuda/` headers with legacy forwarding façades.
 - `python/bindings.cpp` adapts nearly every layer in one translation unit, and
   the C API implementation depends directly on the high-level FMM type.
 - the root CMake target registers the CPU subsystems together with explicit
-  CUDA common/direct units, while the remaining approximately 4,500-line
-  `cuda_fmm.cu` monolith retains P2P, M2L, and full-FMM work; CUDA libraries
-  are currently propagated from `cdfmm_core` to consumers.
+  CUDA common/direct/P2P units, while `cuda_fmm.cu` retains M2L and
+  far-field/full-FMM orchestration; CUDA libraries are currently propagated
+  from `cdfmm_core` to consumers.
 
-The largest responsibility-review candidates are `cuda_fmm.cu` (about 4,500
-lines, retaining P2P/M2L/full-FMM work), `fmm/uniform_fmm.cpp` (about 3,600),
+The largest responsibility-review candidates are `cuda_fmm.cu` (retaining
+M2L/far-field/full-FMM work), `fmm/uniform_fmm.cpp` (about 3,600),
 `cache.cpp` (about 1,800), and
 `python/bindings.cpp` (about 1,500). These measurements locate remaining audit
 work; they do not require mechanical splitting.
@@ -454,8 +462,10 @@ work; they do not require mechanical splitting.
   `src/backend/cpu`; and grouped oneMKL M2L packing, reusable scratch, vendor
   calls, thread control, and availability live under `src/backend/mkl`.
 - CUDA direct/common execution now lives under `src/backend/cuda/{common,direct}`
-  with canonical public headers under `include/cdfmm/backend/cuda/`; P2P,
-  M2L, and full-FMM CUDA decomposition remains separate follow-on work.
+  and the complete P2P backend under `src/backend/cuda/p2p/`, with canonical
+  public headers under `include/cdfmm/backend/cuda/` and legacy forwarding
+  façades retained. M2L and remaining full-FMM CUDA decomposition remain
+  separate follow-on work; `cuda_fmm.cu` consumes P2P internal primitives.
 
 The remaining transitional seam is `StaticFmmTopology`: it adapts tree
 interaction topology to topology-native records consumed by FMM orchestration
@@ -465,8 +475,8 @@ boundary without making the tree depend on a particular P2P packing.
 
 ### Later: remaining backend and CUDA work
 
-- Keep the accepted direct/common extraction stable while decomposing the
-  remaining `cuda_fmm.cu` responsibilities for P2P, M2L, and full-FMM stages.
+- Keep the accepted direct/common/P2P extraction stable while decomposing the
+  remaining `cuda_fmm.cu` responsibilities for M2L and full-FMM stages.
 - Isolate persistent CUDA plans, buffers, streams/events, and cuBLAS/cuSPARSE
   resources from public mathematical interfaces as those stages move.
 - Preserve and benchmark all transfer, launch, overlap, and reuse semantics;
@@ -492,6 +502,7 @@ cache behaviour, and supported CPU/oneMKL/CUDA paths. Performance-sensitive
 backend changes additionally compare plan reuse, transfers, allocations,
 launches, synchronisation, and representative benchmark results.
 
-Step 2 changes file ownership and include structure without changing runtime
-algorithms or public names. API redesign, CUDA decomposition, packing,
-generation, discretisation, and refinement remain deferred.
+These refactor steps change file ownership and include structure without
+changing runtime algorithms or public names. API redesign, CUDA M2L/full-FMM
+decomposition, packing, generation, discretisation, and refinement remain
+deferred.

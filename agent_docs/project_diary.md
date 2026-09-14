@@ -1,5 +1,27 @@
 # Project diary
 
+## 2026-09-14 — complete CUDA P2P backend extraction closure
+
+Accepted the complete CUDA P2P ownership split. The canonical public
+`CudaP2PPlan` declaration is now in
+`include/cdfmm/backend/cuda/p2p.hpp`; the flat `include/cdfmm/cuda_p2p.hpp`
+path remains a forwarding compatibility façade. `src/backend/cuda/p2p/`
+owns canonical AoS, compact/source-only SoA, leaf-block, signed tensor
+dictionary source-warp/target-owned/power-of-two microtile, and cuSPARSE
+BSR(3) execution in FP64 and FP32, including lifecycle, asynchronous state,
+persistent resources, and shared full-plan primitives. The non-CUDA stub is
+`src/backend/cuda/stub/p2p.cpp`; `src/cuda_fmm.cu` retains M2L and
+far-field/full-FMM orchestration and consumes the internal P2P primitives.
+
+Trusted validation: fresh CPU full CTest completed 192/192 with four expected
+skips; fresh CUDA 13.2 SM75 completed a 206-step build covering core, tests,
+Python, examples, tools, and benchmarks; CUDA-configured full CTest completed
+192/192; runtime numerical GPU validation was unavailable because `nvidia-smi`
+could not communicate with the driver; and ownership, `nm`, and
+`git diff --check` audits were clean. The untracked `Article1/` directory and
+unrelated `examples/simple_notebooks/tetrahedron_target_average_comsol_compare.ipynb`
+were preserved untouched. No commit was made pending main-agent diff review.
+
 ## 2026-09-14 — CUDA direct backend extraction closure
 
 Accepted the CUDA direct/common ownership split. Canonical public interfaces
@@ -8,8 +30,9 @@ are `include/cdfmm/backend/cuda/direct.hpp` and
 `cuda_direct.hpp`/`cuda_cuboid.hpp` remain compatibility façades. Shared CUDA
 error/runtime facilities live in `src/backend/cuda/common/`, point O(N^2) and
 dense cuBLAS execution in `src/backend/cuda/direct/`, and non-CUDA direct
-stubs in `src/backend/cuda/stub/direct.cpp`. `src/cuda_fmm.cu` retains P2P,
-M2L, and full-FMM execution. No behaviour or performance change is intended.
+stubs in `src/backend/cuda/stub/direct.cpp`. At that earlier checkpoint,
+`src/cuda_fmm.cu` retained P2P, M2L, and full-FMM execution. No behaviour or
+performance change was intended.
 
 Trusted validation: fresh dev configure/build completed 59 targets; focused
 direct/header/stub coverage passed 8/8, including the exact disabled-stub

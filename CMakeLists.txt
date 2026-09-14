@@ -85,7 +85,8 @@ if(CDFMM_ENABLE_CUDA)
     src/cuda_fmm.cu
     src/backend/cuda/common/runtime.cu
     src/backend/cuda/direct/direct.cu
-    src/backend/cuda/direct/dense.cu)
+    src/backend/cuda/direct/dense.cu
+    src/backend/cuda/p2p/plan.cu)
   target_link_libraries(cdfmm_core PUBLIC CUDA::cudart CUDA::cublas CUDA::cusparse)
   if(CDFMM_ENABLE_PROFILING)
     if(NOT TARGET CUDA::nvtx3)
@@ -105,7 +106,8 @@ if(CDFMM_ENABLE_CUDA)
 else()
   target_sources(cdfmm_core PRIVATE
     src/cuda_fmm_stub.cpp
-    src/backend/cuda/stub/direct.cpp)
+    src/backend/cuda/stub/direct.cpp
+    src/backend/cuda/stub/p2p.cpp)
 endif()
 target_include_directories(cdfmm_core PUBLIC include)
 target_include_directories(cdfmm_core PRIVATE src)

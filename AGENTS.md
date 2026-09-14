@@ -38,14 +38,14 @@ implementation. Architectural work occurs on `refactor/architecture-v0.2`.
 Never move, recreate, or rewrite the tag or preserved branch.
 
 The foundational `core`, `math`, `geometry`, and `tree` layers, followed by the
-operator/static-plan step and initial backend boundaries, are now organised.
-Preserve the flat forwarding headers until an explicit compatibility cleanup.
-Dynamic mathematical operator implementations live under `src/operators/*`;
-`src/operators.cpp` is compatibility-only. CUDA direct execution and shared
-CUDA runtime/error infrastructure now have explicit homes under
-`src/backend/cuda/`; P2P, M2L, and full-FMM CUDA decomposition remain future
-backend work. Further backend, orchestration, cache, or binding changes are
-authorised only when explicitly scoped. Geometry packing, grain
+operator/static-plan step and backend boundaries, are now organised. Preserve
+the flat forwarding headers until an explicit compatibility cleanup. Dynamic
+mathematical operator implementations live under `src/operators/*`;
+`src/operators.cpp` is compatibility-only. CUDA direct execution, the complete
+P2P backend, and shared CUDA runtime/error infrastructure now have explicit
+homes under `src/backend/cuda/`; CUDA M2L and remaining full-FMM decomposition
+remain future backend work. Further backend, orchestration, cache, or binding
+changes are authorised only when explicitly scoped. Geometry packing, grain
 generation/discretisation, and prism/tetrahedron refinement remain future
 work.
 
@@ -66,7 +66,8 @@ Current structure:
 ```text
 dip-fmm/
 |-- include/cdfmm/    structured core/math/geometry/tree plus compatibility headers
-|-- src/              structured math/geometry/tree plus deferred flat higher layers
+|-- src/              structured math/geometry/tree/backend plus deferred
+|                    flat higher layers
 |-- tests/            C++ tests and optional Fortran smoke test
 |-- python_tests/     Python, runner, and notebook regression tests
 |-- benchmarks/       C++ benchmarks and Python benchmark runners

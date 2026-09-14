@@ -1,5 +1,33 @@
 # Latest session work
 
+## 2026-09-14 — complete CUDA P2P backend extraction closure
+
+The complete CUDA P2P extraction is complete in the current uncommitted
+checkout. `include/cdfmm/backend/cuda/p2p.hpp` is the canonical public header
+for `CudaP2PPlan`; `include/cdfmm/cuda_p2p.hpp` remains a legacy forwarding
+façade. `src/backend/cuda/p2p/{internal.hpp,plan.cu}` owns all list-1 CUDA P2P
+variants and lifecycle/state: canonical AoS, compact/source-only SoA,
+leaf-block, signed tensor dictionary (source-warp, target-owned, and
+power-of-two microtiles), and cuSPARSE BSR(3), in FP64 and FP32. The package
+also owns shared full-plan primitives and the non-CUDA path is
+`src/backend/cuda/stub/p2p.cpp`. `src/cuda_fmm.cu` now retains M2L and
+far-field/full-FMM orchestration and consumes P2P internal primitives.
+
+Validation truth for this closure:
+
+- fresh CPU full CTest: 192/192, with four expected skips;
+- fresh CUDA 13.2 SM75 full build: 206 steps covering core, tests, Python,
+  examples, tools, and benchmarks;
+- CUDA-configured full CTest: 192/192;
+- runtime numerical GPU validation unavailable because `nvidia-smi` could not
+  communicate with the driver; and
+- ownership, `nm`, and `git diff --check` audits clean.
+
+The untracked `Article1/` directory and unrelated
+`examples/simple_notebooks/tetrahedron_target_average_comsol_compare.ipynb`
+were preserved untouched and are outside this task. No commit was made; the
+main agent must inspect the complete nested diff before committing.
+
 ## 2026-09-14 — CUDA direct backend extraction closure
 
 The accepted CUDA direct extraction is complete. The
@@ -9,9 +37,10 @@ canonical public headers are
 compatibility façades. Shared internal error/runtime handling is in
 `src/backend/cuda/common/`, point O(N^2) and dense cuBLAS direct execution are
 in `src/backend/cuda/direct/`, and non-CUDA direct stubs are in
-`src/backend/cuda/stub/direct.cpp`. `src/cuda_fmm.cu` still owns P2P, M2L, and
-full-FMM execution. No behaviour/performance change is intended and no
-P2P/M2L/full decomposition was attempted.
+`src/backend/cuda/stub/direct.cpp`. At that earlier checkpoint,
+`src/cuda_fmm.cu` still owned P2P, M2L, and full-FMM execution. No
+behaviour/performance change was intended and no P2P/M2L/full decomposition
+had yet been attempted.
 
 Validation handoff: fresh dev configure/build 59 targets; focused
 direct/header/stub coverage 8/8, including the exact disabled-stub behaviour
@@ -23,8 +52,8 @@ runtime cases only took unavailable-device guards because `/dev/nvidia` was
 absent and `nvidia-smi` could not reach the driver. Ownership/`nm` searches
 and `git diff --check` were clean. `Article1/` remains untouched.
 
-No implementation follow-up is implied beyond the deferred P2P/M2L/full-FMM
-CUDA decomposition.
+At that earlier checkpoint, no implementation follow-up was implied beyond the
+then-deferred P2P/M2L/full-FMM CUDA decomposition.
 
 ## 2026-09-11 — FMM, CPU, and oneMKL execution boundaries
 
