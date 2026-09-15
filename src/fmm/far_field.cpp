@@ -11,7 +11,8 @@
 #endif
 
 #include "cdfmm/operators.hpp"
-#include "cdfmm/backend/cpu/static_plan_apply.hpp"
+#include "cdfmm/backend/cpu/m2l.hpp"
+#include "backend/cpu/far_field/internal.hpp"
 #include "cuda_m2l_plan.hpp"
 #include "profile.hpp"
 #include "uniform_fmm_internal.hpp"
@@ -37,20 +38,6 @@ inline double elapsed_seconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
 
-template <typename Operator, typename Scalar, typename Degree>
-void apply_level_scaled_translation(const Operator& operator_map,
-                                    const std::span<Scalar> input,
-                                    const std::span<Scalar> output,
-                                    const int level,
-                                    const Degree& degree) {
-  for (const auto& entry : operator_map.entries) {
-    const int power = std::abs(degree(entry.output) - degree(entry.input));
-    const Scalar value = std::ldexp(
-        static_cast<Scalar>(entry.value), -(level - 1) * power);
-    output[static_cast<std::size_t>(entry.output)] +=
-        value * input[static_cast<std::size_t>(entry.input)];
-  }
-}
 } // namespace
 
 void UniformFmm::static_m2l(const int level) {
@@ -170,15 +157,10 @@ void UniformFmm::upward_pass_prepared_float() {
     const FloatStaticCoefficientOperator &operator_map =
         p2m_plans_float_[static_cast<std::size_t>(occupied_index)].operator_map;
     const auto M = multipole_float_for_node(leaf_index);
-    for (const FloatStaticOperatorEntry &entry : operator_map.entries) {
-      const FloatVec3 &moment =
-          sorted_dipole_moments_float_[leaf_range.begin +
-              static_cast<std::size_t>(entry.input / 3)];
-      const float component = entry.input % 3 == 0
-          ? moment.x
-          : (entry.input % 3 == 1 ? moment.y : moment.z);
-      M[static_cast<std::size_t>(entry.output)] += entry.value * component;
-    }
+    detail::cpu::apply_static_p2m(
+        operator_map,
+        std::span<const FloatVec3>(sorted_dipole_moments_float_)
+            .subspan(leaf_range.begin, leaf_range.count), M);
   }
   last_timings_.p2m.add(elapsed_seconds(phase_start));
 
@@ -208,12 +190,12 @@ void UniformFmm::upward_pass_prepared_float() {
           if (child.source_count() == 0) {
             continue;
           }
-          apply_level_scaled_translation(
+          detail::cpu::apply_static_translation(
               m2m_operators_float_[edge.child_class],
               multipole_float_for_node(child_index), parent_M, child.level,
-              [this](const int coefficient) {
-                return coefficient_degree(coefficient);
-              });
+              detail::cpu::coefficient_degree_view(
+                  expansion_basis_ == ExpansionBasis::Spherical, basis_,
+                  spherical_basis_));
         }
       }
     }
@@ -278,15 +260,10 @@ void UniformFmm::upward_pass_prepared() {
       const StaticCoefficientOperator &operator_map =
           p2m_plans_[static_cast<std::size_t>(occupied_index)].operator_map;
       const auto M = multipole_for_node(leaf_index);
-      for (const StaticOperatorEntry &entry : operator_map.entries) {
-        const Vec3 &moment =
-            sorted_dipole_moments_[leaf_range.begin +
-                                   static_cast<std::size_t>(entry.input / 3)];
-        const double component =
-            entry.input % 3 == 0 ? moment.x
-                                 : (entry.input % 3 == 1 ? moment.y : moment.z);
-        M[static_cast<std::size_t>(entry.output)] += entry.value * component;
-      }
+      detail::cpu::apply_static_p2m(
+          operator_map,
+          std::span<const Vec3>(sorted_dipole_moments_)
+              .subspan(leaf_range.begin, leaf_range.count), M);
     } else {
       const CoeffVector M = p2m_dipole(basis_, leaf.centre,
                      std::span<const Vec3>(topology_->sorted_source_positions)
@@ -330,12 +307,12 @@ void UniformFmm::upward_pass_prepared() {
             continue;
           }
           if (m2m_executor != StaticOperatorExecutor::Reference) {
-            apply_level_scaled_translation(
+            detail::cpu::apply_static_translation(
                 m2m_operators_[edge.child_class],
                 multipole_for_node(child_index), parent_M, child.level,
-                [this](const int coefficient) {
-                  return coefficient_degree(coefficient);
-                });
+                detail::cpu::coefficient_degree_view(
+                    expansion_basis_ == ExpansionBasis::Spherical, basis_,
+                    spherical_basis_));
           } else {
             const Vec3 d = parent.centre - child.centre;
             m2m_add(basis_, d,
@@ -396,12 +373,12 @@ void UniformFmm::downward_pass() {
         continue;
       }
       if (execution_plan().l2l != StaticOperatorExecutor::Reference) {
-        apply_level_scaled_translation(
+        detail::cpu::apply_static_translation(
             l2l_operators_[edge.child_class], local_for_node(edge.source_node),
             local_for_node(target_index), target.level,
-            [this](const int coefficient) {
-              return coefficient_degree(coefficient);
-            });
+            detail::cpu::coefficient_degree_view(
+                expansion_basis_ == ExpansionBasis::Spherical, basis_,
+                spherical_basis_));
       } else {
         const Vec3 d = target.centre - nodes[static_cast<std::size_t>(edge.source_node)].centre;
         l2l_add(basis_, d, local_for_node(edge.source_node),
@@ -479,13 +456,13 @@ void UniformFmm::downward_pass_float() {
       if (target.target_count() == 0) {
         continue;
       }
-      apply_level_scaled_translation(
+      detail::cpu::apply_static_translation(
           l2l_operators_float_[edge.child_class],
           local_float_for_node(edge.source_node),
           local_float_for_node(target_index), target.level,
-          [this](const int coefficient) {
-            return coefficient_degree(coefficient);
-          });
+          detail::cpu::coefficient_degree_view(
+              expansion_basis_ == ExpansionBasis::Spherical, basis_,
+              spherical_basis_));
     }
     last_timings_.l2l.add(elapsed_seconds(phase_start));
 
@@ -528,12 +505,12 @@ void UniformFmm::l2l_downward() {
       if (target.target_count() == 0) {
         continue;
       }
-      apply_level_scaled_translation(
+      detail::cpu::apply_static_translation(
           l2l_operators_[edge.child_class], local_for_node(edge.source_node),
           local_for_node(target_index), target.level,
-          [this](const int coefficient) {
-            return coefficient_degree(coefficient);
-          });
+          detail::cpu::coefficient_degree_view(
+              expansion_basis_ == ExpansionBasis::Spherical, basis_,
+              spherical_basis_));
     }
     last_timings_.l2l.add(elapsed_seconds(phase_start));
   }

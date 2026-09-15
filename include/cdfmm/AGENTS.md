@@ -21,6 +21,8 @@ include/cdfmm/
 |-- uniform_fmm.hpp                   solver API and options
 |-- backend/cuda/{direct,dense_direct,p2p,m2l}.hpp
 |                                      canonical CUDA direct, P2P, and M2L APIs
+|-- backend/cpu/{p2p,m2l,far_field}.hpp
+|                                      canonical portable static-plan APIs
 |-- cuda_direct.hpp, cuda_p2p.hpp,
 |   cuda_cuboid.hpp                   legacy CUDA-facing compatibility façades
 |-- timings.hpp, validation.hpp,

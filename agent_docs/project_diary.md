@@ -1,5 +1,16 @@
 # Project diary
 
+## 2026-09-15 — CPU execution boundary decision
+
+Accepted the portable CPU split by responsibility rather than by mirroring
+CUDA file counts: P2P owns every prepared list-1 representation and near-field
+dispatch, M2L owns prepared-plan application, and far-field groups only the
+shared P2M/L2P entry and M2M/L2L translation mechanics. The legacy
+`static_plan_apply.hpp` is intentionally retained as a compatibility umbrella;
+reference mathematics stays in `src/fmm/far_field.cpp`, and no generic helper
+bucket or public API redesign was introduced. The next architecture step is
+the final higher-level `UniformFmm` cleanup.
+
 ## 2026-09-14 — CUDA far-field execution extraction closure
 
 Accepted the CUDA far-field ownership split. The internal

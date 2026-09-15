@@ -23,13 +23,14 @@
 #endif
 
 #include "cdfmm/operators.hpp"
-#include "cdfmm/backend/cpu/static_plan_apply.hpp"
+#include "cdfmm/backend/cpu/far_field.hpp"
+#include "cdfmm/backend/cpu/p2p.hpp"
 #include "cdfmm/operators/operators.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 #include "backend/cuda/fmm/internal.hpp"
 #include "cuda_m2l_plan.hpp"
 #include "cuda_p2p_plan.hpp"
-#include "backend/cpu/near_field.hpp"
+#include "backend/cpu/p2p/near_field.hpp"
 #include "profile.hpp"
 #include "uniform_fmm_internal.hpp"
 

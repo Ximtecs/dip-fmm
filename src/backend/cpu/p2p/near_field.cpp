@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-#include "near_field.hpp"
+#include "backend/cpu/p2p/near_field.hpp"
 
 namespace cdfmm::detail {
 

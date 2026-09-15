@@ -23,7 +23,7 @@ include/cdfmm/
   operators/                                                   P2M/M2M/M2L/L2L/L2P/M2P/P2P interfaces
   plan/                                                        immutable static data, direct plans,
                                                                and P2P packings
-  backend/cpu/                                                 portable static and dense-direct interfaces
+  backend/cpu/{p2p,m2l,far_field}.hpp                         portable static-plan interfaces
   backend/cuda/{direct,dense_direct,p2p,m2l}.hpp               canonical CUDA direct/P2P/M2L interfaces
 src/
   math/                                                        mathematical kernels
@@ -36,7 +36,10 @@ src/
   plan/direct/dense.cpp                                         dense-direct preparation/dispatch
   plan/                                                         precision conversion and P2P packing builders
   backend/cpu/direct/dense.cpp                                  portable dense-direct application
-  backend/cpu/{static_plan_apply,near_field}.cpp                 portable static-plan/list-1 application
+  backend/cpu/p2p/{executor,dictionary,near_field}.{cpp,hpp}    portable P2P/list-1 application
+  backend/cpu/m2l/executor.cpp                                  portable prepared M2L application
+  backend/cpu/far_field/{internal,executor}.{hpp,cpp}           far-field execution boundary
+  backend/cpu/far_field/{entries,translation}.hpp               shared P2M/L2P and M2M/L2L mechanics
   backend/mkl/direct/dense.cpp                                  oneMKL dense-direct application
   backend/mkl/m2l.{hpp,cpp}                                     opaque grouped M2L execution state
   backend/cuda/common/error.hpp                                 shared CUDA error helpers
@@ -104,8 +107,12 @@ include/cdfmm/operators/       mathematical operator interfaces, including M2P
 src/operators/                  operator construction and dynamic application
 include/cdfmm/plan/             canonical static data and derived representations
 src/plan/                       FP32 conversion, direct preparation, and deterministic P2P builders
-include/cdfmm/backend/cpu/      portable application interface
-src/backend/cpu/                portable static and dense-direct application
+include/cdfmm/backend/cpu/      canonical portable P2P/M2L/far-field interfaces
+                                 plus static-plan compatibility umbrella
+src/backend/cpu/direct/          portable dense-direct execution
+src/backend/cpu/p2p/             canonical/packed P2P and near-field execution
+src/backend/cpu/m2l/             portable prepared M2L execution
+src/backend/cpu/far_field/       portable P2M/L2P entries and M2M/L2L translation
 src/fmm/                        UniformFmm lifecycle and far-field sequencing
 src/backend/mkl/                oneMKL dense-direct and grouped M2L application
 include/cdfmm/backend/cuda/     canonical CUDA direct/P2P/M2L public interfaces
@@ -154,9 +161,12 @@ coefficient/field buffers, permutations, P2P and separate M2L executor wiring,
 streams/events/timing, near/far overlap, combination/reordering, and D2H
 transfer. `src/cuda_fmm_plan.hpp` is a forwarding shim only.
 
-The CPU backend remains a later Phase 1 architecture task. Its intended
-responsibility taxonomy is `backend/cpu/{direct,p2p,m2l,far_field}/`; no CPU
-files are moved by this CUDA step.
+The CPU backend now follows the responsibility taxonomy
+`backend/cpu/{direct,p2p,m2l,far_field}/`. P2P keeps all canonical and derived
+representations plus near-field dispatch, M2L has its own prepared-plan
+executor, and far-field owns shared P2M/L2P entry and M2M/L2L translation
+mechanics. The old static-plan header remains an umbrella for source
+compatibility. High-level `UniformFmm` cleanup is the next architecture task.
 
 ## Validation and documentation areas
 

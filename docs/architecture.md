@@ -7,8 +7,10 @@ repository. Step 2 made the foundational `core`, `math`, `geometry`, and
 CPU and oneMKL execution are now also structured. Cache and bindings remain
 transitional layers. CUDA direct execution, complete P2P and M2L execution,
 shared CUDA infrastructure, far-field execution, and complete FMM orchestration
-now have explicit internal homes. CPU backend decomposition and final
-high-level cleanup remain deferred.
+now have explicit internal homes. CPU execution now follows explicit `direct`,
+`p2p`, `m2l`, and `far_field` homes alongside corresponding CUDA
+responsibilities, without forcing identical implementation details. Final
+high-level cleanup remains deferred.
 
 ## Design rules
 
@@ -303,7 +305,8 @@ include/cdfmm/
 |       |-- dictionary.hpp      derived Tensor6 dictionary packing
 |       |-- signed_dictionary.hpp derived signed/reduced packing
 |       `-- bsr.hpp              backend-neutral BSR(3) packing
-`-- backend/cpu/static_plan_apply.hpp  CPU application boundary
+|-- backend/cpu/{p2p,m2l,far_field}.hpp CPU execution interfaces
+`-- backend/cpu/static_plan_apply.hpp  compatibility umbrella
 
 src/
 |-- operators/{p2m,m2m,m2l,l2l,l2p,m2p,p2p}.cpp  authoritative construction
@@ -311,8 +314,12 @@ src/
 |-- plan/{precision,direct,p2p}               plan preparation and representations
 |-- cuboid.cpp                                compatibility geometry/pair math
 |-- fmm/{uniform_fmm,far_field}.cpp            lifecycle and pass orchestration
-|-- backend/cpu/{static_plan_apply,near_field,direct/dense}.cpp
-|                                               portable static, list-1, and direct execution
+|-- backend/cpu/direct/dense.cpp                portable dense-direct execution
+|-- backend/cpu/p2p/{executor,dictionary,near_field}.cpp
+|                                               portable P2P and list-1 execution
+|-- backend/cpu/m2l/executor.cpp                portable prepared M2L execution
+|-- backend/cpu/far_field/{executor,entries,translation}.{cpp,hpp}
+|                                               portable far-field mechanics
 |-- backend/mkl/m2l.cpp                        grouped oneMKL M2L execution
 |-- backend/mkl/direct/dense.cpp               oneMKL dense-direct execution
 |-- backend/cuda/p2p/{internal.hpp,plan.cu}    complete CUDA P2P backend
@@ -386,7 +393,10 @@ from the canonical `StaticM2LPlan`, owns reusable FP32/FP64 gather and
 translation buffers, and performs the guarded SGEMM/DGEMM gather/multiply/
 serial-scatter path. `UniformFmm` references that state through an opaque
 internal owner; no vendor-oriented group or scratch layout appears in the
-installed header. CPU list-1 execution lives in `backend/cpu/near_field.cpp`.
+installed header. Portable CPU list-1 and prepared-plan execution live under
+`backend/cpu/p2p`, prepared M2L under `backend/cpu/m2l`, and P2M/L2P entries
+plus M2M/L2L translations under `backend/cpu/far_field`. The old
+`static_plan_apply.hpp` remains a source-compatible umbrella.
 
 `generation/` will eventually own physical grain generation. `refinement/`
 will eventually own prism and tetrahedron refinement. Geometry packing belongs
@@ -475,9 +485,11 @@ work; they do not require mechanical splitting.
   dictionary, and BSR forms are deterministic derived packings under
   `plan/p2p/`; BSR construction is backend-neutral and does not depend on
   CUDA or cuSPARSE.
-- Portable CPU application is isolated at
-  `backend/cpu/static_plan_apply.cpp`. It consumes canonical or derived plans;
-  it does not redefine pair or translation mathematics.
+- Portable CPU application is isolated under
+  `backend/cpu/{p2p,m2l,far_field}`. P2P consumes canonical or derived plans,
+  M2L consumes prepared schedules, and far-field entry/translation helpers
+  consume prepared static operators; none redefine pair or translation
+  mathematics.
 - Dense-direct plan preparation remains under `plan/direct`; portable execution
   is in `backend/cpu/direct`, oneMKL execution is in `backend/mkl/direct`, and
   reusable staging is private backend execution state.
@@ -504,8 +516,7 @@ boundary without making the tree depend on a particular P2P packing.
 ### Later: remaining backend and CUDA work
 
 - Keep the accepted direct/common/P2P/M2L/far-field/full-FMM extraction stable.
-  The next backend-architecture task is the CPU decomposition, approximately
-  under `backend/cpu/{direct,p2p,m2l,far_field}/`.
+  The next architecture task is the final higher-level `UniformFmm` cleanup.
 - Preserve the separation of immutable far-field execution state from mutable
   moments, coefficient/field buffers, streams/events, timing, overlap,
   combination/reordering, and D2H resources as that work proceeds.
@@ -533,6 +544,5 @@ backend changes additionally compare plan reuse, transfers, allocations,
 launches, synchronisation, and representative benchmark results.
 
 These refactor steps change file ownership and include structure without
-changing runtime algorithms or public names. API redesign, remaining CUDA
-full-FMM decomposition, packing, generation, discretisation, and refinement
-remain deferred.
+changing runtime algorithms or public names. API redesign, packing, generation,
+discretisation, and refinement remain deferred.

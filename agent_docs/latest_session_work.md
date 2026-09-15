@@ -1,5 +1,44 @@
 # Latest session work
 
+## 2026-09-15 — Portable CPU backend decomposition closure
+
+Completed and committed the accepted responsibility-driven CPU backend split.
+The portable taxonomy is now `src/backend/cpu/{direct,p2p,m2l,far_field}/`:
+P2P and near-field execution are under `p2p/`, prepared M2L under `m2l/`, and
+prepared P2M/L2P entries plus shared level-scaled M2M/L2L translation under
+`far_field/`. The far-field `executor.cpp` is a narrow mechanics boundary;
+`src/fmm/far_field.cpp` retains reference mathematics, traversal, sequencing,
+backend selection, and timing ownership. Direct execution was preserved.
+
+`include/cdfmm/backend/cpu/{p2p,m2l,far_field}.hpp` now own the canonical
+portable declarations. `static_plan_apply.hpp` remains a compatibility
+umbrella and the mixed `static_plan_apply.cpp` implementation home is removed.
+All existing P2P representations, FP32/FP64 paths, OpenMP thresholds and
+scheduling, SIMD guards and widths, ordering, identity handling, and
+reference-vs-static semantics are preserved. The next architecture task is
+the final higher-level `UniformFmm` cleanup; cache, bindings, and repository
+pruning remain out of scope.
+
+Validation handoff (trusted evidence): initial CUDA hierarchy sanity was clean:
+the complete hierarchy was present, root `src/cuda_fmm.cu` and
+`src/cuda_fmm_stub.cpp` were absent, and CUDA 13.2 was available. Fresh/full
+portable CPU CTest passed 193/193 with four expected optional skips; repaired
+focused CPU suites passed 13/13 and 34/34; standalone canonical/legacy header
+probes passed. The oneMKL configure/core build and full CTest passed 193/193
+with three expected CUDA skips using environment-specific `-latomic`.
+
+Fresh CUDA SM75 configuration and `cdfmm_core`/`cdfmm_tests` build passed
+198/198 steps, repaired CPU objects rebuilt, and focused CUDA-configured
+coverage passed 13/13. No GPU numerical runtime claim is made. The
+vectorisation-report configure/build passed and produced a nonempty
+`cdfmm-cpu-backend.vec` (an earlier repair-worker attempt was network-blocked;
+the independent tester later succeeded). `git diff --check` passed.
+
+Commit: `refactor(cpu): decompose portable backend` (exact SHA reported at
+handoff). Unrelated untracked `Article1/` and
+`examples/simple_notebooks/tetrahedron_target_average_fair_sampling.ipynb`
+remain preserved.
+
 ## 2026-09-14 — CUDA full-FMM backend ownership
 
 Moved complete CUDA FMM declarations and orchestration to

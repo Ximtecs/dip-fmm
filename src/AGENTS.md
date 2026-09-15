@@ -23,8 +23,12 @@ src/
 |-- periodic.cpp                            periodic support code
 |-- fmm/{uniform_fmm,far_field}.cpp         lifecycle and pass orchestration
 |-- fmm/uniform_fmm_internal.hpp            opaque backend owner adapters
-|-- backend/cpu/near_field.cpp              CPU list-1 execution
-|-- backend/cpu/static_plan_apply.cpp       portable static-plan execution
+|-- backend/cpu/direct/dense.cpp            portable dense-direct execution
+|-- backend/cpu/p2p/{executor,dictionary,near_field}.cpp
+|                                          portable P2P and list-1 execution
+|-- backend/cpu/m2l/executor.cpp            portable prepared M2L execution
+|-- backend/cpu/far_field/{executor,entries,translation}.{cpp,hpp}
+|                                          portable far-field mechanics
 |-- backend/mkl/{m2l,direct/dense}.cpp      oneMKL execution
 |-- backend/cuda/common/error.hpp           shared CUDA error helpers
 |-- backend/cuda/common/runtime.{hpp,cu}    CUDA runtime helpers

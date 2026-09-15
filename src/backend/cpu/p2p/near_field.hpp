@@ -4,7 +4,7 @@
 #include <span>
 #include <vector>
 
-#include "cdfmm/backend/cpu/static_plan_apply.hpp"
+#include "cdfmm/backend/cpu/p2p.hpp"
 #include "cdfmm/operators.hpp"
 #include "cdfmm/tree/static_topology.hpp"
 
