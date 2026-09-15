@@ -256,18 +256,10 @@ void read_p2p_blocks(Reader& reader,
     block.zz = values[8];
     block.skip_for_identity = load_unaligned<int>(record + offset);
 
-    compact_plan.source_indices[slot] = block.source;
-    compact_plan.skip_for_identity[slot] =
-        static_cast<unsigned char>(block.skip_for_identity != 0);
-    compact_plan.potential[0][slot] = block.px;
-    compact_plan.potential[1][slot] = block.py;
-    compact_plan.potential[2][slot] = block.pz;
-    compact_plan.tensors[0][slot] = block.xx;
-    compact_plan.tensors[1][slot] = block.xy;
-    compact_plan.tensors[2][slot] = block.xz;
-    compact_plan.tensors[3][slot] = block.yy;
-    compact_plan.tensors[4][slot] = block.yz;
-    compact_plan.tensors[5][slot] = block.zz;
+    // Deliberately fused with the canonical decode above: plan/p2p/compact.hpp
+    // owns the canonical-to-compact row rule, this loop owns only reading the
+    // persisted bytes and choosing to build both representations in one pass.
+    assign_static_p2p_compact_row(compact_plan, slot, block);
   }
 }
 

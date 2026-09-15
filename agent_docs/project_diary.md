@@ -1,6 +1,34 @@
 # Project diary
 
-## 2026-09-15 — whole-Phase-1 validation and closure
+## 2026-09-15 — internal-duplication cleanup: unify without unfusing
+
+Phase 1 had left one item explicitly deferred rather than closed: the
+canonical-to-compact P2P row mapping was stated twice, once in the ordinary
+plan builder and once inside the cache's fused warm-decode loop, and both
+`docs/architecture.md` and `src/cache/AGENTS.md` warned against the obvious
+"fix" of unfusing that loop just to remove the duplication. The interesting
+part of this task was resisting that obvious fix. The two restatements were
+genuinely the same rule — same fields, same order, same semantics — so the
+real question was where a shared primitive could live without forcing the
+fused loop apart. The answer was a small inline free function taking a
+plan-and-slot and a canonical block, callable from inside an indexed
+loop body either way. `compact.cpp`'s builder switched from `reserve`+`push_back`
+to `resize`+indexed-write so it could call the same function; the cache decode
+kept its single `#pragma omp parallel for` untouched and just replaced eleven
+lines of hand-copied fields with one call. Neither side changed what it
+computes.
+
+The other item, a duplicated `n!` loop between `rectangular_prism.cpp` and
+`MultiIndexSet::factorial`, was unambiguous once an audit worker confirmed the
+two were byte-for-byte identical in algorithm, domain, and (lack of) overflow
+handling — a straightforward delete-and-call-through.
+
+The most convincing evidence, again, was the cheapest to gather: a standalone
+probe compiled unchanged against `v0.1.0` and against this HEAD, sharing one
+`CDFMM_CACHE_DIR`, showing identical cache keys, hits, zero bytes written, and
+bit-identical fields — and a stash-based before/after timing comparison on the
+exact touched loop, showing no measurable difference. Both are cheaper and
+more convincing than reasoning about the change from first principles.
 
 From `66b9436`, the job was to decide whether Phase 1 was actually finished,
 using evidence rather than the repository's own say-so, and then to close it.

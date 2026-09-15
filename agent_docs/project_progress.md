@@ -1,5 +1,26 @@
 # Project progress
 
+## Internal-duplication cleanup after Phase 1: COMPLETE — 2026-09-15
+
+The canonical-to-compact P2P packing rule (independently stated by
+`src/plan/p2p/compact.cpp` and the fused warm-cache decode in
+`src/cache/format.cpp`, and previously recorded as deferred rather than
+resolved) now has one authoritative statement,
+`assign_static_p2p_compact_row` in `include/cdfmm/plan/p2p/compact.hpp`. The
+cache's fused single-pass decode is unchanged in structure — it now calls the
+shared function per row instead of restating the field mapping. A duplicated
+`n!` loop (`rectangular_prism.cpp` vs `MultiIndexSet::factorial`) was also
+removed. See `agent_docs/latest_session_work.md` for full validation evidence
+(cross-version `v0.1.0` cache-compatibility probe, before/after warm-cache
+timing, and the full CPU/CUDA/oneMKL/CUDA+oneMKL test matrix, all clean). No
+cache format, cache key, or public API/ABI change.
+
+Still open, each its own future task: the `StaticFmmTopology`/tree-to-plan
+boundary seam; deeper cache/`UniformFmm` encapsulation (cache entry points
+are still `UniformFmm` members); the flat-header/packaging relocation
+candidates (`periodic.cpp`, `parameter_selection.cpp`, `validation.cpp`, and
+the headers awaiting a canonical subsystem home); and repository pruning.
+
 ## Phase 1 architecture refactor: COMPLETE — 2026-09-15
 
 Phase 1 of the `v0.2` architecture refactor is closed. Starting HEAD `66b9436`.

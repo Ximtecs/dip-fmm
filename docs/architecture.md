@@ -545,9 +545,12 @@ transitional layout:
   geometry-plan payloads. Its entry points remain `UniformFmm` members, so
   cache code still has intimate knowledge of the topology and operator
   representations it persists; deeper encapsulation awaits an API/ABI step.
-  `cache/format.cpp` also builds the derived compact P2P representation while
-  decoding the canonical blocks, so the canonical-to-compact rule is stated
-  both there and in `plan/p2p/compact.cpp`.
+  `cache/format.cpp` still builds the derived compact P2P representation
+  while decoding the canonical blocks in the same pass, but it now does so by
+  calling `assign_static_p2p_compact_row` (`plan/p2p/compact.hpp`), the same
+  row-packing primitive `plan/p2p/compact.cpp` uses; the canonical-to-compact
+  rule itself is stated once. Only the fused-pass *choice* remains cache-local,
+  as a performance decision, not a restatement of the mapping.
 - the remaining public CUDA/FMM headers expose transitional plan concepts and
   depend on broad operator or geometry headers; direct, P2P, and M2L CUDA APIs
   now have canonical `backend/cuda/` headers with legacy forwarding façades.
@@ -634,12 +637,26 @@ The compatibility/transitional-source review is complete, and whole-refactor
 validation across the supported CPU, oneMKL, CUDA, bindings, cache, install,
 and documentation configurations has been performed. See "Phase 1 closure".
 
-One item raised here during the refactor is deferred to Phase 2 rather than
-closed: the duplicated canonical-to-compact P2P packing rule, which the cache
-decode in `cache/format.cpp` and the plan builder in `plan/p2p/compact.cpp`
-state independently. The cache decode fuses packing into its single pass
-deliberately, so this is a scoped plan/cache boundary decision rather than a
+One item raised here during the refactor was deferred rather than closed: the
+duplicated canonical-to-compact P2P packing rule, independently stated by the
+cache decode in `cache/format.cpp` and the plan builder in
+`plan/p2p/compact.cpp`. A follow-up internal-duplication cleanup, after Phase
+1 closure, resolved the duplicated *rule* without touching the plan/cache
+boundary: both call sites now share one row-packing primitive,
+`assign_static_p2p_compact_row` in `include/cdfmm/plan/p2p/compact.hpp`. The
+cache decode still fuses canonical decode and compact construction into one
+pass deliberately for performance; that fused-pass structure, and the
+broader question of whether cache entry points should stop being `UniformFmm`
+members that know the topology/operator representations they persist, remain
+open and are recorded as a separate later cache/plan-boundary item, not
 mechanical de-duplication.
+
+That same cleanup also removed a small duplicated `n!` primitive: a
+private `monomial_factorial` in `src/geometry/primitives/rectangular_prism.cpp`
+restated the loop already implemented by `MultiIndexSet::factorial`
+(`include/cdfmm/math/multi_index.hpp`). The prism code now calls the `math`
+implementation directly, matching the `geometry -> math` dependency direction;
+no new file or shared `utils`/`helpers` header was introduced.
 
 ## Refactor validation contract
 

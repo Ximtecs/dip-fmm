@@ -1,5 +1,79 @@
 # Latest session work
 
+## 2026-09-15 — internal-duplication cleanup after Phase-1 closure
+
+Starting HEAD `47bbe5e2` (`refactor: close phase 1 architecture`). Task:
+remove genuinely duplicated implementation rules identified during Phase-1
+closure, without reopening the architecture, changing public API/ABI, or
+touching the persistent cache format/keys. Two items were in scope.
+
+**Canonical-to-compact P2P packing.** `src/plan/p2p/compact.cpp`'s ordinary
+plan builder and the fused warm-cache decode in `src/cache/format.cpp`'s
+`read_p2p_blocks` each independently restated the same field-by-field mapping
+from a canonical `StaticDipoleBlock`/`FloatStaticDipoleBlock` into
+`StaticP2PCompactPlan`/`FloatStaticP2PCompactPlan` (source index, identity
+marker, three potential components, six tensor components). `docs/architecture.md`
+and `src/cache/AGENTS.md` had recorded this as deferred rather than resolved,
+warning specifically against unfusing `read_p2p_blocks`'s single parallel pass
+into decode-then-build. The fix respects that: a new inline free function,
+`assign_static_p2p_compact_row` (two precision overloads), was added to
+`include/cdfmm/plan/p2p/compact.hpp` as the one authoritative statement of the
+mapping. `compact.cpp`'s builder now resizes its output arrays and calls it
+per row (replacing `reserve`+`push_back`); `format.cpp`'s fused decode calls
+the exact same function per row, inside the same `#pragma omp parallel for`
+loop, at the same point where it previously hand-copied the fields — no new
+pass, no new allocation, no change to the persistent format or cache keys.
+`format.cpp`'s own field-copy code for decoding the canonical block *from
+persisted bytes* (the on-disk byte layout) is untouched and correctly remains
+cache-owned; only the canonical-to-compact semantic mapping moved.
+
+**`n!` duplication.** A private `monomial_factorial` in
+`src/geometry/primitives/rectangular_prism.cpp` was byte-for-byte identical
+to the existing public `MultiIndexSet::factorial` (`include/cdfmm/math/multi_index.hpp`),
+which `rectangular_prism.hpp` already transitively includes. Removed the
+private copy; the two call sites in `rectangular_prism_averaged_monomial` now
+call `MultiIndexSet::factorial` directly, matching the established
+`geometry -> math` dependency direction. Two adjacent-but-different factorial
+helpers were found and deliberately left alone: `spherical_harmonics.cpp`'s
+`long double factorial` (different return type/precision, for spherical-
+harmonic normalisation) and a duplicated `odd_double_factorial` between
+`spherical_harmonics.cpp` and `operators/spherical_cartesian_conversion.hpp`
+(flagged for a possible future follow-up, out of scope here).
+
+Validation: full portable-CPU CTest 198/198 (4 expected CUDA/oneMKL skips);
+full CUDA-only (RTX 5090, SM120, CUDA 13.3.73) CTest 198/198 (1 expected
+oneMKL skip); full oneMKL-only CTest 198/198 (4 expected CUDA skips); full
+CUDA+oneMKL CTest 198/198 with **zero skips**. Python: 137 passed/7 skipped
+against the portable `build/` module, 143 passed/1 skipped against the
+CUDA+oneMKL `build-notebooks/` module (`cdfmm.__file__` checked in both
+cases). A standalone cross-version probe (public-API-only source, compiled
+unchanged against `v0.1.0` in an isolated worktree and against this HEAD)
+wrote an 8-file FP64/FP32 point/periodic cache corpus with `v0.1.0`, then read
+it back at HEAD: identical universal/geometry cache keys, cache hits on every
+scenario, zero bytes written, cache files byte-identical before/after
+(`sha256sum`), and field results bit-identical (17 significant digits FP64, 9
+FP32). A before/after `git stash` A/B comparison of the exact touched
+warm-cache path (216,000 P2P interactions, 5 repeated warm constructions each)
+showed no measurable timing difference (~11.78 ms vs ~11.79 ms mean,
+within run-to-run noise) — no extra pass or allocation was introduced.
+`git diff --check` clean.
+
+Files changed: `include/cdfmm/plan/p2p/compact.hpp`, `src/plan/p2p/compact.cpp`,
+`src/cache/format.cpp`, `src/geometry/primitives/rectangular_prism.cpp`.
+Cache format, cache keys, and all public API/ABI surfaces are unchanged.
+`docs/architecture.md` and `src/cache/AGENTS.md` updated to reflect the
+resolved duplication (the fused-pass *performance choice* in `read_p2p_blocks`
+remains, deliberately). `Article1/` and an unrelated untracked notebook in
+`examples/simple_notebooks/` were left untouched.
+
+Not started, and explicitly not in scope for this task: the
+`StaticFmmTopology`/tree-topology-to-plan boundary seam, deeper cache/`UniformFmm`
+encapsulation (cache entry points are still `UniformFmm` members that know the
+topology/operator representations they persist), the flat-header/packaging
+relocation candidates (`periodic.cpp`, `parameter_selection.cpp`,
+`validation.cpp`, and friends), and repository pruning. Each remains its own
+future task, as recorded in `docs/architecture.md`'s deferred-work notes.
+
 ## 2026-09-15 — whole-Phase-1 validation and formal closure
 
 Starting HEAD `66b9436` (`refactor: close transitional architecture`). Task:

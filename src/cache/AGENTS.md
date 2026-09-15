@@ -27,12 +27,15 @@ asks for cached data, builds what is missing, and asks for a write.
 
 - Cache defines no solver mathematics. Operator construction, tree building,
   plan policy, backend selection, and P2P packing policy belong elsewhere.
-  One exception is inherited and deliberately unresolved: `read_p2p_blocks`
-  builds the derived `StaticP2PCompactPlan` in the same pass that decodes the
-  canonical blocks, so the canonical-to-compact rule exists both there and in
-  `src/plan/p2p/compact.cpp`. The compact plan is not stored. Do not unfuse the
-  loop as a tidy-up; removing the duplication is a scoped plan/cache boundary
-  step, recorded as deferred work in `docs/architecture.md`.
+  `read_p2p_blocks` still builds the derived `StaticP2PCompactPlan` in the
+  same pass that decodes the canonical blocks (the compact plan is not
+  stored), but the canonical-to-compact row rule itself now lives once, in
+  `assign_static_p2p_compact_row` (`include/cdfmm/plan/p2p/compact.hpp`).
+  Both the ordinary builder in `src/plan/p2p/compact.cpp` and this fused
+  decode call that shared function per row; `format.cpp` no longer restates
+  the field mapping. Do not unfuse this loop into decode-then-build as a
+  tidy-up: keeping the two passes fused here was a deliberate performance
+  choice, not part of the duplication that was resolved.
 - The persistent binary format is a compatibility contract. Field order, widths,
   magic, `kCacheSchemaVersion`, `kOperatorVersion`, `kEndianMarker`,
   `kChecksumAlgorithm`, `CacheKind` values, the checksum algorithm, and the

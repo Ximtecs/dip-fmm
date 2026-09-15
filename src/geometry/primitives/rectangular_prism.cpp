@@ -35,15 +35,6 @@ void validate_prism(const RectangularPrism& prism, const char* name)
 // It deliberately omits the additional volume test applied by the exact
 // pair-tensor routines, preserving the pre-v0.2 validation behaviour, and it
 // reports the historical "cuboid" wording for both public spellings.
-double monomial_factorial(const int n)
-{
-    double result = 1.0;
-    for (int i = 2; i <= n; ++i) {
-        result *= i;
-    }
-    return result;
-}
-
 void validate_monomial_prism(const RectangularPrism& h, const char* name)
 {
     if (!(std::isfinite(h.hx) && std::isfinite(h.hy) &&
@@ -520,9 +511,9 @@ double rectangular_prism_averaged_monomial(const MultiIndex& beta,
         double axis_sum = 0.0;
         for (int gamma = 0; gamma <= powers[axis]; gamma += 2) {
             axis_sum += std::pow(offsets[axis], powers[axis] - gamma) /
-                monomial_factorial(powers[axis] - gamma) *
+                MultiIndexSet::factorial(powers[axis] - gamma) *
                 std::pow(lengths[axis], gamma) /
-                (std::pow(2.0, gamma) * monomial_factorial(gamma + 1));
+                (std::pow(2.0, gamma) * MultiIndexSet::factorial(gamma + 1));
         }
         result *= axis_sum;
     }
