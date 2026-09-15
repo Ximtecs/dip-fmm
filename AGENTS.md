@@ -47,11 +47,12 @@ P2P, M2L, far-field, and full-FMM backends now have explicit homes under
 `src/backend/cuda/far_field/`, while complete FMM declarations and orchestration
 are under `src/backend/cuda/fmm/`. `CudaFullPlan` still owns changing
 evaluation state, stream/event/timing and near/far orchestration,
-combination/reordering, and D2H transfer. The next Phase 1 backend task is the
-CPU decomposition, approximately under
-`src/backend/cpu/{direct,p2p,m2l,far_field}/`, before final high-level
-`UniformFmm` cleanup. Further backend, orchestration, cache, or binding changes
-are authorised only when explicitly scoped. Geometry packing, grain
+combination/reordering, and D2H transfer. CPU direct, P2P, M2L, and far-field
+execution now also have explicit homes under
+`src/backend/cpu/{direct,p2p,m2l,far_field}/`; the legacy static-plan header
+remains a compatibility umbrella. The next architecture task is the final
+higher-level `UniformFmm` cleanup. Further backend, orchestration, cache, or
+binding changes are authorised only when explicitly scoped. Geometry packing, grain
 generation/discretisation, and prism/tetrahedron refinement remain future work.
 
 ## Repository memory
@@ -103,6 +104,7 @@ The target taxonomy is documented in `docs/architecture.md`. In summary:
 include/cdfmm/{core,math,geometry,tree,operators,plan,backend,fmm}
 src/{math,geometry,tree,operators,plan,backend,fmm,cache,bindings}
 src/backend/{cpu,mkl,cuda}
+src/backend/cpu/{direct,p2p,m2l,far_field}
 src/backend/cuda/{common,direct,p2p,m2l,far_field,fmm}
 tests/{unit,backend,integration}
 benchmarks/{direct,p2p,far_field,fmm}

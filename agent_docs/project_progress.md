@@ -202,9 +202,12 @@ and `git diff --check`, were clean. `Article1/` remains untouched.
 
 High-level FMM implementation now lives under `src/fmm`: construction and
 lifecycle remain in `uniform_fmm.cpp`, while `far_field.cpp` retains the
-P2M/M2M/M2L-dispatch/L2L/L2P sequence and public timing integration. CPU
-list-1 execution lives in `src/backend/cpu/near_field.cpp`; portable canonical
-static-plan application remains in `src/backend/cpu/static_plan_apply.cpp`.
+P2M/M2M/M2L-dispatch/L2L/L2P sequence and public timing integration. Portable
+CPU execution now follows `src/backend/cpu/{direct,p2p,m2l,far_field}/`:
+`p2p/` owns canonical and packed P2P plus near-field execution, `m2l/` owns
+prepared M2L, and `far_field/` owns prepared P2M/L2P entries and shared
+M2M/L2L translation. `static_plan_apply.hpp` remains a compatibility umbrella;
+the former mixed `static_plan_apply.cpp` implementation home is removed.
 
 The oneMKL M2L executor is isolated in `src/backend/mkl/m2l.{hpp,cpp}`. It
 derives stable transfer-class groups once from `StaticM2LPlan`, owns reusable
