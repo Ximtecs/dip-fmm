@@ -53,8 +53,12 @@ execution now also have explicit homes under
 remains a compatibility umbrella. High-level `UniformFmm` implementation is
 decomposed under `src/fmm/` by construction, plan preparation, backend setup,
 evaluation, far-field sequencing, diagnostics, and lifecycle/accessor
-ownership. Further backend, orchestration, cache, or binding changes are
-authorised only when explicitly scoped. Geometry packing, grain
+ownership. Cache identity and persistence are decomposed under `src/cache/`
+by file container/environment policy, payload records, key generation, the
+universal/periodic payload, and the geometry-plan payload; its persistent
+format and its keys are compatibility contracts, so read `src/cache/AGENTS.md`
+before changing them. Further backend, orchestration, cache, or binding
+changes are authorised only when explicitly scoped. Geometry packing, grain
 generation/discretisation, and prism/tetrahedron refinement remain future work.
 
 ## Repository memory

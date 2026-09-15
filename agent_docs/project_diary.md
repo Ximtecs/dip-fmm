@@ -1,5 +1,55 @@
 # Project diary
 
+## 2026-09-15 — cache subsystem ownership decision
+
+Accepted the cache decomposition by responsibility rather than by the smallest
+possible file count. Two separate "format" concerns were deliberately kept
+apart: the validated file container (magic, header fields, checksum, atomic
+temporary-file write) stays with the persistence mechanics in `cache/io.cpp`,
+because it cannot be separated from the read/write path, while `cache/format.cpp`
+owns only the field-wise records for the solver types inside a payload. The
+stream primitives (`Writer`, `Reader`, `CachePayload`, the unaligned load/store
+templates) live in `cache/internal.hpp` because they are templates crossing
+every cache translation unit, not for convenience.
+
+The anonymous namespace that previously covered the whole file could not be
+carried into a shared header: a type defined in an anonymous namespace in a
+header is a distinct type per translation unit. The shared entities therefore
+moved into the named internal namespace `cdfmm::detail::cache`, matching the
+existing `detail::cpu`/`detail::mkl` convention, while entities with a single
+consumer stayed in per-unit anonymous namespaces.
+
+Three known layering warts were deliberately left in place because this step
+was behaviour-preserving: `read_p2p_blocks` still populates the derived compact
+plan in the same pass as decoding, the universal payload still encodes the M2L
+bank layout arithmetic, and `load_geometry_cache` still validates plan
+invariants and resets only FP32 state on failure. Each is recorded rather than
+repaired. `UniformFmm` keeps its existing private cache members and object
+layout; deeper encapsulation belongs to a later API/ABI step.
+
+The decisive evidence was a before/after comparison against real cache files,
+not the unit tests: the existing suite only compares keys between two live
+instances, so a uniform key change would have passed it unnoticed. Final
+validation recorded a portable fresh configure requiring an explicit `cdfmm`
+environment PATH because literal `cmake` was unavailable, a 67/67 build, full
+CTest 193/193 with skips #16/#51/#59/#63, and focused cache coverage 9/11 with
+expected skips #51/#59. The oneMKL notebooks configuration used CUDA 13.2 and
+oneMKL 2026.1.0 and passed its core/tests/Python build, full CTest 190 plus
+three CUDA skips, focused 31 plus one CUDA skip, and Python 139 plus five
+skips. The CUDA 13.2 SM75 core/tests/Python build passed 93/93; full CTest
+passed 189 plus four skips, direct CUDA passed 16 plus three skips, and Python
+import/smoke checks passed. Pytest was unavailable for matching Python 3.13,
+and `nvidia-smi` could not reach the driver, so no GPU runtime is claimed.
+
+Prior old-cache compatibility evidence is preserved and now backed by the
+recovered 11-file corpus: both directions produced hits with zero writes and
+identical manifests, the repository's 522-file corpus remained unchanged, and
+an independent current probe hit old universal/periodic files without
+modifying their hashes. No implementation defect was found. The task is ready
+to be committed with subject `refactor(cache): structure persistence subsystem`;
+remaining Phase 1 scope is the bindings boundary, compatibility/transitional
+review, and whole-Phase-1 validation.
+
 ## 2026-09-15 — high-level ownership audit
 
 The independent final audit identified and verified the L2P ownership repair:

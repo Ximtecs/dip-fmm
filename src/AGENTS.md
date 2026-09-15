@@ -6,6 +6,8 @@ and CPU/oneMKL execution also have explicit homes. CUDA direct execution,
 complete CUDA P2P execution, shared CUDA runtime/error infrastructure, and
 far-field execution now have explicit homes, including the extracted M2L
 backend; complete CUDA FMM orchestration now has an explicit backend home.
+Cache identity, the file container, payload records, and the universal/periodic
+and geometry payloads now have explicit homes under `cache/`.
 
 ## Current structure
 
@@ -50,7 +52,16 @@ src/
 |                                          execution state and shared kernels
 |-- backend/cuda/fmm/{internal.hpp,plan.cu} complete CUDA FMM orchestration
 |-- backend/cuda/stub/fmm.cpp                 non-CUDA full-FMM stubs
-|-- cache.cpp                              cache identity and persistence
+|-- cache/internal.hpp                      shared cache constants, container
+|                                          descriptors, and stream primitives
+|-- cache/io.cpp                            cache root/environment policy and the
+|                                          validated atomic file container
+|-- cache/format.cpp                        payload records for persisted
+|                                          solver types
+|-- cache/keys.cpp                          cache identity and key strings
+|-- cache/universal.cpp                     translation-bank and periodic-root
+|                                          payloads
+|-- cache/geometry.cpp                      geometry-plan payload
 |-- cuda_fmm_plan.hpp                      forwarding compatibility shim
 |-- c_api.cpp                              C adapter
 |-- parameter_selection.cpp, validation.cpp
@@ -76,11 +87,11 @@ Do not create target directories before substantive code belongs in them.
 
 ## Boundaries and pressure points
 
-- `cache.cpp` remains a known decomposition candidate. High-level
-  `UniformFmm` responsibilities now have explicit homes under `fmm/`; CUDA
-  direct, complete P2P, M2L, far-field, and full-FMM execution also have
-  explicit backend homes. Do not simplify backend resource ownership without
-  a later explicitly scoped step.
+- High-level `UniformFmm` responsibilities have explicit homes under `fmm/`;
+  CUDA direct, complete P2P, M2L, far-field, and full-FMM execution have
+  explicit backend homes; cache identity and persistence have explicit homes
+  under `cache/`. Do not simplify backend resource ownership without a later
+  explicitly scoped step.
 - Separate mathematical operator construction, canonical plans, derived
   execution packings, and backend execution in that order during later work.
 - Tree code owns spatial hierarchy/topology, not CUDA execution or
@@ -88,7 +99,8 @@ Do not create target directories before substantive code belongs in them.
 - Geometry owns integration elements and physical models, not dense-direct
   plans, oneMKL selection, or FMM orchestration.
 - Cache code persists defined solver data; it must not define that data's
-  mathematics.
+  mathematics. Its persistent format and its keys are compatibility contracts;
+  read `cache/AGENTS.md` before changing anything under `cache/`.
 - `UniformFmm` source ownership is split by lifecycle, construction, plan
   preparation, backend setup, evaluation, far-field sequencing, and
   diagnostics while delegating mathematical and backend mechanics downward.

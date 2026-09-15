@@ -336,7 +336,13 @@ src/
 |-- backend/cuda/m2l/{internal.hpp,plan.cu}    reusable CUDA M2L backend
 |-- backend/cuda/far_field/{internal.hpp,executor.cu,entries.cuh,translation.cuh}
                                                 CUDA far-field execution
-`-- backend/cuda/fmm/{internal.hpp,plan.cu}     complete CUDA FMM orchestration
+|-- backend/cuda/fmm/{internal.hpp,plan.cu}     complete CUDA FMM orchestration
+|-- cache/internal.hpp                         shared cache interface
+|-- cache/io.cpp                               root policy and file container
+|-- cache/format.cpp                           payload records
+|-- cache/keys.cpp                             cache identity
+|-- cache/universal.cpp                        translation-bank and periodic root
+`-- cache/geometry.cpp                         geometry-plan payload
 ```
 
 The high-level `UniformFmm` implementation is split by responsibility. The
@@ -352,6 +358,26 @@ and cancellation-guard behaviour. Far-field sequencing remains in
 The small `uniform_fmm.cpp` unit retains lifecycle, accessors, and inspection;
 `internal.hpp` declares opaque MKL/CUDA owner wrappers without exposing backend
 implementation types from the installed header.
+
+The cache subsystem under `src/cache/` is split the same way. `io.cpp` owns the
+cache root and `CDFMM_CACHE_DIR`/`CDFMM_DISABLE_CACHE` policy together with the
+validated file container: header fields, payload checksum, memory-mapped
+reads, and the unique-temporary-file plus `fsync` plus `rename` write that lets
+independent processes race safely for the same deterministic file. `format.cpp`
+owns the field-wise records for the solver types a payload holds, including the
+direct FP32 decode paths. `keys.cpp` owns identity: the digest, the canonical
+`1e-9` coordinate representation, compact uniform-grid and permutation-layout
+recognition, and the key strings that name a file. `universal.cpp` and
+`geometry.cpp` own the two payloads. `internal.hpp` is implementation-only and
+is not installed; there is no public cache API.
+
+The persistent format and the cache keys are compatibility contracts rather
+than implementation details, because existing installations hold files written
+by earlier builds. `plan_preparation.cpp` remains the coordinator: it asks the
+cache for already-defined data, constructs what is missing through the operator
+and plan layers, and asks the cache to write the result. Cache code performs no
+operator mathematics, tree construction, plan policy, backend selection, or
+P2P packing policy.
 
 The compatibility headers `cdfmm/operators.hpp` and
 `cdfmm/static_operators.hpp` remain supported forwarding umbrellas; they do
@@ -456,9 +482,14 @@ transitional layout:
   `backend/cuda/fmm/plan.cu`.
   `periodic.cpp` includes `uniform_tree.hpp`, and `parameter_selection.hpp`
   includes the complete `uniform_fmm.hpp` API.
-- `cache.cpp` implements low-level persistence, identities and validation as
-  methods of `UniformFmm`, giving cache mechanics intimate ownership knowledge
-  of all topology/operator representations.
+- the cache subsystem under `cache/` separates the file container and root
+  policy, payload records, identity, and the universal/periodic and
+  geometry-plan payloads. Its entry points remain `UniformFmm` members, so
+  cache code still has intimate knowledge of the topology and operator
+  representations it persists; deeper encapsulation awaits an API/ABI step.
+  `cache/format.cpp` also builds the derived compact P2P representation while
+  decoding the canonical blocks, so the canonical-to-compact rule is stated
+  both there and in `plan/p2p/compact.cpp`.
 - the remaining public CUDA/FMM headers expose transitional plan concepts and
   depend on broad operator or geometry headers; direct, P2P, and M2L CUDA APIs
   now have canonical `backend/cuda/` headers with legacy forwarding façades.
@@ -468,9 +499,11 @@ transitional layout:
   CUDA common/direct/P2P/M2L/far-field/FMM units; CUDA libraries are currently
   propagated from `cdfmm_core` to consumers.
 
-The largest remaining responsibility-review candidates are `backend/cuda/fmm/plan.cu`,
-`cache.cpp`, and `python/bindings.cpp`. These measurements locate remaining
-audit work; they do not require mechanical splitting.
+The largest remaining responsibility-review candidates are
+`backend/cuda/p2p/plan.cu`, `python/bindings.cpp`,
+`geometry/primitives/tetrahedron.cpp`, and `backend/cuda/fmm/plan.cu`. These
+measurements locate remaining audit work; they do not require mechanical
+splitting.
 
 ### Foundational layout: core, math, geometry, and tree
 
@@ -542,12 +575,15 @@ boundary without making the tree depend on a particular P2P packing.
 
 ### Remaining Phase 1 work
 
-- Decompose `cache.cpp` into keys, metadata/validation, and serialisation while
-  keeping cache formats and invalidation behaviour stable.
 - Keep Python, C, and Fortran layers as adapters; split the large pybind11
   translation unit by exposed subsystem without duplicating solver logic.
 - Review remaining compatibility/transitional source seams and remove or
   narrow them only when an explicit compatibility plan exists.
+- Resolve the duplicated canonical-to-compact P2P packing rule, which the
+  cache decode in `cache/format.cpp` and the plan builder in
+  `plan/p2p/compact.cpp` currently state independently. The cache decode fuses
+  packing into its single pass deliberately, so this is a scoped plan/cache
+  boundary decision rather than a mechanical de-duplication.
 - Complete whole-refactor validation across the supported CPU, oneMKL, CUDA,
   bindings, and integration configurations; unavailable hardware or optional
   toolchains must remain explicitly reported rather than inferred as passing.

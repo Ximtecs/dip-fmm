@@ -1,5 +1,63 @@
 # Latest session work
 
+## 2026-09-15 — cache persistence subsystem
+
+The flat `src/cache.cpp` is decomposed into `src/cache/`. Ownership is now
+explicit: `internal.hpp` holds the shared constants, `CacheKind`/
+`CacheDescriptor`, `CachePayload`, the `Writer`/`Reader` stream primitives, and
+the io/format declarations; `io.cpp` owns cache root and environment policy
+plus the validated file container, checksum, and atomic temporary-file write;
+`format.cpp` owns the field-wise records for the persisted solver types;
+`keys.cpp` owns identity, including SHA-256, the canonical 1e-9 coordinate,
+compact grid/permutation recognition, and the key strings; `universal.cpp`
+owns the translation-bank and periodic-root payloads; and `geometry.cpp` owns
+the geometry-plan payload. `src/cache.cpp` is removed and `cdfmm_core` builds
+the five new units. `src/cache/AGENTS.md` records the local invariants.
+
+The moved code is byte-identical to the original apart from namespace
+scaffolding and three deliberate `inline` additions (the shared format
+constants, `checked_bytes`, `p2p_record_bytes`). The shared entities moved from
+the file-wide anonymous namespace into the named `cdfmm::detail::cache`, which
+was required: an anonymous-namespace type in a shared header is a distinct type
+per translation unit. Single-consumer helpers stayed in per-unit anonymous
+namespaces. No public API, `UniformFmm` layout, persistent format, or cache key
+changed; `universal_cache_key()`, `geometry_cache_key()`, and
+`periodic_cache_key()` are untouched.
+
+Final validation handoff:
+
+- portable: the fresh configure required an explicit `cdfmm` environment PATH
+  because literal `cmake` was unavailable; the build completed 67/67, full
+  CTest completed 193/193 with expected skips #16, #51, #59, and #63, and the
+  focused cache selector completed 9/11 with expected skips #51 and #59;
+- oneMKL notebooks configuration: CUDA 13.2 and oneMKL 2026.1.0 built core,
+  tests, and Python; full CTest passed 190 with three CUDA skips (193 total),
+  focused coverage passed 31 with one CUDA skip (32 total), and Python passed
+  139 with five skips;
+- CUDA 13.2 SM75: the core/tests/Python build completed 93/93, full CTest
+  passed 189 with four expected skips (193 total), direct-CUDA focused coverage
+  passed 16 with three expected skips (19 total), and Python import/smoke
+  checks passed. Pytest was unavailable for the matching Python 3.13
+  environment; `nvidia-smi` could not reach the driver, so no GPU runtime is
+  claimed.
+
+Prior old-cache compatibility evidence is preserved and is now backed by the
+recovered 11-file corpus: both directions produced cache hits with zero writes
+and identical manifests, and the repository's 522-file cache corpus remained
+unchanged. An independent current probe also hit old universal/periodic files
+without modifying their hashes. No implementation defect was found.
+
+Documentation builds with warnings as errors still report only the two
+pre-existing `docs/api.rst` declaration warnings.
+
+The task is ready to be committed with subject
+`refactor(cache): structure persistence subsystem`.
+
+Remaining Phase 1 scope is the bindings boundary, the compatibility/transitional
+source review, and whole-Phase-1 validation. Unrelated untracked `Article1/`
+and `examples/simple_notebooks/tetrahedron_target_average_fair_sampling.ipynb`
+remain preserved outside this task.
+
 ## 2026-09-15 — high-level UniformFmm cleanup closure
 
 The final Phase 1 high-level FMM source decomposition is complete. The

@@ -82,7 +82,11 @@ add_library(cdfmm_core
     src/fmm/far_field.cpp
     src/fmm/plan_preparation.cpp
     src/fmm/uniform_fmm.cpp
-    src/cache.cpp
+    src/cache/io.cpp
+    src/cache/format.cpp
+    src/cache/keys.cpp
+    src/cache/universal.cpp
+    src/cache/geometry.cpp
     src/backend/cpu/p2p/near_field.cpp
     src/parameter_selection.cpp
 )

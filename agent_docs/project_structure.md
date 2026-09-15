@@ -2,10 +2,10 @@
 
 The current checkout has substantive homes for foundational layers,
 operators/static plans, high-level FMM orchestration, portable CPU execution,
-oneMKL execution, and the complete CUDA common/direct/P2P/M2L/far-field/FMM
-backend hierarchy. Cache and binding layers remain partly flat; the target taxonomy in
-`docs/architecture.md` is not permission to create empty directories or perform
-an unauthorised refactor.
+oneMKL execution, the complete CUDA common/direct/P2P/M2L/far-field/FMM
+backend hierarchy, and cache identity/persistence. The binding layer remains
+partly flat; the target taxonomy in `docs/architecture.md` is not permission to
+create empty directories or perform an unauthorised refactor.
 
 ## Current map
 
@@ -64,7 +64,13 @@ src/
   fmm/internal.hpp                                              opaque backend-owner declarations
   tree/common/static_topology.cpp                              canonical topology validation
   tree/uniform/static_topology_adapter.cpp                     UniformTree topology adapter
-  periodic.cpp, cache.cpp, validation.cpp                       support boundaries
+  periodic.cpp, validation.cpp                                  support boundaries
+  cache/internal.hpp                                            shared cache interface
+  cache/io.cpp                                                  root policy and file container
+  cache/format.cpp                                              payload records
+  cache/keys.cpp                                                cache identity and key strings
+  cache/universal.cpp                                           translation-bank/periodic payloads
+  cache/geometry.cpp                                            geometry-plan payload
   cuda_fmm_plan.hpp                                              compatibility shim
   c_api.cpp                                                     C ABI adapter
 python/bindings.cpp                                             pybind11 module
@@ -121,6 +127,7 @@ src/backend/cpu/p2p/             canonical/packed P2P and near-field execution
 src/backend/cpu/m2l/             portable prepared M2L execution
 src/backend/cpu/far_field/       portable P2M/L2P entries and M2M/L2L translation
 src/fmm/                        UniformFmm lifecycle and far-field sequencing
+src/cache/                      cache identity, container, and payload persistence
 src/backend/mkl/                oneMKL dense-direct and grouped M2L application
 include/cdfmm/backend/cuda/     canonical CUDA direct/P2P/M2L public interfaces
 src/backend/cuda/common/        shared internal CUDA error/runtime helpers
@@ -176,6 +183,22 @@ Complete CUDA FMM declarations and orchestration now live in
 coefficient/field buffers, permutations, P2P and separate M2L executor wiring,
 streams/events/timing, near/far overlap, combination/reordering, and D2H
 transfer. `src/cuda_fmm_plan.hpp` is a forwarding shim only.
+
+The cache subsystem is responsibility-driven. `cache/io.cpp` owns the cache
+root and `CDFMM_CACHE_DIR`/`CDFMM_DISABLE_CACHE` policy plus the validated file
+container: header fields, payload checksum, memory-mapped reads, and the
+unique-temporary-file plus `fsync` plus `rename` write that lets independent
+processes race safely. `cache/format.cpp` owns the field-wise records for the
+persisted solver types, including the direct FP32 decode paths.
+`cache/keys.cpp` owns identity: the digest, the canonical 1e-9 coordinate, the
+compact uniform-grid and permutation-layout recognition, and the key strings.
+`cache/universal.cpp` and `cache/geometry.cpp` own the two payloads.
+`cache/internal.hpp` is the implementation-only shared interface in the named
+namespace `cdfmm::detail::cache`; nothing is installed and there is no public
+cache API. The persistent format and the cache keys are compatibility
+contracts, so `src/cache/AGENTS.md` governs changes there.
+`fmm/plan_preparation.cpp` remains the coordinator that asks for cached data,
+builds what is missing, and asks for a write.
 
 The CPU backend now follows the responsibility taxonomy
 `backend/cpu/{direct,p2p,m2l,far_field}/`. P2P keeps all canonical and derived

@@ -1,5 +1,68 @@
 # Project progress
 
+## Cache persistence subsystem — 2026-09-15
+
+`src/cache.cpp` is decomposed into `src/cache/` and removed. The units are
+`internal.hpp` (shared format constants, `CacheKind`/`CacheDescriptor`,
+`CachePayload`, `Writer`/`Reader`, io and format declarations), `io.cpp` (cache
+root and `CDFMM_CACHE_DIR`/`CDFMM_DISABLE_CACHE` policy, the validated file
+container, checksum, memory-mapped reads, and the unique-temporary-file plus
+`fsync` plus `rename` write), `format.cpp` (field-wise records for the
+persisted solver types, including the direct FP32 decode paths), `keys.cpp`
+(cache identity and key strings), `universal.cpp` (translation-bank and
+periodic-root payloads), and `geometry.cpp` (geometry-plan payload).
+`cdfmm_core` builds all five sources on the same target, which preserves
+`CDFMM_DEFAULT_CACHE_DIR`, OpenMP, and the floating-point contract.
+`src/cache/AGENTS.md` records the local invariants.
+
+Nothing about the persisted artefacts changed. The schema and operator
+versions remain 4 and 2, the header field order and widths, the checksum, the
+`CacheKind` values, the `/v1` root suffix, the `universal/`, `periodic/` and
+`plans/` categories, the filename padding and the `_v02`/`_v04` suffixes, and
+every cache-key hash input and its order are unchanged. `plan_preparation.cpp`
+remains the coordinator that asks for cached data, builds what is missing, and
+asks for a write; the cache subsystem defines no solver mathematics and chooses
+no backend or packing.
+
+Deliberately preserved rather than repaired, because this step was
+behaviour-preserving: the fused decode-and-compact-pack in `read_p2p_blocks`,
+the universal M2L bank layout arithmetic, the plan-invariant validation on
+load, and the FP32-only state cleanup in the geometry-cache failure path.
+`UniformFmm` keeps its existing private cache members and object layout.
+
+Trusted validation:
+
+- portable: the fresh configure required an explicit `cdfmm` environment PATH
+  because literal `cmake` was unavailable; the build completed 67/67, full
+  CTest completed 193/193 with expected skips #16, #51, #59, and #63, and the
+  focused cache selector completed 9/11 with expected skips #51 and #59;
+- oneMKL notebooks configuration: CUDA 13.2 and oneMKL 2026.1.0 built core,
+  tests, and Python; full CTest passed 190 with three CUDA skips (193 total),
+  focused coverage passed 31 with one CUDA skip (32 total), and Python passed
+  139 with five skips;
+- CUDA 13.2 SM75: the core/tests/Python build completed 93/93, full CTest
+  passed 189 with four expected skips (193 total), direct-CUDA focused coverage
+  passed 16 with three expected skips (19 total), and Python import/smoke
+  checks passed. Pytest was unavailable for the matching Python 3.13
+  environment; `nvidia-smi` could not reach the driver, so no GPU runtime is
+  claimed.
+- prior old-cache compatibility evidence is preserved and now backed by the
+  recovered 11-file corpus: both directions produced cache hits with zero
+  writes and identical manifests; the repository's 522-file cache corpus was
+  unchanged; and an independent current probe hit old universal/periodic files
+  without modifying their hashes.
+
+No implementation defect was found.
+
+This compatibility evidence matters because the existing suite compares cache
+keys only between two live instances; a uniform key change would pass it.
+
+The task is ready to be committed with subject
+`refactor(cache): structure persistence subsystem`. Unrelated untracked
+`Article1/` and
+`examples/simple_notebooks/tetrahedron_target_average_fair_sampling.ipynb`
+remain preserved outside the task.
+
 ## High-level UniformFmm cleanup — 2026-09-15
 
 The final Phase 1 high-level FMM source decomposition is complete. The
