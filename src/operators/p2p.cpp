@@ -2,10 +2,15 @@
 
 #include "cdfmm/operators/p2p.hpp"
 
+#include "../geometry/primitives/tetrahedron_detail.hpp"
+
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
+#include <exception>
 #include <limits>
+#include <numeric>
 #include <numbers>
 #include <stdexcept>
 #include <tuple>
@@ -13,6 +18,52 @@
 
 namespace cdfmm {
 namespace {
+
+[[nodiscard]] constexpr double canonical_zero(const double value) noexcept
+{
+    return value == 0.0 ? 0.0 : value;
+}
+
+[[nodiscard]] constexpr bool exactly_equal(
+    const Vec3& left, const Vec3& right) noexcept
+{
+    return left.x == right.x && left.y == right.y && left.z == right.z;
+}
+
+[[nodiscard]] constexpr bool exactly_equal(
+    const Tetrahedron& left, const Tetrahedron& right) noexcept
+{
+    for (std::size_t vertex = 0; vertex < left.vertices.size(); ++vertex) {
+        if (!exactly_equal(left.vertices[vertex], right.vertices[vertex])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+struct RowInteractionKey {
+    int source{0};
+    double shift_x{0.0};
+    double shift_y{0.0};
+    double shift_z{0.0};
+};
+
+[[nodiscard]] auto row_interaction_sort_key(
+    const StaticP2PInteraction& interaction) noexcept
+{
+    return std::tuple{
+        interaction.source, canonical_zero(interaction.source_shift.x),
+        canonical_zero(interaction.source_shift.y),
+        canonical_zero(interaction.source_shift.z)};
+}
+
+[[nodiscard]] auto row_interaction_sort_key(
+    const RowInteractionKey& key) noexcept
+{
+    return std::tuple{
+        key.source, canonical_zero(key.shift_x),
+        canonical_zero(key.shift_y), canonical_zero(key.shift_z)};
+}
 
 StaticP2POperator build_static_p2p_operator_impl(
     const std::span<const Vec3> target_positions,
@@ -59,6 +110,8 @@ StaticP2POperator build_static_p2p_operator_impl(
             throw std::invalid_argument(message);
         }
     };
+    std::vector<detail::PreparedTetrahedron> prepared_sources;
+    std::vector<detail::PreparedTetrahedron> prepared_targets;
     if (source_is_prism) {
         validate_count(source_prisms.size(), source_positions.size(),
                        "static prism P2P sizes must be common or per source");
@@ -73,8 +126,16 @@ StaticP2POperator build_static_p2p_operator_impl(
         validate_count(
             source_tetrahedra.size(), source_positions.size(),
             "static tetrahedron P2P geometries must be common or per source");
+        if (target_is_tetrahedron) {
+            prepared_sources.reserve(source_tetrahedra.size());
+        }
         for (const Tetrahedron& tetrahedron : source_tetrahedra) {
-            static_cast<void>(tetrahedron_volume(tetrahedron));
+            if (target_is_tetrahedron) {
+                prepared_sources.push_back(
+                    detail::prepare_tetrahedron(tetrahedron));
+            } else {
+                static_cast<void>(tetrahedron_volume(tetrahedron));
+            }
         }
     }
     if (target_is_prism) {
@@ -91,8 +152,16 @@ StaticP2POperator build_static_p2p_operator_impl(
         validate_count(
             target_tetrahedra.size(), target_positions.size(),
             "static tetrahedron P2P geometries must be common or per target");
+        if (source_is_tetrahedron) {
+            prepared_targets.reserve(target_tetrahedra.size());
+        }
         for (const Tetrahedron& tetrahedron : target_tetrahedra) {
-            static_cast<void>(tetrahedron_volume(tetrahedron));
+            if (source_is_tetrahedron) {
+                prepared_targets.push_back(
+                    detail::prepare_tetrahedron(tetrahedron));
+            } else {
+                static_cast<void>(tetrahedron_volume(tetrahedron));
+            }
         }
     }
 
@@ -126,6 +195,170 @@ StaticP2POperator build_static_p2p_operator_impl(
     }
 
     result.blocks.resize(sorted.size());
+
+    if (source_is_tetrahedron && target_is_tetrahedron) {
+        const auto& prepared_source_at =
+            [&](const int source) -> const detail::PreparedTetrahedron& {
+            return prepared_sources[
+                prepared_sources.size() == 1 ? 0 :
+                                                static_cast<std::size_t>(source)];
+        };
+        const auto& prepared_target_at =
+            [&](const int target) -> const detail::PreparedTetrahedron& {
+            return prepared_targets[
+                prepared_targets.size() == 1 ? 0 :
+                                                static_cast<std::size_t>(target)];
+        };
+        const auto& source_tetrahedron_at =
+            [&](const int source) -> const Tetrahedron& {
+            return source_tetrahedra[
+                source_tetrahedra.size() == 1 ? 0 :
+                                                static_cast<std::size_t>(source)];
+        };
+        const auto& target_tetrahedron_at =
+            [&](const int target) -> const Tetrahedron& {
+            return target_tetrahedra[
+                target_tetrahedra.size() == 1 ? 0 :
+                                                static_cast<std::size_t>(target)];
+        };
+
+        bool reciprocal_tetrahedron_layout =
+            source_positions.size() == target_positions.size();
+        for (std::size_t index = 0;
+             reciprocal_tetrahedron_layout && index < source_positions.size();
+             ++index) {
+            reciprocal_tetrahedron_layout =
+                exactly_equal(source_positions[index], target_positions[index]) &&
+                exactly_equal(
+                    source_tetrahedron_at(static_cast<int>(index)),
+                    target_tetrahedron_at(static_cast<int>(index)));
+        }
+
+        for (std::size_t index = 0; index < sorted.size(); ++index) {
+            const StaticP2PInteraction& interaction = sorted[index];
+            const int target = interaction.target;
+            const int source = interaction.source;
+            const Vec3 shifted_source =
+                source_positions[static_cast<std::size_t>(source)] +
+                interaction.source_shift;
+            const Vec3 displacement =
+                target_positions[static_cast<std::size_t>(target)] -
+                shifted_source;
+            const double radius_squared = dot(displacement, displacement);
+            const double potential_scale = radius_squared == 0.0
+                ? 0.0
+                : 1.0 / (4.0 * std::numbers::pi * radius_squared *
+                         std::sqrt(radius_squared));
+            result.blocks[index] = {
+                target, source, potential_scale * displacement.x,
+                potential_scale * displacement.y,
+                potential_scale * displacement.z, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0};
+        }
+
+        std::vector<std::size_t> tensor_owner(sorted.size());
+        std::iota(tensor_owner.begin(), tensor_owner.end(), std::size_t{0});
+        if (reciprocal_tetrahedron_layout) {
+            // For an identical source/target tetrahedral system,
+            // K_{t<-s}(r) = K_{s<-t}(-r)^T. PairTensor stores the symmetric
+            // Cartesian Hessian tensor, so reciprocal directed interactions
+            // share the same Tensor6.
+            for (std::size_t index = 0; index < sorted.size(); ++index) {
+                const StaticP2PInteraction& interaction = sorted[index];
+                const RowInteractionKey reverse_key{
+                    interaction.target,
+                    -canonical_zero(interaction.source_shift.x),
+                    -canonical_zero(interaction.source_shift.y),
+                    -canonical_zero(interaction.source_shift.z)};
+                const auto row_begin = sorted.begin() +
+                    result.row_offsets[
+                        static_cast<std::size_t>(interaction.source)];
+                const auto row_end = sorted.begin() +
+                    result.row_offsets[
+                        static_cast<std::size_t>(interaction.source) + 1];
+                const auto reverse = std::lower_bound(
+                    row_begin, row_end, reverse_key,
+                    [](const StaticP2PInteraction& candidate,
+                       const RowInteractionKey& key) {
+                        return row_interaction_sort_key(candidate) <
+                            row_interaction_sort_key(key);
+                    });
+                if (reverse != row_end &&
+                    row_interaction_sort_key(*reverse) ==
+                        row_interaction_sort_key(reverse_key)) {
+                    const std::size_t reverse_index =
+                        static_cast<std::size_t>(reverse - sorted.begin());
+                    const std::size_t owner = std::min(index, reverse_index);
+                    tensor_owner[index] = owner;
+                    tensor_owner[reverse_index] = owner;
+                }
+            }
+        }
+
+        std::exception_ptr first_exception;
+        std::atomic<bool> failed{false};
+        const std::ptrdiff_t interaction_count =
+            static_cast<std::ptrdiff_t>(sorted.size());
+#pragma omp parallel for schedule(static) if (interaction_count >= 256)
+        for (std::ptrdiff_t raw_index = 0; raw_index < interaction_count;
+             ++raw_index) {
+            const std::size_t index = static_cast<std::size_t>(raw_index);
+            if (tensor_owner[index] != index ||
+                failed.load(std::memory_order_relaxed)) {
+                continue;
+            }
+            try {
+                const StaticP2PInteraction& interaction = sorted[index];
+                const int target = interaction.target;
+                const int source = interaction.source;
+                const Vec3 displacement =
+                    target_positions[static_cast<std::size_t>(target)] -
+                    (source_positions[static_cast<std::size_t>(source)] +
+                     interaction.source_shift);
+                const bool coincident_same_geometry =
+                    reciprocal_tetrahedron_layout && target == source &&
+                    interaction.source_shift.x == 0.0 &&
+                    interaction.source_shift.y == 0.0 &&
+                    interaction.source_shift.z == 0.0;
+                const PairTensor tensor =
+                    detail::tetrahedron_tetrahedron_tensor_prepared(
+                        displacement, prepared_source_at(source),
+                        prepared_target_at(target), coincident_same_geometry);
+                result.blocks[index].xx = tensor.xx;
+                result.blocks[index].xy = tensor.xy;
+                result.blocks[index].xz = tensor.xz;
+                result.blocks[index].yy = tensor.yy;
+                result.blocks[index].yz = tensor.yz;
+                result.blocks[index].zz = tensor.zz;
+            } catch (...) {
+                failed.store(true, std::memory_order_relaxed);
+#pragma omp critical(cdfmm_tetrahedron_setup_exception)
+                {
+                    if (!first_exception) {
+                        first_exception = std::current_exception();
+                    }
+                }
+            }
+        }
+        if (first_exception) {
+            std::rethrow_exception(first_exception);
+        }
+
+        for (std::size_t index = 0; index < sorted.size(); ++index) {
+            const std::size_t owner = tensor_owner[index];
+            if (owner == index) {
+                continue;
+            }
+            result.blocks[index].xx = result.blocks[owner].xx;
+            result.blocks[index].xy = result.blocks[owner].xy;
+            result.blocks[index].xz = result.blocks[owner].xz;
+            result.blocks[index].yy = result.blocks[owner].yy;
+            result.blocks[index].yz = result.blocks[owner].yz;
+            result.blocks[index].zz = result.blocks[owner].zz;
+        }
+        return result;
+    }
+
     for (std::size_t index = 0; index < sorted.size(); ++index) {
         const StaticP2PInteraction& interaction = sorted[index];
         const int target = interaction.target;

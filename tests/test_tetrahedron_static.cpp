@@ -161,6 +161,106 @@ Vec3 apply_pair_tensor(const PairTensor& tensor, const Vec3& moment)
         tensor.xz * moment.x + tensor.yz * moment.y + tensor.zz * moment.z};
 }
 
+const StaticDipoleBlock& find_block(const StaticP2POperator& operator_map,
+                                    const int target, const int source)
+{
+    for (const StaticDipoleBlock& block : operator_map.blocks) {
+        if (block.target == target && block.source == source) {
+            return block;
+        }
+    }
+    throw std::runtime_error("static tetrahedron test interaction missing");
+}
+
+void require_block_tensor(const StaticDipoleBlock& block,
+                          const PairTensor& expected,
+                          const double margin = 2.0e-12)
+{
+    REQUIRE(block.xx == Catch::Approx(expected.xx).margin(margin));
+    REQUIRE(block.xy == Catch::Approx(expected.xy).margin(margin));
+    REQUIRE(block.xz == Catch::Approx(expected.xz).margin(margin));
+    REQUIRE(block.yy == Catch::Approx(expected.yy).margin(margin));
+    REQUIRE(block.yz == Catch::Approx(expected.yz).margin(margin));
+    REQUIRE(block.zz == Catch::Approx(expected.zz).margin(margin));
+}
+
+TEST_CASE("static tetrahedron P2P reuses only identical-system reciprocals",
+          "[static_p2p][tetrahedron]")
+{
+    constexpr std::size_t particle_count = 16;
+    std::array<Vec3, particle_count> positions{};
+    for (std::size_t index = 0; index < particle_count; ++index) {
+        const std::size_t row = index / 4;
+        const std::size_t column = index % 4;
+        positions[index] = {2.4 * static_cast<double>(column),
+                            2.4 * static_cast<double>(row),
+                            0.3 * static_cast<double>(index % 2)};
+    }
+    const Tetrahedron tetrahedron = centred_reference_tetrahedron();
+    const std::array<Tetrahedron, 1> source_geometry{{tetrahedron}};
+    const std::array<Tetrahedron, 1> target_geometry{{tetrahedron}};
+    std::vector<StaticP2PInteraction> interactions;
+    interactions.reserve(particle_count * particle_count);
+    for (int target = 0; target < static_cast<int>(particle_count); ++target) {
+        for (int source = 0;
+             source < static_cast<int>(particle_count); ++source) {
+            interactions.push_back({target, source, {}, false});
+        }
+    }
+
+    const StaticP2POperator identical = build_static_p2p_operator(
+        positions, positions, interactions, SourceGeometry::Tetrahedron, {},
+        source_geometry, TargetGeometry::Tetrahedron, {}, target_geometry,
+        SourceModel::ExactGeometry, TargetModel::ExactGeometry);
+    REQUIRE(identical.blocks.size() == interactions.size());
+    for (const StaticDipoleBlock& block : identical.blocks) {
+        const PairTensor expected = tetrahedron_tetrahedron_tensor(
+            positions[static_cast<std::size_t>(block.target)] -
+                positions[static_cast<std::size_t>(block.source)],
+            tetrahedron, tetrahedron);
+        require_block_tensor(block, expected);
+    }
+    for (int target = 0; target < static_cast<int>(particle_count);
+         ++target) {
+        for (int source = target + 1;
+             source < static_cast<int>(particle_count); ++source) {
+            const StaticDipoleBlock& forward = find_block(
+                identical, target, source);
+            const StaticDipoleBlock& reverse = find_block(
+                identical, source, target);
+            const PairTensor forward_tensor{forward.xx, forward.xy,
+                                            forward.xz, forward.yy,
+                                            forward.yz, forward.zz};
+            const PairTensor reverse_tensor{reverse.xx, reverse.xy,
+                                            reverse.xz, reverse.yy,
+                                            reverse.yz, reverse.zz};
+            require_block_tensor(reverse, forward_tensor);
+            require_block_tensor(forward, reverse_tensor);
+        }
+    }
+
+    // Changing the target geometry makes the indexed systems different.  The
+    // conservative fallback still has to match an independent public-wrapper
+    // evaluation for every directed block.
+    Tetrahedron different_target = tetrahedron;
+    different_target.vertices[1].x += 0.17;
+    const std::array<Tetrahedron, 1> differing_target_geometry{{
+        different_target}};
+    const StaticP2POperator differing = build_static_p2p_operator(
+        positions, positions, interactions, SourceGeometry::Tetrahedron, {},
+        source_geometry, TargetGeometry::Tetrahedron, {},
+        differing_target_geometry, SourceModel::ExactGeometry,
+        TargetModel::ExactGeometry);
+    REQUIRE(differing.blocks.size() == interactions.size());
+    for (const StaticDipoleBlock& block : differing.blocks) {
+        const PairTensor expected = tetrahedron_tetrahedron_tensor(
+            positions[static_cast<std::size_t>(block.target)] -
+                positions[static_cast<std::size_t>(block.source)],
+            tetrahedron, different_target);
+        require_block_tensor(block, expected);
+    }
+}
+
 TEST_CASE("dense direct caches exact tetrahedron pairs including self",
           "[dense_direct][tetrahedron]")
 {

@@ -3,9 +3,32 @@
 
 #include <array>
 
+#include "cdfmm/geometry/primitives/tetrahedron.hpp"
 #include "cdfmm/math/vec3.hpp"
 
 namespace cdfmm::detail {
+
+struct PreparedTetrahedron {
+    double volume{0.0};
+
+    // Representative-relative vertices.
+    std::array<Vec3, 4> vertices{};
+
+    // Representative-relative triangular faces.
+    std::array<std::array<Vec3, 3>, 4> faces{};
+
+    // Unit outward normal corresponding to each face.
+    std::array<Vec3, 4> outward_normals{};
+};
+
+[[nodiscard]] PreparedTetrahedron prepare_tetrahedron(
+    const Tetrahedron& tetrahedron);
+
+[[nodiscard]] PairTensor tetrahedron_tetrahedron_tensor_prepared(
+    const Vec3& target_minus_source_representative,
+    const PreparedTetrahedron& source,
+    const PreparedTetrahedron& target,
+    bool coincident_same_geometry);
 
 /**
  * @brief Evaluates the unnormalised constant-density 1/R triangle pair

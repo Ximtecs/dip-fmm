@@ -174,6 +174,24 @@ void require_close(const PairTensor& actual, const PairTensor& expected,
     REQUIRE(close(actual.zz, expected.zz));
 }
 
+void require_tight_close(const PairTensor& actual, const PairTensor& expected,
+                         const double epsilon = 5.0e-12,
+                         const double margin = 5.0e-13)
+{
+    const auto close = [epsilon, margin](const double value,
+                                         const double reference) {
+        return value == Catch::Approx(reference)
+            .epsilon(epsilon)
+            .margin(margin);
+    };
+    REQUIRE(close(actual.xx, expected.xx));
+    REQUIRE(close(actual.xy, expected.xy));
+    REQUIRE(close(actual.xz, expected.xz));
+    REQUIRE(close(actual.yy, expected.yy));
+    REQUIRE(close(actual.yz, expected.yz));
+    REQUIRE(close(actual.zz, expected.zz));
+}
+
 } // namespace
 
 TEST_CASE("tetrahedron volume validation and centroided moments")
@@ -287,6 +305,44 @@ TEST_CASE("analytical triangle pair integral preserves singular configurations")
         shared_edge_first, nearly_touching)));
 }
 
+TEST_CASE("analytical triangle pair integral is symmetric at contact")
+{
+    const Triangle separated_first{{{0.0, 0.0, 0.0},
+                                    {1.0, 0.0, 0.0},
+                                    {0.0, 1.0, 0.0}}};
+    const Triangle separated_second{{{0.2, -0.3, 1.4},
+                                     {1.1, -0.3, 1.4},
+                                     {0.2, 0.5, 1.4}}};
+    const Triangle near_second = translate_triangle(
+        separated_second, {0.0, 0.0, -1.3999});
+    const Triangle shared_edge_first{{{0.0, 0.0, 0.0},
+                                      {0.0, 1.0, 0.0},
+                                      {1.0, 0.0, 0.0}}};
+    const Triangle shared_edge_second{{{0.0, 0.0, 0.0},
+                                       {0.0, 1.0, 0.0},
+                                       {-1.0, 0.0, 0.0}}};
+    const Triangle shared_vertex{{{0.0, 0.0, 0.0},
+                                  {0.0, 0.0, 1.0},
+                                  {0.0, -1.0, 0.0}}};
+    const Triangle cases_first[] = {separated_first, shared_edge_first,
+                                    shared_edge_first, shared_edge_first,
+                                    separated_first};
+    const Triangle cases_second[] = {separated_second, near_second,
+                                     shared_vertex, shared_edge_second,
+                                     separated_first};
+
+    for (std::size_t index = 0; index < std::size(cases_first); ++index) {
+        const double forward = detail::triangle_triangle_laplace_integral(
+            cases_first[index], cases_second[index]);
+        const double reverse = detail::triangle_triangle_laplace_integral(
+            cases_second[index], cases_first[index]);
+        REQUIRE(std::isfinite(forward));
+        REQUIRE(reverse == Catch::Approx(forward)
+                             .epsilon(5.0e-12)
+                             .margin(2.0e-13));
+    }
+}
+
 TEST_CASE("tetrahedron point tensor has far-field and symmetry limits")
 {
     const Tetrahedron tetrahedron = reference_tetrahedron();
@@ -378,6 +434,68 @@ TEST_CASE("exact tetrahedron pair obeys reciprocity, rotation, and scaling")
         forward.yz / std::pow(factor, 3.0),
         forward.zz / std::pow(factor, 3.0)};
     require_close(scaled, expected, 2.0e-10);
+}
+
+TEST_CASE("exact tetrahedron pair obeys reciprocity for irregular geometry")
+{
+    const Tetrahedron source = centred_physical_tetrahedron({{
+        {-0.3, 0.2, 0.4},
+        {1.7, -0.5, 0.1},
+        {0.4, 1.2, -0.6},
+        {0.1, 0.3, 2.1},
+    }});
+    const Tetrahedron target = centred_physical_tetrahedron({{
+        {-1.1, 0.4, 0.2},
+        {0.8, -0.7, 0.6},
+        {0.2, 1.9, -0.3},
+        {1.4, 0.1, 1.7},
+    }});
+    const Vec3 displacement{2.35, -1.15, 1.8};
+
+    const PairTensor forward = tetrahedron_tetrahedron_tensor(
+        displacement, source, target);
+    const PairTensor reverse = tetrahedron_tetrahedron_tensor(
+        displacement * -1.0, target, source);
+    require_tight_close(forward, reverse);
+}
+
+TEST_CASE("prepared coincident tetrahedron path matches generic face pairs")
+{
+    const Tetrahedron regular = centred_physical_tetrahedron({{
+        {1.0, 1.0, 1.0},
+        {1.0, -1.0, -1.0},
+        {-1.0, 1.0, -1.0},
+        {-1.0, -1.0, 1.0},
+    }});
+    const Tetrahedron irregular = centred_physical_tetrahedron({{
+        {-0.3, 0.2, 0.4},
+        {1.7, -0.5, 0.1},
+        {0.4, 1.2, -0.6},
+        {0.1, 0.3, 2.1},
+    }});
+    const Tetrahedron anisotropic = centred_physical_tetrahedron({{
+        {1.7, 0.8, 2.3},
+        {1.7, -0.8, -2.3},
+        {-1.7, 0.8, -2.3},
+        {-1.7, -0.8, 2.3},
+    }});
+
+    const std::array<Tetrahedron, 3> tetrahedra{{
+        regular, irregular, anisotropic}};
+    for (const Tetrahedron& tetrahedron : tetrahedra) {
+        const detail::PreparedTetrahedron prepared =
+            detail::prepare_tetrahedron(tetrahedron);
+        const PairTensor ten_integrals =
+            detail::tetrahedron_tetrahedron_tensor_prepared(
+                {}, prepared, prepared, true);
+        const PairTensor sixteen_integrals =
+            detail::tetrahedron_tetrahedron_tensor_prepared(
+                {}, prepared, prepared, false);
+        require_tight_close(ten_integrals, sixteen_integrals);
+        require_tight_close(ten_integrals,
+                            tetrahedron_tetrahedron_tensor(
+                                {}, tetrahedron, tetrahedron));
+    }
 }
 
 TEST_CASE("exact tetrahedron pair handles touching and shrinking limits")

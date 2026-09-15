@@ -22,6 +22,31 @@ struct Matrix3 {
     double value[3][3]{};
 };
 
+constexpr std::array<std::array<int, 3>, 4> tetrahedron_face_vertices{{
+    {{1, 2, 3}},
+    {{0, 3, 2}},
+    {{0, 1, 3}},
+    {{0, 2, 1}},
+}};
+
+inline void add_scaled_outer_product(Matrix3& matrix,
+                                     const double factor,
+                                     const Vec3& left,
+                                     const Vec3& right) noexcept
+{
+    matrix.value[0][0] += factor * left.x * right.x;
+    matrix.value[0][1] += factor * left.x * right.y;
+    matrix.value[0][2] += factor * left.x * right.z;
+
+    matrix.value[1][0] += factor * left.y * right.x;
+    matrix.value[1][1] += factor * left.y * right.y;
+    matrix.value[1][2] += factor * left.y * right.z;
+
+    matrix.value[2][0] += factor * left.z * right.x;
+    matrix.value[2][1] += factor * left.z * right.y;
+    matrix.value[2][2] += factor * left.z * right.z;
+}
+
 Vec3 cross(const Vec3& a, const Vec3& b)
 {
     return {a.y * b.z - a.z * b.y,
@@ -43,6 +68,26 @@ bool finite(const Vec3& value)
 {
     return std::isfinite(value.x) && std::isfinite(value.y) &&
         std::isfinite(value.z);
+}
+
+Vec3 tetrahedron_outward_normal(
+    const std::array<Vec3, 4>& vertices,
+    const std::array<int, 3>& face,
+    const int opposite)
+{
+    const Vec3 first = vertices[static_cast<std::size_t>(face[0])];
+    const Vec3 second = vertices[static_cast<std::size_t>(face[1])];
+    const Vec3 third = vertices[static_cast<std::size_t>(face[2])];
+    Vec3 normal = cross(second - first, third - first);
+    if (dot(normal,
+            vertices[static_cast<std::size_t>(opposite)] - first) > 0.0) {
+        normal = -1.0 * normal;
+    }
+    const double length = norm(normal);
+    if (!(length > 0.0) || !std::isfinite(length)) {
+        throw std::invalid_argument("tetrahedron face is degenerate");
+    }
+    return scale(normal, 1.0 / length);
 }
 
 // This is the principal atan quotient used by TileTriangle's P_Nzz/Q_Nzz
@@ -896,6 +941,112 @@ double triangle_triangle_laplace_integral(
     return triangle_triangle_integral(first, second);
 }
 
+PreparedTetrahedron prepare_tetrahedron(const Tetrahedron& tetrahedron)
+{
+    PreparedTetrahedron prepared;
+    prepared.volume = tetrahedron_volume(tetrahedron);
+    prepared.vertices = tetrahedron.vertices;
+    for (int face_index = 0; face_index < 4; ++face_index) {
+        const auto& indices = tetrahedron_face_vertices[
+            static_cast<std::size_t>(face_index)];
+        for (int vertex = 0; vertex < 3; ++vertex) {
+            prepared.faces[static_cast<std::size_t>(face_index)][
+                static_cast<std::size_t>(vertex)] = prepared.vertices[
+                    static_cast<std::size_t>(indices[vertex])];
+        }
+        prepared.outward_normals[static_cast<std::size_t>(face_index)] =
+            tetrahedron_outward_normal(
+                prepared.vertices, indices, face_index);
+    }
+    return prepared;
+}
+
+PairTensor tetrahedron_tetrahedron_tensor_prepared(
+    const Vec3& target_minus_source_representative,
+    const PreparedTetrahedron& source,
+    const PreparedTetrahedron& target,
+    const bool coincident_same_geometry)
+{
+    Matrix3 tensor{};
+    if (coincident_same_geometry) {
+        for (int target_face = 0; target_face < 4; ++target_face) {
+            for (int source_face = target_face; source_face < 4;
+                 ++source_face) {
+                const double integral = triangle_triangle_laplace_integral(
+                    target.faces[static_cast<std::size_t>(target_face)],
+                    source.faces[static_cast<std::size_t>(source_face)]);
+                if (!std::isfinite(integral)) {
+                    throw std::domain_error(
+                        "tetrahedron face-pair integral is not finite");
+                }
+                add_scaled_outer_product(
+                    tensor, integral,
+                    target.outward_normals[
+                        static_cast<std::size_t>(target_face)],
+                    source.outward_normals[
+                        static_cast<std::size_t>(source_face)]);
+                if (target_face != source_face) {
+                    add_scaled_outer_product(
+                        tensor, integral,
+                        target.outward_normals[
+                            static_cast<std::size_t>(source_face)],
+                        source.outward_normals[
+                            static_cast<std::size_t>(target_face)]);
+                }
+            }
+        }
+    } else {
+        for (int target_face = 0; target_face < 4; ++target_face) {
+            std::array<Vec3, 3> translated_target{};
+            for (int vertex = 0; vertex < 3; ++vertex) {
+                translated_target[static_cast<std::size_t>(vertex)] =
+                    target.faces[static_cast<std::size_t>(target_face)][
+                        static_cast<std::size_t>(vertex)] +
+                    target_minus_source_representative;
+            }
+            for (int source_face = 0; source_face < 4; ++source_face) {
+                const double integral = triangle_triangle_laplace_integral(
+                    translated_target,
+                    source.faces[static_cast<std::size_t>(source_face)]);
+                if (!std::isfinite(integral)) {
+                    throw std::domain_error(
+                        "tetrahedron face-pair integral is not finite");
+                }
+                add_scaled_outer_product(
+                    tensor, integral,
+                    target.outward_normals[
+                        static_cast<std::size_t>(target_face)],
+                    source.outward_normals[
+                        static_cast<std::size_t>(source_face)]);
+            }
+        }
+    }
+
+    const long double normalisation = -1.0L /
+        (four_pi * static_cast<long double>(source.volume) *
+         static_cast<long double>(target.volume));
+    for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            tensor.value[row][column] = static_cast<double>(
+                normalisation * static_cast<long double>(
+                    tensor.value[row][column]));
+            if (!std::isfinite(tensor.value[row][column])) {
+                throw std::domain_error(
+                    "tetrahedron-to-tetrahedron tensor is not finite");
+            }
+        }
+    }
+    for (int row = 0; row < 3; ++row) {
+        for (int column = row + 1; column < 3; ++column) {
+            const double average = 0.5 * (tensor.value[row][column] +
+                                          tensor.value[column][row]);
+            tensor.value[row][column] = average;
+            tensor.value[column][row] = average;
+        }
+    }
+    return to_pair_tensor(tensor);
+}
+
 } // namespace detail
 
 double Tetrahedron::signed_volume() const noexcept
@@ -1018,118 +1169,27 @@ PairTensor tetrahedron_tetrahedron_tensor(
     const Tetrahedron& source,
     const Tetrahedron& target)
 {
-    const double source_volume = tetrahedron_volume(source);
-    const double target_volume = tetrahedron_volume(target);
-
-    // The face order is immaterial to the scalar Galerkin integral.  It is
-    // made outward below using the vertex opposite each face, which keeps the
-    // tensor sign independent of the caller's tetrahedron orientation.
-    constexpr std::array<std::array<int, 3>, 4> face_vertices{{
-        {{1, 2, 3}},
-        {{0, 3, 2}},
-        {{0, 1, 3}},
-        {{0, 2, 1}},
-    }};
-
-    const auto outward_normal = [](const std::array<Vec3, 4>& vertices,
-                                   const std::array<int, 3>& face,
-                                   const int opposite) {
-        const Vec3 first = vertices[static_cast<std::size_t>(face[0])];
-        const Vec3 second = vertices[static_cast<std::size_t>(face[1])];
-        const Vec3 third = vertices[static_cast<std::size_t>(face[2])];
-        Vec3 normal = cross(second - first, third - first);
-        if (dot(normal,
-                vertices[static_cast<std::size_t>(opposite)] - first) > 0.0) {
-            normal = -1.0 * normal;
-        }
-        const double length = norm(normal);
-        if (!(length > 0.0) || !std::isfinite(length)) {
-            throw std::invalid_argument("tetrahedron face is degenerate");
-        }
-        return scale(normal, 1.0 / length);
+    const auto prepared_source = detail::prepare_tetrahedron(source);
+    const auto prepared_target = detail::prepare_tetrahedron(target);
+    const bool zero_displacement =
+        target_minus_source_representative.x == 0.0 &&
+        target_minus_source_representative.y == 0.0 &&
+        target_minus_source_representative.z == 0.0;
+    const auto same_vertex = [](const Vec3& first, const Vec3& second) {
+        return first.x == second.x && first.y == second.y &&
+            first.z == second.z;
     };
-
-    std::array<Vec3, 4> source_normals{};
-    std::array<Vec3, 4> target_normals{};
-    for (int face = 0; face < 4; ++face) {
-        source_normals[static_cast<std::size_t>(face)] = outward_normal(
-            source.vertices, face_vertices[static_cast<std::size_t>(face)],
-            face);
-        target_normals[static_cast<std::size_t>(face)] = outward_normal(
-            target.vertices, face_vertices[static_cast<std::size_t>(face)],
-            face);
-    }
-
-    std::array<Vec3, 4> target_vertices{};
+    bool exact_same_geometry = true;
     for (int vertex = 0; vertex < 4; ++vertex) {
-        target_vertices[static_cast<std::size_t>(vertex)] =
-            target_minus_source_representative + target.vertices[
-                static_cast<std::size_t>(vertex)];
+        exact_same_geometry = exact_same_geometry && same_vertex(
+            source.vertices[static_cast<std::size_t>(vertex)],
+            target.vertices[static_cast<std::size_t>(vertex)]);
     }
-
-    Matrix3 tensor;
-    for (int target_face = 0; target_face < 4; ++target_face) {
-        const auto& target_face_indices = face_vertices[
-            static_cast<std::size_t>(target_face)];
-        const std::array<Vec3, 3> target_triangle{{
-            target_vertices[static_cast<std::size_t>(target_face_indices[0])],
-            target_vertices[static_cast<std::size_t>(target_face_indices[1])],
-            target_vertices[static_cast<std::size_t>(target_face_indices[2])],
-        }};
-        for (int source_face = 0; source_face < 4; ++source_face) {
-            const auto& source_face_indices = face_vertices[
-                static_cast<std::size_t>(source_face)];
-            const std::array<Vec3, 3> source_triangle{{
-                source.vertices[static_cast<std::size_t>(source_face_indices[0])],
-                source.vertices[static_cast<std::size_t>(source_face_indices[1])],
-                source.vertices[static_cast<std::size_t>(source_face_indices[2])],
-            }};
-            const double integral = detail::triangle_triangle_laplace_integral(
-                target_triangle, source_triangle);
-            if (!std::isfinite(integral)) {
-                throw std::domain_error(
-                    "tetrahedron face-pair integral is not finite (target face " +
-                    std::to_string(target_face) + ", source face " +
-                    std::to_string(source_face) + ")");
-            }
-            const Vec3& target_normal = target_normals[
-                static_cast<std::size_t>(target_face)];
-            const Vec3& source_normal = source_normals[
-                static_cast<std::size_t>(source_face)];
-            for (int row = 0; row < 3; ++row) {
-                for (int column = 0; column < 3; ++column) {
-                    tensor.value[row][column] += integral *
-                        target_normal[row] * source_normal[column];
-                }
-            }
-        }
-    }
-
-    const long double normalisation = -1.0L /
-        (four_pi * static_cast<long double>(source_volume) *
-         static_cast<long double>(target_volume));
-    for (int row = 0; row < 3; ++row) {
-        for (int column = 0; column < 3; ++column) {
-            tensor.value[row][column] = static_cast<double>(
-                normalisation * static_cast<long double>(
-                    tensor.value[row][column]));
-            if (!std::isfinite(tensor.value[row][column])) {
-                throw std::domain_error(
-                    "tetrahedron-to-tetrahedron tensor is not finite");
-            }
-        }
-    }
-    // The Hessian of 1/R is symmetric.  Face-pair evaluation can leave only
-    // last-bit antisymmetry, and PairTensor stores the six symmetric entries.
-    for (int row = 0; row < 3; ++row) {
-        for (int column = row + 1; column < 3; ++column) {
-            const double average = 0.5 * (tensor.value[row][column] +
-                                          tensor.value[column][row]);
-            tensor.value[row][column] = average;
-            tensor.value[column][row] = average;
-        }
-    }
-    return to_pair_tensor(tensor);
+    return detail::tetrahedron_tetrahedron_tensor_prepared(
+        target_minus_source_representative,
+        prepared_source,
+        prepared_target,
+        zero_displacement && exact_same_geometry);
 }
 
 } // namespace cdfmm
