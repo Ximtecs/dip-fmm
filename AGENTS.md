@@ -38,10 +38,24 @@ implementation. Architectural work occurs on `refactor/architecture-v0.2`.
 Never move, recreate, or rewrite the tag or preserved branch.
 
 The foundational `core`, `math`, `geometry`, and `tree` layers, followed by the
-operator/static-plan step and backend boundaries, are now organised. Preserve
-the flat forwarding headers until an explicit compatibility cleanup. Dynamic
-mathematical operator implementations live under `src/operators/*`;
-`src/operators.cpp` is compatibility-only. CUDA direct execution, complete
+operator/static-plan step and backend boundaries, are now organised. The
+compatibility/transitional-source review is complete, so the remaining
+compatibility surface is now intentional rather than merely inherited. Every
+flat header under `include/cdfmm/` was an installed public path at `v0.1.0`;
+they are therefore retained deliberately as public compatibility façades and
+must not be removed without an approved API change. Canonical structured
+headers and canonical implementation no longer include those façades: the
+dependency runs façade -> canonical, never the reverse. The unused internal
+shims `src/cuda_fmm_plan.hpp`, `src/cuda_m2l_plan.hpp`, `src/cuda_p2p_plan.hpp`
+and the dead `src/static_operators.cpp` are removed; internal `src/` headers
+carry no downstream compatibility obligation. Dynamic mathematical operator
+implementations live under `src/operators/*`; `src/operators.cpp` is
+compatibility-only thin delegation and is retained for the supported flat C++
+and Python operator names. `src/cuboid.cpp` is removed: its prism-averaged
+monomial is now owned by `src/geometry/primitives/rectangular_prism.cpp` and
+its pair-tensor dispatch by `src/operators/p2p.cpp`, with
+`cuboid_averaged_monomial` and `build_pair_tensor` retained as thin flat
+spellings. CUDA direct execution, complete
 P2P, M2L, far-field, and full-FMM backends now have explicit homes under
 `src/backend/cuda/`: far-field execution is under
 `src/backend/cuda/far_field/`, while complete FMM declarations and orchestration
@@ -350,8 +364,9 @@ unavailable optional dependency/device and must say why.
 - Compare against `v0.1.0` and inspect both the stat and full diff. Never alter
   `v0.1.0` or `release/v0.1`.
 - Keep each production-code step within its explicitly authorised layers and
-  stop after its acceptance criteria pass. Preserve compatibility shims until
-  their removal is separately approved.
+  stop after its acceptance criteria pass. Preserve public compatibility
+  façades under `include/cdfmm/` unless an API change is separately approved;
+  an internal `src/` forwarding header may be removed once it has no users.
 
 The authoritative rationale, dependency table, target tree, and deferred-work
 inventory are in `docs/architecture.md`.

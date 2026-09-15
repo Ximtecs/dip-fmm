@@ -2,7 +2,7 @@
 
 #include "cdfmm/operators/m2p.hpp"
 
-#include "cdfmm/laplace_derivatives.hpp"
+#include "cdfmm/math/laplace_derivatives.hpp"
 
 namespace cdfmm::operators::m2p {
 

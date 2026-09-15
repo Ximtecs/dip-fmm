@@ -4,9 +4,12 @@
 #include <span>
 #include <vector>
 
-#include "cdfmm/operators.hpp"
+#include "cdfmm/core/output_flags.hpp"
+#include "cdfmm/math/coefficients.hpp"
+#include "cdfmm/math/multi_index.hpp"
+#include "cdfmm/math/potential_field.hpp"
 #include "cdfmm/periodic.hpp"
-#include "cdfmm/spherical_harmonics.hpp"
+#include "cdfmm/math/spherical_harmonics.hpp"
 
 namespace cdfmm::operators::m2l {
 

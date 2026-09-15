@@ -412,7 +412,7 @@ StaticP2POperator build_static_p2p_operator_impl(
             tensor = point_tetrahedron_tensor(
                 displacement, *target_tetrahedron);
         } else {
-            tensor = build_pair_tensor(
+            tensor = operators::p2p::build_pair(
                 target_positions[static_cast<std::size_t>(target)],
                 shifted_source, effective_source_geometry,
                 effective_target_geometry, source_prism, target_prism);
@@ -525,9 +525,54 @@ PairTensor build_pair(
     const CuboidSize& source_size, const CuboidSize& target_size,
     const bool omit_singular_point_pair)
 {
-    return build_pair_tensor(
-        target, source, source_geometry, target_geometry, source_size,
-        target_size, omit_singular_point_pair);
+    if (source_geometry == SourceGeometry::Tetrahedron ||
+        target_geometry == TargetGeometry::Tetrahedron) {
+        // NOTE(cdfmm): The message names the flat compatibility spelling
+        // deliberately; it is part of the preserved observable behaviour.
+        throw std::invalid_argument(
+            "build_pair_tensor does not accept tetrahedral geometry; "
+            "use the tetrahedron P2P operator with tetrahedron records");
+    }
+    const Vec3 r = target - source;
+    // An explicit identity map marks a point-source self interaction.  The
+    // singular point field is omitted even when the target is a finite volume;
+    // finite sources are handled by their analytical self-limit below.
+    if (omit_singular_point_pair &&
+        source_geometry == SourceGeometry::PointDipole) {
+        return {};
+    }
+    if (source_geometry == SourceGeometry::RectangularPrism &&
+        target_geometry == TargetGeometry::RectangularPrism) {
+        return rectangular_prism_rectangular_prism_tensor(
+            r, source_size, target_size);
+    }
+
+    // Reciprocity converts a point-to-volume average into the corresponding
+    // finite-source field, including the required total-moment normalisation.
+    if (source_geometry == SourceGeometry::PointDipole &&
+        target_geometry == TargetGeometry::RectangularPrism) {
+        return rectangular_prism_point_tensor(r, target_size);
+    }
+
+    if (source_geometry == SourceGeometry::RectangularPrism) {
+        return rectangular_prism_point_tensor(r, source_size);
+    }
+
+    const double r2 = dot(r, r);
+    if (r2 == 0.0) {
+        if (omit_singular_point_pair) {
+            return {};
+        }
+        throw std::domain_error("coincident point dipole and point target");
+    }
+    const double inverse_r = 1.0 / std::sqrt(r2);
+    const double inverse_r3 = inverse_r / r2;
+    const double diagonal = inverse_r3 / (4.0 * std::numbers::pi);
+    const double common = 3.0 * diagonal / r2;
+    return {common * r.x * r.x - diagonal,
+            common * r.x * r.y, common * r.x * r.z,
+            common * r.y * r.y - diagonal, common * r.y * r.z,
+            common * r.z * r.z - diagonal};
 }
 
 PotentialField evaluate_pair(
@@ -647,3 +692,23 @@ CanonicalOperator build(
 }
 
 } // namespace cdfmm::operators::p2p
+
+namespace cdfmm {
+
+// Flat compatibility entry point retained for source and Python compatibility.
+// Mathematical ownership lives in `cdfmm::operators::p2p::build_pair`.
+
+PairTensor build_pair_tensor(const Vec3& target_position,
+                             const Vec3& source_position,
+                             const SourceGeometry source_geometry,
+                             const TargetGeometry target_geometry,
+                             const CuboidSize& source_size,
+                             const CuboidSize& target_size,
+                             const bool omit_singular_point_pair)
+{
+    return operators::p2p::build_pair(
+        target_position, source_position, source_geometry, target_geometry,
+        source_size, target_size, omit_singular_point_pair);
+}
+
+} // namespace cdfmm

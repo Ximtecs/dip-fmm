@@ -5,7 +5,10 @@
 #include <span>
 #include <vector>
 
-#include "cdfmm/operators.hpp"
+#include "cdfmm/core/output_flags.hpp"
+#include "cdfmm/math/coefficients.hpp"
+#include "cdfmm/math/multi_index.hpp"
+#include "cdfmm/math/potential_field.hpp"
 #include "cdfmm/timings.hpp"
 
 namespace cdfmm {

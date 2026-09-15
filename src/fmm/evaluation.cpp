@@ -9,7 +9,7 @@
 
 #include "cdfmm/backend/cpu/p2p.hpp"
 #include "cdfmm/backend/cuda/p2p.hpp"
-#include "cdfmm/operators.hpp"
+#include "cdfmm/operators/operators.hpp"
 
 #include "backend/cpu/p2p/near_field.hpp"
 #include "fmm/internal.hpp"

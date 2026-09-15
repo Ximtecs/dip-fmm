@@ -1,5 +1,112 @@
 # Project progress
 
+## Compatibility and transitional-source review — 2026-09-15
+
+Completed the late-Phase-1 compatibility/transitional-source review from
+starting HEAD `5cb5576` (`refactor(bindings): structure language adapters`).
+Every remaining transitional file was audited and classified; the remaining
+compatibility surface is now intentional rather than inherited.
+
+Decisive evidence: `git ls-tree v0.1.0 include/cdfmm/` lists exactly the same
+29 flat headers present today, and `CMakeLists.txt` installs
+`include/cdfmm/` by whole-directory glob. Every flat public header is therefore
+a shipped, installed pre-v0.2 include path, so none qualified for removal.
+
+Classification outcome:
+
+- **A, public compatibility façades retained (23).** The 19 pure forwarding
+  headers plus `cuboid.hpp`, `geometry.hpp`, `static_operators.hpp`, and
+  `tetrahedron.hpp`. Each now carries an explicit comment stating why it
+  exists. `cuboid.hpp` and `static_operators.hpp` were rewritten to reproduce
+  their pre-v0.2 transitive surface exactly, which the build caught when an
+  initial narrowing dropped `DenseDirectBackend` from
+  `cdfmm/static_operators.hpp`.
+- **B, internal shims removed (4).** `src/cuda_fmm_plan.hpp` and
+  `src/cuda_p2p_plan.hpp` had zero includers; `src/cuda_m2l_plan.hpp` had two,
+  both retargeted to `cdfmm/backend/cuda/m2l.hpp`; `src/static_operators.cpp`
+  was dead code, absent from every source list since `14a94d6`.
+- **C, compatibility implementations retained (2).** `src/operators.cpp` is
+  eight one-expression delegations with no inline mathematics, and backs the
+  supported flat C++ and Python operator names. `include/cdfmm/operators.hpp`
+  is an API adapter, not a forwarding umbrella; `docs/architecture.md` was
+  corrected, as it had described it inaccurately.
+- **D, substantive implementation moved (1).** `src/cuboid.cpp`.
+
+`src/cuboid.cpp` decision: it was not a compatibility adapter. It owned
+`cuboid_averaged_monomial`, consumed by `src/operators/p2m.cpp` and
+`src/operators/l2p.cpp`, and `build_pair_tensor`, consumed by
+`src/operators/p2p.cpp` and `src/plan/direct/dense.cpp`. The canonical
+`cdfmm::operators::p2p::build_pair` was a pass-through to it, so the dependency
+ran canonical -> legacy. The prism-averaged monomial moved to
+`src/geometry/primitives/rectangular_prism.cpp`, restoring symmetry with the
+existing `tetrahedron_averaged_monomial`; the pair-tensor dispatch became the
+body of `operators::p2p::build_pair` in `src/operators/p2p.cpp`. Both flat
+spellings remain as thin delegations. The file is removed and dropped from
+CMake. The monomial path keeps its own side-length check rather than the
+stricter volume validation used by the exact pair tensors, and keeps the
+historical "cuboid" exception wording, so behaviour is unchanged.
+
+`CuboidSize` moved from `include/cdfmm/plan/direct/dense.hpp` to
+`include/cdfmm/geometry/primitives/rectangular_prism.hpp`, which is where the
+geometry alias belongs and which let the canonical operator headers stop
+including a plan header to obtain it.
+
+Canonical production code no longer depends on compatibility façades. Flat
+includes were narrowed in `src/operators/{m2l,m2p}.cpp`,
+`src/backend/cpu/far_field/internal.hpp`, `src/backend/cuda/fmm/internal.hpp`,
+`src/plan/direct/dense.cpp`, and the canonical public headers
+`include/cdfmm/operators/*.hpp`, `include/cdfmm/backend/cuda/{direct,dense_direct}.hpp`,
+and `include/cdfmm/backend/cpu/static_plan_apply.hpp`. Internal call sites in
+`src/fmm/far_field.cpp`, `src/backend/cpu/p2p/near_field.cpp`,
+`src/parameter_selection.cpp`, and `src/validation.cpp` now call
+`cdfmm::operators::*` directly. `python/internal.hpp` keeps
+`cdfmm/operators.hpp` with an explicit note: the Python module exports those
+flat names, so it is a justified compatibility dependency.
+
+Flat files retained deliberately: `src/periodic.cpp`,
+`src/parameter_selection.cpp`, and `src/validation.cpp` each own one coherent
+responsibility. Both audit workers proposed splitting or relocating them; that
+was declined as Phase-2 work outside this scope. Likewise the substantive flat
+public headers (`timings.hpp`, `periodic.hpp`, `uniform_fmm.hpp`,
+`validation.hpp`, `parameter_selection.hpp`, `tensor_dictionary.hpp`) are
+supported API awaiting a subsystem home, not debt.
+
+Coverage added: `tests/test_foundational_headers.cpp` now compiles
+`cdfmm/cuboid.hpp` and `cdfmm/tensor_dictionary.hpp`, which the audit found
+were absent from the compatibility include block, and a new test case asserts
+that the legacy and canonical spellings of the moved mathematics agree
+exactly.
+
+Validation for this task:
+
+- portable `dev`: fresh configure, full build, CTest 198/198 with the four
+  expected optional skips (#16, #55, #63, #67); Python 137 passed and 7
+  skipped, matching the previous task exactly;
+- CUDA `cuda` preset: fresh configure and build, CTest 198/198 with only the
+  oneMKL-only skip, on an RTX 5090 with driver 595.84 and CUDA 13.3.73, so a
+  full runtime regression rather than the compile-only regression the scope
+  required;
+- oneMKL + CUDA `notebooks` preset: fresh configure, build, CTest 198/198 with
+  zero skips;
+- C ABI unchanged: the same 14 `cdfmm_*` dynamic symbols, with
+  `include/cdfmm/c_api.h` and `src/bindings/` untouched;
+- installed-header probe: headers installed to a temporary prefix, then two
+  separate translation units compiled against legacy-only and canonical-only
+  include paths. Both compile, and `nm` shows the legacy and canonical
+  spellings resolving to symbols with identical mangled signatures over the
+  same types. `nm` on `libcdfmm_core.a` confirms `build_pair_tensor` is now
+  defined in `p2p.cpp.o` and `cuboid_averaged_monomial` in
+  `rectangular_prism.cpp.o`;
+- note for future sessions: LTO links fail with "Disk quota exceeded" unless
+  `TMPDIR` is moved off the shared `/tmp` tmpfs.
+
+No FMM, geometry, P2P, tetrahedron, tree, plan, cache, CPU, oneMKL, CUDA,
+Python, C ABI, Fortran, or performance behaviour changed. The intervening
+`9003b666` tetrahedron P2P performance work is untouched.
+
+Remaining Phase 1: whole-Phase-1 validation and closure. Phase 1 is **not**
+claimed closed.
+
 ## Bindings boundary and current Phase 1 handoff — 2026-09-15
 
 The bindings boundary is now structured from implementation base/newest

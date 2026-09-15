@@ -8,7 +8,7 @@
 #include <numeric>
 #include <stdexcept>
 
-#include "cdfmm/operators.hpp"
+#include "cdfmm/operators/p2p.hpp"
 
 namespace cdfmm {
 namespace {
@@ -235,7 +235,7 @@ AccuracySuggestion suggest_parameters_for_accuracy(
   for (const std::size_t index : suggestion.reference_target_indices) {
     const int self_index = target_source_indices.empty()
         ? -1 : target_source_indices[index];
-    references.push_back(p2p_dipole_sum(target_positions[index], source_positions,
+    references.push_back(operators::p2p::evaluate_sum(target_positions[index], source_positions,
                                         dipole_moments, OutputFlags::Field,
                                         self_index).H);
   }

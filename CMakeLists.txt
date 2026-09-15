@@ -48,7 +48,6 @@ add_library(cdfmm_core
     src/operators/l2l.cpp
     src/operators/l2p.cpp
     src/operators/p2p.cpp
-    src/cuboid.cpp
     src/plan/direct/dense.cpp
     src/backend/cpu/direct/dense.cpp
     src/backend/mkl/direct/dense.cpp

@@ -31,6 +31,11 @@
 #include "cdfmm/math/vec3.hpp"
 #include "cdfmm/operators/operators.hpp"
 #include "cdfmm/parameter_selection.hpp"
+// NOTE(cdfmm): `cdfmm/operators.hpp` is a justified compatibility dependency.
+// The Python module exports the flat operator spellings it declares, so the
+// binding adapter must see that supported API surface, not only the canonical
+// namespaced one.
+#include "cdfmm/operators.hpp"
 #include "cdfmm/periodic.hpp"
 #include "cdfmm/plan/direct/dense.hpp"
 #include "cdfmm/plan/static_plan.hpp"

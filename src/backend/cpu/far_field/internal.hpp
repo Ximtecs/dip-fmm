@@ -4,8 +4,8 @@
 #include <span>
 
 #include "cdfmm/plan/static_plan.hpp"
-#include "cdfmm/multi_index.hpp"
-#include "cdfmm/spherical_harmonics.hpp"
+#include "cdfmm/math/multi_index.hpp"
+#include "cdfmm/math/spherical_harmonics.hpp"
 
 namespace cdfmm::detail::cpu {
 

@@ -3,11 +3,15 @@
 
 #include <span>
 
-#include "cdfmm/cuboid.hpp"
-#include "cdfmm/operators.hpp"
+#include "cdfmm/geometry/models.hpp"
+#include "cdfmm/geometry/primitives/rectangular_prism.hpp"
+#include "cdfmm/core/output_flags.hpp"
+#include "cdfmm/math/coefficients.hpp"
+#include "cdfmm/math/multi_index.hpp"
+#include "cdfmm/math/potential_field.hpp"
 #include "cdfmm/plan/l2p.hpp"
-#include "cdfmm/spherical_harmonics.hpp"
-#include "cdfmm/tetrahedron.hpp"
+#include "cdfmm/math/spherical_harmonics.hpp"
+#include "cdfmm/geometry/primitives/tetrahedron.hpp"
 
 namespace cdfmm::operators::l2p {
 

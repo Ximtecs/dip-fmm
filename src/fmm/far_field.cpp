@@ -10,7 +10,7 @@
 #include <omp.h>
 #endif
 
-#include "cdfmm/operators.hpp"
+#include "cdfmm/operators/operators.hpp"
 #include "cdfmm/backend/cpu/far_field.hpp"
 #include "cdfmm/backend/cpu/m2l.hpp"
 #include "cdfmm/backend/cuda/m2l.hpp"
@@ -266,7 +266,7 @@ void UniformFmm::upward_pass_prepared() {
           std::span<const Vec3>(sorted_dipole_moments_)
               .subspan(leaf_range.begin, leaf_range.count), M);
     } else {
-      const CoeffVector M = p2m_dipole(basis_, leaf.centre,
+      const CoeffVector M = operators::p2m::evaluate(basis_, leaf.centre,
                      std::span<const Vec3>(topology_->sorted_source_positions)
                          .subspan(leaf_range.begin, leaf_range.count),
                      std::span<const Vec3>(sorted_dipole_moments_)
@@ -316,7 +316,7 @@ void UniformFmm::upward_pass_prepared() {
                     spherical_basis_));
           } else {
             const Vec3 d = parent.centre - child.centre;
-            m2m_add(basis_, d,
+            operators::m2m::apply(basis_, d,
                     multipole_for_node(child_index),
                     parent_M);
           }
@@ -385,7 +385,7 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
                   spherical_basis_));
         } else {
           const Vec3 d = target.centre - nodes[static_cast<std::size_t>(edge.source_node)].centre;
-          l2l_add(basis_, d, local_for_node(edge.source_node),
+          operators::l2l::apply(basis_, d, local_for_node(edge.source_node),
                   local_for_node(target_index));
         }
       }
@@ -413,7 +413,7 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
         }
         const auto &source = nodes[static_cast<std::size_t>(interaction.source_node)];
         const Vec3 R = target.centre - source.centre - interaction.source_shift;
-        m2l_add(basis_, R, multipole_for_node(interaction.source_node),
+        operators::m2l::apply(basis_, R, multipole_for_node(interaction.source_node),
                 local_for_node(interaction.target_node));
       }
       last_timings_.m2l.add(elapsed_seconds(phase_start));
@@ -444,7 +444,7 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
               l2p_evaluators_[target_index], local_for_node(leaf_index), output);
         } else {
           sorted_results_[target_index] =
-              l2p_eval(basis_, leaf.centre, targets[target_index],
+              operators::l2p::evaluate(basis_, leaf.centre, targets[target_index],
                        local_for_node(leaf_index), output);
         }
       }

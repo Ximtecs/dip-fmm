@@ -316,7 +316,6 @@ src/
 |-- operators/{p2m,m2m,m2l,l2l,l2p,m2p,p2p}.cpp  authoritative construction
 |                                                  and dynamic application
 |-- plan/{precision,direct,p2p}               plan preparation and representations
-|-- cuboid.cpp                                compatibility geometry/pair math
 |-- fmm/construction.cpp                      geometry normalisation and construction
 |-- fmm/plan_preparation.cpp                  immutable plans, FP32 quantisation, cache calls
 |-- fmm/execution_setup.cpp                   backend wiring and P2P policy
@@ -395,9 +394,10 @@ Binding units use supported canonical structured headers where available, with
 only justified compatibility dependencies. They contain adaptation and
 validation glue, not solver logic, and do not include internal backend headers.
 
-The compatibility headers `cdfmm/operators.hpp` and
-`cdfmm/static_operators.hpp` remain supported forwarding umbrellas; they do
-not define a second operator or plan representation. `StaticFmmTopology`
+`cdfmm/static_operators.hpp` is a genuine forwarding umbrella. `cdfmm/operators.hpp`
+is different in kind: it declares the flat dynamic-operator names in their own
+right and is a compatibility API adapter, backed by the thin delegations in
+`src/operators.cpp`. Neither defines a second operator or plan representation. `StaticFmmTopology`
 stores topology-native occupied leaf interaction metadata; conversion to
 derived leaf-packing records occurs at the P2P plan boundary. It remains the
 principal seam for a later FMM/topology integration step.
@@ -406,7 +406,14 @@ The responsibility-specific files under `src/operators/` are the authoritative
 homes for both mathematical operator construction and dynamic application.
 The flat `src/operators.cpp` translation unit is retained only for thin
 compatibility wrappers around those implementations; it does not own a second
-set of operator formulas.
+set of operator formulas. `src/operators/p2p.cpp` also owns the authoritative
+point/rectangular-prism pair-tensor construction as
+`cdfmm::operators::p2p::build_pair`, with the flat `cdfmm::build_pair_tensor`
+defined beside it as a thin delegation. The prism-averaged monomial is owned by
+`src/geometry/primitives/rectangular_prism.cpp` as
+`rectangular_prism_averaged_monomial`, with `cuboid_averaged_monomial` as its
+flat spelling. The former `src/cuboid.cpp` home no longer exists, and
+`include/cdfmm/cuboid.hpp` is now a pure compatibility façade.
 
 Dense direct follows the same plan/backend boundary. `plan/direct/dense.cpp`
 validates geometry and prepares the six immutable target-major matrices;
@@ -432,8 +439,9 @@ leaf, signed tensor-dictionary, and cuSPARSE BSR(3) executors in FP64 and
 FP32, together with plan lifecycle, asynchronous evaluation, persistent
 device/host state, and shared full-plan primitives. The non-CUDA boundary is
 `src/backend/cuda/stub/p2p.cpp`. The canonical public
-`include/cdfmm/backend/cuda/m2l.hpp` owns `CudaM2LPlan`, while the legacy
-`src/cuda_m2l_plan.hpp` is a forwarding compatibility shim. The reusable
+`include/cdfmm/backend/cuda/m2l.hpp` owns `CudaM2LPlan`; the former internal
+`src/cuda_m2l_plan.hpp` shim is removed and its consumers include the canonical
+header directly. The reusable
 `src/backend/cuda/m2l/{internal.hpp,plan.cu}` executor owns M2L device
 metadata, kernels, bounded scaled-multipole scratch, and both FP64/FP32
 lifecycles; standalone `CudaM2LPlan` and `CudaFullPlan` consume that same
@@ -471,6 +479,37 @@ is canonical geometry data or an execution representation. The P2P execution
 packings listed above are implemented; grain generation, discretisation, and
 geometric refinement remain outside this step.
 
+## Compatibility surface
+
+The compatibility/transitional-source review is complete. The resulting surface
+is intentional, and the distinction below is the rule for future work.
+
+Canonical structured implementation is the single authority for a concept. An
+intentional public compatibility façade is a supported pre-v0.2 include path or
+callable name that forwards to that authority and owns no mathematics.
+
+- Every flat header under `include/cdfmm/` was an installed public path at the
+  `v0.1.0` tag, so all are retained. Removing one is an API change requiring
+  separate approval. A façade also reproduces the pre-v0.2 transitive surface
+  of its path.
+- Compatibility flows one way. Canonical headers under
+  `include/cdfmm/{core,math,geometry,tree,operators,plan,backend}` and canonical
+  implementation under `src/` and `python/` include canonical headers; the flat
+  façades include those. The deliberate exceptions are `src/operators.cpp`,
+  which implements `cdfmm/operators.hpp`, and `python/internal.hpp`, which must
+  see the flat operator declarations the Python module exports.
+- `cdfmm/timings.hpp`, `cdfmm/periodic.hpp`, `cdfmm/uniform_fmm.hpp`,
+  `cdfmm/validation.hpp`, `cdfmm/parameter_selection.hpp`, and
+  `cdfmm/tensor_dictionary.hpp` are substantive public headers, not façades.
+  They are flat only because no canonical subsystem home exists yet; their
+  migration is deferred, not overdue cleanup.
+- Internal `src/` headers carry no downstream obligation. The unused
+  `src/cuda_fmm_plan.hpp`, `src/cuda_m2l_plan.hpp`, `src/cuda_p2p_plan.hpp` and
+  the dead `src/static_operators.cpp` were removed on that basis.
+- `tests/test_foundational_headers.cpp` and the `test_cuda_legacy_*_header.cpp`
+  units are deliberate compatibility coverage. They must keep their flat
+  includes, and they assert that legacy and canonical spellings agree.
+
 ## Deferred refactor inventory
 
 This inventory records remaining pressure points; it does not authorise a
@@ -485,19 +524,21 @@ transitional layout:
   `static_topology.hpp` remains a compatibility forwarding header.
 - `adaptive_tree.hpp` returns `StaticFmmTopology` directly, coupling adaptive
   construction to the current static-plan representation.
-- `cuboid.hpp` remains a compatibility umbrella for finite geometry/pair math
-  and the dense-direct public API. `DenseDirectPlan` is now declared by
-  `plan/direct/dense.hpp` and implemented by `src/plan/direct/dense.cpp`.
-  Portable, oneMKL, and CUDA direct execution now have dedicated internal
-  backend homes; the façades retain only their supported API surfaces.
+- `cuboid.hpp` is a compatibility façade that declares nothing of its own.
+  `DenseDirectPlan` is declared by `plan/direct/dense.hpp`, the prism record,
+  `CuboidSize`, and the averaged monomial by
+  `geometry/primitives/rectangular_prism.hpp`, and the pair tensor by
+  `operators/p2p.hpp`. Portable, oneMKL, and CUDA direct execution have
+  dedicated internal backend homes; the façades retain only their supported
+  API surfaces.
 - compatibility `static_operators.hpp/.cpp` remain as forwarding umbrellas;
   their former mixed implementation has been separated into operators, plans,
   and the portable CPU apply boundary described below.
 - `fmm/far_field.cpp` contains CPU expansion sequencing and no longer contains
   oneMKL vendor mechanics; complete CUDA FMM orchestration is in
   `backend/cuda/fmm/plan.cu`.
-  `periodic.cpp` includes `uniform_tree.hpp`, and `parameter_selection.hpp`
-  includes the complete `uniform_fmm.hpp` API.
+  `periodic.cpp` now includes the narrow `cdfmm/tree/indexing.hpp`, but
+  `parameter_selection.hpp` still includes the complete `uniform_fmm.hpp` API.
 - the cache subsystem under `cache/` separates the file container and root
   policy, payload records, identity, and the universal/periodic and
   geometry-plan payloads. Its entry points remain `UniformFmm` members, so

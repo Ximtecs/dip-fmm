@@ -6,7 +6,7 @@
 #include <numbers>
 #include <vector>
 
-#include "cdfmm/laplace_derivatives.hpp"
+#include "cdfmm/math/laplace_derivatives.hpp"
 #include "spherical_cartesian_conversion.hpp"
 
 namespace cdfmm {

@@ -1,5 +1,63 @@
 # Project diary
 
+## 2026-09-15 — compatibility and transitional-source review
+
+From starting HEAD `5cb5576`, audited every remaining legacy-looking or
+transitional file and made the surviving compatibility surface intentional.
+
+The decisive fact came from `git ls-tree v0.1.0 include/cdfmm/`: the flat
+header set is unchanged since the preserved tag, and CMake installs the
+directory by glob. Every flat public header is therefore a shipped public
+include path. That turned the question from "which of these look old?" into
+"which carry a real obligation?", and the answer was all of them, so none were
+removed. Each now says so in a comment.
+
+The interesting case was `src/cuboid.cpp`, and it was not the shim its
+neighbours suggested. It owned the prism-averaged monomial used by
+`src/operators/{p2m,l2p}.cpp` and the pair-tensor dispatch used by
+`src/operators/p2p.cpp` and `src/plan/direct/dense.cpp`, while the canonical
+`operators::p2p::build_pair` merely forwarded to it. The dependency ran
+canonical -> legacy. The monomial moved to
+`src/geometry/primitives/rectangular_prism.cpp`, next to the existing
+`tetrahedron_averaged_monomial` it had been separated from; the dispatch became
+the body of `operators::p2p::build_pair`. Both flat names survive as thin
+delegations, so nothing downstream moved.
+
+Two behaviour details were preserved deliberately rather than tidied. The
+monomial path keeps its own side-length check instead of adopting the stricter
+volume validation the exact pair tensors use, and the tetrahedral rejection
+still names `build_pair_tensor` in its message even though it is now thrown
+from the canonical function. Both are observable, so both stayed.
+
+The internal `src/` shims were the opposite case. `cuda_fmm_plan.hpp` and
+`cuda_p2p_plan.hpp` had no includers at all, `cuda_m2l_plan.hpp` had two that
+could name the canonical header directly, and `static_operators.cpp` had been
+absent from every source list since `14a94d6` while still claiming in its own
+comment to exist "for downstream source lists". Internal headers carry no
+downstream obligation, so all four were removed.
+
+Narrowing the canonical headers surfaced the one genuine compatibility trap.
+Removing `cdfmm/cuboid.hpp` from the canonical operator headers also removed
+`DenseDirectBackend` from everything reaching it through
+`cdfmm/static_operators.hpp`, which a test caught immediately, and dropped the
+flat operator names from `python/operators.cpp`. The fix was to restore the
+pre-v0.2 transitive surface at the façades themselves rather than to re-widen
+the canonical headers, which is the rule now written into
+`include/cdfmm/AGENTS.md`: compatibility flows one way.
+
+Both audit workers recommended relocating `periodic.cpp`,
+`parameter_selection.cpp`, and `validation.cpp` as well. That was declined.
+Each owns one coherent responsibility, a flat source file is not wrong merely
+for being flat, and moving them belongs to Phase 2.
+
+Validation: portable, CUDA, and oneMKL+CUDA configurations all built fresh and
+passed CTest 198/198 (four, one, and zero skips respectively); Python 137
+passed and 7 skipped, matching the previous task; the C ABI kept exactly its 14
+symbols; and tiny consumers compiled against an installed prefix through both
+legacy-only and canonical-only include paths, with `nm` confirming the two
+spellings resolve to identically typed symbols. Phase 1 is not closed; the
+remaining task is whole-Phase-1 validation and closure.
+
 ## 2026-09-15 — bindings boundary and validation closure
 
 At implementation base/newest starting HEAD `9003b666`, the bindings boundary

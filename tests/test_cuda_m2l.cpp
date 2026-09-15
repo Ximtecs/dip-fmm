@@ -11,7 +11,7 @@
 #include "cdfmm/multi_index.hpp"
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/uniform_fmm.hpp"
-#include "cuda_m2l_plan.hpp"
+#include "cdfmm/backend/cuda/m2l.hpp"
 
 using namespace cdfmm;
 

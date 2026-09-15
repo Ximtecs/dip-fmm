@@ -19,7 +19,6 @@ src/
 |-- tree/common/static_topology.cpp        canonical topology validation/storage
 |-- tree/uniform/static_topology_adapter.cpp UniformTree topology adapter
 |-- operators.cpp                           flat compatibility wrappers only
-|-- cuboid.cpp                              transitional geometry/direct code
 |-- operators/                              authoritative operator construction
 |                                          and dynamic application
 |-- periodic.cpp                            periodic support code
@@ -62,11 +61,25 @@ src/
 |-- cache/universal.cpp                     translation-bank and periodic-root
 |                                          payloads
 |-- cache/geometry.cpp                      geometry-plan payload
-|-- cuda_fmm_plan.hpp                      forwarding compatibility shim
 |-- bindings/c_api.cpp                     C adapter
 |-- parameter_selection.cpp, validation.cpp
-`-- *.hpp                                  implementation-only support
+`-- profile.hpp                            internal NVTX range support
 ```
+
+The flat root now contains no forwarding shims. `cuda_fmm_plan.hpp`,
+`cuda_m2l_plan.hpp`, `cuda_p2p_plan.hpp`, `static_operators.cpp`, and
+`cuboid.cpp` are removed; include the canonical structured header directly.
+A file under `src/` is internal, so it carries no downstream source-compatibility
+obligation: an internal forwarding header may be deleted once it has no users.
+That is the opposite of `include/cdfmm/`, where the flat paths are supported
+public façades and are retained.
+
+The remaining flat `.cpp` files each own one coherent responsibility and are
+kept deliberately: `operators.cpp` is thin compatibility delegation to
+`operators/*` and backs the flat C++/Python operator names; `periodic.cpp`
+owns periodic support; `parameter_selection.cpp` owns the advisory search; and
+`validation.cpp` owns error metrics and the direct reference. Moving them is
+Phase-2 work, not cleanup to fold into an unrelated step.
 
 Expected later destinations:
 
@@ -98,6 +111,11 @@ Do not create target directories before substantive code belongs in them.
   backend-oriented packing.
 - Geometry owns integration elements and physical models, not dense-direct
   plans, oneMKL selection, or FMM orchestration.
+- Canonical implementation includes canonical structured headers. Do not add a
+  new `#include "cdfmm/<flat>.hpp"` for a header that has a canonical
+  subsystem home. The two deliberate exceptions are `src/operators.cpp`, which
+  implements `cdfmm/operators.hpp`, and `python/internal.hpp`, which must see
+  the flat operator declarations it exports to Python.
 - Cache code persists defined solver data; it must not define that data's
   mathematics. Its persistent format and its keys are compatibility contracts;
   read `cache/AGENTS.md` before changing anything under `cache/`.

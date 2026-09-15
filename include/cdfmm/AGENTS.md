@@ -25,6 +25,9 @@ include/cdfmm/
 |                                      canonical portable static-plan APIs
 |-- cuda_direct.hpp, cuda_p2p.hpp,
 |   cuda_cuboid.hpp                   legacy CUDA-facing compatibility façades
+|-- cuboid.hpp                        compatibility façade; the prism record,
+|                                      averaged monomial, pair tensor, and
+|                                      dense-direct plan are canonical below
 |-- timings.hpp, validation.hpp,
 |   parameter_selection.hpp           diagnostics and utilities
 `-- c_api.h                           stable C boundary
@@ -59,6 +62,21 @@ include/cdfmm/
   units, precision, indexing, self-interaction, and lifetime constraints.
 - Preserve public names and include compatibility during the behaviour-
   preserving refactor. Moving implementation is not an API redesign.
+- Every flat header here was an installed public path at `v0.1.0`. They are
+  intentional compatibility façades, not leftovers, and are retained. A façade
+  must also reproduce the pre-v0.2 transitive surface of its path, because
+  downstream code relied on what it pulled in.
+- Compatibility flows one way. A canonical subsystem header under `core/`,
+  `math/`, `geometry/`, `tree/`, `operators/`, `plan/`, or `backend/` includes
+  only canonical headers; the flat façades include those, not the reverse. The
+  remaining flat includes from canonical headers are `cdfmm/timings.hpp` and
+  `cdfmm/periodic.hpp`, which are substantive public headers awaiting a
+  subsystem home rather than façades.
+- A flat header that still owns declarations (`operators.hpp`, `periodic.hpp`,
+  `timings.hpp`, `uniform_fmm.hpp`, `validation.hpp`, `parameter_selection.hpp`,
+  `tensor_dictionary.hpp`) is supported public API whose canonical home is
+  deferred. Do not treat it as debt to delete, and do not migrate it as part of
+  an unrelated step.
 
 ## Validation
 

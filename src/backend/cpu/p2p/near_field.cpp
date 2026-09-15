@@ -73,7 +73,7 @@ void evaluate_reference_near_field(
               self_sorted_index - static_cast<int>(record.source_begin);
         }
 
-        const PotentialField near = p2p_dipole_sum(
+        const PotentialField near = operators::p2p::evaluate_sum(
             targets[target_index],
             sources.subspan(record.source_begin, record.source_count),
             sorted_dipole_moments.subspan(

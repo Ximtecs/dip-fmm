@@ -31,6 +31,28 @@ void validate_prism(const RectangularPrism& prism, const char* name)
     }
 }
 
+// NOTE(cdfmm): The averaged-monomial path keeps its own side-length check.
+// It deliberately omits the additional volume test applied by the exact
+// pair-tensor routines, preserving the pre-v0.2 validation behaviour, and it
+// reports the historical "cuboid" wording for both public spellings.
+double monomial_factorial(const int n)
+{
+    double result = 1.0;
+    for (int i = 2; i <= n; ++i) {
+        result *= i;
+    }
+    return result;
+}
+
+void validate_monomial_prism(const RectangularPrism& h, const char* name)
+{
+    if (!(std::isfinite(h.hx) && std::isfinite(h.hy) &&
+          std::isfinite(h.hz) && h.hx > 0.0 && h.hy > 0.0 && h.hz > 0.0)) {
+        throw std::invalid_argument(std::string(name) +
+                                    " dimensions must be finite and positive");
+    }
+}
+
 void validate_displacement(const Vec3& displacement)
 {
     if (!(std::isfinite(displacement.x) && std::isfinite(displacement.y) &&
@@ -483,6 +505,34 @@ PairTensor rectangular_prism_rectangular_prism_tensor(
     return {static_cast<double>(xx), static_cast<double>(xy),
             static_cast<double>(xz), static_cast<double>(yy),
             static_cast<double>(yz), static_cast<double>(zz)};
+}
+
+double rectangular_prism_averaged_monomial(const MultiIndex& beta,
+                                           const Vec3& d,
+                                           const RectangularPrism& prism)
+{
+    validate_monomial_prism(prism, "cuboid");
+    const int powers[3] = {beta.ax, beta.ay, beta.az};
+    const double offsets[3] = {d.x, d.y, d.z};
+    const double lengths[3] = {prism.hx, prism.hy, prism.hz};
+    double result = 1.0;
+    for (int axis = 0; axis < 3; ++axis) {
+        double axis_sum = 0.0;
+        for (int gamma = 0; gamma <= powers[axis]; gamma += 2) {
+            axis_sum += std::pow(offsets[axis], powers[axis] - gamma) /
+                monomial_factorial(powers[axis] - gamma) *
+                std::pow(lengths[axis], gamma) /
+                (std::pow(2.0, gamma) * monomial_factorial(gamma + 1));
+        }
+        result *= axis_sum;
+    }
+    return result;
+}
+
+double cuboid_averaged_monomial(const MultiIndex& beta, const Vec3& d,
+                                const CuboidSize& h)
+{
+    return rectangular_prism_averaged_monomial(beta, d, h);
 }
 
 } // namespace cdfmm

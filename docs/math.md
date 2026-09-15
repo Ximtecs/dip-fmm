@@ -155,7 +155,8 @@ $m=V_sM$, the stored tensor maps $m$ directly to the field. CUDA consumes the
 precomputed tensors and performs no prism integration at runtime.
 
 For point/prism endpoint pairs, `DenseDirectPlan` and FMM `list1` construction
-share the canonical `build_pair_tensor` implementation. Tetrahedron endpoint
+share the canonical `cdfmm::operators::p2p::build_pair` implementation, whose
+flat compatibility spelling is `build_pair_tensor`. Tetrahedron endpoint
 pairs dispatch through tetrahedron-specific analytical operators; finite
 tetrahedron-to-prism interactions remain unsupported, while tetrahedron-to-
 tetrahedron pairs are evaluated exactly during DenseDirect or static P2P plan

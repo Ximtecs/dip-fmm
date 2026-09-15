@@ -12,6 +12,14 @@ declarations should use the nested `cdfmm::operators` namespaces and preserve
 the established coefficient order, sign conventions, geometry dispatch, and
 explicit self-interaction policy.
 
+These headers include canonical structured headers only. Do not reintroduce a
+dependency on a flat compatibility path such as `cdfmm/operators.hpp`,
+`cdfmm/cuboid.hpp`, or `cdfmm/tetrahedron.hpp`: the compatibility umbrellas
+include these headers, not the other way round. `p2p.hpp` additionally declares
+the flat `cdfmm::build_pair_tensor` spelling beside the flat
+`build_static_p2p_operator` overloads; both delegate to
+`cdfmm::operators::p2p`.
+
 Current tree:
 
 ```text

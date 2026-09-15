@@ -4,10 +4,14 @@
 #include <array>
 #include <span>
 
-#include "cdfmm/cuboid.hpp"
-#include "cdfmm/operators.hpp"
+#include "cdfmm/core/output_flags.hpp"
+#include "cdfmm/geometry/models.hpp"
+#include "cdfmm/geometry/primitives/rectangular_prism.hpp"
+#include "cdfmm/geometry/primitives/tetrahedron.hpp"
+#include "cdfmm/math/pair_tensor.hpp"
+#include "cdfmm/math/potential_field.hpp"
+#include "cdfmm/math/vec3.hpp"
 #include "cdfmm/plan/p2p/canonical.hpp"
-#include "cdfmm/tetrahedron.hpp"
 
 namespace cdfmm {
 
@@ -30,9 +34,11 @@ using CanonicalOperator = cdfmm::StaticP2POperator;
 /**
  * @brief Builds one geometry-specific pair tensor.
  *
+ * This is the authoritative point/rectangular-prism pair-tensor construction.
  * The tensor maps a total source dipole moment to target field.  Point-point
  * singularity remains explicit; callers selecting source-point identity
  * exclusion must do so through an interaction's `skip_for_identity` marker.
+ * Tetrahedral geometry is rejected; use the tetrahedron P2P operator instead.
  */
 [[nodiscard]] PairTensor build_pair(const Vec3& target,
                                     const Vec3& source,
@@ -116,6 +122,26 @@ using CanonicalOperator = cdfmm::StaticP2POperator;
 } // namespace cdfmm::operators::p2p
 
 namespace cdfmm {
+
+// Flat compatibility entry points.  Mathematical ownership lives in
+// `cdfmm::operators::p2p`; these names are retained for source compatibility.
+
+/**
+ * @brief Compatibility spelling of `cdfmm::operators::p2p::build_pair`.
+ *
+ * Runtime inputs are total moments m=V*M. Cuboid source normalisation is
+ * consequently included in the returned tensor. Point-point coincidence is
+ * singular unless @p omit_singular_point_pair is true.
+ */
+[[nodiscard]] PairTensor build_pair_tensor(
+    const Vec3& target_position,
+    const Vec3& source_position,
+    SourceGeometry source_geometry = SourceGeometry::PointDipole,
+    TargetGeometry target_geometry = TargetGeometry::Point,
+    const CuboidSize& source_size = {},
+    const CuboidSize& target_size = {},
+    bool omit_singular_point_pair = false
+);
 
 [[nodiscard]] StaticP2POperator build_static_p2p_operator(
     std::span<const Vec3> target_positions,

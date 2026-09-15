@@ -5,7 +5,8 @@
 #include <string>
 #include <vector>
 
-#include "cdfmm/output_flags.hpp"
+#include "cdfmm/core/output_flags.hpp"
+#include "cdfmm/math/potential_field.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 #include "cdfmm/timings.hpp"
 #include "cdfmm/uniform_fmm.hpp"

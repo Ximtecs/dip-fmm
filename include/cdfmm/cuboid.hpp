@@ -1,51 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include "cdfmm/plan/direct/dense.hpp"
+// Compatibility umbrella for the original flat cuboid include.  It owns no
+// declarations of its own: the prism record, the legacy `CuboidSize` spelling,
+// and the averaged-monomial mathematics are canonical under
+// cdfmm/geometry/primitives/, the pair-tensor construction is canonical under
+// cdfmm/operators/, and `DenseDirectPlan` is canonical under cdfmm/plan/.
+// The include set reproduces the pre-v0.2 transitive surface so that this path
+// remains source compatible.
+#include "cdfmm/core/precision.hpp"
+#include "cdfmm/geometry/models.hpp"
+#include "cdfmm/geometry/primitives/rectangular_prism.hpp"
+#include "cdfmm/geometry/primitives/tetrahedron.hpp"
 #include "cdfmm/math/coefficients.hpp"
-#include "cdfmm/geometry.hpp"
-#include "cdfmm/multi_index.hpp"
-
-namespace cdfmm {
-
-//------------------------------------------------------------------------------
-// Geometry and pair tensors
-//------------------------------------------------------------------------------
-
-/**
- * @brief Evaluates the factorial-normalised monomial averaged over a prism.
- *
- * This is J_beta(d,h) = V^-1 integral_V (d+u)^beta/beta! dV and is evaluated
- * by its finite even-power sum, without numerical quadrature.
- */
-[[nodiscard]] double cuboid_averaged_monomial(
-    const MultiIndex& beta,
-    const Vec3& d,
-    const CuboidSize& h
-);
-
-/** @brief Generic rectangular-prism spelling of cuboid_averaged_monomial. */
-[[nodiscard]] double rectangular_prism_averaged_monomial(
-    const MultiIndex& beta,
-    const Vec3& d,
-    const RectangularPrism& prism
-);
-
-/**
- * @brief Constructs the exact moment-to-field tensor for one geometry pair.
- *
- * Runtime inputs are total moments m=V*M. Cuboid source normalisation is
- * consequently included in the returned tensor. Point-point coincidence is
- * singular unless @p omit_singular_point_pair is true.
- */
-[[nodiscard]] PairTensor build_pair_tensor(
-    const Vec3& target_position,
-    const Vec3& source_position,
-    SourceGeometry source_geometry = SourceGeometry::PointDipole,
-    TargetGeometry target_geometry = TargetGeometry::Point,
-    const CuboidSize& source_size = {},
-    const CuboidSize& target_size = {},
-    bool omit_singular_point_pair = false
-);
-
-} // namespace cdfmm
+#include "cdfmm/math/multi_index.hpp"
+#include "cdfmm/math/pair_tensor.hpp"
+#include "cdfmm/math/vec3.hpp"
+#include "cdfmm/operators/p2p.hpp"
+#include "cdfmm/plan/direct/dense.hpp"

@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "cdfmm/backend/cpu/p2p.hpp"
-#include "cdfmm/operators.hpp"
+#include "cdfmm/operators/p2p.hpp"
 #include "cdfmm/tree/static_topology.hpp"
 
 namespace cdfmm::detail {

@@ -8,7 +8,7 @@
 #include <numeric>
 #include <tuple>
 
-#include "cdfmm/operators.hpp"
+#include "cdfmm/operators/operators.hpp"
 #include "cdfmm/operators/operators.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 

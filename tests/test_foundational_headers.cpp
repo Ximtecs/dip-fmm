@@ -53,6 +53,7 @@
 // Pre-v0.2 compatibility include paths.
 #include "cdfmm/adaptive_tree.hpp"
 #include "cdfmm/coefficients.hpp"
+#include "cdfmm/cuboid.hpp"
 #include "cdfmm/cuda_cuboid.hpp"
 #include "cdfmm/cuda_direct.hpp"
 #include "cdfmm/geometry.hpp"
@@ -63,6 +64,7 @@
 #include "cdfmm/rectangular_prism.hpp"
 #include "cdfmm/spherical_harmonics.hpp"
 #include "cdfmm/taylor_jet.hpp"
+#include "cdfmm/tensor_dictionary.hpp"
 #include "cdfmm/tetrahedron.hpp"
 #include "cdfmm/timings.hpp"
 #include "cdfmm/tree_node.hpp"
@@ -149,6 +151,45 @@ TEST_CASE("Canonical operator and plan headers expose public boundaries")
     cdfmm::StaticM2LPlan compatibility_m2l;
     CHECK(compatibility_plan.target_count == 0);
     CHECK(compatibility_m2l.coefficient_count == 0);
+}
+
+TEST_CASE("Legacy geometry and pair-tensor spellings match canonical owners")
+{
+    // `build_pair_tensor` and `cuboid_averaged_monomial` remain supported flat
+    // entry points after their implementations moved to the operator and
+    // geometry subsystems.  Both spellings must name the same function.
+    const cdfmm::Vec3 target{0.7, -0.3, 0.45};
+    const cdfmm::Vec3 source{-0.2, 0.15, -0.35};
+    const cdfmm::CuboidSize source_size{0.4, 0.5, 0.6};
+    const cdfmm::CuboidSize target_size{0.3, 0.25, 0.7};
+
+    const cdfmm::PairTensor canonical_tensor = cdfmm::operators::p2p::build_pair(
+        target, source, cdfmm::SourceGeometry::RectangularPrism,
+        cdfmm::TargetGeometry::RectangularPrism, source_size, target_size);
+    const cdfmm::PairTensor compatibility_tensor = cdfmm::build_pair_tensor(
+        target, source, cdfmm::SourceGeometry::RectangularPrism,
+        cdfmm::TargetGeometry::RectangularPrism, source_size, target_size);
+    CHECK(canonical_tensor.xx == compatibility_tensor.xx);
+    CHECK(canonical_tensor.xy == compatibility_tensor.xy);
+    CHECK(canonical_tensor.xz == compatibility_tensor.xz);
+    CHECK(canonical_tensor.yy == compatibility_tensor.yy);
+    CHECK(canonical_tensor.yz == compatibility_tensor.yz);
+    CHECK(canonical_tensor.zz == compatibility_tensor.zz);
+
+    const cdfmm::MultiIndex beta{2, 1, 0};
+    const cdfmm::Vec3 displacement{0.11, -0.22, 0.33};
+    CHECK(cdfmm::rectangular_prism_averaged_monomial(
+              beta, displacement, source_size) ==
+          cdfmm::cuboid_averaged_monomial(beta, displacement, source_size));
+
+    // The canonical tensor-dictionary encoding stays reachable from its
+    // pre-v0.2 path.
+    const std::array<double, 6> tensor_components{
+        canonical_tensor.xx, canonical_tensor.xy, canonical_tensor.xz,
+        canonical_tensor.yy, canonical_tensor.yz, canonical_tensor.zz};
+    const cdfmm::CanonicalTensor6<double> canonical_six =
+        cdfmm::canonicalise_tensor6(tensor_components);
+    CHECK(canonical_six.values[0] == std::abs(canonical_tensor.xx));
 }
 
 TEST_CASE("Namespaced dynamic operators match flat compatibility functions")

@@ -2,7 +2,7 @@
 
 #include "cdfmm/plan/direct/dense.hpp"
 
-#include "cdfmm/cuboid.hpp"
+#include "cdfmm/operators/p2p.hpp"
 #include "backend/cpu/direct/dense.hpp"
 #include "backend/direct/dense_workspace.hpp"
 #include "backend/mkl/direct/dense.hpp"
@@ -259,7 +259,7 @@ DenseDirectPlan::DenseDirectPlan(
                         target_positions[target] - source_positions[source],
                         *target_tetrahedron);
                 } else {
-                    tensor = build_pair_tensor(
+                    tensor = operators::p2p::build_pair(
                         target_positions[target], source_positions[source],
                         effective_source_geometry, effective_target_geometry,
                         source_size, target_size, omit_identity);

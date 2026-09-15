@@ -2,7 +2,7 @@
 
 #include "backend/cuda/fmm/internal.hpp"
 #include "profile.hpp"
-#include "cuda_m2l_plan.hpp"
+#include "cdfmm/backend/cuda/m2l.hpp"
 #include "backend/cuda/common/error.hpp"
 #include "backend/cuda/common/runtime.hpp"
 #include "backend/cuda/far_field/internal.hpp"

@@ -16,8 +16,9 @@
 
 namespace cdfmm {
 
-/** @brief Compatibility name for the pre-generalisation prism record. */
-using CuboidSize = RectangularPrism;
+// NOTE(cdfmm): `CuboidSize` is the legacy spelling of `RectangularPrism` and is
+// declared by the canonical geometry primitive header included above.  It stays
+// reachable from this path for source compatibility.
 
 /** @brief Selects the GEMV implementation used by a dense direct plan. */
 enum class DenseDirectBackend {

@@ -30,7 +30,6 @@ src/
   geometry/primitives/                                         prism/tetrahedron
   tree/{common,uniform,adaptive}/                             hierarchy/topology
   operators.cpp                                                 thin flat compatibility wrappers only
-  cuboid.cpp                                                    compatibility geometry/pair math
   operators/                                                    authoritative mathematical construction
                                                                and dynamic application
   plan/direct/dense.cpp                                         dense-direct preparation/dispatch
@@ -71,7 +70,6 @@ src/
   cache/keys.cpp                                                cache identity and key strings
   cache/universal.cpp                                           translation-bank/periodic payloads
   cache/geometry.cpp                                            geometry-plan payload
-  cuda_fmm_plan.hpp                                              compatibility shim
   bindings/c_api.cpp                                           C ABI adapter
 python/internal.hpp                                             shared binding declarations
 python/module.cpp                                               sole pybind11 module entry point
@@ -173,8 +171,10 @@ legacy flat header forwarding to it. `src/backend/cuda/p2p/` owns the FP64 and
 FP32 canonical, compact, leaf, signed tensor-dictionary, and BSR(3) executors,
 their asynchronous lifecycle, persistent resources, and shared full-plan
 primitives. The CUDA M2L backend is declared by
-`include/cdfmm/backend/cuda/m2l.hpp`, with `src/cuda_m2l_plan.hpp` retained as
-a forwarding compatibility shim. `src/backend/cuda/m2l/{internal.hpp,plan.cu}`
+`include/cdfmm/backend/cuda/m2l.hpp`, with the former internal `src/cuda_m2l_plan.hpp` shim removed and its consumers
+pointed at the canonical header, formerly described as
+a forwarding compatibility shim (now removed).
+`src/backend/cuda/m2l/{internal.hpp,plan.cu}`
 owns the reusable FP64/FP32 device representation, kernels, bounded scratch
 policy, lifecycle, and statistics used by both standalone `CudaM2LPlan` and
 `CudaFullPlan`. The far-field executor at
@@ -187,7 +187,7 @@ Complete CUDA FMM declarations and orchestration now live in
 `src/backend/cuda/fmm/{internal.hpp,plan.cu}`, which retains changing moments/
 coefficient/field buffers, permutations, P2P and separate M2L executor wiring,
 streams/events/timing, near/far overlap, combination/reordering, and D2H
-transfer. `src/cuda_fmm_plan.hpp` is a forwarding shim only.
+transfer. The former `src/cuda_fmm_plan.hpp` forwarding shim is removed.
 
 The cache subsystem is responsibility-driven. `cache/io.cpp` owns the cache
 root and `CDFMM_CACHE_DIR`/`CDFMM_DISABLE_CACHE` policy plus the validated file
@@ -225,3 +225,32 @@ notebook contracts. `benchmarks/` measures setup separately from repeated
 evaluation and records accuracy/traffic/timing fields. `docs/` is authoritative
 for current support, mathematics, and measured performance; `agent_docs/`
 records repository workflow memory and current state.
+
+
+## Compatibility surface — 2026-09-15
+
+The flat root of `src/` holds no forwarding shims. `cuboid.cpp`,
+`cuda_fmm_plan.hpp`, `cuda_m2l_plan.hpp`, `cuda_p2p_plan.hpp`, and the dead
+`static_operators.cpp` are removed. The remaining flat `.cpp` files each own
+one coherent responsibility: `operators.cpp` (thin compatibility delegation),
+`periodic.cpp`, `parameter_selection.cpp`, and `validation.cpp`, plus the
+internal `profile.hpp`.
+
+Ownership of the former `cuboid.cpp` mathematics:
+
+```text
+rectangular_prism_averaged_monomial  src/geometry/primitives/rectangular_prism.cpp
+cuboid_averaged_monomial             same file, flat spelling delegating to it
+operators::p2p::build_pair           src/operators/p2p.cpp  (authoritative)
+build_pair_tensor                    same file, flat spelling delegating to it
+CuboidSize                           include/cdfmm/geometry/primitives/rectangular_prism.hpp
+DenseDirectPlan                      include/cdfmm/plan/direct/dense.hpp
+```
+
+All 29 flat headers under `include/cdfmm/` were installed public paths at
+`v0.1.0` and are retained as intentional compatibility façades. Canonical
+structured headers and canonical implementation include canonical headers only;
+the façades include those, never the reverse. The two deliberate exceptions are
+`src/operators.cpp`, which implements `cdfmm/operators.hpp`, and
+`python/internal.hpp`, which must see the flat operator declarations the Python
+module exports.

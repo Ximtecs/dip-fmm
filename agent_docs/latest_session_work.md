@@ -1,5 +1,65 @@
 # Latest session work
 
+## 2026-09-15 — compatibility/transitional-source review and current handoff
+
+Starting HEAD `5cb5576` (`refactor(bindings): structure language adapters`).
+The compatibility/transitional-source review is complete. Classification:
+
+- retained public compatibility façades: all 29 flat headers under
+  `include/cdfmm/`, each an installed public path at `v0.1.0` (verified with
+  `git ls-tree v0.1.0 include/cdfmm/` against a whole-directory install glob),
+  now each carrying an explicit reason-to-exist comment;
+- removed internal shims: `src/cuda_fmm_plan.hpp`, `src/cuda_p2p_plan.hpp`
+  (zero includers), `src/cuda_m2l_plan.hpp` (two includers retargeted to
+  `cdfmm/backend/cuda/m2l.hpp`), and the dead `src/static_operators.cpp`;
+- retained compatibility implementations: `src/operators.cpp` (eight
+  one-expression delegations, backing the supported flat C++/Python operator
+  names) and `include/cdfmm/operators.hpp` (an API adapter, not a forwarding
+  umbrella — `docs/architecture.md` corrected);
+- moved substantive implementation: `src/cuboid.cpp` is removed.
+  `rectangular_prism_averaged_monomial` now lives in
+  `src/geometry/primitives/rectangular_prism.cpp` and the authoritative pair
+  tensor is `cdfmm::operators::p2p::build_pair` in `src/operators/p2p.cpp`.
+  `cuboid_averaged_monomial` and `build_pair_tensor` remain as thin flat
+  spellings. `CuboidSize` moved from `plan/direct/dense.hpp` to
+  `geometry/primitives/rectangular_prism.hpp`.
+
+Canonical code no longer includes compatibility façades. The only deliberate
+exceptions are `src/operators.cpp`, which implements `cdfmm/operators.hpp`, and
+`python/internal.hpp`, which must see the flat operator declarations the Python
+module exports; both are commented. `cdfmm/timings.hpp` and `cdfmm/periodic.hpp`
+are still included by canonical headers, but they are substantive public
+headers with no subsystem home yet, not façades.
+
+Validation evidence: portable `dev` fresh configure/build, CTest 198/198 with
+expected skips #16, #55, #63, #67, Python 137 passed and 7 skipped (identical
+to the bindings task). CUDA preset fresh configure/build, CTest 198/198 with
+only the oneMKL-only skip, on RTX 5090, driver 595.84, CUDA 13.3.73 — a full
+runtime regression, beyond the compile-only regression the scope required.
+oneMKL+CUDA `notebooks` preset fresh configure/build, CTest 198/198 with zero
+skips. C ABI unchanged at the same 14 `cdfmm_*` symbols with `c_api.h` and
+`src/bindings/` untouched. An installed-prefix probe compiled separate
+legacy-only and canonical-only consumers, and `nm` confirmed both spellings
+resolve to identically typed symbols, with `build_pair_tensor` now defined in
+`p2p.cpp.o` and `cuboid_averaged_monomial` in `rectangular_prism.cpp.o`.
+Fortran was not exercised: no gfortran, ifx, or ifort available.
+
+Environment note: LTO links fail with "Disk quota exceeded" unless `TMPDIR` is
+moved off the shared `/tmp` tmpfs.
+
+`tests/test_foundational_headers.cpp` gained `cdfmm/cuboid.hpp` and
+`cdfmm/tensor_dictionary.hpp` in its compatibility include block, plus a case
+asserting the legacy and canonical spellings of the moved mathematics agree.
+
+Declined as out of scope and left for Phase 2: relocating `src/periodic.cpp`,
+`src/parameter_selection.cpp`, and `src/validation.cpp`; giving the substantive
+flat public headers subsystem homes; and the duplicate factorial helper shared
+with `MultiIndexSet::factorial`.
+
+Remaining Phase 1: whole-Phase-1 validation and closure. Phase 1 is not
+claimed closed. Unrelated untracked `Article1/` and the
+`tetrahedron_target_average_fair_sampling.ipynb` notebook remain preserved.
+
 ## 2026-09-15 — bindings boundary and current handoff
 
 The bindings boundary is complete from implementation base/newest starting HEAD

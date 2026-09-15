@@ -6,7 +6,7 @@
 #include <cmath>
 #include <stdexcept>
 
-#include "cdfmm/operators.hpp"
+#include "cdfmm/operators/p2p.hpp"
 
 namespace cdfmm {
 
@@ -101,7 +101,7 @@ std::vector<PotentialField> direct_p2p_reference(
     const int self_index = target_source_indices.empty()
         ? -1
         : target_source_indices[static_cast<std::size_t>(target_index)];
-    reference[static_cast<std::size_t>(target_index)] = p2p_dipole_sum(
+    reference[static_cast<std::size_t>(target_index)] = operators::p2p::evaluate_sum(
         target_positions[static_cast<std::size_t>(target_index)],
         source_positions, dipole_moments, output, self_index
     );

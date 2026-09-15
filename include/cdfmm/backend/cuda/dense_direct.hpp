@@ -5,7 +5,7 @@
 #include <span>
 #include <vector>
 
-#include "cdfmm/cuboid.hpp"
+#include "cdfmm/plan/direct/dense.hpp"
 
 namespace cdfmm {
 

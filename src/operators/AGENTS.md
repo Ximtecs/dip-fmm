@@ -8,6 +8,13 @@ evaluation. Compatibility names and structured names must share these
 implementations. Do not create a second P2P definition with different self or
 geometry semantics.
 
+`p2p.cpp` owns the authoritative point/rectangular-prism pair-tensor
+construction as `cdfmm::operators::p2p::build_pair`. The flat
+`cdfmm::build_pair_tensor` is defined in the same translation unit as a thin
+delegation and is the only compatibility spelling of that mathematics; the
+former `src/cuboid.cpp` home is removed. Tetrahedral pairs stay with the
+tetrahedron operator path.
+
 Current tree:
 
 ```text
