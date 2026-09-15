@@ -11,11 +11,12 @@
 #endif
 
 #include "cdfmm/operators.hpp"
+#include "cdfmm/backend/cpu/far_field.hpp"
 #include "cdfmm/backend/cpu/m2l.hpp"
+#include "cdfmm/backend/cuda/m2l.hpp"
 #include "backend/cpu/far_field/internal.hpp"
-#include "cuda_m2l_plan.hpp"
+#include "fmm/internal.hpp"
 #include "profile.hpp"
-#include "uniform_fmm_internal.hpp"
 
 namespace cdfmm {
 
@@ -332,9 +333,14 @@ void UniformFmm::upward_pass_prepared() {
 
 void UniformFmm::downward_pass() {
   if (precision_ == StaticPrecision::Float32) {
-    downward_pass_float();
+    downward_pass_float_for_output(OutputFlags::None, false);
     return;
   }
+  downward_pass_for_output(OutputFlags::None, false);
+}
+
+void UniformFmm::downward_pass_for_output(const OutputFlags output,
+                                          const bool evaluate_l2p) {
   detail::ProfileRange downward_range{"cdfmm/far_field/downward"};
   auto phase_start = Clock::now();
   detail::ProfileRange reset_range{"cdfmm/far_field/local_reset"};
@@ -345,78 +351,110 @@ void UniformFmm::downward_pass() {
   if (execution_plan().m2l == StaticOperatorExecutor::Cuda) {
     cuda_m2l();
     l2l_downward();
-    return;
-  }
-
-  if (periodic_.enabled && m2l_backend_ == M2LBackend::Static) {
-    phase_start = Clock::now();
-    static_m2l(0);
-    last_timings_.m2l.add(elapsed_seconds(phase_start));
-  }
-
-  const auto &nodes = topology_->nodes;
-  for (int level = 1; level <= topology_->maximum_level; ++level) {
-    // Parent locals must be inherited before this level's M2L is added.
-    // Advancing levels in order makes the parent-child dependency explicit.
-    const int begin = topology_->l2l_level_offsets[static_cast<std::size_t>(level)];
-    const int end = topology_->l2l_level_offsets[static_cast<std::size_t>(level + 1)];
-
-    phase_start = Clock::now();
-    detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
-#pragma omp parallel for schedule(static) if (end - begin >= 8)
-    for (int edge_slot = begin; edge_slot < end; ++edge_slot) {
-      const StaticTranslationEdge &edge = topology_->l2l_edges[
-          static_cast<std::size_t>(edge_slot)];
-      const int target_index = edge.target_node;
-      const auto &target = nodes[static_cast<std::size_t>(target_index)];
-      if (target.target_count() == 0) {
-        continue;
-      }
-      if (execution_plan().l2l != StaticOperatorExecutor::Reference) {
-        detail::cpu::apply_static_translation(
-            l2l_operators_[edge.child_class], local_for_node(edge.source_node),
-            local_for_node(target_index), target.level,
-            detail::cpu::coefficient_degree_view(
-                expansion_basis_ == ExpansionBasis::Spherical, basis_,
-                spherical_basis_));
-      } else {
-        const Vec3 d = target.centre - nodes[static_cast<std::size_t>(edge.source_node)].centre;
-        l2l_add(basis_, d, local_for_node(edge.source_node),
-                local_for_node(target_index));
-      }
-    }
-    last_timings_.l2l.add(elapsed_seconds(phase_start));
-    l2l_range.end();
-
-    if (m2l_backend_ == M2LBackend::Static) {
+  } else {
+    if (periodic_.enabled && m2l_backend_ == M2LBackend::Static) {
       phase_start = Clock::now();
-      static_m2l(level);
+      static_m2l(0);
       last_timings_.m2l.add(elapsed_seconds(phase_start));
-      continue;
     }
 
-    phase_start = Clock::now();
-    detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
-    // Reference M2L retains list2 order through the canonical interaction
-    // records. It is intentionally serial to preserve each target's sum.
-    for (const StaticM2LInteraction &interaction : topology_->m2l_interactions) {
-      if (interaction.target_level != level) {
+    const auto &nodes = topology_->nodes;
+    for (int level = 1; level <= topology_->maximum_level; ++level) {
+      // Parent locals must be inherited before this level's M2L is added.
+      // Advancing levels in order makes the parent-child dependency explicit.
+      const int begin = topology_->l2l_level_offsets[static_cast<std::size_t>(level)];
+      const int end = topology_->l2l_level_offsets[static_cast<std::size_t>(level + 1)];
+
+      phase_start = Clock::now();
+      detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
+#pragma omp parallel for schedule(static) if (end - begin >= 8)
+      for (int edge_slot = begin; edge_slot < end; ++edge_slot) {
+        const StaticTranslationEdge &edge = topology_->l2l_edges[
+            static_cast<std::size_t>(edge_slot)];
+        const int target_index = edge.target_node;
+        const auto &target = nodes[static_cast<std::size_t>(target_index)];
+        if (target.target_count() == 0) {
+          continue;
+        }
+        if (execution_plan().l2l != StaticOperatorExecutor::Reference) {
+          detail::cpu::apply_static_translation(
+              l2l_operators_[edge.child_class], local_for_node(edge.source_node),
+              local_for_node(target_index), target.level,
+              detail::cpu::coefficient_degree_view(
+                  expansion_basis_ == ExpansionBasis::Spherical, basis_,
+                  spherical_basis_));
+        } else {
+          const Vec3 d = target.centre - nodes[static_cast<std::size_t>(edge.source_node)].centre;
+          l2l_add(basis_, d, local_for_node(edge.source_node),
+                  local_for_node(target_index));
+        }
+      }
+      last_timings_.l2l.add(elapsed_seconds(phase_start));
+      l2l_range.end();
+
+      if (m2l_backend_ == M2LBackend::Static) {
+        phase_start = Clock::now();
+        static_m2l(level);
+        last_timings_.m2l.add(elapsed_seconds(phase_start));
         continue;
       }
-      const auto &target = nodes[static_cast<std::size_t>(interaction.target_node)];
-      if (target.target_count() == 0) {
-        continue;
+
+      phase_start = Clock::now();
+      detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
+      // Reference M2L retains list2 order through the canonical interaction
+      // records. It is intentionally serial to preserve each target's sum.
+      for (const StaticM2LInteraction &interaction : topology_->m2l_interactions) {
+        if (interaction.target_level != level) {
+          continue;
+        }
+        const auto &target = nodes[static_cast<std::size_t>(interaction.target_node)];
+        if (target.target_count() == 0) {
+          continue;
+        }
+        const auto &source = nodes[static_cast<std::size_t>(interaction.source_node)];
+        const Vec3 R = target.centre - source.centre - interaction.source_shift;
+        m2l_add(basis_, R, multipole_for_node(interaction.source_node),
+                local_for_node(interaction.target_node));
       }
-      const auto &source = nodes[static_cast<std::size_t>(interaction.source_node)];
-      const Vec3 R = target.centre - source.centre - interaction.source_shift;
-      m2l_add(basis_, R, multipole_for_node(interaction.source_node),
-              local_for_node(interaction.target_node));
+      last_timings_.m2l.add(elapsed_seconds(phase_start));
     }
-    last_timings_.m2l.add(elapsed_seconds(phase_start));
+  }
+
+  // Keep the coarse downward profile scoped to M2L/L2L; L2P has its own
+  // hierarchy-stage range and timing below.
+  downward_range.end();
+  if (evaluate_l2p) {
+    const auto &nodes = topology_->nodes;
+    const auto targets = std::span<const Vec3>(topology_->sorted_target_positions);
+    const auto &occupied_leaves = topology_->target_leaves;
+    phase_start = Clock::now();
+    detail::ProfileRange l2p_range{"cdfmm/far_field/l2p"};
+#pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
+    for (std::ptrdiff_t occupied_index = 0;
+         occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
+         ++occupied_index) {
+      const StaticLeafRange &leaf_range =
+          occupied_leaves[static_cast<std::size_t>(occupied_index)];
+      const int leaf_index = leaf_range.node;
+      const auto &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+      for (std::size_t target_index = leaf_range.begin;
+           target_index < leaf_range.begin + leaf_range.count; ++target_index) {
+        if (execution_plan().l2p != StaticOperatorExecutor::Reference) {
+          sorted_results_[target_index] = apply_static_l2p_evaluator(
+              l2p_evaluators_[target_index], local_for_node(leaf_index), output);
+        } else {
+          sorted_results_[target_index] =
+              l2p_eval(basis_, leaf.centre, targets[target_index],
+                       local_for_node(leaf_index), output);
+        }
+      }
+    }
+    last_timings_.l2p.add(elapsed_seconds(phase_start));
   }
 }
 
-void UniformFmm::downward_pass_float() {
+void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
+                                                const bool evaluate_l2p) {
   auto phase_start = Clock::now();
   std::fill(locals_float_.begin(), locals_float_.end(), 0.0F);
   last_timings_.local_reset.add(elapsed_seconds(phase_start));
@@ -471,6 +509,26 @@ void UniformFmm::downward_pass_float() {
       static_m2l_float(level);
       last_timings_.m2l.add(elapsed_seconds(phase_start));
     }
+  }
+
+  if (evaluate_l2p) {
+    const auto &occupied_leaves = topology_->target_leaves;
+    phase_start = Clock::now();
+#pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
+    for (std::ptrdiff_t occupied_index = 0;
+         occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
+         ++occupied_index) {
+      const StaticLeafRange &leaf_range =
+          occupied_leaves[static_cast<std::size_t>(occupied_index)];
+      const int leaf_index = leaf_range.node;
+      for (std::size_t target_index = leaf_range.begin;
+           target_index < leaf_range.begin + leaf_range.count; ++target_index) {
+        sorted_results_float_[target_index] =
+            apply_static_l2p_evaluator(l2p_evaluators_float_[target_index],
+                                       local_float_for_node(leaf_index), output);
+      }
+    }
+    last_timings_.l2p.add(elapsed_seconds(phase_start));
   }
 }
 

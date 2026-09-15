@@ -1,5 +1,13 @@
 # Project diary
 
+## 2026-09-15 — high-level ownership audit
+
+The independent final audit identified and verified the L2P ownership repair:
+far-field sequencing now owns L2P evaluation, while evaluation retains the
+whole near/far lifecycle, timing, and hybrid CUDA begin/CPU-far/finish
+coordination. The re-review passed; no public API, cache/backend, binding, or
+test changes were introduced.
+
 ## 2026-09-15 — CPU execution boundary decision
 
 Accepted the portable CPU split by responsibility rather than by mirroring

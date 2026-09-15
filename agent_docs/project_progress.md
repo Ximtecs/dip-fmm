@@ -1,5 +1,38 @@
 # Project progress
 
+## High-level UniformFmm cleanup — 2026-09-15
+
+The final Phase 1 high-level FMM source decomposition is complete. The
+`src/fmm` units now have stable ownership: `construction.cpp` handles geometry
+normalisation and construction; `plan_preparation.cpp` handles immutable plan
+creation, FP32 quantisation, and high-level cache calls;
+`execution_setup.cpp` handles backend resolution/wiring and P2P policy;
+`evaluation.cpp` handles the complete near/far lifecycle and timing, preserving
+hybrid CUDA begin/CPU-far/finish and cancellation; `far_field.cpp` retains
+hierarchy sequencing; `diagnostics.cpp` retains exact summary formatting;
+`uniform_fmm.cpp` retains lifecycle, accessors, and inspection; and
+`internal.hpp` contains opaque backend-owner declarations. Geometry uses a
+representative position plus representative-relative finite-primitive data;
+points have no additional primitive record.
+
+Trusted final validation:
+
+- baseline hierarchy and legacy-home sanity checks are clean;
+- fresh portable configure/build: 63/63;
+- focused portable coverage: 39 total, 36 passed, three expected skips;
+- full CPU CTest: 193/193 with expected skips #16, #51, #59, and #63;
+- CUDA+oneMKL rebuild: 27/27, followed by full oneMKL CTest 193/193 with
+  expected CUDA skips #16, #59, and #63;
+- CUDA 13.2 SM75 core/tests/Python build: 27/27;
+- focused and full CUDA-configured CTest ultimately completed 193/193 with
+  optional runtime skips after the unavailable-device state; and
+- diff and ownership audits are clean.
+
+GPU numerical runtime remains unavailable because `nvidia-smi` could not
+communicate with the driver and the driver rejected CUDA 13.2 PTX; no
+numerical device pass is claimed. Remaining Phase 1 work is limited to the
+cache boundary, bindings boundary, and compatibility/transitional review.
+
 ## Portable CPU backend decomposition — 2026-09-15
 
 The accepted portable CPU execution split is complete. Prepared P2P
@@ -16,8 +49,9 @@ remains under `src/backend/cpu/direct/`.
 portable execution declarations. The former
 `include/cdfmm/backend/cpu/static_plan_apply.hpp` remains a source-compatible
 umbrella, while `src/backend/cpu/static_plan_apply.cpp` is removed. Reference
-mathematics and high-level pass sequencing remain in `src/fmm/far_field.cpp`;
-the final higher-level `UniformFmm` cleanup is the next architecture task.
+mathematics and high-level pass sequencing remain in `src/fmm/far_field.cpp`.
+At that checkpoint the final higher-level `UniformFmm` cleanup was the next
+architecture task.
 
 Trusted validation for this closure:
 

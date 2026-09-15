@@ -75,9 +75,14 @@ add_library(cdfmm_core
     src/tree/common/static_topology.cpp
     src/tree/uniform/static_topology_adapter.cpp
     src/tree/adaptive/adaptive_tree.cpp
+    src/fmm/construction.cpp
+    src/fmm/diagnostics.cpp
+    src/fmm/evaluation.cpp
+    src/fmm/execution_setup.cpp
+    src/fmm/far_field.cpp
+    src/fmm/plan_preparation.cpp
     src/fmm/uniform_fmm.cpp
     src/cache.cpp
-    src/fmm/far_field.cpp
     src/backend/cpu/p2p/near_field.cpp
     src/parameter_selection.cpp
 )

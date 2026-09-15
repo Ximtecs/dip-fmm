@@ -1,16 +1,15 @@
 # Developer architecture
 
 This document is the architectural contract for the `v0.2` refactor. It
-describes the ownership and dependency boundaries now implemented in the
-repository. Step 2 made the foundational `core`, `math`, `geometry`, and
-`tree` layout concrete; operators, static plans, FMM orchestration, portable
-CPU and oneMKL execution are now also structured. Cache and bindings remain
-transitional layers. CUDA direct execution, complete P2P and M2L execution,
-shared CUDA infrastructure, far-field execution, and complete FMM orchestration
-now have explicit internal homes. CPU execution now follows explicit `direct`,
-`p2p`, `m2l`, and `far_field` homes alongside corresponding CUDA
-responsibilities, without forcing identical implementation details. Final
-high-level cleanup remains deferred.
+describes the ownership and dependency boundaries implemented in the
+repository. The foundational `core`, `math`, `geometry`, and `tree` layers,
+operators, static plans, FMM orchestration, portable CPU and oneMKL execution,
+and CUDA execution all have responsibility-specific homes. The high-level
+`UniformFmm` implementation is also decomposed into construction, plan
+preparation, backend setup, evaluation, far-field sequencing, diagnostics, and
+lifecycle/accessor units. Cache and bindings remain transitional layers; the
+remaining Phase 1 work is limited to those boundaries, compatibility review,
+and whole-refactor validation.
 
 ## Design rules
 
@@ -107,6 +106,12 @@ mathematical maps on them. The `plan` layer packages immutable work for an
 executor. Backends execute the plan and may own persistent backend resources;
 they must not independently redefine the mathematics.
 
+Integration elements use a representative-position convention. A point stores
+its representative `Vec3` position and has no additional primitive record. A
+finite rectangular prism stores its representative position and side lengths;
+a tetrahedron stores its representative position and representative-relative
+vertex offsets. No artificial `Point` marker or wrapper is required.
+
 For P2P in particular, preserve this separation:
 
 ```text
@@ -202,16 +207,14 @@ Measure performance-sensitive changes against the pre-refactor baseline.
 
 ## Current and target repository structure
 
-The current production layout after the CUDA direct, P2P, M2L, and far-field
-extractions is:
+The current production layout is:
 
 ```text
 dip-fmm/
 |-- include/cdfmm/    canonical core/math/geometry/tree/operators/plan/backend
 |                    plus compatibility shims
-|-- src/              structured operators/plan/backend/cpu plus extracted
-|                    CUDA common/direct/P2P/M2L/far-field code and transitional
-|                    full-FMM orchestration
+|-- src/              structured operators/plan/fmm/backend code, including
+|                    explicit CPU and CUDA execution homes
 |-- tests/            C++ and optional Fortran tests
 |-- python_tests/     Python and notebook regression tests
 |-- benchmarks/       C++ drivers and Python runners
@@ -313,7 +316,14 @@ src/
 |                                                  and dynamic application
 |-- plan/{precision,direct,p2p}               plan preparation and representations
 |-- cuboid.cpp                                compatibility geometry/pair math
-|-- fmm/{uniform_fmm,far_field}.cpp            lifecycle and pass orchestration
+|-- fmm/construction.cpp                      geometry normalisation and construction
+|-- fmm/plan_preparation.cpp                  immutable plans, FP32 quantisation, cache calls
+|-- fmm/execution_setup.cpp                   backend wiring and P2P policy
+|-- fmm/evaluation.cpp                        complete near/far evaluation and timing
+|-- fmm/far_field.cpp                         hierarchy sequencing
+|-- fmm/diagnostics.cpp                       exact summary formatting
+|-- fmm/uniform_fmm.cpp                       lifecycle, accessors, and inspection
+|-- fmm/internal.hpp                          opaque backend-owner declarations
 |-- backend/cpu/direct/dense.cpp                portable dense-direct execution
 |-- backend/cpu/p2p/{executor,dictionary,near_field}.cpp
 |                                               portable P2P and list-1 execution
@@ -328,6 +338,20 @@ src/
                                                 CUDA far-field execution
 `-- backend/cuda/fmm/{internal.hpp,plan.cu}     complete CUDA FMM orchestration
 ```
+
+The high-level `UniformFmm` implementation is split by responsibility. The
+construction unit normalises input geometry, builds the tree/topology, and
+delegates construction of canonical operators. Plan preparation creates
+immutable static plans, performs FP32 quantisation, and makes high-level cache
+calls. Execution setup resolves the requested backend, wires its resources,
+and owns the unchanged P2P policy and derived-packing selection. Evaluation
+owns the complete near-plus-far lifecycle and whole-evaluation timing; the
+hybrid CUDA path retains asynchronous P2P begin, CPU far-field work, finish,
+and cancellation-guard behaviour. Far-field sequencing remains in
+`far_field.cpp`. Diagnostics owns the exact initialisation-summary formatting.
+The small `uniform_fmm.cpp` unit retains lifecycle, accessors, and inspection;
+`internal.hpp` declares opaque MKL/CUDA owner wrappers without exposing backend
+implementation types from the installed header.
 
 The compatibility headers `cdfmm/operators.hpp` and
 `cdfmm/static_operators.hpp` remain supported forwarding umbrellas; they do
@@ -427,10 +451,6 @@ transitional layout:
 - compatibility `static_operators.hpp/.cpp` remain as forwarding umbrellas;
   their former mixed implementation has been separated into operators, plans,
   and the portable CPU apply boundary described below.
-- `uniform_fmm.hpp` and `fmm/uniform_fmm.cpp` combine public policy, geometry
-  normalisation, topology and operator construction, cache use, backend
-  selection, mutable state, CUDA upload, evaluation, and inspection. The
-  oneMKL execution packing is now delegated behind an opaque backend owner.
 - `fmm/far_field.cpp` contains CPU expansion sequencing and no longer contains
   oneMKL vendor mechanics; complete CUDA FMM orchestration is in
   `backend/cuda/fmm/plan.cu`.
@@ -448,11 +468,9 @@ transitional layout:
   CUDA common/direct/P2P/M2L/far-field/FMM units; CUDA libraries are currently
   propagated from `cdfmm_core` to consumers.
 
-The largest responsibility-review candidates are `backend/cuda/fmm/plan.cu`
-(retaining full-FMM orchestration and resource wiring), `fmm/uniform_fmm.cpp` (about 3,600),
-`cache.cpp` (about 1,800), and
-`python/bindings.cpp` (about 1,500). These measurements locate remaining audit
-work; they do not require mechanical splitting.
+The largest remaining responsibility-review candidates are `backend/cuda/fmm/plan.cu`,
+`cache.cpp`, and `python/bindings.cpp`. These measurements locate remaining
+audit work; they do not require mechanical splitting.
 
 ### Foundational layout: core, math, geometry, and tree
 
@@ -513,26 +531,26 @@ and the P2P plan boundary. Tree ownership remains spatial
 hierarchy/topology, while derived schedule assembly stays behind the plan
 boundary without making the tree depend on a particular P2P packing.
 
-### Later: remaining backend and CUDA work
+### Stable backend boundaries
 
 - Keep the accepted direct/common/P2P/M2L/far-field/full-FMM extraction stable.
-  The next architecture task is the final higher-level `UniformFmm` cleanup.
 - Preserve the separation of immutable far-field execution state from mutable
   moments, coefficient/field buffers, streams/events, timing, overlap,
-  combination/reordering, and D2H resources as that work proceeds.
+  combination/reordering, and D2H resources.
 - Preserve and benchmark all transfer, launch, overlap, and reuse semantics;
   source boundaries must not add runtime work.
 
-### Later: FMM, cache, bindings, and build
+### Remaining Phase 1 work
 
-- Reduce `fmm/uniform_fmm.cpp` to high-level lifecycle and orchestration after
-  its lower layers have stable homes.
 - Decompose `cache.cpp` into keys, metadata/validation, and serialisation while
   keeping cache formats and invalidation behaviour stable.
 - Keep Python, C, and Fortran layers as adapters; split the large pybind11
   translation unit by exposed subsystem without duplicating solver logic.
-- Rework CMake source grouping only as files actually move, then align tests
-  and benchmarks with the resulting subsystem tree.
+- Review remaining compatibility/transitional source seams and remove or
+  narrow them only when an explicit compatibility plan exists.
+- Complete whole-refactor validation across the supported CPU, oneMKL, CUDA,
+  bindings, and integration configurations; unavailable hardware or optional
+  toolchains must remain explicitly reported rather than inferred as passing.
 
 ## Refactor validation contract
 
@@ -543,6 +561,8 @@ cache behaviour, and supported CPU/oneMKL/CUDA paths. Performance-sensitive
 backend changes additionally compare plan reuse, transfers, allocations,
 launches, synchronisation, and representative benchmark results.
 
-These refactor steps change file ownership and include structure without
-changing runtime algorithms or public names. API redesign, packing, generation,
-discretisation, and refinement remain deferred.
+The high-level `UniformFmm` cleanup is complete. These refactor steps change
+file ownership and include structure without changing runtime algorithms or
+public names. Cache and bindings boundaries, compatibility/transitional source
+review, and whole-refactor validation are the remaining Phase 1 work. API
+redesign, packing, generation, discretisation, and refinement remain deferred.

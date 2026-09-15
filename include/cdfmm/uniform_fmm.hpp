@@ -502,7 +502,8 @@ private:
   void static_m2l_float(int level);
   void cuda_m2l();
   void l2l_downward();
-  void downward_pass_float();
+  void downward_pass_for_output(OutputFlags output, bool evaluate_l2p);
+  void downward_pass_float_for_output(OutputFlags output, bool evaluate_l2p);
   [[nodiscard]] std::span<double> multipole_for_node(int node_index) noexcept;
   [[nodiscard]] std::span<const double> multipole_for_node(
       int node_index) const noexcept;

@@ -1,5 +1,35 @@
 # Latest session work
 
+## 2026-09-15 — high-level UniformFmm cleanup closure
+
+The final Phase 1 high-level FMM source decomposition is complete. The
+`src/fmm` ownership is now explicit: `construction.cpp` owns geometry
+normalisation and construction; `plan_preparation.cpp` owns immutable plan
+creation, FP32 quantisation, and high-level cache calls; `execution_setup.cpp`
+owns backend resolution/wiring and unchanged P2P policy; `evaluation.cpp`
+owns the complete near/far lifecycle and timing, including hybrid CUDA
+begin/CPU-far/finish and cancellation; `far_field.cpp` retains hierarchy
+sequencing; `diagnostics.cpp` retains exact summary formatting;
+`uniform_fmm.cpp` retains lifecycle, accessors, and inspection; and
+`internal.hpp` declares opaque owner wrappers. The representative-position
+geometry convention is documented: points have no extra primitive record,
+while finite primitives store representative-relative data.
+
+Final validation handoff: baseline hierarchy and legacy-home sanity checks
+were clean; fresh portable configure/build completed 63/63; focused portable
+coverage completed 39 cases (36 passed, three expected skips); full CPU CTest
+completed 193/193 with expected skips #16, #51, #59, and #63; CUDA+oneMKL
+rebuild completed 27/27 and full oneMKL CTest completed 193/193 with expected
+CUDA skips #16, #59, and #63; CUDA 13.2 SM75 core/tests/Python build completed
+27/27; and focused/full CUDA-configured CTest ultimately completed 193/193
+with optional runtime skips after the unavailable-device state. GPU numerical
+runtime was unavailable because `nvidia-smi` could not communicate with the
+driver and the driver rejected CUDA 13.2 PTX, so no numerical device pass is
+claimed. Diff and ownership audits were clean.
+
+Remaining Phase 1 work is limited to the cache boundary, bindings boundary,
+compatibility/transitional source review, and whole-refactor validation.
+
 ## 2026-09-15 — Portable CPU backend decomposition closure
 
 Completed and committed the accepted responsibility-driven CPU backend split.
@@ -15,9 +45,9 @@ portable declarations. `static_plan_apply.hpp` remains a compatibility
 umbrella and the mixed `static_plan_apply.cpp` implementation home is removed.
 All existing P2P representations, FP32/FP64 paths, OpenMP thresholds and
 scheduling, SIMD guards and widths, ordering, identity handling, and
-reference-vs-static semantics are preserved. The next architecture task is
-the final higher-level `UniformFmm` cleanup; cache, bindings, and repository
-pruning remain out of scope.
+reference-vs-static semantics are preserved. At that checkpoint the final
+higher-level `UniformFmm` cleanup was the next architecture task; cache,
+bindings, and repository pruning remained out of scope.
 
 Validation handoff (trusted evidence): initial CUDA hierarchy sanity was clean:
 the complete hierarchy was present, root `src/cuda_fmm.cu` and

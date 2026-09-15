@@ -21,8 +21,15 @@ src/
 |-- operators/                              authoritative operator construction
 |                                          and dynamic application
 |-- periodic.cpp                            periodic support code
-|-- fmm/{uniform_fmm,far_field}.cpp         lifecycle and pass orchestration
-|-- fmm/uniform_fmm_internal.hpp            opaque backend owner adapters
+|-- fmm/construction.cpp                    geometry normalisation/construction
+|-- fmm/plan_preparation.cpp                immutable plans, FP32 quantisation,
+|                                          high-level cache calls
+|-- fmm/execution_setup.cpp                 backend resolution/wiring and P2P policy
+|-- fmm/evaluation.cpp                      complete near/far lifecycle and timing
+|-- fmm/far_field.cpp                       hierarchy sequencing
+|-- fmm/diagnostics.cpp                     exact summary formatting
+|-- fmm/uniform_fmm.cpp                     lifecycle, accessors, inspection
+|-- fmm/internal.hpp                        opaque backend owner declarations
 |-- backend/cpu/direct/dense.cpp            portable dense-direct execution
 |-- backend/cpu/p2p/{executor,dictionary,near_field}.cpp
 |                                          portable P2P and list-1 execution
@@ -69,10 +76,11 @@ Do not create target directories before substantive code belongs in them.
 
 ## Boundaries and pressure points
 
-- `fmm/uniform_fmm.cpp` and `cache.cpp` remain known decomposition candidates.
-  CUDA direct, complete P2P, M2L, far-field, and full-FMM execution now have
-  explicit homes; do not simplify their resource ownership without a later
-  explicitly scoped step.
+- `cache.cpp` remains a known decomposition candidate. High-level
+  `UniformFmm` responsibilities now have explicit homes under `fmm/`; CUDA
+  direct, complete P2P, M2L, far-field, and full-FMM execution also have
+  explicit backend homes. Do not simplify backend resource ownership without
+  a later explicitly scoped step.
 - Separate mathematical operator construction, canonical plans, derived
   execution packings, and backend execution in that order during later work.
 - Tree code owns spatial hierarchy/topology, not CUDA execution or
@@ -81,8 +89,9 @@ Do not create target directories before substantive code belongs in them.
   plans, oneMKL selection, or FMM orchestration.
 - Cache code persists defined solver data; it must not define that data's
   mathematics.
-- `UniformFmm` should eventually express lifecycle and orchestration while
-  delegating construction and execution mechanics downward.
+- `UniformFmm` source ownership is split by lifecycle, construction, plan
+  preparation, backend setup, evaluation, far-field sequencing, and
+  diagnostics while delegating mathematical and backend mechanics downward.
 - `fmm/far_field.cpp` owns CPU-side P2M/M2M/M2L-dispatch/L2L/L2P sequencing. Grouped
   gather/GEMM/scatter execution, persistent M2L scratch, and vendor includes
   belong under `backend/mkl`.

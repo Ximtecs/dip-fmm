@@ -44,6 +44,13 @@ near-field chains, combines near/far fields, and restores caller target order.
 One evaluator is not re-entrant; OpenMP parallelism is internal to an
 evaluation. Empty complete-tree nodes remain explicit and zero-valued.
 
+The implementation keeps these lifecycle responsibilities in separate
+translation units under `src/fmm`: construction, immutable plan preparation
+and cache calls, backend setup and P2P policy, complete evaluation/timing,
+far-field hierarchy sequencing, diagnostics formatting, and lifecycle/accessor
+inspection. `src/fmm/internal.hpp` keeps MKL/CUDA owner declarations opaque to
+the installed API.
+
 In the current architecture, the mathematical maps are constructed under the
 operator layer, immutable canonical and derived representations under the plan
 layer, and portable static-plan application under the CPU backend boundary.
@@ -90,9 +97,10 @@ compatibility façades. The complete P2P backend is in
 `include/cdfmm/backend/cuda/m2l.hpp`, a forwarding compatibility shim at
 `src/cuda_m2l_plan.hpp`, and non-CUDA stubs at
 `src/backend/cuda/stub/m2l.cpp`. Its shared executor is consumed by both
-standalone `CudaM2LPlan` and `CudaFullPlan`; `src/cuda_fmm.cu` coordinates the
-full-FMM stages and orchestration and consumes the separate executors for
-static execution. The internal CUDA far-field
+standalone `CudaM2LPlan` and `CudaFullPlan`; complete CUDA FMM stages and
+orchestration are coordinated by
+`src/backend/cuda/fmm/{internal.hpp,plan.cu}` and consume the separate
+executors for static execution. The internal CUDA far-field
 executor is in `src/backend/cuda/far_field/{internal.hpp,executor.cu}`. It
 owns immutable FP32/FP64 P2M/L2P entries, coefficient degrees, M2M/L2L
 matrices/interactions/metadata, uploads, lifecycle/statistics, and kernels;

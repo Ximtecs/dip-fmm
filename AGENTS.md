@@ -50,9 +50,11 @@ evaluation state, stream/event/timing and near/far orchestration,
 combination/reordering, and D2H transfer. CPU direct, P2P, M2L, and far-field
 execution now also have explicit homes under
 `src/backend/cpu/{direct,p2p,m2l,far_field}/`; the legacy static-plan header
-remains a compatibility umbrella. The next architecture task is the final
-higher-level `UniformFmm` cleanup. Further backend, orchestration, cache, or
-binding changes are authorised only when explicitly scoped. Geometry packing, grain
+remains a compatibility umbrella. High-level `UniformFmm` implementation is
+decomposed under `src/fmm/` by construction, plan preparation, backend setup,
+evaluation, far-field sequencing, diagnostics, and lifecycle/accessor
+ownership. Further backend, orchestration, cache, or binding changes are
+authorised only when explicitly scoped. Geometry packing, grain
 generation/discretisation, and prism/tetrahedron refinement remain future work.
 
 ## Repository memory
@@ -72,8 +74,8 @@ Current structure:
 ```text
 dip-fmm/
 |-- include/cdfmm/    structured core/math/geometry/tree plus compatibility headers
-|-- src/              structured math/geometry/tree/backend plus deferred
-|                    flat higher-level orchestration
+|-- src/              structured math/geometry/tree/backend plus decomposed
+|                    higher-level FMM orchestration
 |-- tests/            C++ tests and optional Fortran smoke test
 |-- python_tests/     Python, runner, and notebook regression tests
 |-- benchmarks/       C++ benchmarks and Python benchmark runners

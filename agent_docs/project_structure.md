@@ -53,8 +53,15 @@ src/
   backend/cuda/far_field/{internal.hpp,executor.cu,entries.cuh,translation.cuh}
                                                                 CUDA far-field backend
   backend/cuda/fmm/{internal.hpp,plan.cu}                       complete CUDA FMM
-  fmm/{uniform_fmm,far_field}.cpp                               lifecycle and pass orchestration
-  fmm/uniform_fmm_internal.hpp                                  opaque backend owner adapters
+  fmm/construction.cpp                                          geometry normalisation/construction
+  fmm/plan_preparation.cpp                                      immutable plans, FP32 quantisation,
+                                                               high-level cache calls
+  fmm/execution_setup.cpp                                       backend resolution/wiring and P2P policy
+  fmm/evaluation.cpp                                            complete near/far lifecycle and timing
+  fmm/far_field.cpp                                             hierarchy sequencing
+  fmm/diagnostics.cpp                                           exact summary formatting
+  fmm/uniform_fmm.cpp                                           lifecycle, accessors, inspection
+  fmm/internal.hpp                                              opaque backend-owner declarations
   tree/common/static_topology.cpp                              canonical topology validation
   tree/uniform/static_topology_adapter.cpp                     UniformTree topology adapter
   periodic.cpp, cache.cpp, validation.cpp                       support boundaries
@@ -139,6 +146,15 @@ stable transfer-class metadata and reusable gathered/translated buffers remain
 private behind an opaque owner, while FMM orchestration adds the backend's
 gather/multiply/scatter timings to the existing public timing record.
 
+The high-level `UniformFmm` source is now responsibility-driven: construction
+normalises geometry and builds the fixed tree/topology; plan preparation builds
+immutable plans, quantises FP32 state, and performs high-level cache calls;
+execution setup resolves backends and preserves P2P selection policy;
+evaluation coordinates complete near/far evaluation and timing; far-field
+retains hierarchy sequencing; diagnostics retains exact summary formatting;
+and `uniform_fmm.cpp` retains lifecycle, accessors, and inspection. The
+internal owner declarations are in `src/fmm/internal.hpp`.
+
 The CUDA P2P backend is built once from a canonical or derived static plan.
 `CudaP2PPlan` is declared by `include/cdfmm/backend/cuda/p2p.hpp`, with the
 legacy flat header forwarding to it. `src/backend/cuda/p2p/` owns the FP64 and
@@ -166,7 +182,9 @@ The CPU backend now follows the responsibility taxonomy
 representations plus near-field dispatch, M2L has its own prepared-plan
 executor, and far-field owns shared P2M/L2P entry and M2M/L2L translation
 mechanics. The old static-plan header remains an umbrella for source
-compatibility. High-level `UniformFmm` cleanup is the next architecture task.
+compatibility. High-level `UniformFmm` ownership is split across the
+responsibility-specific `src/fmm` units listed above; no implementation type is
+exposed by the installed header.
 
 ## Validation and documentation areas
 
