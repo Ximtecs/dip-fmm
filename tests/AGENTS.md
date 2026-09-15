@@ -20,6 +20,12 @@ tests/
 |-- test_{uniform_fmm,periodic,precision,
 |   normalisation,output_flags,cache}.cpp      integration
 |-- test_{cuda_backend,cuda_m2l}.cpp           CUDA/backend
+|-- test_cuda_p2p_stub.cpp                     non-CUDA backend boundary
+|-- test_foundational_headers.cpp              canonical/compatibility headers
+|-- test_cuda_{direct,dense_direct,p2p,m2l}_headers.cpp
+|                                              canonical CUDA header coverage
+|-- test_cuda_legacy_{direct,cuboid,p2p}_header.cpp
+|                                              legacy CUDA façade coverage
 |-- test_parameter_selection.cpp               policy/advice
 |-- test_c_api.cpp
 `-- test_fortran_api.f90                       optional smoke test

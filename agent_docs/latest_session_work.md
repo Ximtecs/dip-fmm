@@ -1,5 +1,93 @@
 # Latest session work
 
+## 2026-09-15 — whole-Phase-1 validation and formal closure
+
+Starting HEAD `66b9436` (`refactor: close transitional architecture`). Task:
+audit and validate the whole Phase-1 architecture, then close it. **Outcome:
+Phase 1 is COMPLETE and closed.** The full evidence, the validation matrix, the
+enumerated dependency exceptions, and the Phase-2 handoff now live in the
+"Phase 1 closure" and "Phase 2 handoff" sections of `docs/architecture.md`;
+this entry records how the session ran and what it changed.
+
+Baseline preserved and untouched: `v0.1.0` -> tag object `26eb955`, commit
+`2d3d4ea`; `release/v0.1` -> `2d3d4ea`; both matching `origin`.
+
+### Audit
+
+Three read-only workers audited architecture/dependencies, API/compatibility/
+install, and documentation/test-matrix consistency. Their findings were
+re-verified by the lead before any of them were acted on; two were wrong and
+were rejected:
+
+- a worker reported the `cdfmm/uniform_fmm.hpp` include in
+  `src/backend/cuda/fmm/internal.hpp` as dead. Removing it broke the build:
+  `plan.cu` *defines* `cuda_m2l_p2p_available()`, which that header declares.
+  It is a supported public-API relationship, not an inversion. Reverted.
+- a worker reported `SourceGeometry::UniformCuboid` and a `std::vector<Vec3>`
+  return from `evaluate`. Both were wrong; the enumerators are
+  `RectangularPrism` and `evaluate` returns `std::vector<PotentialField>`, at
+  `v0.1.0` and at HEAD alike.
+
+Worker findings that did hold up were confirmed against the tree first: the
+`operators/`/`plan/` structure claims, the three stale `docs/architecture.md`
+passages, and the `docs/Doxyfile` macro-name diagnosis.
+
+### Validation performed
+
+Environment: `cdfmm` Conda env, GCC 15.3, CMake 4.4.3, CUDA 13.3.73, oneMKL
+2026.1, Python 3.11, RTX 5090 SM120 driver 595.84. Note `cmake` and `nvcc` are
+not on the base PATH; that env must be active. `python -c "import cdfmm"`
+resolves to an installed module in that env's site-packages, so every Python
+run below asserted `cdfmm.__file__` pointed at the just-built extension.
+
+- portable CPU `dev` (fresh): clean build, 198/198 CTest, 137 pytest passed;
+- oneMKL without CUDA: 198/198 CTest, 139 pytest passed;
+- CUDA without oneMKL `cuda` (fresh, SM120): 198/198 CTest, 141 pytest passed;
+- CUDA + oneMKL `notebooks` (fresh): **198/198 CTest with zero skips**, 143
+  pytest passed;
+- Fortran via `ifx` 2025.2.1: 199/199 CTest including `cdfmm_fortran_smoke`,
+  and `magtense_style_demag` builds and runs.
+- isolated install: 84 files, all 79 installed headers compile standalone,
+  mixed legacy/canonical TU compiles in both include orders, downstream C
+  consumer reproduces the analytic field to 1.6e-16;
+- cache: a 10-file corpus written by a `v0.1.0` build is read back by HEAD with
+  identical keys, hits everywhere, `bytes_written: 0`, corpus byte-identical
+  afterwards, results bit-identical;
+- docs: `sphinx-build -W` now succeeds with zero warnings (was two);
+- performance: CPU 11.47 ms at HEAD vs 11.56 ms at `v0.1.0`; CUDA 0.96 ms
+  partial, 0.88 ms full.
+
+A cross-version probe compiled unchanged against both `v0.1.0` and HEAD public
+headers and produced bit-identical results for five configurations. That is the
+strongest single piece of behaviour-preservation evidence the session produced.
+
+### Changes made
+
+Four genuine Phase-1 defects, all narrow:
+
+1. `tests/test_fortran_api.f90` — periodic cell centre set to `(0, 0, 0.5)`.
+   **Pre-existing, not a refactor regression**: the file is byte-identical to
+   `v0.1.0` and a `v0.1.0` build fails the same way. Undetected until now
+   because no Fortran compiler was available in earlier sessions; `ifx` exists
+   in the `magtense-env` Conda env.
+2. `docs/Doxyfile` — `PREDEFINED` named `CDFMM_HOST_DEVICE`, used nowhere,
+   while `plan/p2p/canonical.hpp` uses `CDFMM_PLAN_HOST_DEVICE`. Fixed; the two
+   long-standing Sphinx warnings are gone.
+3. `include/cdfmm/AGENTS.md` and `src/AGENTS.md` — `operators/`, `plan/`, and
+   `src/plan/` were implemented but documented as future work.
+4. `docs/architecture.md` — three passages still called the finished
+   compatibility review "remaining Phase 1 work", contradicting the same
+   document's own "Compatibility surface" section.
+
+Also: `tests/AGENTS.md` and `python_tests/AGENTS.md` structure listings
+completed, and Phase-1 closure recorded across `AGENTS.md`,
+`docs/architecture.md`, and `agent_docs/`.
+
+### Explicitly not done
+
+Phase-2 work was recorded, not executed. The handoff list is in
+`docs/architecture.md`. No release tag or branch was created.
+
 ## 2026-09-15 — compatibility/transitional-source review and current handoff
 
 Starting HEAD `5cb5576` (`refactor(bindings): structure language adapters`).

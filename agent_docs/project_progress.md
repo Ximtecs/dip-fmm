@@ -1,5 +1,49 @@
 # Project progress
 
+## Phase 1 architecture refactor: COMPLETE — 2026-09-15
+
+Phase 1 of the `v0.2` architecture refactor is closed. Starting HEAD `66b9436`.
+The authoritative record — ownership/dependency audit, `v0.1.0` comparison,
+validation matrix, cache and install evidence, defects fixed, and the Phase-2
+handoff — is in the "Phase 1 closure" and "Phase 2 handoff" sections of
+`docs/architecture.md`. Summary of status:
+
+| Area | Status |
+|---|---|
+| Preserved baseline (`v0.1.0`, `release/v0.1`) | untouched, verified |
+| Ownership / dependency direction | no prohibited edge; exceptions enumerated |
+| Public headers (29 v0.1.0 paths) | all retained; none removed |
+| C ABI | `c_api.h` byte-identical; version 1; 14 exported symbols |
+| Python surface | zero-diff vs pre-split bindings |
+| Cache format and keys | backward compatible against a `v0.1.0` corpus |
+| Portable CPU | 198/198 CTest, 137 pytest |
+| oneMKL (no CUDA) | 198/198 CTest, 139 pytest |
+| CUDA (no oneMKL, SM120) | 198/198 CTest, 141 pytest |
+| CUDA + oneMKL | 198/198 CTest, **zero skips**, 143 pytest |
+| Fortran (`ifx` 2025.2.1) | 199/199 CTest; smoke test and example run |
+| Isolated install + downstream consumer | pass, 1.6e-16 analytic agreement |
+| Documentation build | `sphinx-build -W` clean, zero warnings |
+| Performance | CPU 11.47 ms vs 11.56 ms at `v0.1.0`; no regression |
+
+Behaviour preservation was demonstrated directly: a probe compiling unchanged
+against both `v0.1.0` and HEAD public headers returns bit-identical fields for
+spherical FP32, spherical FP64, prism FP32, Cartesian FP64, and periodic FP64.
+
+Four narrow Phase-1 defects were fixed during closure: a **pre-existing**
+periodic-cell-centre error in `tests/test_fortran_api.f90` (identical failure at
+`v0.1.0`, undetected because no Fortran compiler was previously available); a
+stale macro name in `docs/Doxyfile` that caused the two long-standing Sphinx
+warnings; and stale structure/status claims in `include/cdfmm/AGENTS.md`,
+`src/AGENTS.md`, and `docs/architecture.md`.
+
+Standing limitations, recorded rather than hidden: CI remains portable CPU
+only, so oneMKL, CUDA, and Fortran are validated manually; the optional external
+MagTense package is absent, so one Python comparison skips; and most CUDA-gated
+C++ cases return via `SUCCEED()` rather than a true `SKIP()`, so a portable-CPU
+run reports them as passed rather than skipped.
+
+Phase 2 is **not started** and needs its own explicit task.
+
 ## Compatibility and transitional-source review — 2026-09-15
 
 Completed the late-Phase-1 compatibility/transitional-source review from

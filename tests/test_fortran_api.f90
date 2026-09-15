@@ -86,6 +86,10 @@ program test_fortran_api
     options%periodic = .true.
     options%backend = CDFMM_BACKEND_CPU_STATIC
     options%basis = CDFMM_BASIS_SPHERICAL
+    ! The two prisms sit at z = 0 and z = 1 with side 0.2, so the cubic cell of
+    ! side 2 must be centred on the geometry at z = 0.5. Leaving the centre at
+    ! the origin puts the z = 1 prism outside the periodic root.
+    options%periodic_cell_center = [0.0_c_double, 0.0_c_double, 0.5_c_double]
     options%periodic_cell_lengths = [2.0_c_double, 2.0_c_double, 2.0_c_double]
     call cdfmm_create_uniform_cuboids(plan, x, y, z, cell_size, options, ierr)
     if (ierr /= CDFMM_SUCCESS .or. .not. plan%valid()) error stop cdfmm_last_error()

@@ -1,5 +1,9 @@
 # Project structure and ownership
 
+**Phase 1 is COMPLETE**: this map describes the final Phase-1 architecture, and
+it was verified against the tree during closure. Do not relocate anything here
+without an explicit Phase-2 task.
+
 The current checkout has substantive homes for foundational layers,
 operators/static plans, high-level FMM orchestration, portable CPU execution,
 oneMKL execution, the complete CUDA common/direct/P2P/M2L/far-field/FMM
@@ -254,3 +258,36 @@ the façades include those, never the reverse. The two deliberate exceptions are
 `src/operators.cpp`, which implements `cdfmm/operators.hpp`, and
 `python/internal.hpp`, which must see the flat operator declarations the Python
 module exports.
+
+## Audited dependency exceptions
+
+Closure enumerated every reverse-direction edge that remains. Besides
+`src/operators.cpp` and `python/internal.hpp` above, these are deliberate and
+must not be "cleaned up" without an approved API change:
+
+```text
+src/plan/direct/dense.cpp -> backend/{cpu,mkl}/direct/dense.hpp
+    DenseDirectPlan::evaluate() is pre-v0.2 public API, so the plan object
+    itself dispatches to an executor. Confined to this one unit; the public
+    plan/direct/dense.hpp header depends on no backend.
+
+src/backend/cuda/fmm/internal.hpp -> cdfmm/uniform_fmm.hpp
+    The CUDA backend implements the public availability queries declared there
+    (cuda_m2l_p2p_available, cuda_m2l_available). A definition must see its
+    declaration. Not an inversion.
+
+src/cache/internal.hpp -> cdfmm/uniform_fmm.hpp
+    The sanctioned cache -> already-defined solver data edge.
+
+canonical headers -> cdfmm/timings.hpp, cdfmm/periodic.hpp
+    Substantive public headers awaiting a subsystem home, not façades.
+
+include/cdfmm/tree/adaptive_tree.hpp -> StaticFmmTopology
+    The documented transitional tree/plan seam.
+```
+
+No prohibited edge exists: no geometry/tree depending on a backend or CUDA, no
+math depending on FMM, no operators depending on orchestration or vendor
+libraries, no plan depending on Python, no CPU backend reaching into CUDA
+internals, and no binding unit including an internal `src/` header. Every
+`.cpp`/`.cu` under `src/` is referenced by `CMakeLists.txt`.

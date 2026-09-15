@@ -15,9 +15,11 @@ include/cdfmm/
 |-- math/                             vectors, indices, derivatives, expansions
 |-- geometry/                         models and exact physical primitives
 |-- tree/                             common, uniform, and adaptive interfaces
+|-- operators/                        canonical P2M/M2M/M2L/L2L/L2P/M2P/P2P
+|-- plan/                             canonical static plans and P2P packings
 |-- *.hpp                             legacy shims and deferred higher layers
 |-- operators.hpp,
-|   static_operators.hpp              operators and static plans
+|   static_operators.hpp              flat operator/static-plan compatibility
 |-- uniform_fmm.hpp                   solver API and options
 |-- backend/cuda/{direct,dense_direct,p2p,m2l}.hpp
 |                                      canonical CUDA direct, P2P, and M2L APIs
@@ -33,20 +35,21 @@ include/cdfmm/
 `-- c_api.h                           stable C boundary
 ```
 
-Remaining target structure, introduced only as cohesive code moves in later
-steps:
+The `core`, `math`, `geometry`, `tree`, `operators`, `plan`, and `backend`
+homes are implemented. Only `fmm/` remains a target directory, introduced
+solely when a cohesive public solver interface moves into it:
 
 ```text
 include/cdfmm/
 |-- cdfmm.hpp
-|-- core/
-|-- math/
-|-- geometry/
-|-- tree/
-|-- operators/
-|-- plan/
-|-- backend/
-`-- fmm/
+|-- core/         implemented
+|-- math/         implemented
+|-- geometry/     implemented
+|-- tree/         implemented
+|-- operators/    implemented
+|-- plan/         implemented
+|-- backend/      implemented
+`-- fmm/          target only; uniform_fmm.hpp remains a flat public header
 ```
 
 ## Rules

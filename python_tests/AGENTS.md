@@ -9,7 +9,7 @@ selected notebooks and helper scripts.
 ```text
 python_tests/
 |-- test_{python_bindings,operator_bindings,geometry_bindings}.py
-|-- test_{uniform_fmm_python,adaptive_tree,spherical_fmm,
+|-- test_{uniform_fmm_python,uniform_tree_python,adaptive_tree,spherical_fmm,
 |   fmm_precision,periodic_fmm,fmm_memory}.py
 |-- test_{benchmark_runner,p2p_sweep,high_occupancy_p2p_runner}.py
 |-- test_{adaptive_notebook,precision_notebook,

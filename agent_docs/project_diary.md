@@ -1,5 +1,57 @@
 # Project diary
 
+## 2026-09-15 — whole-Phase-1 validation and closure
+
+From `66b9436`, the job was to decide whether Phase 1 was actually finished,
+using evidence rather than the repository's own say-so, and then to close it.
+
+The useful discipline this session was refusing to take audit reports at face
+value. Three read-only workers produced a lot of correct detail, but two
+confident findings were wrong, and both would have caused damage. One claimed
+the `cdfmm/uniform_fmm.hpp` include in `src/backend/cuda/fmm/internal.hpp` was
+dead, having grepped for class names only; removing it broke the build, because
+`plan.cu` *defines* `cuda_m2l_p2p_available()`, which that header declares. A
+backend implementing a public availability query is a supported API
+relationship, not a layering inversion — and the fix was to revert, not to
+invent an architectural justification. The lesson is cheap to state and easy to
+forget: verify a claimed dead dependency by deleting it and rebuilding.
+
+The most satisfying evidence was the cheapest. Rather than reasoning about
+whether the cache refactor preserved its format, a `v0.1.0` build wrote a
+ten-file corpus and HEAD read it back: same keys, every lookup a hit, zero bytes
+written, corpus byte-identical afterwards. The same probe, compiled unchanged
+against both versions' public headers, returned bit-identical fields across five
+configurations. That single artefact answers "is this behaviour-preserving?"
+better than any amount of diff reading.
+
+The Fortran result was the genuine surprise. Every previous session recorded
+"no Fortran compiler available" — true of `PATH`, but `ifx` sits in the
+`magtense-env` Conda env. With it, the smoke test failed, and for a moment that
+looked like a refactor regression. It was not: the test asks for a cubic
+periodic cell of side 2 centred at the origin while its prisms sit at `z = 0`
+and `z = 1`, so the second one pokes outside the periodic root. Building the
+same test at `v0.1.0` reproduced the failure exactly. A pre-existing bug, hidden
+for as long as the toolchain was missing. Classifying it correctly mattered more
+than fixing it: the refactor preserved the behaviour faithfully, including the
+broken part.
+
+The documentation warnings told a similar story. Two Sphinx warnings had been
+carried forward as "pre-existing" for several sessions. They were neither
+mysterious nor pre-existing in the sense implied: `docs/Doxyfile` predefined
+`CDFMM_HOST_DEVICE`, a macro used nowhere, while the canonical header the
+refactor introduced guards two declarations with `CDFMM_PLAN_HOST_DEVICE`. A
+one-word fix cleared both. It is worth noticing how long a warning can survive
+once it has been labelled expected.
+
+The last thing worth recording is what was left alone. The plan/backend dispatch
+in `src/plan/direct/dense.cpp` is a real reverse-direction edge, and it is there
+because `DenseDirectPlan::evaluate()` is public API from `v0.1.0`. Removing it
+would be an API change, not a cleanup. It is now written down as a deliberate
+exception rather than left to be rediscovered and "fixed" by someone later. The
+same goes for the flat `timings.hpp`/`periodic.hpp` includes and the
+`StaticFmmTopology` seam. Phase 1 closes with its compromises enumerated, which
+is the honest form of done.
+
 ## 2026-09-15 — compatibility and transitional-source review
 
 From starting HEAD `5cb5576`, audited every remaining legacy-looking or

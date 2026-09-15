@@ -33,9 +33,18 @@ tests. Do not infer support from names alone.
 
 ## Current refactor stage
 
+**Phase 1 of the `v0.2` architecture refactor is COMPLETE.** Ownership,
+dependency direction, public/ABI/cache compatibility, the supported build
+matrix, installation, and documentation were validated together; the evidence,
+the validation matrix, its limitations, and the Phase-2 handoff are recorded
+under "Phase 1 closure" in `docs/architecture.md`. Phase 2 has not started and
+requires its own explicit task: do not begin cleanup, deduplication, relocation,
+API modernisation, or repository pruning as a side effect of another change.
+
 The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor
 implementation. Architectural work occurs on `refactor/architecture-v0.2`.
-Never move, recreate, or rewrite the tag or preserved branch.
+Never move, recreate, or rewrite the tag or preserved branch. No `v0.2` release
+ref exists; creating one is a separate, explicit release step.
 
 The foundational `core`, `math`, `geometry`, and `tree` layers, followed by the
 operator/static-plan step and backend boundaries, are now organised. The
@@ -140,6 +149,16 @@ symmetry. Add more local `AGENTS.md` files only when corresponding substantive
 subsystems exist. Current support areas such as `python_tests/`, `python/`,
 `fortran/`, and `tools/` remain in place; the implemented C and Python
 binding adaptation units are listed above and below.
+
+The closure audit found no violation of the prohibited-dependency list. Besides
+`src/operators.cpp` and `python/internal.hpp`, the only reverse-direction edges
+are deliberate and are enumerated in `docs/architecture.md`: the
+`DenseDirectPlan::evaluate()` compatibility dispatch in
+`src/plan/direct/dense.cpp`, the CUDA backend implementing the public
+availability queries declared in `cdfmm/uniform_fmm.hpp`, the sanctioned
+`cache -> already-defined solver data` edge, and the canonical headers still
+including the substantive flat `cdfmm/timings.hpp` and `cdfmm/periodic.hpp`.
+Do not add new ones.
 
 ## Architecture contract
 

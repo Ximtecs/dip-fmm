@@ -21,6 +21,9 @@ src/
 |-- operators.cpp                           flat compatibility wrappers only
 |-- operators/                              authoritative operator construction
 |                                          and dynamic application
+|-- plan/precision.cpp                       FP64-to-FP32 static conversion
+|-- plan/direct/dense.cpp                   dense-direct plan preparation
+|-- plan/p2p/                               canonical and derived P2P packings
 |-- periodic.cpp                            periodic support code
 |-- fmm/construction.cpp                    geometry normalisation/construction
 |-- fmm/plan_preparation.cpp                immutable plans, FP32 quantisation,
@@ -81,7 +84,10 @@ owns periodic support; `parameter_selection.cpp` owns the advisory search; and
 `validation.cpp` owns error metrics and the direct reference. Moving them is
 Phase-2 work, not cleanup to fold into an unrelated step.
 
-Expected later destinations:
+Expected later destinations. `plan/` and its `p2p/` packings, `backend/`, `fmm/`,
+`cache/`, and `bindings/` are already implemented above; the remaining entries
+are per-operator directories and the future geometry generation/refinement
+homes:
 
 ```text
 src/
@@ -89,7 +95,6 @@ src/
 |-- geometry/{primitives,generation,refinement}/
 |-- tree/{uniform,adaptive}/
 |-- operators/{p2m,m2m,m2l,l2l,l2p,m2p,p2p}/
-|-- plan/p2p/
 |-- backend/{cpu,mkl,cuda/{common,direct,p2p,m2l,far_field,fmm}}/
 |-- fmm/
 |-- cache/

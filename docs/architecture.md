@@ -8,9 +8,10 @@ and CUDA execution all have responsibility-specific homes. The high-level
 `UniformFmm` implementation is also decomposed into construction, plan
 preparation, backend setup, evaluation, far-field sequencing, diagnostics, and
 lifecycle/accessor units. Cache persistence and the bindings boundary are now
-structured responsibility-specific layers. Remaining Phase 1 work is limited
-to compatibility/transitional-source review followed by whole-refactor
-validation.
+structured responsibility-specific layers. The compatibility/transitional-source
+review and the whole-refactor validation are both complete, so **Phase 1 is
+COMPLETE**. The validation matrix and its limitations are recorded under
+"Phase 1 closure" below.
 
 ## Design rules
 
@@ -627,18 +628,18 @@ boundary without making the tree depend on a particular P2P packing.
 - Preserve and benchmark all transfer, launch, overlap, and reuse semantics;
   source boundaries must not add runtime work.
 
-### Remaining Phase 1 work
+### Phase 1 work: complete
 
-- Review remaining compatibility/transitional source seams and remove or
-  narrow them only when an explicit compatibility plan exists.
-- Resolve the duplicated canonical-to-compact P2P packing rule, which the
-  cache decode in `cache/format.cpp` and the plan builder in
-  `plan/p2p/compact.cpp` currently state independently. The cache decode fuses
-  packing into its single pass deliberately, so this is a scoped plan/cache
-  boundary decision rather than a mechanical de-duplication.
-- Complete whole-refactor validation across the supported CPU, oneMKL, CUDA,
-  bindings, and integration configurations; unavailable hardware or optional
-  toolchains must remain explicitly reported rather than inferred as passing.
+The compatibility/transitional-source review is complete, and whole-refactor
+validation across the supported CPU, oneMKL, CUDA, bindings, cache, install,
+and documentation configurations has been performed. See "Phase 1 closure".
+
+One item raised here during the refactor is deferred to Phase 2 rather than
+closed: the duplicated canonical-to-compact P2P packing rule, which the cache
+decode in `cache/format.cpp` and the plan builder in `plan/p2p/compact.cpp`
+state independently. The cache decode fuses packing into its single pass
+deliberately, so this is a scoped plan/cache boundary decision rather than a
+mechanical de-duplication.
 
 ## Refactor validation contract
 
@@ -652,5 +653,210 @@ launches, synchronisation, and representative benchmark results.
 The high-level `UniformFmm`, cache, and bindings boundaries are complete. These
 refactor steps change file ownership and include structure without changing
 runtime algorithms or public names. Compatibility/transitional source review
-and whole-refactor validation are the remaining Phase 1 work. API redesign,
-packing, generation, discretisation, and refinement remain deferred.
+and whole-refactor validation are both complete, so Phase 1 is closed. API
+redesign, packing, generation, discretisation, and refinement remain deferred.
+
+## Phase 1 closure
+
+Phase 1 of the `v0.2` architecture refactor is **COMPLETE**. The preserved
+pre-refactor baseline remains the `v0.1.0` annotated tag (commit `2d3d4ea`) and
+the `release/v0.1` branch; neither was moved. Closure rests on the evidence
+below rather than on assertion.
+
+### Ownership and dependency audit
+
+A repository-wide include-edge audit of `include/cdfmm/`, `src/`, and `python/`
+found no violation of the prohibited-by-default list: no `geometry -> backend`
+or `geometry -> CUDA`, no `tree -> CUDA`, no `math -> FMM`, no
+`operators -> orchestration`, no `operators -> cuBLAS/cuSPARSE`, no
+`plan -> Python`, no `CPU backend -> CUDA internals`, and no binding unit
+including an internal `src/` header. No CUDA backend redefines canonical
+mathematics or topology: each consumes prepared `Static*Plan` data.
+
+Compatibility flows one way. Every flat header under `include/cdfmm/` was an
+installed public path at `v0.1.0` and is retained; canonical subsystem headers
+and canonical implementation include canonical headers, and the façades include
+those. The audited exceptions are each deliberate and are recorded here in full:
+
+- `src/operators.cpp` implements `cdfmm/operators.hpp`, the flat operator
+  compatibility API, and so includes it.
+- `python/internal.hpp` must see the flat operator declarations the Python
+  module exports.
+- `cdfmm/timings.hpp` and `cdfmm/periodic.hpp` are still included by some
+  canonical headers. They are substantive public headers awaiting a subsystem
+  home, not façades; their migration is deferred to Phase 2.
+- `src/plan/direct/dense.cpp` includes `backend/cpu/direct/dense.hpp` and
+  `backend/mkl/direct/dense.hpp`. `DenseDirectPlan::evaluate()` is a pre-v0.2
+  public method, so the plan object itself must dispatch to an executor. This
+  is an isolated compatibility seam confined to one translation unit; the
+  public `plan/direct/dense.hpp` header depends on no backend, and no other
+  file under `src/plan/` or `src/operators/` includes a backend header.
+- `src/backend/cuda/fmm/internal.hpp` includes `cdfmm/uniform_fmm.hpp` because
+  the CUDA backend *implements* the public availability queries declared there
+  (`cuda_m2l_p2p_available`, `cuda_m2l_available`). A translation unit must see
+  the declaration of the function it defines, so this is a supported public-API
+  relationship, not an implementation-layer inversion. Relocating those
+  declarations to a backend header would be an API change and is deferred.
+- `src/cache/internal.hpp` includes `cdfmm/uniform_fmm.hpp`: the sanctioned
+  `cache -> already-defined solver data` edge. Cache code performs no operator
+  mathematics, tree construction, plan policy, or backend selection.
+- `tree/adaptive_tree.hpp` returning `StaticFmmTopology` remains the documented
+  transitional seam recorded in the deferred inventory.
+
+Every `.cpp`/`.cu` file under `src/` is referenced by `CMakeLists.txt`; no
+stale or transitional source remains compiled, and no build file references a
+removed path.
+
+### Comparison against `v0.1.0`
+
+No header present at `v0.1.0` is absent at HEAD: all 29 pre-refactor public
+paths are retained as compatibility façades. `include/cdfmm/c_api.h` is
+byte-identical to `v0.1.0` (same blob hash), `CDFMM_ABI_VERSION` remains `1`,
+and the built `libcdfmm_c.so` exports exactly the expected 14 `cdfmm_*`
+functions. `fortran/cdfmm_fortran.f90` is likewise byte-identical. The Python
+surface is unchanged: 20 classes, 14 enums, 29 module functions, 151
+methods/properties, 130 `py::arg` entries with identical defaults, and 123
+diagnostic dictionary keys all compare zero-diff against the pre-split
+`python/bindings.cpp`.
+
+The installed-header rule widened from `c_api.h` only to the whole
+`include/cdfmm/` tree with `AGENTS.md` excluded. That is a deliberate widening,
+not a narrowing, and no installed header points into `src/`, `python/`, or a
+build-tree path.
+
+Behaviour is preserved exactly where it can be compared directly: a probe
+building five representative plans (spherical FP32, spherical FP64, prism FP32,
+Cartesian FP64, and periodic FP64) compiles unchanged against both `v0.1.0` and
+HEAD public headers and produces **bit-identical** field results.
+
+`9003b666` (tetrahedron P2P construction) is separate, intentional
+performance/numerical work carried on this branch and is not an architecture
+regression.
+
+### Validation matrix
+
+All builds used the `cdfmm` Conda environment: GCC 15.3, CMake 4.4.3,
+CUDA 13.3.73, oneMKL 2026.1, Python 3.11, on an NVIDIA RTX 5090 (SM120,
+driver 595.84). Python runs verified `cdfmm.__file__` resolved to the
+just-built module in every case.
+
+| Configuration | Build | CTest | Python |
+|---|---|---|---|
+| Portable CPU (`dev` preset, fresh) | clean, no warnings | 198/198 passed, 4 skipped | 137 passed, 7 skipped |
+| oneMKL, no CUDA | clean | 198/198 passed, 3 skipped | 139 passed, 5 skipped |
+| CUDA, no oneMKL (`cuda` preset, fresh, SM120) | clean | 198/198 passed, 1 skipped | 141 passed, 3 skipped |
+| CUDA + oneMKL (`notebooks` preset, fresh) | clean | **198/198 passed, 0 skipped** | 143 passed, 1 skipped |
+| Fortran interface (`ifx` 2025.2.1) | clean | 199/199 passed, 4 skipped | n/a |
+
+Every skip is a genuinely absent optional dependency or device: CUDA
+unavailable, oneMKL unavailable, or the optional external MagTense package. The
+CUDA + oneMKL configuration exercises the complete matrix with no skips.
+
+CUDA numerical execution is real, not vacuous. In a CUDA build the
+device-backed cases run for measurable time (for example "spherical CUDA
+partial and full agree with CPU static" 0.36 s, "cache and no-cache CUDA-full
+paths agree" 0.35 s, "shared CUDA M2L executor agrees with the canonical CPU
+plan" 2.05 s), whereas in a portable build the same cases report 0.00 s because
+they return early. CPU-reference, CPU-static, CUDA M2L/P2P hybrid, and CUDA
+full-FMM agreement is therefore covered by tests that genuinely executed on the
+GPU.
+
+### Cache backward compatibility
+
+A cache corpus of ten files was generated by the `v0.1.0` baseline build
+(universal spherical FP32/FP64, universal Cartesian FP64, a periodic root, and
+five geometry plans). Running HEAD against that untouched corpus produced, for
+every one of the five cases: the **same key strings**, `universal.hit: true`,
+`geometry.hit: true`, `periodic.hit: true` where applicable, and
+`cache.bytes_written: 0`. All ten files remained byte-identical afterwards, and
+the field results were bit-identical to the baseline run. The schema version,
+operator version, magic, hash inputs, and format layout were not changed.
+
+### Installation and downstream consumption
+
+A clean install to an isolated prefix produced 84 files: 79 headers, the
+`cdfmm_c` shared library, the `cdfmm-precompute` tool, the Python extension,
+and the installed Fortran source. No `AGENTS.md` was installed and no installed
+header references `src/` or `python/`. Every one of the 79 installed C++
+headers compiles standalone against the prefix alone, with no include-ordering
+requirement. A translation unit mixing all legacy flat paths with all canonical
+subsystem paths compiles in both include orders. A downstream C consumer built
+only against the installed prefix creates a plan, evaluates it, and reproduces
+the analytic two-dipole field to a relative error of `1.6e-16`.
+
+Note that dip-fmm exports no CMake package configuration, at `v0.1.0` or at
+HEAD; downstream C++ consumers link `cdfmm_c` directly. This is a pre-existing
+characteristic, not a refactor regression.
+
+### Documentation
+
+`sphinx-build -W --keep-going -b html docs docs/_build/html` now succeeds with
+**zero** warnings. The two long-standing `docs/api.rst` C++ declaration
+warnings were a genuine Phase-1 defect and were fixed rather than tolerated:
+`docs/Doxyfile` predefined `CDFMM_HOST_DEVICE`, a macro used nowhere, while the
+canonical `plan/p2p/canonical.hpp` header introduced by the refactor guards two
+declarations with `CDFMM_PLAN_HOST_DEVICE`. With `EXPAND_ONLY_PREDEF = YES`,
+Doxygen left that token unexpanded and Breathe could not parse the two
+declarations. `PREDEFINED` now names the macro actually in use.
+
+### Performance sanity
+
+A representative 20k-source/20k-target, depth-3, order-4 FP32 evaluation gives
+a median of 11.47 ms on the portable CPU static-matrix backend at HEAD against
+11.56 ms at `v0.1.0` — no regression. CUDA medians are 0.96 ms (partial) and
+0.88 ms (full), so near/far overlap and persistent device state are intact and
+no accidental backend fallback occurs.
+
+### Defects found and fixed during closure
+
+- `tests/test_fortran_api.f90` requested a periodic cubic cell of side 2
+  centred at the origin while its two prisms sit at `z = 0` and `z = 1` with
+  side 0.2, so the `z = 1` prism lay outside the periodic root and plan
+  creation correctly failed. The cell centre is now `(0, 0, 0.5)`, matching the
+  period-2 chain the case intends. This is a **pre-existing** defect: the file
+  is byte-identical to `v0.1.0`, and a `v0.1.0` build of the same test fails
+  identically. It went undetected because no Fortran compiler was available in
+  any previous session.
+- `docs/Doxyfile` named a macro that does not exist, as described above.
+- `include/cdfmm/AGENTS.md`, `src/AGENTS.md`, and three passages of this
+  document described already-implemented work as pending. Documentation that
+  contradicts the implementation is a Phase-1 defect, and these were corrected.
+
+## Phase 2 handoff
+
+Recorded, not started. Phase 2 requires its own explicit task.
+
+- **Implementation deduplication.** The canonical-to-compact P2P packing rule
+  stated independently by `cache/format.cpp` and `plan/p2p/compact.cpp`; the
+  factorial helper duplicated against `MultiIndexSet::factorial`.
+- **Remaining flat-file and public-header homes.** Relocating the coherent flat
+  units `src/periodic.cpp`, `src/parameter_selection.cpp`, and
+  `src/validation.cpp`; giving `timings.hpp`, `periodic.hpp`, `uniform_fmm.hpp`,
+  `validation.hpp`, `parameter_selection.hpp`, and `tensor_dictionary.hpp`
+  subsystem homes behind their retained public façades. Do these where they
+  clarify ownership, not for symmetry.
+- **Transitional seams.** `StaticFmmTopology` as the tree/plan adapter;
+  `tree/uniform_topology.hpp`; `adaptive_tree.hpp` returning
+  `StaticFmmTopology`; `parameter_selection.hpp` including the complete
+  `uniform_fmm.hpp`.
+- **Plan/cache duplication and encapsulation.** Cache entry points remain
+  `UniformFmm` members, so cache code retains intimate knowledge of the
+  representations it persists. Deeper encapsulation needs an API/ABI step.
+- **API and internal simplification.** Relocating the CUDA availability queries
+  out of `uniform_fmm.hpp`; introducing a CMake package configuration; stopping
+  CUDA libraries propagating from `cdfmm_core` to consumers. Each is an API or
+  packaging change requiring separate approval.
+- **Responsibility-review candidates.** `backend/cuda/p2p/plan.cu`,
+  `geometry/primitives/tetrahedron.cpp`, and `backend/cuda/fmm/plan.cu` are the
+  largest units. Size locates audit work; it does not mandate splitting.
+- **Obsolete test/doc/example audit and repository pruning**, and the future
+  `tests/{unit,backend,integration}` and `benchmarks/{direct,p2p,far_field,fmm}`
+  taxonomies.
+- **Coverage gaps.** CI remains portable CPU only; oneMKL, CUDA, and Fortran
+  are validated manually. Most CUDA-gated C++ cases return through `SUCCEED()`
+  rather than a true `SKIP()`, so a portable-CPU run reports them as passed;
+  only four cases report a real CTest skip. Making that distinction visible
+  would make portable-run results easier to read literally.
+
+A future `v0.2` release tag or branch is a separate, explicit release step. No
+release ref was created by this closure.
