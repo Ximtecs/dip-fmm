@@ -7,9 +7,10 @@ operators, static plans, FMM orchestration, portable CPU and oneMKL execution,
 and CUDA execution all have responsibility-specific homes. The high-level
 `UniformFmm` implementation is also decomposed into construction, plan
 preparation, backend setup, evaluation, far-field sequencing, diagnostics, and
-lifecycle/accessor units. Cache and bindings remain transitional layers; the
-remaining Phase 1 work is limited to those boundaries, compatibility review,
-and whole-refactor validation.
+lifecycle/accessor units. Cache persistence and the bindings boundary are now
+structured responsibility-specific layers. Remaining Phase 1 work is limited
+to compatibility/transitional-source review followed by whole-refactor
+validation.
 
 ## Design rules
 
@@ -214,12 +215,12 @@ dip-fmm/
 |-- include/cdfmm/    canonical core/math/geometry/tree/operators/plan/backend
 |                    plus compatibility shims
 |-- src/              structured operators/plan/fmm/backend code, including
-|                    explicit CPU and CUDA execution homes
+|                    explicit CPU/CUDA execution and bindings homes
 |-- tests/            C++ and optional Fortran tests
 |-- python_tests/     Python and notebook regression tests
 |-- benchmarks/       C++ drivers and Python runners
 |-- examples/         C++, Fortran, scripts, and notebooks
-|-- python/           pybind11 bindings
+|-- python/           split pybind11 binding units
 |-- fortran/          ISO_C_BINDING module
 |-- tools/            cache precomputation tool
 `-- docs/             user, mathematical, validation, and developer documents
@@ -264,7 +265,7 @@ dip-fmm/
 |   |       `-- fmm/          # complete CUDA FMM orchestration
 |   |-- fmm/
 |   |-- cache/
-|   `-- bindings/
+|   `-- bindings/       C ABI implementation
 |-- tests/
 |   |-- unit/
 |   |-- backend/
@@ -280,8 +281,8 @@ dip-fmm/
 
 This target sketch focuses on production subsystems. Existing top-level
 support areas such as `python_tests/`, `python/`, `fortran/`, and `tools/`
-remain valid until the later bindings/build step deliberately reorganises
-them.
+remain valid; the bindings boundary is implemented by the C ABI unit under
+`src/bindings/` and the split Python units under `python/`.
 
 The implemented operator and plan homes are:
 
@@ -378,6 +379,21 @@ cache for already-defined data, constructs what is missing through the operator
 and plan layers, and asks the cache to write the result. Cache code performs no
 operator mathematics, tree construction, plan policy, backend selection, or
 P2P packing policy.
+
+### Bindings boundary
+
+The bindings refactor is complete. The unconditional C ABI implementation is
+`src/bindings/c_api.cpp`, moved byte-identically from its former flat home;
+`include/cdfmm/c_api.h` is unchanged and `CDFMM_ABI_VERSION` remains `1`.
+The Fortran layer remains `ISO_C_BINDING -> C ABI -> supported C++`, so it does
+not reach into solver internals. The former monolithic `python/bindings.cpp`
+has been replaced by `python/internal.hpp`, `module.cpp` (the sole pybind11
+entry point), and the subsystem units `core.cpp`, `geometry.cpp`, `tree.cpp`,
+`operators.cpp`, `direct.cpp`, and `fmm.cpp`. CMake registers these units.
+
+Binding units use supported canonical structured headers where available, with
+only justified compatibility dependencies. They contain adaptation and
+validation glue, not solver logic, and do not include internal backend headers.
 
 The compatibility headers `cdfmm/operators.hpp` and
 `cdfmm/static_operators.hpp` remain supported forwarding umbrellas; they do
@@ -493,17 +509,14 @@ transitional layout:
 - the remaining public CUDA/FMM headers expose transitional plan concepts and
   depend on broad operator or geometry headers; direct, P2P, and M2L CUDA APIs
   now have canonical `backend/cuda/` headers with legacy forwarding façades.
-- `python/bindings.cpp` adapts nearly every layer in one translation unit, and
-  the C API implementation depends directly on the high-level FMM type.
 - the root CMake target registers the CPU subsystems together with explicit
   CUDA common/direct/P2P/M2L/far-field/FMM units; CUDA libraries are currently
   propagated from `cdfmm_core` to consumers.
 
 The largest remaining responsibility-review candidates are
-`backend/cuda/p2p/plan.cu`, `python/bindings.cpp`,
-`geometry/primitives/tetrahedron.cpp`, and `backend/cuda/fmm/plan.cu`. These
-measurements locate remaining audit work; they do not require mechanical
-splitting.
+`backend/cuda/p2p/plan.cu`, `geometry/primitives/tetrahedron.cpp`, and
+`backend/cuda/fmm/plan.cu`. These measurements locate remaining audit work;
+they do not require mechanical splitting.
 
 ### Foundational layout: core, math, geometry, and tree
 
@@ -575,8 +588,6 @@ boundary without making the tree depend on a particular P2P packing.
 
 ### Remaining Phase 1 work
 
-- Keep Python, C, and Fortran layers as adapters; split the large pybind11
-  translation unit by exposed subsystem without duplicating solver logic.
 - Review remaining compatibility/transitional source seams and remove or
   narrow them only when an explicit compatibility plan exists.
 - Resolve the duplicated canonical-to-compact P2P packing rule, which the
@@ -597,8 +608,8 @@ cache behaviour, and supported CPU/oneMKL/CUDA paths. Performance-sensitive
 backend changes additionally compare plan reuse, transfers, allocations,
 launches, synchronisation, and representative benchmark results.
 
-The high-level `UniformFmm` cleanup is complete. These refactor steps change
-file ownership and include structure without changing runtime algorithms or
-public names. Cache and bindings boundaries, compatibility/transitional source
-review, and whole-refactor validation are the remaining Phase 1 work. API
-redesign, packing, generation, discretisation, and refinement remain deferred.
+The high-level `UniformFmm`, cache, and bindings boundaries are complete. These
+refactor steps change file ownership and include structure without changing
+runtime algorithms or public names. Compatibility/transitional source review
+and whole-refactor validation are the remaining Phase 1 work. API redesign,
+packing, generation, discretisation, and refinement remain deferred.

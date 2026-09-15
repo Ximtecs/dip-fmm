@@ -1,5 +1,41 @@
 # Project diary
 
+## 2026-09-15 — bindings boundary and validation closure
+
+At implementation base/newest starting HEAD `9003b666`, the bindings boundary
+was structured without changing the public contract. The C ABI implementation
+moved byte-identically to `src/bindings/c_api.cpp`; `include/cdfmm/c_api.h`
+remains unchanged and ABI version 1 remains. Fortran continues through
+`ISO_C_BINDING -> C ABI -> supported C++`. The former `python/bindings.cpp` was
+replaced by `python/internal.hpp`, `module.cpp` as the sole entry point, and
+the subsystem units `core.cpp`, `geometry.cpp`, `tree.cpp`, `operators.cpp`,
+`direct.cpp`, and `fmm.cpp`. CMake registers these units. Binding code uses
+supported canonical structured headers where available, retains only justified
+compatibility dependencies, and contains no solver logic or internal backend
+headers.
+
+The isolated `9e111ee8` manifest comparison found 63 top-level Python names,
+with object kinds, docs/defaults, and member surface identical after
+normalising object addresses. The C ABI dynamic symbol set remained exactly
+14 `cdfmm_*` symbols, and the C source move was byte-identical.
+
+Trusted final evidence: portable affected/full build 73/73, CTest 197/197
+with four expected optional skips, and Python 137 passed/7 skipped; oneMKL
+notebooks core/C/Python/tests build, CTest 197/197 with three CUDA skips, and
+Python 139 passed/5 skipped; RTX 5090 visible with driver 595.84 under full
+access; fresh CUDA 13.3.73 build with explicit SM120, affected targets
+107/107, CTest 197/197 with only the oneMKL-only skip, and Python 141 passed/
+3 skipped. The initial stale SM75 artifacts failed PTX on the 5090 and are not
+a final result. No gfortran, ifx, or ifort was available, so Fortran smoke and
+example checks were not run. An independent temporary-prefix install passed,
+and diff/ownership audits passed. `sphinx-build -W --keep-going -b html docs
+docs/_build/html` rendered the documentation and exited nonzero only for the
+same two pre-existing `docs/api.rst` C++ declaration warnings.
+
+The cache change is already committed as `9e111ee`; it is not pending. The
+remaining Phase 1 sequence is compatibility/transitional-source review,
+followed by whole-Phase-1 validation. Neither is claimed complete here.
+
 ## 2026-09-15 — cache subsystem ownership decision
 
 Accepted the cache decomposition by responsibility rather than by the smallest
@@ -45,10 +81,10 @@ Prior old-cache compatibility evidence is preserved and now backed by the
 recovered 11-file corpus: both directions produced hits with zero writes and
 identical manifests, the repository's 522-file corpus remained unchanged, and
 an independent current probe hit old universal/periodic files without
-modifying their hashes. No implementation defect was found. The task is ready
-to be committed with subject `refactor(cache): structure persistence subsystem`;
-remaining Phase 1 scope is the bindings boundary, compatibility/transitional
-review, and whole-Phase-1 validation.
+modifying their hashes. No implementation defect was found. The cache task is
+already committed as `9e111ee` with subject `refactor(cache): structure
+persistence subsystem`; at that checkpoint, the bindings boundary,
+compatibility/transitional review, and whole-Phase-1 validation remained.
 
 ## 2026-09-15 — high-level ownership audit
 

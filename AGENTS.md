@@ -57,9 +57,14 @@ ownership. Cache identity and persistence are decomposed under `src/cache/`
 by file container/environment policy, payload records, key generation, the
 universal/periodic payload, and the geometry-plan payload; its persistent
 format and its keys are compatibility contracts, so read `src/cache/AGENTS.md`
-before changing them. Further backend, orchestration, cache, or binding
-changes are authorised only when explicitly scoped. Geometry packing, grain
-generation/discretisation, and prism/tetrahedron refinement remain future work.
+before changing them. The bindings boundary is now structured: the C ABI
+implementation is `src/bindings/c_api.cpp`, while the Python adapter is split
+into `python/internal.hpp`, `module.cpp`, `core.cpp`, `geometry.cpp`,
+`tree.cpp`, `operators.cpp`, `direct.cpp`, and `fmm.cpp`; the public C header
+and ABI version remain unchanged. Further backend, orchestration, cache, or
+binding changes are authorised only when explicitly scoped. Geometry packing,
+grain generation/discretisation, and prism/tetrahedron refinement remain
+future work.
 
 ## Repository memory
 
@@ -119,8 +124,8 @@ benchmarks/{direct,p2p,far_field,fmm}
 This is a target, not the current tree. Do not create empty directories for
 symmetry. Add more local `AGENTS.md` files only when corresponding substantive
 subsystems exist. Current support areas such as `python_tests/`, `python/`,
-`fortran/`, and `tools/` remain in place until a later bindings/build step
-explicitly assigns a different home.
+`fortran/`, and `tools/` remain in place; the implemented C and Python
+binding adaptation units are listed above and below.
 
 ## Architecture contract
 
@@ -172,7 +177,10 @@ Subsystem responsibilities and allowed dependencies:
 - `cache`: keying, metadata, validation, serialisation, and deserialisation of
   solver data; it defines no solver mathematics.
 - `bindings`: thin Python, C, and Fortran adaptation; no independent solver
-  logic.
+  logic. The C ABI implementation lives under `src/bindings/`; Python is
+  split by exposed subsystem under `python/`, with `module.cpp` as its sole
+  module entry point. Binding code uses supported canonical structured headers
+  where available and does not include internal backend headers.
 
 Prohibited by default: geometry or tree depending on CUDA/backend; math
 depending on FMM; operators depending on orchestration, cuBLAS, or cuSPARSE;

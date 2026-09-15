@@ -3,8 +3,8 @@
 The current checkout has substantive homes for foundational layers,
 operators/static plans, high-level FMM orchestration, portable CPU execution,
 oneMKL execution, the complete CUDA common/direct/P2P/M2L/far-field/FMM
-backend hierarchy, and cache identity/persistence. The binding layer remains
-partly flat; the target taxonomy in `docs/architecture.md` is not permission to
+backend hierarchy, cache identity/persistence, and the split Python/C binding
+boundary. The target taxonomy in `docs/architecture.md` is not permission to
 create empty directories or perform an unauthorised refactor.
 
 ## Current map
@@ -72,8 +72,10 @@ src/
   cache/universal.cpp                                           translation-bank/periodic payloads
   cache/geometry.cpp                                            geometry-plan payload
   cuda_fmm_plan.hpp                                              compatibility shim
-  c_api.cpp                                                     C ABI adapter
-python/bindings.cpp                                             pybind11 module
+  bindings/c_api.cpp                                           C ABI adapter
+python/internal.hpp                                             shared binding declarations
+python/module.cpp                                               sole pybind11 module entry point
+python/{core,geometry,tree,operators,direct,fmm}.cpp             subsystem adapters
 fortran/cdfmm_fortran.f90                                       ISO_C_BINDING wrapper
 tools/cdfmm_precompute.cpp                                     universal-cache tool
 tests/                                                          Catch2 C++ suite and
@@ -92,7 +94,10 @@ headers, CUDA RAII, kernels, and launch helpers stay under `src/`. `geometry`
 owns physical integration elements; `tree` owns hierarchy and interaction
 topology; `operators` owns mathematical maps; `plan` concepts own immutable
 execution descriptions; `backend` concepts own resources and execution; and
-`bindings` adapt the public API without reimplementing solver logic.
+`bindings` adapt the public API without reimplementing solver logic. The C ABI
+implementation is under `src/bindings/`; Python adaptation is split under
+`python/`, with `module.cpp` as the sole entry point. The Fortran wrapper
+continues to use `ISO_C_BINDING -> C ABI -> supported C++`.
 
 ## Execution data flow
 

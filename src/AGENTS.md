@@ -63,7 +63,7 @@ src/
 |                                          payloads
 |-- cache/geometry.cpp                      geometry-plan payload
 |-- cuda_fmm_plan.hpp                      forwarding compatibility shim
-|-- c_api.cpp                              C adapter
+|-- bindings/c_api.cpp                     C adapter
 |-- parameter_selection.cpp, validation.cpp
 `-- *.hpp                                  implementation-only support
 ```

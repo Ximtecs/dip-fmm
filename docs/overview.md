@@ -44,10 +44,12 @@ are optional and enabled with `CDFMM_BUILD_FORTRAN_INTERFACE`.
 ## Architecture
 
 Public C++ declarations live in `include/cdfmm`; implementation files live in
-`src`; `python/bindings.cpp` supplies the pybind11 module. `UniformTree` owns
-immutable geometry and ordering metadata. `UniformFmm` owns the selected basis,
-canonical static plan, typed mutable coefficient/result state, and optional
-device plan.
+`src`; `python/module.cpp` is the sole pybind11 entry point, with the binding
+adapter split across subsystem units in `python/`. The unconditional C ABI is
+implemented by `src/bindings/c_api.cpp`; the public C header and ABI version
+remain unchanged. `UniformTree` owns immutable geometry and ordering metadata.
+`UniformFmm` owns the selected basis, canonical static plan, typed mutable
+coefficient/result state, and optional device plan.
 
 Start with [Static-geometry architecture](static-architecture.md) for ownership
 and data flow, [FMM overview](fmm-overview.md) for traversal,

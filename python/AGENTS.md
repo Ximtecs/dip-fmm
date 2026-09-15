@@ -7,12 +7,18 @@ Python; it does not own solver algorithms.
 
 ```text
 python/
-`-- bindings.cpp    pybind11 module: types, options, plans, execution, diagnostics
+|-- module.cpp      single pybind11 entrypoint and registration order
+|-- internal.hpp    shared conversion and registration declarations
+|-- core.cpp        NumPy/Python conversion helpers and basic types
+|-- geometry.cpp    physical geometry records and geometry enums
+|-- tree.cpp        uniform/adaptive trees and static topology exposure
+|-- operators.cpp   expansion operators and mathematical helpers
+|-- direct.cpp      direct plans, references, and capability queries
+`-- fmm.cpp         UniformFmm, options, suggestions, and diagnostics
 ```
 
-`bindings.cpp` is currently a large mixed binding unit and a later
-decomposition candidate. Future files should be grouped by exposed subsystem,
-not by arbitrary line count, and should continue to call C++ library logic.
+Binding files are grouped by exposed subsystem, not arbitrary line count, and
+should continue to call C++ library logic.
 
 ## Rules and validation
 

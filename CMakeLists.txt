@@ -241,7 +241,7 @@ cdfmm_enable_ipo(cdfmm_core)
 
 # The shared integration boundary contains only plain C symbols.  Its C++
 # implementation and all backend resources remain private behind an opaque plan.
-add_library(cdfmm_c SHARED src/c_api.cpp)
+add_library(cdfmm_c SHARED src/bindings/c_api.cpp)
 target_link_libraries(cdfmm_c PRIVATE cdfmm_core)
 target_include_directories(cdfmm_c PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -305,7 +305,14 @@ if(CDFMM_BUILD_PYTHON)
     )
     FetchContent_MakeAvailable(pybind11)
   endif()
-  pybind11_add_module(cdfmm python/bindings.cpp)
+  pybind11_add_module(cdfmm
+    python/module.cpp
+    python/core.cpp
+    python/geometry.cpp
+    python/tree.cpp
+    python/operators.cpp
+    python/direct.cpp
+    python/fmm.cpp)
   target_link_libraries(cdfmm PRIVATE cdfmm_core)
   target_include_directories(cdfmm PRIVATE include)
   cdfmm_enable_ipo(cdfmm)

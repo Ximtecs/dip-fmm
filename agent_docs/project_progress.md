@@ -1,5 +1,50 @@
 # Project progress
 
+## Bindings boundary and current Phase 1 handoff — 2026-09-15
+
+The bindings boundary is now structured from implementation base/newest
+starting HEAD `9003b666` (with the cache commit `9e111ee` already preserved in
+history). The C ABI implementation moved byte-identically to
+`src/bindings/c_api.cpp`; `include/cdfmm/c_api.h` is unchanged and ABI version
+1 remains in force. Fortran remains the
+`ISO_C_BINDING -> C ABI -> supported C++` path. The former `python/bindings.cpp`
+was removed and replaced by `python/internal.hpp`, `module.cpp` (sole entry
+point), and `core.cpp`, `geometry.cpp`, `tree.cpp`, `operators.cpp`,
+`direct.cpp`, and `fmm.cpp`. CMake registers those sources. Binding code uses
+supported canonical structured headers where available, with only justified
+compatibility dependencies; it contains no solver logic or internal backend
+headers.
+
+The isolated `9e111ee8` manifest comparison found 63 top-level Python names,
+with object kinds, docs/defaults, and member surface identical after
+normalising object addresses. The C ABI dynamic symbol set was exactly the
+same 14 `cdfmm_*` symbols before and after, and the moved C source is
+byte-identical.
+
+Trusted validation for this boundary and the current checkout:
+
+- portable affected/full build: 73/73; CTest 197/197 with four expected
+  optional skips; Python 137 passed and 7 skipped;
+- oneMKL notebooks configuration built core/C/Python/tests; CTest 197/197
+  with three CUDA skips; Python 139 passed and 5 skipped;
+- under full access, an RTX 5090 was visible with driver 595.84. A fresh CUDA
+  build used the active environment's CUDA compiler/toolkit 13.3.73 with
+  explicit SM120; affected targets built 107/107, CTest 197/197 with only
+  the oneMKL-only skip, and Python 141 passed and 3 skipped (two oneMKL-only,
+  one external MagTense);
+- the initial stale SM75 artifacts failed PTX on the RTX 5090 and are not a
+  final result;
+- no gfortran, ifx, or ifort was available, so Fortran smoke/example checks
+  were not run; and
+- an independent temporary-prefix install passed. Git diff checks and
+  ownership audits passed; `sphinx-build -W --keep-going -b html docs
+  docs/_build/html` rendered the documentation and exited nonzero only for the
+  same two pre-existing `docs/api.rst` C++ declaration warnings.
+
+The remaining Phase 1 sequence is compatibility/transitional-source review,
+then whole-Phase-1 validation. Neither is claimed complete here. Unrelated
+`Article1/` and notebook changes remain preserved.
+
 ## Cache persistence subsystem — 2026-09-15
 
 `src/cache.cpp` is decomposed into `src/cache/` and removed. The units are
@@ -57,7 +102,7 @@ No implementation defect was found.
 This compatibility evidence matters because the existing suite compares cache
 keys only between two live instances; a uniform key change would pass it.
 
-The task is ready to be committed with subject
+The cache task is already committed as `9e111ee` with subject
 `refactor(cache): structure persistence subsystem`. Unrelated untracked
 `Article1/` and
 `examples/simple_notebooks/tetrahedron_target_average_fair_sampling.ipynb`
@@ -93,8 +138,9 @@ Trusted final validation:
 
 GPU numerical runtime remains unavailable because `nvidia-smi` could not
 communicate with the driver and the driver rejected CUDA 13.2 PTX; no
-numerical device pass is claimed. Remaining Phase 1 work is limited to the
-cache boundary, bindings boundary, and compatibility/transitional review.
+numerical device pass is claimed. At that earlier checkpoint, the cache and
+bindings boundaries plus compatibility/transitional review were next; current
+remaining work is recorded at the top of this file.
 
 ## Portable CPU backend decomposition — 2026-09-15
 

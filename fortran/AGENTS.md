@@ -12,7 +12,7 @@ fortran/
 tests/test_fortran_api.f90
 examples/fortran/magtense_style_demag.f90
 include/cdfmm/c_api.h
-src/c_api.cpp
+src/bindings/c_api.cpp
 ```
 
 ## Rules and validation
