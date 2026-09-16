@@ -42,8 +42,8 @@ std::vector<StaticP2PLeafPair> leaf_pairs_from_topology(
   return leaf_pairs;
 }
 
-// A cache loaded directly at FP32 has no FP64 canonical operator; the leaf
-// builder is FP64-only, so widen the stored values without changing them.
+// FP32 plans retain no FP64 canonical operator; the leaf builder is FP64-only,
+// so widen the stored values without changing them.
 StaticP2POperator promote_p2p_operator(const FloatStaticP2POperator &source) {
   StaticP2POperator promoted;
   promoted.source_count = source.source_count;
@@ -632,14 +632,12 @@ StaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan() const {
 }
 
 FloatStaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan_float() const {
-  const std::vector<StaticP2PLeafPair> leaf_pairs =
-      leaf_pairs_from_topology(*topology_);
-  if (geometry_cache_loaded_direct_float_) {
-    return quantise_static_p2p_leaf_plan(build_static_p2p_leaf_plan(
-        promote_p2p_operator(p2p_operator_float_), leaf_pairs));
-  }
-  return quantise_static_p2p_leaf_plan(
-      build_static_p2p_leaf_plan(p2p_operator_, leaf_pairs));
+  // An FP32 plan keeps no FP64 operator after quantisation, so the FP64-only
+  // leaf builder runs on the widened FP32 values; quantising the result back
+  // reproduces the stored FP32 tensors exactly.
+  return quantise_static_p2p_leaf_plan(build_static_p2p_leaf_plan(
+      promote_p2p_operator(p2p_operator_float_),
+      leaf_pairs_from_topology(*topology_)));
 }
 
 void UniformFmm::build_backend_packing() {

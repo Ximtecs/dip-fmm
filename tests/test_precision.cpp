@@ -5,6 +5,8 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <string>
 #include <numeric>
 #include <random>
 #include <vector>
@@ -332,6 +334,67 @@ TEST_CASE("FP32 FMM normalises nanometre-scale expansion state") {
     REQUIRE(actual[target].phi ==
             Catch::Approx(expected[target].phi).epsilon(3.0e-5));
   }
+}
+
+TEST_CASE("CUDA FP32 point plans build without a geometry cache") {
+  if (!cuda_available()) {
+    SUCCEED("CUDA is unavailable");
+    return;
+  }
+  // An FP32 plan keeps no FP64 P2P operator after quantisation; the CUDA
+  // leaf-block packing must therefore be derivable from the FP32 operator
+  // alone. A warm geometry cache hides that, so the cache is disabled here.
+  const char *previous = std::getenv("CDFMM_DISABLE_CACHE");
+  const std::string restored = previous == nullptr ? "" : previous;
+  setenv("CDFMM_DISABLE_CACHE", "1", 1);
+  const auto restore = [&] {
+    if (previous == nullptr) {
+      unsetenv("CDFMM_DISABLE_CACHE");
+    } else {
+      setenv("CDFMM_DISABLE_CACHE", restored.c_str(), 1);
+    }
+  };
+  try {
+    std::vector<Vec3> positions;
+    std::vector<Vec3> moments;
+    for (int index = 0; index < 64; ++index) {
+      const double value = static_cast<double>(index);
+      positions.push_back({-0.9 + 1.8 * static_cast<double>((index * 11) % 61) / 60.0,
+                           -0.9 + 1.8 * static_cast<double>((index * 23) % 59) / 58.0,
+                           -0.9 + 1.8 * static_cast<double>((index * 37) % 53) / 52.0});
+      moments.push_back({std::sin(value), std::cos(0.5 * value),
+                         std::sin(0.25 * value)});
+    }
+    std::vector<int> identities(positions.size());
+    std::iota(identities.begin(), identities.end(), 0);
+    for (const ExecutionBackend backend :
+         {ExecutionBackend::CudaPartial, ExecutionBackend::CudaFull}) {
+      UniformFmmOptions options;
+      options.expansion_basis = ExpansionBasis::Spherical;
+      options.expansion_order = 4;
+      options.tree.max_level = 2;
+      options.tree.root_centre = Vec3{};
+      options.tree.root_half_width = 1.0;
+      options.fixed_target_source_indices = identities;
+      options.backend = ExecutionBackend::CpuStatic;
+      options.precision = StaticPrecision::Float64;
+      UniformFmm reference(positions, positions, options);
+      options.backend = backend;
+      options.precision = StaticPrecision::Float32;
+      UniformFmm fp32(positions, positions, options);
+      CAPTURE(backend);
+      REQUIRE(fp32.p2p_execution_packing() == P2PExecutionPacking::LeafBlock);
+      const auto expected =
+          reference.evaluate(moments, OutputFlags::Field, identities);
+      const auto actual =
+          fp32.evaluate_float32(moments, OutputFlags::Field, identities);
+      REQUIRE(relative_field_error(actual, expected) < 3.0e-5);
+    }
+  } catch (...) {
+    restore();
+    throw;
+  }
+  restore();
 }
 
 TEST_CASE("CUDA partial and full execute FP32 and FP64 plans") {
