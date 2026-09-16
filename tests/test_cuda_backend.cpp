@@ -878,14 +878,14 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
     REQUIRE(cdfmm::cuda_policy::dictionary_microtile_occupancy_limit() <
             cdfmm::cuda_policy::dictionary_source_warp_occupancy_limit());
   }
-  SECTION("RegularGrid without identity or on a CPU backend keeps the defaults") {
+  SECTION("RegularGrid without identity keeps the defaults; CPU backends share the lattice rule") {
     inputs.spatial_layout = SpatialLayout::RegularGrid;
     inputs.fixed_identity_available = false;
     REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
             CudaP2PPacking::LeafBlock);
     inputs.fixed_identity_available = true;
     inputs.cuda_backend = false;
-    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing !=
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
             CudaP2PPacking::SignedDictionary);
   }
   SECTION("periodicity does not restrict any stored-tensor packing") {
@@ -901,7 +901,7 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
     inputs.effective_point_source = false;
     inputs.bsr_estimate_bytes = 1024;
     REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
-            CudaP2PPacking::Bsr3);
+            CudaP2PPacking::LeafBlock);
     for (const CudaP2PPacking packing :
          {CudaP2PPacking::CanonicalRows, CudaP2PPacking::LeafBlock,
           CudaP2PPacking::Bsr3, CudaP2PPacking::SignedDictionary}) {
@@ -915,15 +915,24 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
     REQUIRE(cdfmm::cuda_policy::explicit_packing_rejection(
                 inputs, CudaP2PPacking::LeafBlock) == nullptr);
   }
-  SECTION("RegularGrid finite sources keep the BSR policy") {
-    inputs.spatial_layout = SpatialLayout::RegularGrid;
+  SECTION("finite sources follow the same rules as points") {
+    // Leaf blocks are the general default for every geometry (measured
+    // faster than BSR(3) on finite bodies once the leaf packing carried the
+    // identity metadata); the BSR budget no longer steers the policy, and the
+    // lattice hint selects the dictionary for finite bodies too.
     inputs.effective_point_source = false;
+    inputs.fixed_identity_available = false;
     inputs.bsr_estimate_bytes = 1024;
     REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
-            CudaP2PPacking::Bsr3);
+            CudaP2PPacking::LeafBlock);
     inputs.bsr_budget_bytes = 0;
     REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
-            CudaP2PPacking::CanonicalRows);
+            CudaP2PPacking::LeafBlock);
+    inputs.spatial_layout = SpatialLayout::RegularGrid;
+    const auto lattice = resolve_cuda_execution_policy(inputs);
+    REQUIRE(lattice.p2p_packing == CudaP2PPacking::SignedDictionary);
+    REQUIRE(lattice.dictionary_from_layout);
+    REQUIRE(cdfmm::cuda_policy::dictionary_layout_max_token_width_bytes() == 2);
   }
   SECTION("explicit options win over the layout hint and keep their meaning") {
     inputs.spatial_layout = SpatialLayout::RegularGrid;
@@ -1075,7 +1084,8 @@ TEST_CASE("regular-grid layout hint keeps finite and periodic CUDA policies",
   std::vector<int> identities(positions.size());
   std::iota(identities.begin(), identities.end(), 0);
 
-  // Finite (prism) sources: BSR(3) exactly as for the general layout.
+  // Finite (prism) sources on a lattice: the hint selects the dictionary for
+  // finite bodies too (identical prisms compress like a point lattice).
   UniformFmmOptions finite;
   finite.expansion_basis = ExpansionBasis::Cartesian;
   finite.expansion_order = 2;
@@ -1089,7 +1099,12 @@ TEST_CASE("regular-grid layout hint keeps finite and periodic CUDA policies",
   finite.spatial_layout = SpatialLayout::RegularGrid;
   finite.enable_cache = false;
   UniformFmm finite_plan(positions, positions, finite);
-  REQUIRE(finite_plan.p2p_execution_packing() == P2PExecutionPacking::CudaBsr3);
+  REQUIRE(finite_plan.p2p_execution_packing() ==
+          P2PExecutionPacking::TensorDictionary);
+  finite.spatial_layout = SpatialLayout::General;
+  UniformFmm finite_general(positions, positions, finite);
+  REQUIRE(finite_general.p2p_execution_packing() ==
+          P2PExecutionPacking::LeafBlock);
 
   // Periodic point sources follow the free-space rules: leaf blocks on the
   // general layout, the dictionary on a regular lattice with a fixed identity
@@ -1308,9 +1323,10 @@ TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
     return;
   }
 
-  // Finite sources keep BSR(3) as their default packing (their self fields are
-  // physical), so the memory budget is what decides between BSR and canonical
-  // rows; point sources take the leaf-block packing regardless of the budget.
+  // Leaf blocks are the general default for finite and point sources alike;
+  // the BSR memory budget no longer steers the automatic policy, and BSR(3)
+  // remains available as an explicit packing (its finite self fields are
+  // physical, so no identity map is needed).
   const std::vector<Vec3> positions{
       {-0.5, 0.0, 0.0}, {0.25, 0.1, -0.2}, {0.4, -0.3, 0.2}};
   UniformFmmOptions options;
@@ -1324,14 +1340,20 @@ TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
 
   UniformFmm fmm(positions, positions, options);
 
-  REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::CanonicalAos);
+  REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::LeafBlock);
   REQUIRE(fmm.cuda_plan_statistics().p2p_identity_bytes ==
           positions.size() * sizeof(int));
 
   options.cuda_p2p_bsr_max_bytes = 20ULL * 1024ULL * 1024ULL * 1024ULL;
   UniformFmm within_budget(positions, positions, options);
   REQUIRE(within_budget.p2p_execution_packing() ==
+          P2PExecutionPacking::LeafBlock);
+  options.p2p_packing = P2PExecutionPacking::CudaBsr3;
+  options.cuda_p2p_bsr_max_bytes = 0;
+  UniformFmm explicit_bsr(positions, positions, options);
+  REQUIRE(explicit_bsr.p2p_execution_packing() ==
           P2PExecutionPacking::CudaBsr3);
+  REQUIRE(explicit_bsr.cuda_plan_statistics().p2p_identity_bytes == 0);
 
   const std::vector<int> identities{0, 1, 2};
   UniformFmmOptions point_options;
@@ -1381,6 +1403,7 @@ TEST_CASE("CUDA BSR supports finite cuboid point and cuboid self fields",
     if (target_geometry == TargetGeometry::RectangularPrism) {
       options.target_sizes = {target_sizes.front()};
     }
+    options.p2p_packing = P2PExecutionPacking::CudaBsr3;
 
     UniformFmm fmm(positions, positions, options);
     REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::CudaBsr3);

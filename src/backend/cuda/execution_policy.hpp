@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 
 #include "cdfmm/backend/execution.hpp"
@@ -49,7 +50,8 @@ struct CudaExecutionPolicyInputs {
   double mean_leaf_occupancy{0.0};
   std::size_t p2p_pair_count{0};
   std::size_t m2l_translation_count{0};
-  /// Estimated persistent bytes of a BSR(3) plan and the configured budget.
+  /// Estimated persistent bytes of a BSR(3) plan and the configured budget
+  /// (diagnostic only since leaf blocks became the general default).
   std::size_t bsr_estimate_bytes{0};
   std::size_t bsr_budget_bytes{0};
 };
@@ -58,7 +60,9 @@ struct CudaExecutionPolicyInputs {
 struct CudaExecutionPolicy {
   CudaP2PPacking p2p_packing{CudaP2PPacking::CanonicalRows};
   CudaDictionaryExecutor dictionary_executor{CudaDictionaryExecutor::SourceWarp};
-  /// True when the P2P packing came from the layout hint, not an explicit option.
+  /// True when the P2P packing came from the layout hint, not an explicit
+  /// option; such a dictionary is kept only if the built plan compresses
+  /// (token width of at most two bytes, i.e. at most 65535 variants).
   bool dictionary_from_layout{false};
   /// Pairs per thread of the grouped M2L kernel.
   int m2l_pairs_per_thread{8};
@@ -96,6 +100,16 @@ explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
 
 /** @brief Leaf occupancy from which the source-warp executor is chosen. */
 [[nodiscard]] double dictionary_source_warp_occupancy_limit();
+
+/**
+ * @brief Largest token width (bytes) a layout-selected dictionary may have.
+ *
+ * Measured on 32768 irregular bodies (3.47M variants, four-byte tokens): the
+ * CUDA dictionary kernels were 1.9-3.6x slower than leaf blocks, while a
+ * lattice (187-344 variants, one-byte tokens) was 3x faster; two-byte tokens
+ * keep the dictionary within about 1.5 MB, which streams from cache.
+ */
+[[nodiscard]] std::uint8_t dictionary_layout_max_token_width_bytes() noexcept;
 
 [[nodiscard]] const char *name(CudaP2PPacking packing) noexcept;
 [[nodiscard]] const char *name(CudaDictionaryExecutor executor) noexcept;

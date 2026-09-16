@@ -617,11 +617,19 @@ void UniformFmm::build_reduced_symmetry_p2p_packing() {
     p2p_tensor_dictionary_plan_ = build_static_p2p_signed_tensor_dictionary_plan(
         promoted, leaf_pairs, fixed_sorted_self_indices_,
         signed_p2p_target_tile_size_);
-    return;
+  } else {
+    p2p_tensor_dictionary_plan_ = build_static_p2p_signed_tensor_dictionary_plan(
+        p2p_operator_, leaf_pairs, fixed_sorted_self_indices_,
+        signed_p2p_target_tile_size_);
   }
-  p2p_tensor_dictionary_plan_ = build_static_p2p_signed_tensor_dictionary_plan(
-      p2p_operator_, leaf_pairs, fixed_sorted_self_indices_,
-      signed_p2p_target_tile_size_);
+  // A dictionary chosen from the layout hint is a prediction; the built plan
+  // is the measurement. Keep it only when the operator actually compresses
+  // (token width), otherwise release it so the general defaults apply.
+  if (cuda_policy_->policy.dictionary_from_layout &&
+      p2p_tensor_dictionary_plan_->token_width_bytes >
+          cuda_policy::dictionary_layout_max_token_width_bytes()) {
+    p2p_tensor_dictionary_plan_.reset();
+  }
 }
 
 void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
@@ -852,11 +860,12 @@ void UniformFmm::build_backend_packing() {
 }
 
 bool UniformFmm::selects_point_geometry_p2p() const noexcept {
-  // Automatic policy: point sources and point targets, no periodic images and
-  // no dictionary request. Every list-1 pair is then the point-dipole formula
-  // of two resident positions, so recomputing it is cheaper than streaming
-  // tensors. An explicit request bypasses this rule (see
-  // resolve_cpu_p2p_packing).
+  // Automatic policy: point sources and point targets and no dictionary
+  // request. Every list-1 pair is then the point-dipole formula of two
+  // resident positions (plus the record's image shift on a periodic plan), so
+  // recomputing it is cheaper than streaming tensors: measured 2.7-5.1x
+  // faster than the SoA rows for periodic plans as well. An explicit request
+  // bypasses this rule (see resolve_cpu_p2p_packing).
   if (requested_p2p_packing_ != P2PExecutionPacking::Auto) {
     return requested_p2p_packing_ == P2PExecutionPacking::PointGeometry;
   }
@@ -867,7 +876,7 @@ bool UniformFmm::selects_point_geometry_p2p() const noexcept {
       target_geometry_ == TargetGeometry::Point ||
       near_field_target_model_ == TargetModel::Point;
   return effective_point_source && effective_point_target &&
-         !periodic_.enabled && !use_reduced_symmetry_p2p_;
+         !use_reduced_symmetry_p2p_;
 }
 
 P2PExecutionPacking UniformFmm::resolve_cpu_p2p_packing() const noexcept {

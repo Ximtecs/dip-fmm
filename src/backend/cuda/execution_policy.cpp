@@ -55,6 +55,8 @@ double dictionary_source_warp_occupancy_limit() {
   return dictionary_source_warp_occupancy;
 }
 
+std::uint8_t dictionary_layout_max_token_width_bytes() noexcept { return 2; }
+
 const char *
 explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
                            const CudaP2PPacking packing) noexcept {
@@ -109,15 +111,20 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
   }
 
   // The signed dictionary encodes fixed point-source self pairs as the zero
-  // variant, so it needs a point source with a fixed identity map. Finite
-  // sources may use it through the explicit option only (their self fields
-  // are physical). Periodic image records are dense leaf pairs like any
-  // other, so periodicity does not restrict any stored-tensor packing.
+  // variant, so a point source needs a fixed identity map; a finite source's
+  // self field is physical and needs nothing. Periodic image records are
+  // dense leaf pairs like any other, so periodicity does not restrict any
+  // stored-tensor packing. The regular-grid hint selects the dictionary for
+  // any geometry on every backend: a lattice of identical bodies has as few
+  // distinct tensors as a point lattice (248 prism / 187 tetrahedron variants
+  // for 6.2M pairs) and the same executors, measured 2-7.5x faster than the
+  // SoA rows on the CPU and 3x faster than leaf blocks on CUDA. Whether the
+  // derived dictionary actually compresses is checked on the built plan
+  // (token width), and a poorly compressing hint falls back to the defaults.
   const bool dictionary_valid =
       !inputs.effective_point_source || inputs.fixed_identity_available;
   const bool layout_dictionary =
-      inputs.cuda_backend && inputs.spatial_layout == SpatialLayout::RegularGrid &&
-      inputs.effective_point_source && dictionary_valid;
+      inputs.spatial_layout == SpatialLayout::RegularGrid && dictionary_valid;
 
   if (inputs.explicit_reduced_symmetry && dictionary_valid) {
     // Explicit request: the executor flags keep their documented meaning
@@ -153,18 +160,14 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
     return policy;
   }
 
-  // General defaults (Phase 3A): dense leaf blocks for point sources; BSR(3)
-  // within its budget for finite sources, otherwise canonical rows. Periodic
-  // plans follow the same rules since their image records pack identically.
-  if (inputs.effective_point_source) {
-    policy.p2p_packing = CudaP2PPacking::LeafBlock;
-    return policy;
-  }
-  if (inputs.bsr_estimate_bytes <= inputs.bsr_budget_bytes) {
-    policy.p2p_packing = CudaP2PPacking::Bsr3;
-    return policy;
-  }
-  policy.p2p_packing = CudaP2PPacking::CanonicalRows;
+  // General default: dense leaf blocks for every geometry. Phase 3A chose
+  // them for point sources; the P2P unification measured them against BSR(3)
+  // on finite bodies too (117 vs 191 us on a 32^3 prism/tetrahedron lattice,
+  // 142 vs 217 us on irregular bodies, 8 bodies per leaf, FP32) once the leaf
+  // packing carried the identity metadata, so the geometry-based BSR default
+  // is gone. BSR(3) and canonical rows remain explicit packings; periodic
+  // plans follow the same rule since their image records pack identically.
+  policy.p2p_packing = CudaP2PPacking::LeafBlock;
   return policy;
 }
 
