@@ -115,6 +115,19 @@ public:
                 std::span<FloatVec3> fields,
                 std::span<const int> sorted_self_indices);
   void copy_far_fields(std::span<Vec3> fields) const;
+
+  /**
+   * @brief Pinned host staging buffers for one evaluation.
+   *
+   * Writing the scaled moments straight into `pinned_moments()` and reading
+   * the user-ordered fields straight from `pinned_fields()` removes one host
+   * copy on each side of the device round trip. `evaluate()` recognises the
+   * aliased spans and skips its own staging copies.
+   */
+  [[nodiscard]] std::span<Vec3> pinned_moments() noexcept;
+  [[nodiscard]] std::span<FloatVec3> pinned_moments_float() noexcept;
+  [[nodiscard]] std::span<Vec3> pinned_fields() noexcept;
+  [[nodiscard]] std::span<FloatVec3> pinned_fields_float() noexcept;
   [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
   [[nodiscard]] const CudaEvaluationTimings &timings() const noexcept;
 

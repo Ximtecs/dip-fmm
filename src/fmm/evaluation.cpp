@@ -148,14 +148,22 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
         "request field only or select point near-field models");
   }
   if (precision_ == StaticPrecision::Float32) {
-    std::vector<FloatPotentialField> float_results(results.size());
+    // The persistent scratch keeps repeated FP32 evaluation allocation-free
+    // when results are requested through the FP64 API.
+    float_result_scratch_.resize(results.size());
+    const std::span<FloatPotentialField> float_results = float_result_scratch_;
     evaluate_into_float32(dipole_moments, float_results, output,
                           target_source_indices);
-    for (std::size_t index = 0; index < results.size(); ++index) {
-      results[index].phi = static_cast<double>(float_results[index].phi);
-      results[index].H = {static_cast<double>(float_results[index].H.x),
-          static_cast<double>(float_results[index].H.y),
-          static_cast<double>(float_results[index].H.z)};
+#pragma omp parallel for schedule(static) if (results.size() >= 256)
+    for (std::ptrdiff_t index = 0;
+         index < static_cast<std::ptrdiff_t>(results.size()); ++index) {
+      const FloatPotentialField &value =
+          float_results[static_cast<std::size_t>(index)];
+      PotentialField &result = results[static_cast<std::size_t>(index)];
+      result.phi = static_cast<double>(value.phi);
+      result.H = {static_cast<double>(value.H.x),
+                  static_cast<double>(value.H.y),
+                  static_cast<double>(value.H.z)};
     }
     return;
   }
@@ -186,42 +194,15 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     }
     last_timings_ = {};
     const auto evaluation_start = Clock::now();
-    prepare_self_indices(target_source_indices);
-    detail::ProfileRange device_range{"cdfmm/cuda_full"};
-    const double inverse_volume_scale =
-        1.0 / (coordinate_scale_ * coordinate_scale_ * coordinate_scale_);
-    for (std::size_t index = 0; index < dipole_moments.size(); ++index) {
-      sorted_dipole_moments_[index] =
-          dipole_moments[index] * inverse_volume_scale;
+    const std::span<const Vec3> fields =
+        evaluate_cuda_full(dipole_moments, target_source_indices);
+#pragma omp parallel for schedule(static) if (target_count >= 256)
+    for (std::ptrdiff_t target = 0;
+         target < static_cast<std::ptrdiff_t>(target_count); ++target) {
+      PotentialField &result = results[static_cast<std::size_t>(target)];
+      result.phi = 0.0;
+      result.H = fields[static_cast<std::size_t>(target)];
     }
-    cuda_full_plan_->plan->evaluate(sorted_dipole_moments_, near_fields_,
-                                    sorted_self_indices_);
-    for (std::size_t target = 0; target < target_count; ++target) {
-      results[target].phi = 0.0;
-      results[target].H = near_fields_[target];
-    }
-    if (capture_components_) {
-      std::vector<Vec3> sorted_far(target_count);
-      cuda_full_plan_->plan->copy_far_fields(sorted_far);
-      diagnostic_far_.resize(target_count);
-      for (std::size_t i = 0; i < target_count; ++i) {
-        diagnostic_far_[topology_->target_permutation[i]] = sorted_far[i];
-      }
-    }
-    const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
-    last_timings_.cuda_h2d.add(device.h2d_seconds);
-    last_timings_.p2m.add(device.p2m_seconds);
-    last_timings_.m2m.add(device.m2m_seconds);
-    last_timings_.m2l.add(device.m2l_seconds);
-    last_timings_.m2l_scale.add(device.scale_seconds);
-    last_timings_.m2l_multiply.add(device.multiply_seconds);
-    last_timings_.l2l.add(device.l2l_seconds);
-    last_timings_.l2p.add(device.l2p_seconds);
-    last_timings_.p2p.add(device.p2p_seconds);
-    last_timings_.cuda_p2p_kernel.add(device.p2p_seconds);
-    last_timings_.result_unpermutation.add(device.accumulation_seconds);
-    last_timings_.cuda_kernel.add(device.kernel_seconds);
-    last_timings_.cuda_d2h.add(device.d2h_seconds);
     last_timings_.total.add(elapsed_seconds(evaluation_start));
     last_timings_.evaluations = 1;
     accumulate_timings(aggregate_timings_, last_timings_);
@@ -364,6 +345,109 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
   accumulate_timings(aggregate_timings_, last_timings_);
 }
 
+std::span<const int> UniformFmm::stage_self_indices(
+    const std::span<const int> target_source_indices) {
+  // A fixed identity map was gathered into sorted order once at construction;
+  // only a dynamic map needs the per-evaluation gather.
+  if (fixed_target_source_indices_.has_value()) {
+    return fixed_sorted_self_indices_;
+  }
+  prepare_self_indices(target_source_indices);
+  return sorted_self_indices_;
+}
+
+void UniformFmm::record_cuda_full_timings() {
+  const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
+  last_timings_.cuda_h2d.add(device.h2d_seconds);
+  last_timings_.p2m.add(device.p2m_seconds);
+  last_timings_.m2m.add(device.m2m_seconds);
+  last_timings_.m2l.add(device.m2l_seconds);
+  last_timings_.m2l_scale.add(device.scale_seconds);
+  last_timings_.m2l_multiply.add(device.multiply_seconds);
+  last_timings_.l2l.add(device.l2l_seconds);
+  last_timings_.l2p.add(device.l2p_seconds);
+  last_timings_.p2p.add(device.p2p_seconds);
+  last_timings_.cuda_p2p_kernel.add(device.p2p_seconds);
+  last_timings_.result_unpermutation.add(device.accumulation_seconds);
+  last_timings_.cuda_kernel.add(device.kernel_seconds);
+  last_timings_.cuda_d2h.add(device.d2h_seconds);
+}
+
+std::span<const Vec3>
+UniformFmm::evaluate_cuda_full(const std::span<const Vec3> dipole_moments,
+                               const std::span<const int> target_source_indices) {
+  detail::ProfileRange device_range{"cdfmm/cuda_full"};
+  CudaFullPlan &plan = *cuda_full_plan_->plan;
+  const std::span<Vec3> staged_moments = plan.pinned_moments();
+  if (dipole_moments.size() != staged_moments.size()) {
+    throw std::invalid_argument("full CUDA FMM dimensions are inconsistent");
+  }
+  const std::span<const int> self_indices =
+      stage_self_indices(target_source_indices);
+  // Scaled user-order moments go straight into the plan's pinned staging
+  // buffer; the device applies the Morton permutation.
+  const double scale = coordinate_scale_;
+  const double inverse_volume_scale = 1.0 / (scale * scale * scale);
+#pragma omp parallel for schedule(static) if (dipole_moments.size() >= 256)
+  for (std::ptrdiff_t index = 0;
+       index < static_cast<std::ptrdiff_t>(dipole_moments.size()); ++index) {
+    staged_moments[static_cast<std::size_t>(index)] =
+        dipole_moments[static_cast<std::size_t>(index)] * inverse_volume_scale;
+  }
+  const std::span<Vec3> fields = plan.pinned_fields();
+  plan.evaluate(staged_moments, fields, self_indices);
+  if (capture_components_) {
+    const std::size_t target_count = fields.size();
+    std::vector<Vec3> sorted_far(target_count);
+    plan.copy_far_fields(sorted_far);
+    diagnostic_far_.resize(target_count);
+    for (std::size_t i = 0; i < target_count; ++i) {
+      diagnostic_far_[topology_->target_permutation[i]] = sorted_far[i];
+    }
+  }
+  record_cuda_full_timings();
+  return fields;
+}
+
+template <typename Moment>
+std::span<const FloatVec3> UniformFmm::evaluate_cuda_full_float32(
+    const std::span<const Moment> dipole_moments,
+    const std::span<const int> target_source_indices) {
+  detail::ProfileRange device_range{"cdfmm/cuda_full"};
+  CudaFullPlan &plan = *cuda_full_plan_->plan;
+  const std::span<FloatVec3> staged_moments = plan.pinned_moments_float();
+  if (dipole_moments.size() != staged_moments.size()) {
+    throw std::invalid_argument(
+        "full FP32 CUDA FMM dimensions are inconsistent");
+  }
+  const std::span<const int> self_indices =
+      stage_self_indices(target_source_indices);
+  const double scale = coordinate_scale_;
+  const double inverse_volume_scale = 1.0 / (scale * scale * scale);
+#pragma omp parallel for schedule(static) if (dipole_moments.size() >= 256)
+  for (std::ptrdiff_t index = 0;
+       index < static_cast<std::ptrdiff_t>(dipole_moments.size()); ++index) {
+    const Moment value = dipole_moments[static_cast<std::size_t>(index)];
+    staged_moments[static_cast<std::size_t>(index)] = {
+        static_cast<float>(static_cast<double>(value.x) * inverse_volume_scale),
+        static_cast<float>(static_cast<double>(value.y) * inverse_volume_scale),
+        static_cast<float>(static_cast<double>(value.z) * inverse_volume_scale)};
+  }
+  const std::span<FloatVec3> fields = plan.pinned_fields_float();
+  plan.evaluate(staged_moments, fields, self_indices);
+  if (capture_components_) {
+    const std::size_t target_count = fields.size();
+    std::vector<Vec3> sorted_far(target_count);
+    plan.copy_far_fields(sorted_far);
+    diagnostic_far_.resize(target_count);
+    for (std::size_t i = 0; i < target_count; ++i) {
+      diagnostic_far_[topology_->target_permutation[i]] = sorted_far[i];
+    }
+  }
+  record_cuda_full_timings();
+  return fields;
+}
+
 std::vector<FloatPotentialField>
 UniformFmm::evaluate_float32(const std::span<const Vec3> dipole_moments,
                              const OutputFlags output,
@@ -449,44 +533,15 @@ void UniformFmm::evaluate_into_float32_impl(
     }
     last_timings_ = {};
     const auto evaluation_start = Clock::now();
-    prepare_self_indices(target_source_indices);
-    for (std::size_t index = 0; index < dipole_moments.size(); ++index) {
-      const Moment value = dipole_moments[index];
-      using Scalar = decltype(value.x);
-      const Scalar scale = static_cast<Scalar>(coordinate_scale_);
-      sorted_dipole_moments_float_[index] = {
-          static_cast<float>(value.x / scale / scale / scale),
-          static_cast<float>(value.y / scale / scale / scale),
-          static_cast<float>(value.z / scale / scale / scale)};
+    const std::span<const FloatVec3> fields =
+        evaluate_cuda_full_float32(dipole_moments, target_source_indices);
+#pragma omp parallel for schedule(static) if (target_count >= 256)
+    for (std::ptrdiff_t target = 0;
+         target < static_cast<std::ptrdiff_t>(target_count); ++target) {
+      FloatPotentialField &result = results[static_cast<std::size_t>(target)];
+      result.phi = 0.0F;
+      result.H = fields[static_cast<std::size_t>(target)];
     }
-    cuda_full_plan_->plan->evaluate(sorted_dipole_moments_float_,
-                                    near_fields_float_, sorted_self_indices_);
-    for (std::size_t target = 0; target < target_count; ++target) {
-      results[target].phi = 0.0F;
-      results[target].H = near_fields_float_[target];
-    }
-    if (capture_components_) {
-      std::vector<Vec3> sorted_far(target_count);
-      cuda_full_plan_->plan->copy_far_fields(sorted_far);
-      diagnostic_far_.resize(target_count);
-      for (std::size_t i = 0; i < target_count; ++i) {
-        diagnostic_far_[topology_->target_permutation[i]] = sorted_far[i];
-      }
-    }
-    const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
-    last_timings_.cuda_h2d.add(device.h2d_seconds);
-    last_timings_.p2m.add(device.p2m_seconds);
-    last_timings_.m2m.add(device.m2m_seconds);
-    last_timings_.m2l.add(device.m2l_seconds);
-    last_timings_.m2l_scale.add(device.scale_seconds);
-    last_timings_.m2l_multiply.add(device.multiply_seconds);
-    last_timings_.l2l.add(device.l2l_seconds);
-    last_timings_.l2p.add(device.l2p_seconds);
-    last_timings_.p2p.add(device.p2p_seconds);
-    last_timings_.cuda_p2p_kernel.add(device.p2p_seconds);
-    last_timings_.result_unpermutation.add(device.accumulation_seconds);
-    last_timings_.cuda_kernel.add(device.kernel_seconds);
-    last_timings_.cuda_d2h.add(device.d2h_seconds);
     last_timings_.total.add(elapsed_seconds(evaluation_start));
     last_timings_.evaluations = 1;
     accumulate_timings(aggregate_timings_, last_timings_);

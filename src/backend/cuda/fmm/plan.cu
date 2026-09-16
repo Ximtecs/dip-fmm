@@ -641,7 +641,9 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
     throw std::invalid_argument(
         "CudaFull identity map changed; rebuild the static plan");
   }
-  std::copy(moments.begin(), moments.end(), plan.pinned_moments);
+  if (moments.data() != plan.pinned_moments) {
+    std::copy(moments.begin(), moments.end(), plan.pinned_moments);
+  }
   constexpr int threads = 256;
   check_cuda(cudaEventRecord(plan.evaluation_start, plan.far_field_stream),
              "record full FMM start");
@@ -777,8 +779,10 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
              "record field download");
   check_cuda(cudaEventSynchronize(plan.d2h_complete),
              "wait for full FMM evaluation");
-  std::copy(plan.pinned_fields, plan.pinned_fields + fields.size(),
-            fields.begin());
+  if (fields.data() != plan.pinned_fields) {
+    std::copy(plan.pinned_fields, plan.pinned_fields + fields.size(),
+              fields.begin());
+  }
   const auto elapsed = [](const cudaEvent_t first, const cudaEvent_t second) {
     float milliseconds = 0.0F;
     check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
@@ -847,7 +851,9 @@ void CudaFullPlan::evaluate(
     throw std::invalid_argument(
         "CudaFull FP32 identity map changed; rebuild the static plan");
   }
-  std::copy(moments.begin(), moments.end(), plan.pinned_moments_float);
+  if (moments.data() != plan.pinned_moments_float) {
+    std::copy(moments.begin(), moments.end(), plan.pinned_moments_float);
+  }
   constexpr int threads = 256;
 
   check_cuda(cudaEventRecord(plan.evaluation_start, plan.far_field_stream),
@@ -952,8 +958,10 @@ void CudaFullPlan::evaluate(
              "record FP32 field download");
   check_cuda(cudaEventSynchronize(plan.d2h_complete),
              "wait for FP32 full FMM evaluation");
-  std::copy(plan.pinned_fields_float,
-            plan.pinned_fields_float + fields.size(), fields.begin());
+  if (fields.data() != plan.pinned_fields_float) {
+    std::copy(plan.pinned_fields_float,
+              plan.pinned_fields_float + fields.size(), fields.begin());
+  }
 
   const auto elapsed = [](const cudaEvent_t first, const cudaEvent_t second) {
     float milliseconds = 0.0F;
@@ -989,6 +997,34 @@ void CudaFullPlan::evaluate(
   plan.statistics.evaluation_d2h_bytes = fields.size_bytes();
   ++plan.statistics.evaluation_h2d_calls;
   ++plan.statistics.evaluation_d2h_calls;
+}
+
+std::span<Vec3> CudaFullPlan::pinned_moments() noexcept {
+  auto &plan = *implementation_;
+  return {plan.pinned_moments,
+          plan.fp32 ? std::size_t{0}
+                    : static_cast<std::size_t>(plan.source_count)};
+}
+
+std::span<FloatVec3> CudaFullPlan::pinned_moments_float() noexcept {
+  auto &plan = *implementation_;
+  return {plan.pinned_moments_float,
+          plan.fp32 ? static_cast<std::size_t>(plan.source_count)
+                    : std::size_t{0}};
+}
+
+std::span<Vec3> CudaFullPlan::pinned_fields() noexcept {
+  auto &plan = *implementation_;
+  return {plan.pinned_fields,
+          plan.fp32 ? std::size_t{0}
+                    : static_cast<std::size_t>(plan.target_count)};
+}
+
+std::span<FloatVec3> CudaFullPlan::pinned_fields_float() noexcept {
+  auto &plan = *implementation_;
+  return {plan.pinned_fields_float,
+          plan.fp32 ? static_cast<std::size_t>(plan.target_count)
+                    : std::size_t{0}};
 }
 
 const CudaPlanStatistics &CudaFullPlan::statistics() const noexcept {

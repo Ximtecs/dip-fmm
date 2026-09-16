@@ -435,6 +435,16 @@ private:
   void upward_pass_prepared_float();
   void prepare_self_indices(std::span<const int> target_source_indices);
   [[nodiscard]] std::span<const int>
+  stage_self_indices(std::span<const int> target_source_indices);
+  [[nodiscard]] std::span<const Vec3>
+  evaluate_cuda_full(std::span<const Vec3> dipole_moments,
+                     std::span<const int> target_source_indices);
+  template <typename Moment>
+  [[nodiscard]] std::span<const FloatVec3>
+  evaluate_cuda_full_float32(std::span<const Moment> dipole_moments,
+                             std::span<const int> target_source_indices);
+  void record_cuda_full_timings();
+  [[nodiscard]] std::span<const int>
   resolve_self_indices(std::span<const int> target_source_indices) const;
   void static_m2l(int level);
   void static_m2l_float(int level);
@@ -546,6 +556,9 @@ private:
   std::vector<FloatVec3> sorted_dipole_moments_float_{};
   std::vector<FloatPotentialField> sorted_results_float_{};
   std::vector<FloatVec3> near_fields_float_{};
+  // Persistent widening scratch for FP32 plans evaluated through the FP64
+  // result API, so repeated evaluation allocates nothing.
+  std::vector<FloatPotentialField> float_result_scratch_{};
   // Legacy coefficient inspection widens FP32 state only on demand.
   mutable std::vector<double> inspection_widening_buffer_{};
   mutable std::vector<float> float_inspection_buffer_{};
