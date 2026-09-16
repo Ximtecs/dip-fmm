@@ -133,6 +133,142 @@ __global__ void apply_unscaled_m2l_rows_kernel(
   locals[local_index] += local_scaling[scale_base + beta] * value;
 }
 
+/** @brief One block of same-transfer-class M2L pairs. */
+struct CudaM2LClassGroup {
+  int matrix_id{0};
+  int pair_begin{0};
+  int pair_end{0};
+};
+
+inline constexpr int m2l_group_threads = 256;
+inline constexpr int m2l_group_alpha_tile = 16;
+inline constexpr int m2l_group_pairs_per_thread = 8;
+
+// Transfer-class grouped M2L. Every block owns one shared matrix and up to
+// `pairs_per_block` (source, target) pairs using it. The matrix is streamed
+// through shared memory in alpha slabs, so each matrix value is fetched from
+// global memory once per block and reused for every pair, instead of once per
+// interaction as in the target-row kernel. Threads own one beta and eight
+// consecutive pairs; the eight multipole values they need per alpha are
+// broadcast shared-memory loads. Multipole level scaling is applied while
+// staging, and local level scaling before the final accumulation, so the
+// arithmetic matches the target-row kernels exactly up to summation order.
+// Different classes contribute to the same target, hence the atomic adds.
+template <typename Scalar>
+__global__ void __launch_bounds__(m2l_group_threads)
+apply_grouped_m2l_kernel(const Scalar *__restrict__ matrices,
+                         const CudaM2LClassGroup *__restrict__ groups,
+                         const int *__restrict__ pair_sources,
+                         const int *__restrict__ pair_targets,
+                         const int *__restrict__ pair_source_levels,
+                         const int *__restrict__ pair_target_levels,
+                         const Scalar *__restrict__ multipole_scaling,
+                         const Scalar *__restrict__ local_scaling,
+                         const int coefficient_count, const int pairs_per_block,
+                         const Scalar *__restrict__ multipoles,
+                         Scalar *__restrict__ locals) {
+  extern __shared__ __align__(16) unsigned char m2l_group_shared[];
+  Scalar *matrix_tile = reinterpret_cast<Scalar *>(m2l_group_shared);
+  // 16 * n * sizeof(Scalar) is a multiple of 16 bytes, so the multipole tile
+  // keeps 16-byte alignment for the vector loads below.
+  Scalar *multipole_tile =
+      matrix_tile + m2l_group_alpha_tile * coefficient_count;
+
+  constexpr int pairs_per_thread = m2l_group_pairs_per_thread;
+  const int n = coefficient_count;
+  const CudaM2LClassGroup group = groups[blockIdx.x];
+  const int pair_count = group.pair_end - group.pair_begin;
+  const int slot = static_cast<int>(threadIdx.x) / n;
+  const int beta = static_cast<int>(threadIdx.x) - slot * n;
+  const bool computes = slot < pairs_per_block / pairs_per_thread;
+  const int first_pair = slot * pairs_per_thread;
+  const std::size_t matrix_base =
+      static_cast<std::size_t>(group.matrix_id) * n * n;
+
+  Scalar accumulator[pairs_per_thread];
+#pragma unroll
+  for (int q = 0; q < pairs_per_thread; ++q) {
+    accumulator[q] = Scalar{0};
+  }
+
+  for (int alpha_begin = 0; alpha_begin < n;
+       alpha_begin += m2l_group_alpha_tile) {
+    const int alpha_count = min(m2l_group_alpha_tile, n - alpha_begin);
+    // Matrix rows alpha_begin.. are contiguous: a plain coalesced copy.
+    for (int index = static_cast<int>(threadIdx.x); index < alpha_count * n;
+         index += m2l_group_threads) {
+      matrix_tile[index] =
+          matrices[matrix_base + static_cast<std::size_t>(alpha_begin) * n +
+                   index];
+    }
+    // Pre-scaled source multipoles, transposed to [alpha][pair] so that the
+    // eight pairs of one thread are contiguous. Missing pairs of a partial
+    // group stage zeros and contribute nothing.
+    for (int index = static_cast<int>(threadIdx.x);
+         index < alpha_count * pairs_per_block; index += m2l_group_threads) {
+      const int pair = index / alpha_count;
+      const int alpha = index - pair * alpha_count;
+      Scalar value = Scalar{0};
+      if (pair < pair_count) {
+        const int pair_index = group.pair_begin + pair;
+        const int source = pair_sources[pair_index];
+        const int source_level = pair_source_levels[pair_index];
+        value = multipole_scaling[static_cast<std::size_t>(source_level) * n +
+                                  alpha_begin + alpha] *
+                multipoles[static_cast<std::size_t>(source) * n + alpha_begin +
+                           alpha];
+      }
+      multipole_tile[alpha * pairs_per_block + pair] = value;
+    }
+    __syncthreads();
+    if (computes) {
+      for (int alpha = 0; alpha < alpha_count; ++alpha) {
+        const Scalar matrix_value = matrix_tile[alpha * n + beta];
+        const Scalar *values =
+            multipole_tile + alpha * pairs_per_block + first_pair;
+        if constexpr (sizeof(Scalar) == sizeof(float)) {
+          const float4 low = *reinterpret_cast<const float4 *>(values);
+          const float4 high = *reinterpret_cast<const float4 *>(values + 4);
+          accumulator[0] += matrix_value * low.x;
+          accumulator[1] += matrix_value * low.y;
+          accumulator[2] += matrix_value * low.z;
+          accumulator[3] += matrix_value * low.w;
+          accumulator[4] += matrix_value * high.x;
+          accumulator[5] += matrix_value * high.y;
+          accumulator[6] += matrix_value * high.z;
+          accumulator[7] += matrix_value * high.w;
+        } else {
+#pragma unroll
+          for (int q = 0; q < pairs_per_thread; q += 2) {
+            const double2 pair_values =
+                *reinterpret_cast<const double2 *>(values + q);
+            accumulator[q] += matrix_value * pair_values.x;
+            accumulator[q + 1] += matrix_value * pair_values.y;
+          }
+        }
+      }
+    }
+    __syncthreads();
+  }
+
+  if (!computes) {
+    return;
+  }
+#pragma unroll
+  for (int q = 0; q < pairs_per_thread; ++q) {
+    const int pair = first_pair + q;
+    if (pair < pair_count) {
+      const int pair_index = group.pair_begin + pair;
+      const int target = pair_targets[pair_index];
+      const int target_level = pair_target_levels[pair_index];
+      atomicAdd(locals + static_cast<std::size_t>(target) * n + beta,
+                local_scaling[static_cast<std::size_t>(target_level) * n +
+                              beta] *
+                    accumulator[q]);
+    }
+  }
+}
+
 /**
  * @brief Shared persistent CUDA executor for a canonical static M2L plan.
  *
@@ -157,6 +293,11 @@ public:
     cudaFree(multipole_scaling_);
     cudaFree(local_scaling_);
     cudaFree(scaled_multipoles_);
+    cudaFree(groups_);
+    cudaFree(pair_sources_);
+    cudaFree(pair_targets_);
+    cudaFree(pair_source_levels_);
+    cudaFree(pair_target_levels_);
   }
 
   CudaM2LExecutionStorage(const CudaM2LExecutionStorage &) = delete;
@@ -164,6 +305,20 @@ public:
 
   void enqueue(const Scalar *multipoles, Scalar *locals, cudaStream_t stream,
                cudaEvent_t scale_complete) const {
+    if (group_count_ != 0) {
+      // The grouped kernel scales multipoles while staging, so there is no
+      // separate scaling pass; the event still marks the phase boundary.
+      check_cuda(cudaEventRecord(scale_complete, stream),
+                 "record M2L scaling completion");
+      apply_grouped_m2l_kernel<<<group_count_, m2l_group_threads,
+                                 group_shared_bytes_, stream>>>(
+          matrices_, groups_, pair_sources_, pair_targets_,
+          pair_source_levels_, pair_target_levels_, multipole_scaling_,
+          local_scaling_, coefficient_count_, pairs_per_block_, multipoles,
+          locals);
+      check_cuda(cudaGetLastError(), "launch grouped static M2L kernel");
+      return;
+    }
     const std::size_t coefficient_values =
         static_cast<std::size_t>(node_count_) * coefficient_count_;
     if (scaled_multipoles_ != nullptr && coefficient_values != 0) {
@@ -348,6 +503,82 @@ private:
     upload(local_scaling_, data.local_scaling, stream,
            "upload M2L local scaling");
 
+    // Transfer-class grouping for the grouped kernel: pairs are counting-sorted
+    // by matrix id and cut into blocks of `pairs_per_block_`. Every block then
+    // stages exactly one matrix. Coefficient counts above one block of threads
+    // fall back to the target-row kernels.
+    const int slots = coefficient_count_ > 0
+        ? m2l_group_threads / coefficient_count_
+        : 0;
+    if (slots > 0 && !active_rows.empty()) {
+      pairs_per_block_ = slots * m2l_group_pairs_per_thread;
+      std::vector<int> class_offsets(static_cast<std::size_t>(data.matrix_count) + 1, 0);
+      for (const CudaM2LActiveRow &row : active_rows) {
+        for (int interaction = row.interaction_begin;
+             interaction < row.interaction_end; ++interaction) {
+          ++class_offsets[static_cast<std::size_t>(
+              data.matrix_ids[static_cast<std::size_t>(interaction)]) + 1];
+        }
+      }
+      for (int matrix = 0; matrix < data.matrix_count; ++matrix) {
+        class_offsets[static_cast<std::size_t>(matrix) + 1] +=
+            class_offsets[static_cast<std::size_t>(matrix)];
+      }
+      const std::size_t pair_count =
+          class_offsets[static_cast<std::size_t>(data.matrix_count)];
+      std::vector<int> pair_sources(pair_count);
+      std::vector<int> pair_targets(pair_count);
+      std::vector<int> pair_source_levels(pair_count);
+      std::vector<int> pair_target_levels(pair_count);
+      std::vector<int> cursor(class_offsets.begin(), class_offsets.end() - 1);
+      for (const CudaM2LActiveRow &row : active_rows) {
+        for (int interaction = row.interaction_begin;
+             interaction < row.interaction_end; ++interaction) {
+          const std::size_t index = static_cast<std::size_t>(interaction);
+          const int source = data.source_nodes[index];
+          const std::size_t slot_index = static_cast<std::size_t>(
+              cursor[static_cast<std::size_t>(data.matrix_ids[index])]++);
+          pair_sources[slot_index] = source;
+          pair_targets[slot_index] = row.target;
+          pair_source_levels[slot_index] =
+              node_levels[static_cast<std::size_t>(source)];
+          pair_target_levels[slot_index] = row.level;
+        }
+      }
+      std::vector<CudaM2LClassGroup> groups;
+      for (int matrix = 0; matrix < data.matrix_count; ++matrix) {
+        const int begin = class_offsets[static_cast<std::size_t>(matrix)];
+        const int end = class_offsets[static_cast<std::size_t>(matrix) + 1];
+        for (int group_begin = begin; group_begin < end;
+             group_begin += pairs_per_block_) {
+          groups.push_back(
+              {matrix, group_begin, std::min(end, group_begin + pairs_per_block_)});
+        }
+      }
+      group_count_ = static_cast<int>(groups.size());
+      group_shared_bytes_ =
+          static_cast<std::size_t>(m2l_group_alpha_tile) *
+          (static_cast<std::size_t>(coefficient_count_) + pairs_per_block_) *
+          sizeof(Scalar);
+      allocate(&groups_, groups.size(), "allocate M2L class groups");
+      allocate(&pair_sources_, pair_sources.size(), "allocate M2L pair sources");
+      allocate(&pair_targets_, pair_targets.size(), "allocate M2L pair targets");
+      allocate(&pair_source_levels_, pair_source_levels.size(),
+               "allocate M2L pair source levels");
+      allocate(&pair_target_levels_, pair_target_levels.size(),
+               "allocate M2L pair target levels");
+      upload(groups_, groups, stream, "upload M2L class groups");
+      upload(pair_sources_, pair_sources, stream, "upload M2L pair sources");
+      upload(pair_targets_, pair_targets, stream, "upload M2L pair targets");
+      upload(pair_source_levels_, pair_source_levels, stream,
+             "upload M2L pair source levels");
+      upload(pair_target_levels_, pair_target_levels, stream,
+             "upload M2L pair target levels");
+      grouped_metadata_bytes_ =
+          groups.size() * sizeof(CudaM2LClassGroup) +
+          4 * pair_count * sizeof(int);
+    }
+
     // Pre-scaled multipoles are demand-sized. Their persistent allocation is
     // bounded by both total and currently free device memory so construction
     // remains safe for very large geometries.
@@ -360,7 +591,8 @@ private:
                "query CUDA memory for M2L scratch");
     const std::size_t scratch_limit =
         std::min(total_bytes / 10, free_bytes / 4);
-    if (scratch_bytes != 0 && scratch_bytes <= scratch_limit) {
+    if (group_count_ == 0 && scratch_bytes != 0 &&
+        scratch_bytes <= scratch_limit) {
       const cudaError_t status = cudaMalloc(
           reinterpret_cast<void **>(&scaled_multipoles_), scratch_bytes);
       if (status != cudaSuccess) {
@@ -392,7 +624,8 @@ private:
         active_rows.size() * sizeof(CudaM2LActiveRow) +
         data.source_nodes.size() * sizeof(int) +
         data.matrix_ids.size() * sizeof(int) +
-        node_levels.size() * sizeof(int);
+        node_levels.size() * sizeof(int) +
+        grouped_metadata_bytes_;
     statistics_.m2l_scratch_bytes =
         scaled_multipoles_ == nullptr ? 0 : scratch_bytes;
     statistics_.m2l_threads_per_block = threads_per_block_;
@@ -417,6 +650,15 @@ private:
   Scalar *multipole_scaling_{nullptr};
   Scalar *local_scaling_{nullptr};
   Scalar *scaled_multipoles_{nullptr};
+  CudaM2LClassGroup *groups_{nullptr};
+  int *pair_sources_{nullptr};
+  int *pair_targets_{nullptr};
+  int *pair_source_levels_{nullptr};
+  int *pair_target_levels_{nullptr};
+  int group_count_{0};
+  int pairs_per_block_{0};
+  std::size_t group_shared_bytes_{0};
+  std::size_t grouped_metadata_bytes_{0};
   int node_count_{0};
   int active_row_count_{0};
   int coefficient_count_{0};
