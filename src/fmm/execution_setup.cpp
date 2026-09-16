@@ -483,10 +483,9 @@ void UniformFmm::apply_p2p_packing_request(
                "stored pair tensors (ParticleRowSoa, CanonicalAos or "
                "TensorDictionary)");
       }
-      if (inputs.periodic) {
-        reject("PointGeometry is enabled for free-space plans only; "
-               "periodic plans use ParticleRowSoa");
-      }
+      // Periodic image records carry their source shift and identity
+      // marker, which the position-based executor folds into the gathered
+      // neighbourhood, so periodic plans are accepted.
       return;
     case P2PExecutionPacking::TensorDictionary: {
       const char *reason = cuda_policy::explicit_packing_rejection(

@@ -540,6 +540,74 @@ TEST_CASE("explicit P2P packing requests resolve and agree on CpuStatic",
     }
 }
 
+TEST_CASE("periodic point geometry P2P matches the stored rows for field and potential",
+          "[uniform_fmm][p2p][packing][periodic]")
+{
+    // Periodic leaf records carry an image shift and (for images) a cleared
+    // identity marker. The position-based executor must reproduce the SoA
+    // rows, which store one tensor per image, for a dynamic identity map,
+    // for a fixed identity map, and for the potential rows it does not store.
+    const std::vector<Vec3> positions = packing_test_positions(80, 19U);
+    std::vector<Vec3> moments(positions.size());
+    for (std::size_t index = 0; index < moments.size(); ++index) {
+        const double value = static_cast<double>(index);
+        moments[index] = {std::cos(0.9 * value), std::sin(1.7 * value + 0.4),
+                          std::cos(0.5 * value - 0.8)};
+    }
+    std::vector<int> identities(positions.size());
+    std::iota(identities.begin(), identities.end(), 0);
+
+    for (const StaticPrecision precision :
+         {StaticPrecision::Float64, StaticPrecision::Float32}) {
+        for (const bool fixed_identity : {false, true}) {
+            UniformFmmOptions options;
+            options.backend = ExecutionBackend::CpuStatic;
+            options.precision = precision;
+            options.expansion_order = 4;
+            options.tree.max_level = 2;
+            options.periodic.enabled = true;
+            options.periodic.centre = Vec3{};
+            options.periodic.lengths = Vec3{2.0, 2.0, 2.0};
+            options.enable_cache = false;
+            if (fixed_identity) {
+                options.fixed_target_source_indices = identities;
+            }
+            options.p2p_packing = P2PExecutionPacking::ParticleRowSoa;
+            UniformFmm rows(positions, positions, options);
+            options.p2p_packing = P2PExecutionPacking::PointGeometry;
+            UniformFmm geometry(positions, positions, options);
+            REQUIRE(geometry.p2p_execution_packing() ==
+                    P2PExecutionPacking::PointGeometry);
+
+            const double tolerance =
+                precision == StaticPrecision::Float32 ? 5.0e-5 : 1.0e-11;
+            const auto expected =
+                rows.evaluate(moments, OutputFlags::Field, identities);
+            const auto actual =
+                geometry.evaluate(moments, OutputFlags::Field, identities);
+            require_fields_close(actual, expected, tolerance);
+
+            const auto expected_both = rows.evaluate(
+                moments, OutputFlags::Field | OutputFlags::Potential,
+                identities);
+            const auto actual_both = geometry.evaluate(
+                moments, OutputFlags::Field | OutputFlags::Potential,
+                identities);
+            require_fields_close(actual_both, expected_both, tolerance);
+            double potential_scale = 0.0;
+            for (const PotentialField& value : expected_both) {
+                potential_scale = std::max(potential_scale, std::abs(value.phi));
+            }
+            REQUIRE(potential_scale > 0.0);
+            for (std::size_t index = 0; index < actual_both.size(); ++index) {
+                REQUIRE(std::abs(actual_both[index].phi -
+                                 expected_both[index].phi) <=
+                        tolerance * potential_scale);
+            }
+        }
+    }
+}
+
 TEST_CASE("unsupported explicit P2P packing requests fail with a reason",
           "[uniform_fmm][p2p][packing]")
 {

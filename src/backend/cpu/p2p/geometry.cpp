@@ -254,5 +254,8 @@ template void PointGeometryP2P<double>::apply<FloatVec3, FloatVec3>(
 template void PointGeometryP2P<double>::apply_potential<FloatVec3, FloatPotentialField>(
     const StaticFmmTopology&, std::span<const FloatVec3>,
     std::span<FloatPotentialField>, std::span<const int>) const;
+template void PointGeometryP2P<double>::apply_potential<Vec3, PotentialField>(
+    const StaticFmmTopology&, std::span<const Vec3>,
+    std::span<PotentialField>, std::span<const int>) const;
 
 } // namespace cdfmm::detail::cpu

@@ -290,7 +290,15 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     }
   }
 
-  if (periodic_.enabled && has_flag(output, OutputFlags::Potential)) {
+  if (periodic_.enabled && has_flag(output, OutputFlags::Potential) &&
+      p2p_execution_packing_ == P2PExecutionPacking::PointGeometry) {
+    // The position-based executor keeps no stored potential rows; it sweeps
+    // the image-shifted records with the point-dipole potential instead.
+    cpu_packing_->p2p.apply_potential(
+        *topology_, std::span<const Vec3>(sorted_dipole_moments_),
+        std::span<PotentialField>(sorted_results_),
+        std::span<const int>(sorted_self_indices_));
+  } else if (periodic_.enabled && has_flag(output, OutputFlags::Potential)) {
     const StaticP2PCompactPlan& plan = p2p_compact_plan_;
 #pragma omp parallel for schedule(static) if (target_count >= 64)
     for (std::ptrdiff_t target = 0;
