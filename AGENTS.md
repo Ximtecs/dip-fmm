@@ -80,7 +80,12 @@ ownership. Cache identity and persistence are decomposed under `src/cache/`
 by file container/environment policy, payload records, key generation, the
 universal/periodic payload, and the geometry-plan payload; its persistent
 format and its keys are compatibility contracts, so read `src/cache/AGENTS.md`
-before changing them. The bindings boundary is now structured: the C ABI
+before changing them. Every cache entry point is a free function taking an
+explicit identity/payload record built from specific solver/plan/tree/topology
+types; no file under `src/cache/` depends on `cdfmm/uniform_fmm.hpp` or defines
+a `UniformFmm` member function, and `src/fmm/execution_setup.cpp`/
+`plan_preparation.cpp` remain the sole callers and the owners of the
+cache-vs-build decision. The bindings boundary is now structured: the C ABI
 implementation is `src/bindings/c_api.cpp`, while the Python adapter is split
 into `python/internal.hpp`, `module.cpp`, `core.cpp`, `geometry.cpp`,
 `tree.cpp`, `operators.cpp`, `direct.cpp`, and `fmm.cpp`; the public C header
@@ -155,10 +160,12 @@ The closure audit found no violation of the prohibited-dependency list. Besides
 are deliberate and are enumerated in `docs/architecture.md`: the
 `DenseDirectPlan::evaluate()` compatibility dispatch in
 `src/plan/direct/dense.cpp`, the CUDA backend implementing the public
-availability queries declared in `cdfmm/uniform_fmm.hpp`, the sanctioned
-`cache -> already-defined solver data` edge, and the canonical headers still
-including the substantive flat `cdfmm/timings.hpp` and `cdfmm/periodic.hpp`.
-Do not add new ones.
+availability queries declared in `cdfmm/uniform_fmm.hpp`, and the canonical
+headers still including the substantive flat `cdfmm/timings.hpp` and
+`cdfmm/periodic.hpp`. A later cache/plan-preparation boundary cleanup removed
+the `src/cache/internal.hpp -> cdfmm/uniform_fmm.hpp` edge entirely: cache code
+now depends only on the specific solver/plan/tree/topology types it persists,
+never on `UniformFmm`. Do not add new reverse-direction edges.
 
 ## Architecture contract
 

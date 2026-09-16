@@ -24,14 +24,6 @@
 
 namespace cdfmm {
 
-/** @brief Expansion basis used by the reusable far-field hierarchy. */
-enum class ExpansionBasis {
-    /// Factorial-normalised total-degree Cartesian Taylor coefficients.
-    Cartesian,
-    /// Minimal real tesseral solid harmonics ordered by degree then m.
-    Spherical
-};
-
 /** @brief Implemented M2L strategy for real spherical expansions. */
 enum class SphericalM2LBackend {
     /// Reusable dense real matrix for each integer displacement class.
@@ -451,29 +443,10 @@ private:
       const std::vector<Vec3>& source_positions,
       const std::vector<Vec3>& target_positions,
       const UniformFmmOptions& options);
-  /** @brief Immutable leaf index and geometry-specific P2M coefficient map. */
-  struct P2MPlan {
-    int leaf{0};
-    std::size_t begin{0};
-    std::size_t count{0};
-    StaticCoefficientOperator operator_map{};
-  };
-  /** @brief FP32 leaf index and quantised P2M coefficient map. */
-  struct FloatP2MPlan {
-    int leaf{0};
-    std::size_t begin{0};
-    std::size_t count{0};
-    FloatStaticCoefficientOperator operator_map{};
-  };
   void initialise_execution(const UniformFmmOptions& options);
   void build_static_plan();
-  void initialise_cache_keys(const UniformFmmOptions& options);
-  [[nodiscard]] bool load_universal_cache();
   void build_missing_universal_operators(bool universal_available,
                                          bool periodic_required);
-  void write_universal_cache() const;
-  [[nodiscard]] bool load_geometry_cache();
-  void write_geometry_cache() const;
   void build_backend_packing();
   void quantise_static_plan_to_float();
   void initialise_source_geometry(const UniformFmmOptions &options);

@@ -127,6 +127,18 @@ const StaticPlanStatistics &UniformFmm::static_plan_statistics() const {
   return static_plan_statistics_;
 }
 
+const std::string& UniformFmm::universal_cache_key() const noexcept {
+  return universal_cache_key_;
+}
+
+const std::string& UniformFmm::geometry_cache_key() const noexcept {
+  return geometry_cache_key_;
+}
+
+const std::string& UniformFmm::periodic_cache_key() const noexcept {
+  return periodic_cache_key_;
+}
+
 std::span<const double> UniformFmm::multipole(const int node_index) const {
   if (node_index < 0 ||
       static_cast<std::size_t>(node_index) >= topology_->nodes.size()) {

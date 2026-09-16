@@ -1,5 +1,65 @@
 # Project diary
 
+## 2026-09-16 — cache/plan-preparation boundary: narrow records, not a service class
+
+The brief for this task was explicit about what *not* to do: don't reach for
+`CacheManager`/`CacheService`/`CachePimpl` just because the name sounds clean,
+and don't build a friend-class bridge that hands a new type unrestricted
+access to `UniformFmm` and calls it encapsulation. That framing turned out to
+matter, because the obvious lazy fix — `friend class CacheManager` wrapping
+the same five method bodies unchanged — would have satisfied none of the
+actual goals.
+
+Two read-only workers mapped the territory before any design decision: one
+classified every field the five cache functions (`initialise_cache_keys`,
+`load_universal_cache`, `write_universal_cache`, `load_geometry_cache`,
+`write_geometry_cache`) read or wrote from `UniformFmm`, sorting each into
+identity state, persisted payload, statistics, or unrelated plan/lifecycle
+data they merely happened to see; the other confirmed none of the five were
+referenced anywhere outside `src/cache/*.cpp` and `src/fmm/*.cpp` — no test,
+binding, or public accessor calls them directly (they're private), so the
+entire public/C-ABI/Python/Fortran surface was unconstrained by whatever
+redesign followed.
+
+The map made the shape of the fix obvious: each function already reads a
+specific, enumerable set of fields and writes another specific set. That's
+not "the whole `UniformFmm` object" — it just looked that way because the
+functions happened to be members. So the fix is free functions in
+`cdfmm::detail::cache` taking explicit records (`CacheIdentityInputs`/
+`CacheIdentity`, `UniversalCacheIdentity`/`UniversalCachePayload`,
+`GeometryCacheIdentity`/`GeometryCachePayload`) built from references to the
+exact fields each function touches — no new copy of solver state, no
+service object owning anything, no friendship required, because the free
+functions never see `UniformFmm` at all, only the records passed to them.
+`src/fmm/execution_setup.cpp` and `plan_preparation.cpp` build those records
+and remain the only callers, which is exactly the "plan preparation owns
+cache-vs-build" property the brief asked for, just made structurally true
+instead of true by convention.
+
+One real obstacle: `P2MPlan`/`FloatP2MPlan` were private nested types of
+`UniformFmm`, and the geometry payload needs to reference them by value.
+Nested-and-private meant no free function could name the type without seeing
+the whole class. The honest fix wasn't a workaround — it was recognising
+these were misplaced from the start: they're canonical static-plan records
+(leaf index, offsets, a coefficient map), the same category as everything
+else already living in `include/cdfmm/plan/static_coefficient.hpp`. Moved
+them there as free-standing types. Same story for `ExpansionBasis`, which had
+been declared directly inside `uniform_fmm.hpp` with no header of its own,
+even though `CacheDescriptor` needed it — moved to
+`include/cdfmm/core/precision.hpp` next to `StaticPrecision`, the enum it's
+conceptually paired with. Neither move touches `sizeof(UniformFmm)` (checked:
+7272 bytes before and after) or any public name's meaning; both types were
+already reachable only through `UniformFmm`'s public API by value, never by
+name.
+
+The old-cache compatibility check was the most satisfying part to run: a
+throwaway probe, compiled unchanged against an isolated `v0.1.0` worktree and
+then against this HEAD, wrote an 8-file corpus cold and read it back warm —
+identical keys, every hit, zero bytes written, files byte-identical by
+`sha256sum`, fields bit-identical. That's the strongest evidence available
+that moving *who calls what* didn't perturb *what gets written*, which is the
+one thing this task was absolutely not allowed to touch.
+
 ## 2026-09-16 — tree/topology boundary cleanup: the seam wasn't there
 
 The brief for this task assumed a coupling problem existed: `AdaptiveTree`

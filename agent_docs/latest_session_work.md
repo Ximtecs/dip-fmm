@@ -1,5 +1,128 @@
 # Latest session work
 
+## 2026-09-16 — cache/plan-preparation boundary cleanup
+
+Starting HEAD `03be4671` (`refactor(tree): clarify topology ownership`).
+Baseline check: the known pre-existing failure, "static triangular
+translations match M2M and L2L references", reproduces identically in a
+fresh portable `dev` build (same `REQUIRE`, same printed values) — confirmed
+unrelated to this task before any production change.
+
+Task: narrow the cache subsystem's dependency on `UniformFmm`. Cache
+persistence (`initialise_cache_keys`, `load_universal_cache`,
+`write_universal_cache`, `load_geometry_cache`, `write_geometry_cache`) was
+implemented as five private `UniformFmm` member functions defined in
+`src/cache/*.cpp`, forcing `src/cache/internal.hpp` to include the complete
+`cdfmm/uniform_fmm.hpp` and giving cache translation units access to
+essentially all private solver state.
+
+**Audit (two read-only workers, run in parallel).** One classified every
+field each of the five functions reads or writes from `UniformFmm` as cache
+identity, persisted payload, statistics, or unrelated plan/lifecycle state
+merely read in passing; the other confirmed none of the five functions is
+referenced anywhere outside `src/cache/*.cpp`/`src/fmm/*.cpp` (they are
+private — the compiler already enforces this), catalogued the full public
+C++/C-ABI/Python-visible surface (public accessors `universal_cache_key()`/
+`geometry_cache_key()`/`periodic_cache_key()`, the `StaticPlanStatistics`
+cache fields returned by `static_plan_statistics()`, `UniformFmmOptions::
+enable_cache`), confirmed no `sizeof(UniformFmm)` check exists anywhere and
+that removing private member-function declarations cannot affect object
+layout, and confirmed no committed old-cache compatibility probe exists (each
+session writes one fresh, ad hoc, against an isolated `v0.1.0` worktree).
+
+**Design.** Narrow free functions plus explicit records, not a service
+object or a friend god-class (both were explicitly out of scope per the
+brief). Every cache entry point is now a free function in
+`cdfmm::detail::cache` taking one of three explicit records declared in
+`src/cache/internal.hpp`: `CacheIdentityInputs`/`CacheIdentity` (identity;
+`keys.cpp`), `UniversalCacheIdentity`/`UniversalCachePayload` (the
+depth-independent bank and periodic root; `universal.cpp`), and
+`GeometryCacheIdentity`/`GeometryCachePayload` (the geometry-dependent plan;
+`geometry.cpp`). Payload records hold references to already-existing
+`UniformFmm` members, not a second copy of solver state.
+`src/fmm/execution_setup.cpp` (identity) and `plan_preparation.cpp`
+(universal/geometry load and write) assemble these records from `this`'s
+private state, call the free functions, and copy results back; they remain
+the sole callers, so plan preparation remains the sole owner of the
+cache-vs-build decision — now structurally, not just by convention. All five
+private `UniformFmm` cache-method declarations were removed from
+`include/cdfmm/uniform_fmm.hpp`; the three trivial cache-key accessors
+(previously also defined in `keys.cpp`) moved to `src/fmm/uniform_fmm.cpp`,
+which already owns lifecycle/accessors.
+
+Two narrow types moved out of `uniform_fmm.hpp` to make this possible without
+an ABI-affecting layout change (a public installed header cannot include an
+internal `src/` header, so these types had to move to an existing installed
+canonical header instead): `P2MPlan`/`FloatP2MPlan` (private nested structs
+needed by the geometry payload) moved to
+`include/cdfmm/plan/static_coefficient.hpp`, alongside
+`StaticCoefficientOperator`, the type category they already belonged to;
+`ExpansionBasis` (declared directly in `uniform_fmm.hpp` with no header of
+its own, needed by `CacheDescriptor`) moved to
+`include/cdfmm/core/precision.hpp`, alongside `StaticPrecision`. Neither was
+reachable except through `UniformFmm`'s public API by value, so neither move
+changes a public name's meaning; `uniform_fmm.hpp` still transitively
+provides both. `sizeof(UniformFmm)` is unchanged: 7272 bytes measured before
+and after with a standalone probe. `StaticPlanStatistics` continues to be
+mutated directly by cache free functions (unchanged from before): it is
+already a narrow, `UniformFmm`-independent plan-layer type declared in
+`cdfmm/timings.hpp`, so this is not a coupling concern, and adding a returned-
+result type for every cache call would have added complexity without
+narrowing anything.
+
+Persistent format, cache keys, hash inputs/order, the direct FP32 decode
+path, and the asymmetric FP32-only failure-cleanup behaviour are all
+byte-for-byte/behaviourally unchanged; `src/cache/format.cpp` and `io.cpp`
+were not touched (neither ever depended on `UniformFmm`).
+
+**Validation.** Fresh portable `dev`: clean configure/build; full CTest 198
+total, 193 passed, 4 expected skips, the same pre-existing "triangular
+translations" failure (confirmed identical on the unmodified `03be467`
+baseline); Python 137 passed/7 skipped against the just-built module.
+Focused `ctest -R 'cache' -E 'tetrahedron pairs|tetrahedron dispatch'`: 11
+total, 9 passed, 2 expected oneMKL/CUDA skips. `sizeof(UniformFmm)` compared
+byte-for-byte via a standalone probe against the unmodified `03be467` tree:
+identical (7272). A cross-version probe (public-API-only source, unchanged)
+built against an isolated `v0.1.0` worktree wrote an 8-file FP64/FP32
+free/periodic cache corpus cold, then HEAD read it back: identical universal/
+geometry/periodic cache keys, every hit, zero bytes written, corpus
+byte-identical by `sha256sum`, field results bit-identical. A before/after
+timing probe (both built without LTO to permit direct static-library
+linking, identical ~4,500-point geometry, 5 repeats) showed no measurable
+warm-construction slowdown (~0.725 s baseline vs ~0.726 s HEAD, within
+run-to-run noise); the same probe also surfaced a geometry-cache-miss
+characteristic for that specific synthetic point spacing that reproduces
+identically on baseline and HEAD, confirming it predates this task and is
+unrelated to it (not investigated further, per scope). CUDA + oneMKL
+`notebooks` (fresh, RTX 5090 SM120, CUDA 13.3.73; `TMPDIR` moved off the
+shared `/tmp` tmpfs to avoid the known disk-quota LTO failure): **198/198
+CTest with zero skips**, including the triangular-translation case, which is
+sensitive to build configuration and passes here — matching this project's
+established pattern of zero-skip CUDA+oneMKL runs, not a change caused by
+this task; the full focused cache selector 11/11, including the two
+CUDA/oneMKL-only cases the portable build skips; Python 143 passed/1 skipped
+against the `build-notebooks` module. `git diff --check` clean.
+
+`docs/architecture.md`'s stale "Deferred refactor inventory" and "Phase 2
+handoff" cache bullets (still describing cache entry points as `UniformFmm`
+members, and separately still listing the already-resolved canonical-to-
+compact P2P/factorial deduplication as open Phase-2 work) were corrected, and
+a new "Cache/plan-preparation boundary cleanup" subsection records the full
+audit and design. `src/cache/AGENTS.md`, `AGENTS.md`, and
+`agent_docs/project_structure.md` were updated to match; the now-obsolete
+`src/cache/internal.hpp -> cdfmm/uniform_fmm.hpp` "sanctioned edge" bullet was
+removed from both `AGENTS.md` and `project_structure.md`'s audited-exceptions
+lists, since the edge no longer exists.
+
+An unrelated, pre-existing `Article1/` directory (roughly 640 GB of research
+data, untracked) was found renamed to `Article1_old/` partway through this
+session; nothing in this task's commands referenced that path, and its
+contents look intact, so this was very likely a concurrent, unrelated action
+on this shared machine. Left untouched and unexplained; flagged for the user.
+The unrelated untracked
+`examples/simple_notebooks/tetrahedron_target_average_fair_sampling.ipynb`
+remains preserved outside this task.
+
 ## 2026-09-16 — tree/topology/FMM-plan boundary cleanup
 
 Starting HEAD `76d6c9ab` (`refactor(p2p): unify canonical-to-compact packing

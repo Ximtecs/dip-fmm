@@ -10,7 +10,8 @@ translation units.
 ```text
 src/cache/
 |-- internal.hpp    shared constants, CacheKind/CacheDescriptor, CachePayload,
-|                   Writer/Reader, and the io/format declarations
+|                   Writer/Reader, the io/format declarations, and the
+|                   identity/payload records the boundary below is built on
 |-- io.cpp          cache root and environment policy, the validated file
 |                   container, checksum, and atomic temporary-file writes
 |-- format.cpp      field-wise records for the persisted solver types
@@ -22,6 +23,34 @@ src/cache/
 The file container lives in `io.cpp`; `format.cpp` owns only the payload
 records inside it. `src/fmm/plan_preparation.cpp` remains the coordinator that
 asks for cached data, builds what is missing, and asks for a write.
+
+## Cache/`UniformFmm` boundary
+
+No file under `src/cache/` defines a `UniformFmm` member function, and
+`internal.hpp` does not include `cdfmm/uniform_fmm.hpp`. Every cache entry
+point is a free function in `cdfmm::detail::cache` taking an explicit
+identity/payload record — `CacheIdentityInputs`/`CacheIdentity`,
+`UniversalCacheIdentity`/`UniversalCachePayload`, or
+`GeometryCacheIdentity`/`GeometryCachePayload`, all declared in
+`internal.hpp` — built from specific solver/plan/tree/topology types
+(`UniformTree`, `StaticFmmTopology`, `StaticM2LPlan`, `P2MPlan`, and similar),
+never from `UniformFmm` itself. `src/fmm/execution_setup.cpp` (identity) and
+`src/fmm/plan_preparation.cpp` (universal/geometry load and write) assemble
+these records from `UniformFmm`'s private state, call the free functions, and
+copy results back; they remain the only callers and the sole owners of the
+cache-vs-build decision. Do not add a `UniformFmm` member function to
+`src/cache/` to make a future change more convenient — extend the identity or
+payload record instead, and keep the new field's origin (identity vs.
+persisted payload vs. statistics) explicit, matching the classification below.
+
+`P2MPlan`/`FloatP2MPlan` moved from private nested types of `UniformFmm` to
+`include/cdfmm/plan/static_coefficient.hpp` specifically so the geometry
+payload could reference them without seeing the rest of `UniformFmm`;
+`ExpansionBasis` moved from `uniform_fmm.hpp` to `include/cdfmm/core/precision.hpp`
+for the same reason (`CacheDescriptor` needs it). Neither move changed
+`sizeof(UniformFmm)` or any public/ABI surface: both were already effectively
+internal-only types reachable solely through `UniformFmm`'s public API by
+value, never by their now-relocated name.
 
 ## Local invariants
 

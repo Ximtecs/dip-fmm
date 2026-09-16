@@ -13,6 +13,7 @@
 #include "cdfmm/plan/static_plan.hpp"
 
 #include "backend/cuda/fmm/internal.hpp"
+#include "cache/internal.hpp"
 #include "fmm/internal.hpp"
 
 namespace cdfmm {
@@ -199,7 +200,38 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
   }
   sorted_self_indices_.resize(target_count, -1);
   initialise_p2p_policy(options);
-  initialise_cache_keys(options);
+  {
+    // Plan preparation supplies the geometry/option facts cache identity is
+    // computed from; `compute_cache_identity` never reaches into `this`.
+    const detail::cache::CacheIdentityInputs inputs{
+        expansion_basis_,
+        precision_,
+        expansion_order(),
+        source_geometry_,
+        target_geometry_,
+        near_field_source_model_,
+        near_field_target_model_,
+        far_field_source_model_,
+        far_field_target_model_,
+        use_reduced_symmetry_p2p_,
+        periodic_,
+        *tree_,
+        sorted_source_sizes_,
+        sorted_target_sizes_,
+        sorted_source_tetrahedra_,
+        sorted_target_tetrahedra_,
+        fixed_target_source_indices_};
+    const detail::cache::CacheIdentity identity =
+        detail::cache::compute_cache_identity(supplied_topology_,
+                                              options.enable_cache, inputs,
+                                              static_plan_statistics_);
+    cache_enabled_ = identity.enabled;
+    cache_directory_ = identity.directory;
+    universal_cache_key_ = identity.universal_key;
+    periodic_cache_key_ = identity.periodic_key;
+    geometry_cache_key_ = identity.geometry_key;
+    geometry_hash_digest_ = identity.geometry_hash_digest;
+  }
   if (m2l_backend_ == M2LBackend::Static ||
       precision_ == StaticPrecision::Float32) {
     build_static_plan();

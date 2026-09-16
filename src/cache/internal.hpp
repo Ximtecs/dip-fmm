@@ -1,7 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
-#include "cdfmm/uniform_fmm.hpp"
+#include "cdfmm/geometry/models.hpp"
+#include "cdfmm/geometry/primitives/rectangular_prism.hpp"
+#include "cdfmm/geometry/primitives/tetrahedron.hpp"
+#include "cdfmm/periodic.hpp"
+#include "cdfmm/plan/static_plan.hpp"
+#include "cdfmm/precision.hpp"
+#include "cdfmm/timings.hpp"
+#include "cdfmm/tree/static_topology.hpp"
+#include "cdfmm/tree/uniform_tree.hpp"
 
 #include <sys/mman.h>
 
@@ -11,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -19,7 +28,12 @@
 
 // Implementation-only interface shared by the cache translation units. The
 // cache subsystem persists solver data defined elsewhere: nothing here
-// constructs operators, plans, topology, or execution packings.
+// constructs operators, plans, topology, or execution packings, and nothing
+// here depends on `UniformFmm` itself. Every cache entry point below takes
+// explicit identity/payload records naming the specific solver/plan state it
+// persists; `src/fmm/execution_setup.cpp` and `src/fmm/plan_preparation.cpp`
+// assemble those records from `UniformFmm`'s private state and remain the
+// sole callers, preserving plan preparation as the cache-vs-build owner.
 //
 // Ownership inside this subsystem:
 //   io.cpp        cache root/environment policy and the validated file
@@ -329,5 +343,162 @@ void read_p2p_blocks(Reader& reader, std::uint64_t block_count64,
 
 void read_p2p_blocks_float(Reader& reader, std::uint64_t block_count64,
                            FloatStaticP2POperator& operator_map);
+
+//------------------------------------------------------------------------------
+// Cache identity: geometry/option facts in, keys and digest out. keys.cpp.
+//------------------------------------------------------------------------------
+
+// Explicit geometry/option facts that determine cache identity. This is the
+// same information `initialise_cache_keys` used to read directly from
+// `UniformFmm`; `execution_setup.cpp` now assembles it from the solver's
+// state and hands it over instead of identity logic reaching into the solver
+// object itself. References are only read for the duration of the call.
+struct CacheIdentityInputs {
+  ExpansionBasis expansion_basis;
+  StaticPrecision precision;
+  int expansion_order;
+  SourceGeometry source_geometry;
+  TargetGeometry target_geometry;
+  SourceModel near_field_source_model;
+  TargetModel near_field_target_model;
+  SourceModel far_field_source_model;
+  TargetModel far_field_target_model;
+  bool use_reduced_symmetry_p2p;
+  const PeriodicCellOptions& periodic;
+  const UniformTree& tree;
+  std::span<const CuboidSize> sorted_source_sizes;
+  std::span<const CuboidSize> sorted_target_sizes;
+  std::span<const Tetrahedron> sorted_source_tetrahedra;
+  std::span<const Tetrahedron> sorted_target_tetrahedra;
+  const std::optional<std::vector<int>>& fixed_target_source_indices;
+};
+
+// Resolved cache identity, ready to store back on the solver object. Every
+// key/digest is empty and `enabled` is false whenever the enclosing option
+// disables caching, the environment disables it, or the topology was
+// supplied externally (see `compute_cache_identity`'s `supplied_topology`
+// parameter).
+struct CacheIdentity {
+  bool enabled{false};
+  std::string directory{};
+  std::string universal_key{};
+  std::string periodic_key{};
+  std::string geometry_key{};
+  std::string geometry_hash_digest{};
+};
+
+// Computes cache identity from explicit geometry/option facts. `statistics`
+// receives the geometry-hash phase timing, matching the timing this used to
+// record as a side effect of `initialise_cache_keys`. Caching is disabled
+// unconditionally, with an otherwise-default-constructed identity, whenever
+// `supplied_topology` is set: supplied topologies do not yet participate in
+// cache keys (see `UniformFmm`'s topology-supplying constructor).
+[[nodiscard]] CacheIdentity compute_cache_identity(
+    bool supplied_topology, bool option_enable_cache,
+    const CacheIdentityInputs& inputs, StaticPlanStatistics& statistics);
+
+//------------------------------------------------------------------------------
+// Depth-independent translation bank and periodic root payload. universal.cpp.
+//------------------------------------------------------------------------------
+
+struct UniversalCacheIdentity {
+  bool enabled{false};
+  std::string directory{};
+  std::string universal_key{};
+  std::string periodic_key{};
+  ExpansionBasis basis{};
+  StaticPrecision precision{};
+  int order{0};
+  bool periodic_enabled{false};
+};
+
+// Mutable references to the depth-independent operator bank this payload
+// persists. `m2l_matrices` is `StaticM2LPlan::matrices`: the universal bank is
+// always built and cached in FP64, then widened once into the FP32 plan by
+// `quantise_static_plan_to_float`, so only the FP64 array is a payload field
+// here.
+struct UniversalCachePayload {
+  std::array<StaticCoefficientOperator, 8>& m2m_operators;
+  std::array<StaticCoefficientOperator, 8>& l2l_operators;
+  std::vector<double>& m2l_matrices;
+  bool& periodic_operator_available;
+};
+
+// Loads the universal translation bank and, if `identity.periodic_enabled`,
+// the periodic root operator appended to its tail. Returns whether the
+// universal bank itself was hit; the periodic root is loaded independently
+// and best-effort (a periodic miss does not fail this call, matching prior
+// behaviour). A missing, truncated, or incompatible file is a safe miss.
+[[nodiscard]] bool load_universal_cache(const UniversalCacheIdentity& identity,
+                                        int coefficient_count,
+                                        UniversalCachePayload payload,
+                                        StaticPlanStatistics& statistics);
+
+// Writes the universal translation bank, and the periodic root tail when
+// `identity.periodic_enabled` and the tail is present in `m2l_matrices`.
+void write_universal_cache(
+    const UniversalCacheIdentity& identity, int coefficient_count,
+    const std::array<StaticCoefficientOperator, 8>& m2m_operators,
+    const std::array<StaticCoefficientOperator, 8>& l2l_operators,
+    const std::vector<double>& m2l_matrices, StaticPlanStatistics& statistics);
+
+//------------------------------------------------------------------------------
+// Geometry-dependent plan payload. geometry.cpp.
+//------------------------------------------------------------------------------
+
+struct GeometryCacheIdentity {
+  bool enabled{false};
+  std::string directory{};
+  std::string geometry_key{};
+  std::string geometry_hash_digest{};
+  ExpansionBasis basis{};
+  StaticPrecision precision{};
+  int order{0};
+};
+
+// Mutable references to exactly the geometry-dependent plan state this
+// payload persists or restores. FP32 and FP64 fields both appear because a
+// warm load populates only the side selected by `identity.precision`; a
+// direct FP32 hit leaves the FP64 fields untouched (see
+// `geometry_cache_loaded_direct_float`).
+struct GeometryCachePayload {
+  std::vector<P2MPlan>& p2m_plans;
+  std::vector<FloatP2MPlan>& p2m_plans_float;
+  StaticM2LPlan& m2l_plan;
+  FloatStaticM2LPlan& m2l_plan_float;
+  std::vector<StaticL2PEvaluator>& l2p_evaluators;
+  std::vector<FloatStaticL2PEvaluator>& l2p_evaluators_float;
+  StaticP2POperator& p2p_operator;
+  FloatStaticP2POperator& p2p_operator_float;
+  StaticP2PCompactPlan& p2p_compact_plan;
+  FloatStaticP2PCompactPlan& p2p_compact_plan_float;
+  FloatStaticP2PBsrPlan& p2p_bsr_plan_float;
+};
+
+// Loads a geometry plan, validating every cached tree/topology invariant
+// against `tree`/`topology`. A missing, truncated, corrupt, or mismatched file
+// is a safe miss (returns false) and never throws past this call. On a direct
+// FP32 hit, `geometry_cache_loaded_direct_float` is set true and only the
+// `_float` payload fields are populated. On any miss, the FP32 payload fields
+// and `geometry_cache_loaded_direct_float` are reset exactly as before: the
+// FP64 fields are deliberately left untouched (`cache/AGENTS.md` warns against
+// symmetrising this FP32-only failure cleanup).
+[[nodiscard]] bool load_geometry_cache(
+    const GeometryCacheIdentity& identity, const UniformTree& tree,
+    const StaticFmmTopology& topology,
+    const std::optional<std::vector<int>>& fixed_target_source_indices,
+    GeometryCachePayload payload, bool& geometry_cache_loaded_direct_float,
+    StaticPlanStatistics& statistics);
+
+// Writes the FP64 geometry plan built by cold construction. Always called
+// with the FP64 payload populated; the FP32 twin and the compact/BSR P2P
+// packings are derived state, not part of the persisted geometry payload, and
+// are not parameters here.
+void write_geometry_cache(
+    const GeometryCacheIdentity& identity, const UniformTree& tree,
+    const std::optional<std::vector<int>>& fixed_target_source_indices,
+    const std::vector<P2MPlan>& p2m_plans, const StaticM2LPlan& m2l_plan,
+    const std::vector<StaticL2PEvaluator>& l2p_evaluators,
+    const StaticP2POperator& p2p_operator, StaticPlanStatistics& statistics);
 
 } // namespace cdfmm::detail::cache

@@ -21,42 +21,46 @@
 // the live tree and topology; an invalid or mismatched file is a cache miss,
 // never a solver error. FP32 plans are decoded directly into FP32 storage.
 //
-// NOTE(cdfmm): geometry_cache_loaded_direct_float_ is set here and consumed by
+// NOTE(cdfmm): geometry_cache_loaded_direct_float is set here and consumed by
 // src/fmm/plan_preparation.cpp, which skips FP32 quantisation on a direct hit,
 // and by src/fmm/execution_setup.cpp, which promotes the FP32 P2P operator back
 // to FP64 to build the signed tensor-dictionary plan.
-namespace cdfmm {
-
-using namespace detail::cache;
+namespace cdfmm::detail::cache {
 
 // Geometry-plan serialisation is implemented below with field-wise arrays.
 // It deliberately excludes the universal translation matrices.
-bool UniformFmm::load_geometry_cache() {
-  if (!cache_enabled_) {
+bool load_geometry_cache(
+    const GeometryCacheIdentity& identity, const UniformTree& tree,
+    const StaticFmmTopology& topology,
+    const std::optional<std::vector<int>>& fixed_target_source_indices,
+    GeometryCachePayload payload, bool& geometry_cache_loaded_direct_float,
+    StaticPlanStatistics& statistics) {
+  if (!identity.enabled) {
     return false;
   }
   const auto start = std::chrono::steady_clock::now();
   try {
-    const auto payload = read_cache(
-        cache_path(cache_directory_, "plans", geometry_cache_key_),
-        {CacheKind::Plan, expansion_basis_, expansion_order(), precision_,
-         tree_->leaf_level(), geometry_cache_key_, geometry_hash_digest_},
-        static_plan_statistics_.cache_bytes_read);
-    Reader reader(payload);
+    const auto file = read_cache(
+        cache_path(identity.directory, "plans", identity.geometry_key),
+        {CacheKind::Plan, identity.basis, identity.order, identity.precision,
+         tree.leaf_level(), identity.geometry_key,
+         identity.geometry_hash_digest},
+        statistics.cache_bytes_read);
+    Reader reader(file);
     const auto require_int_span = [&reader](const std::span<const int> expected) {
       if (!reader.equal_span<int>(expected)) {
         throw std::runtime_error("cached tree index metadata mismatch");
       }
     };
-    require_int_span(tree_->source_permutation());
-    require_int_span(tree_->source_inverse_permutation());
-    require_int_span(tree_->target_permutation());
-    require_int_span(tree_->target_inverse_permutation());
-    require_int_span(tree_->leaf_indices());
-    require_int_span(tree_->occupied_source_leaves());
-    require_int_span(tree_->occupied_target_leaves());
+    require_int_span(tree.source_permutation());
+    require_int_span(tree.source_inverse_permutation());
+    require_int_span(tree.target_permutation());
+    require_int_span(tree.target_inverse_permutation());
+    require_int_span(tree.leaf_indices());
+    require_int_span(tree.occupied_source_leaves());
+    require_int_span(tree.occupied_target_leaves());
     const auto node_count = reader.scalar<std::uint64_t>();
-    const auto nodes = tree_->nodes();
+    const auto nodes = tree.nodes();
     if (node_count != nodes.size()) {
       throw std::runtime_error("cached tree node count mismatch");
     }
@@ -93,19 +97,19 @@ bool UniformFmm::load_geometry_cache() {
       }
     }
     const bool has_fixed_identities = reader.scalar<bool>();
-    if (has_fixed_identities != fixed_target_source_indices_.has_value()) {
+    if (has_fixed_identities != fixed_target_source_indices.has_value()) {
       throw std::runtime_error("cached self-identity metadata mismatch");
     }
     if (has_fixed_identities) {
       const std::vector<int> cached_identities = reader.vector<int>();
-      if (cached_identities != *fixed_target_source_indices_) {
+      if (cached_identities != *fixed_target_source_indices) {
         throw std::runtime_error("cached self identities mismatch");
       }
     }
-    const auto validate_cached_m2l = [this](const auto& plan) {
-      const std::size_t node_count = topology_->nodes.size();
+    const auto validate_cached_m2l = [&topology](const auto& plan) {
+      const std::size_t node_count = topology.nodes.size();
       const std::size_t interaction_count = plan.source_nodes.size();
-      if (plan.level_count != topology_->maximum_level + 1 ||
+      if (plan.level_count != topology.maximum_level + 1 ||
           plan.target_row_offsets.size() != node_count + 1 ||
           plan.target_row_offsets.back() !=
               static_cast<int>(interaction_count) ||
@@ -120,7 +124,7 @@ bool UniformFmm::load_geometry_cache() {
         throw std::runtime_error("cached canonical M2L metadata dimensions mismatch");
       }
       if (!std::equal(plan.node_levels.begin(), plan.node_levels.end(),
-                      topology_->nodes.begin(),
+                      topology.nodes.begin(),
                       [](const int level, const StaticFmmTopology::Node& node) {
                         return level == node.level;
                       })) {
@@ -138,7 +142,7 @@ bool UniformFmm::load_geometry_cache() {
         for (int slot = begin; slot < end; ++slot) {
           const int node = plan.target_nodes_by_level[static_cast<std::size_t>(slot)];
           if (node < 0 || node >= static_cast<int>(node_count) ||
-              topology_->nodes[static_cast<std::size_t>(node)].level != level) {
+              topology.nodes[static_cast<std::size_t>(node)].level != level) {
             throw std::runtime_error("cached canonical M2L target schedule mismatch");
           }
         }
@@ -152,10 +156,10 @@ bool UniformFmm::load_geometry_cache() {
         for (int slot = begin; slot < end; ++slot) {
           const std::size_t index = static_cast<std::size_t>(slot);
           const int source = plan.source_nodes[index];
-          const int target_level = topology_->nodes[target].level;
+          const int target_level = topology.nodes[target].level;
           if (source < 0 || source >= static_cast<int>(node_count) ||
               plan.source_levels[index] !=
-                  topology_->nodes[static_cast<std::size_t>(source)].level ||
+                  topology.nodes[static_cast<std::size_t>(source)].level ||
               plan.target_levels[index] != target_level ||
               plan.interaction_levels[index] != target_level) {
             throw std::runtime_error("cached canonical M2L endpoint levels mismatch");
@@ -163,12 +167,12 @@ bool UniformFmm::load_geometry_cache() {
         }
       }
     };
-    const auto validate_cached_p2m = [this](const auto& plans) {
-      if (plans.size() != topology_->source_leaves.size()) {
+    const auto validate_cached_p2m = [&topology](const auto& plans) {
+      if (plans.size() != topology.source_leaves.size()) {
         throw std::runtime_error("cached P2M leaf metadata dimensions mismatch");
       }
       for (std::size_t index = 0; index < plans.size(); ++index) {
-        const auto& expected = topology_->source_leaves[index];
+        const auto& expected = topology.source_leaves[index];
         if (plans[index].leaf != expected.node ||
             plans[index].begin != expected.begin ||
             plans[index].count != expected.count) {
@@ -177,137 +181,143 @@ bool UniformFmm::load_geometry_cache() {
       }
     };
     const auto p2m_count = reader.scalar<std::uint64_t>();
-    if (precision_ == StaticPrecision::Float32) {
-      p2m_plans_float_.clear();
-      p2m_plans_float_.reserve(static_cast<std::size_t>(p2m_count));
+    if (identity.precision == StaticPrecision::Float32) {
+      payload.p2m_plans_float.clear();
+      payload.p2m_plans_float.reserve(static_cast<std::size_t>(p2m_count));
       for (std::uint64_t index = 0; index < p2m_count; ++index) {
-        p2m_plans_float_.push_back(
+        payload.p2m_plans_float.push_back(
             {reader.scalar<int>(), reader.scalar<std::size_t>(),
              reader.scalar<std::size_t>(), read_operator_float(reader)});
       }
-      validate_cached_p2m(p2m_plans_float_);
-      m2l_plan_float_.coefficient_count = reader.scalar<int>();
-      m2l_plan_float_.matrix_count = reader.scalar<int>();
-      m2l_plan_float_.level_count = reader.scalar<int>();
-      m2l_plan_float_.multipole_scaling = read_values_float(reader);
-      m2l_plan_float_.local_scaling = read_values_float(reader);
-      m2l_plan_float_.target_row_offsets = reader.vector<int>();
-      m2l_plan_float_.source_nodes = reader.vector<int>();
-      m2l_plan_float_.matrix_ids = reader.vector<int>();
-      m2l_plan_float_.source_levels = reader.vector<int>();
-      m2l_plan_float_.target_levels = reader.vector<int>();
-      m2l_plan_float_.interaction_levels = reader.vector<int>();
-      m2l_plan_float_.level_target_begin = reader.vector<int>();
-      m2l_plan_float_.level_target_end = reader.vector<int>();
-      m2l_plan_float_.target_level_offsets = reader.vector<int>();
-      m2l_plan_float_.target_nodes_by_level = reader.vector<int>();
-      m2l_plan_float_.node_levels = reader.vector<int>();
+      validate_cached_p2m(payload.p2m_plans_float);
+      payload.m2l_plan_float.coefficient_count = reader.scalar<int>();
+      payload.m2l_plan_float.matrix_count = reader.scalar<int>();
+      payload.m2l_plan_float.level_count = reader.scalar<int>();
+      payload.m2l_plan_float.multipole_scaling = read_values_float(reader);
+      payload.m2l_plan_float.local_scaling = read_values_float(reader);
+      payload.m2l_plan_float.target_row_offsets = reader.vector<int>();
+      payload.m2l_plan_float.source_nodes = reader.vector<int>();
+      payload.m2l_plan_float.matrix_ids = reader.vector<int>();
+      payload.m2l_plan_float.source_levels = reader.vector<int>();
+      payload.m2l_plan_float.target_levels = reader.vector<int>();
+      payload.m2l_plan_float.interaction_levels = reader.vector<int>();
+      payload.m2l_plan_float.level_target_begin = reader.vector<int>();
+      payload.m2l_plan_float.level_target_end = reader.vector<int>();
+      payload.m2l_plan_float.target_level_offsets = reader.vector<int>();
+      payload.m2l_plan_float.target_nodes_by_level = reader.vector<int>();
+      payload.m2l_plan_float.node_levels = reader.vector<int>();
 
       const auto l2p_count = reader.scalar<std::uint64_t>();
-      l2p_evaluators_float_.clear();
-      l2p_evaluators_float_.reserve(static_cast<std::size_t>(l2p_count));
+      payload.l2p_evaluators_float.clear();
+      payload.l2p_evaluators_float.reserve(static_cast<std::size_t>(l2p_count));
       for (std::uint64_t index = 0; index < l2p_count; ++index) {
         FloatStaticL2PEvaluator evaluator;
         evaluator.potential = read_values_float(reader);
         for (auto& row : evaluator.field) {
           row = read_values_float(reader);
         }
-        l2p_evaluators_float_.push_back(std::move(evaluator));
+        payload.l2p_evaluators_float.push_back(std::move(evaluator));
       }
-      p2p_operator_float_.source_count = reader.scalar<int>();
-      p2p_operator_float_.target_count = reader.scalar<int>();
-      p2p_operator_float_.row_offsets = reader.vector<int>();
+      payload.p2p_operator_float.source_count = reader.scalar<int>();
+      payload.p2p_operator_float.target_count = reader.scalar<int>();
+      payload.p2p_operator_float.row_offsets = reader.vector<int>();
       const auto block_count = reader.scalar<std::uint64_t>();
-      read_p2p_blocks_float(reader, block_count, p2p_operator_float_);
-      validate_cached_m2l(m2l_plan_float_);
-      geometry_cache_loaded_direct_float_ = true;
+      read_p2p_blocks_float(reader, block_count, payload.p2p_operator_float);
+      validate_cached_m2l(payload.m2l_plan_float);
+      geometry_cache_loaded_direct_float = true;
     } else {
-      p2m_plans_.clear();
-        p2m_plans_.reserve(static_cast<std::size_t>(p2m_count));
+      payload.p2m_plans.clear();
+      payload.p2m_plans.reserve(static_cast<std::size_t>(p2m_count));
       for (std::uint64_t index = 0; index < p2m_count; ++index) {
-        p2m_plans_.push_back(
+        payload.p2m_plans.push_back(
             {reader.scalar<int>(), reader.scalar<std::size_t>(),
-             reader.scalar<std::size_t>(), read_operator(reader, precision_)});
+             reader.scalar<std::size_t>(),
+             read_operator(reader, identity.precision)});
       }
-      validate_cached_p2m(p2m_plans_);
-      m2l_plan_.coefficient_count = reader.scalar<int>();
-      m2l_plan_.matrix_count = reader.scalar<int>();
-      m2l_plan_.level_count = reader.scalar<int>();
-      m2l_plan_.multipole_scaling = read_values(reader, precision_);
-      m2l_plan_.local_scaling = read_values(reader, precision_);
-      m2l_plan_.target_row_offsets = reader.vector<int>();
-      m2l_plan_.source_nodes = reader.vector<int>();
-      m2l_plan_.matrix_ids = reader.vector<int>();
-      m2l_plan_.source_levels = reader.vector<int>();
-      m2l_plan_.target_levels = reader.vector<int>();
-      m2l_plan_.interaction_levels = reader.vector<int>();
-      m2l_plan_.level_target_begin = reader.vector<int>();
-      m2l_plan_.level_target_end = reader.vector<int>();
-      m2l_plan_.target_level_offsets = reader.vector<int>();
-      m2l_plan_.target_nodes_by_level = reader.vector<int>();
-      m2l_plan_.node_levels = reader.vector<int>();
+      validate_cached_p2m(payload.p2m_plans);
+      payload.m2l_plan.coefficient_count = reader.scalar<int>();
+      payload.m2l_plan.matrix_count = reader.scalar<int>();
+      payload.m2l_plan.level_count = reader.scalar<int>();
+      payload.m2l_plan.multipole_scaling = read_values(reader, identity.precision);
+      payload.m2l_plan.local_scaling = read_values(reader, identity.precision);
+      payload.m2l_plan.target_row_offsets = reader.vector<int>();
+      payload.m2l_plan.source_nodes = reader.vector<int>();
+      payload.m2l_plan.matrix_ids = reader.vector<int>();
+      payload.m2l_plan.source_levels = reader.vector<int>();
+      payload.m2l_plan.target_levels = reader.vector<int>();
+      payload.m2l_plan.interaction_levels = reader.vector<int>();
+      payload.m2l_plan.level_target_begin = reader.vector<int>();
+      payload.m2l_plan.level_target_end = reader.vector<int>();
+      payload.m2l_plan.target_level_offsets = reader.vector<int>();
+      payload.m2l_plan.target_nodes_by_level = reader.vector<int>();
+      payload.m2l_plan.node_levels = reader.vector<int>();
 
       const auto l2p_count = reader.scalar<std::uint64_t>();
-      l2p_evaluators_.clear();
-      l2p_evaluators_.reserve(static_cast<std::size_t>(l2p_count));
+      payload.l2p_evaluators.clear();
+      payload.l2p_evaluators.reserve(static_cast<std::size_t>(l2p_count));
       for (std::uint64_t index = 0; index < l2p_count; ++index) {
         StaticL2PEvaluator evaluator;
-        evaluator.potential = read_values(reader, precision_);
+        evaluator.potential = read_values(reader, identity.precision);
         for (auto& row : evaluator.field) {
-          row = read_values(reader, precision_);
+          row = read_values(reader, identity.precision);
         }
-        l2p_evaluators_.push_back(std::move(evaluator));
+        payload.l2p_evaluators.push_back(std::move(evaluator));
       }
-      p2p_operator_.source_count = reader.scalar<int>();
-      p2p_operator_.target_count = reader.scalar<int>();
-      p2p_operator_.row_offsets = reader.vector<int>();
+      payload.p2p_operator.source_count = reader.scalar<int>();
+      payload.p2p_operator.target_count = reader.scalar<int>();
+      payload.p2p_operator.row_offsets = reader.vector<int>();
       const auto block_count = reader.scalar<std::uint64_t>();
-      read_p2p_blocks(reader, block_count, precision_, p2p_operator_,
-                      p2p_compact_plan_);
-      validate_cached_m2l(m2l_plan_);
+      read_p2p_blocks(reader, block_count, identity.precision,
+                      payload.p2p_operator, payload.p2p_compact_plan);
+      validate_cached_m2l(payload.m2l_plan);
     }
     reader.require_end();
-    static_plan_statistics_.geometry_cache_hit = true;
-    static_plan_statistics_.geometry_cache_load.add(
+    statistics.geometry_cache_hit = true;
+    statistics.geometry_cache_load.add(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
             .count());
-    static_plan_statistics_.geometry_cache_lookup.add(
+    statistics.geometry_cache_lookup.add(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
             .count());
     return true;
   } catch (const std::exception&) {
-    geometry_cache_loaded_direct_float_ = false;
-    p2m_plans_float_.clear();
-    l2p_evaluators_float_.clear();
-    p2p_operator_float_ = {};
-    p2p_compact_plan_float_ = {};
-    p2p_bsr_plan_float_ = {};
-    m2l_plan_float_ = {};
-    static_plan_statistics_.geometry_cache_lookup.add(
+    geometry_cache_loaded_direct_float = false;
+    payload.p2m_plans_float.clear();
+    payload.l2p_evaluators_float.clear();
+    payload.p2p_operator_float = {};
+    payload.p2p_compact_plan_float = {};
+    payload.p2p_bsr_plan_float = {};
+    payload.m2l_plan_float = {};
+    statistics.geometry_cache_lookup.add(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
             .count());
     return false;
   }
 }
 
-void UniformFmm::write_geometry_cache() const {
-  if (!cache_enabled_) {
+void write_geometry_cache(
+    const GeometryCacheIdentity& identity, const UniformTree& tree,
+    const std::optional<std::vector<int>>& fixed_target_source_indices,
+    const std::vector<P2MPlan>& p2m_plans, const StaticM2LPlan& m2l_plan,
+    const std::vector<StaticL2PEvaluator>& l2p_evaluators,
+    const StaticP2POperator& p2p_operator, StaticPlanStatistics& statistics) {
+  if (!identity.enabled) {
     return;
   }
   const auto start = std::chrono::steady_clock::now();
   Writer payload;
   const std::size_t p2p_bytes = checked_bytes(
-      p2p_operator_.blocks.size(), p2p_record_bytes(precision_));
+      p2p_operator.blocks.size(), p2p_record_bytes(identity.precision));
   payload.reserve(p2p_bytes + 4 * 1024 * 1024);
-  payload.span(tree_->source_permutation());
-  payload.span(tree_->source_inverse_permutation());
-  payload.span(tree_->target_permutation());
-  payload.span(tree_->target_inverse_permutation());
-  payload.span(tree_->leaf_indices());
-  payload.span(tree_->occupied_source_leaves());
-  payload.span(tree_->occupied_target_leaves());
-  payload.scalar<std::uint64_t>(tree_->nodes().size());
-  for (const TreeNode& node : tree_->nodes()) {
+  payload.span(tree.source_permutation());
+  payload.span(tree.source_inverse_permutation());
+  payload.span(tree.target_permutation());
+  payload.span(tree.target_inverse_permutation());
+  payload.span(tree.leaf_indices());
+  payload.span(tree.occupied_source_leaves());
+  payload.span(tree.occupied_target_leaves());
+  payload.scalar<std::uint64_t>(tree.nodes().size());
+  for (const TreeNode& node : tree.nodes()) {
     payload.scalar(node.index);
     payload.scalar(node.level);
     payload.scalar(node.parent);
@@ -327,56 +337,54 @@ void UniformFmm::write_geometry_cache() const {
     payload.scalar(node.target_begin);
     payload.scalar(node.target_end);
   }
-  payload.scalar(fixed_target_source_indices_.has_value());
-  if (fixed_target_source_indices_) {
-    payload.vector(*fixed_target_source_indices_);
+  payload.scalar(fixed_target_source_indices.has_value());
+  if (fixed_target_source_indices) {
+    payload.vector(*fixed_target_source_indices);
   }
-  payload.scalar<std::uint64_t>(p2m_plans_.size());
-  for (const P2MPlan& plan : p2m_plans_) {
+  payload.scalar<std::uint64_t>(p2m_plans.size());
+  for (const P2MPlan& plan : p2m_plans) {
     payload.scalar(plan.leaf);
     payload.scalar(plan.begin);
     payload.scalar(plan.count);
-    write_operator(payload, plan.operator_map, precision_);
+    write_operator(payload, plan.operator_map, identity.precision);
   }
-  payload.scalar(m2l_plan_.coefficient_count);
-  payload.scalar(m2l_plan_.matrix_count);
-  payload.scalar(m2l_plan_.level_count);
-  write_values(payload, m2l_plan_.multipole_scaling, precision_);
-  write_values(payload, m2l_plan_.local_scaling, precision_);
-  payload.vector(m2l_plan_.target_row_offsets);
-  payload.vector(m2l_plan_.source_nodes);
-  payload.vector(m2l_plan_.matrix_ids);
-  payload.vector(m2l_plan_.source_levels);
-  payload.vector(m2l_plan_.target_levels);
-  payload.vector(m2l_plan_.interaction_levels);
-  payload.vector(m2l_plan_.level_target_begin);
-  payload.vector(m2l_plan_.level_target_end);
-  payload.vector(m2l_plan_.target_level_offsets);
-  payload.vector(m2l_plan_.target_nodes_by_level);
-  payload.vector(m2l_plan_.node_levels);
-  payload.scalar<std::uint64_t>(l2p_evaluators_.size());
-  for (const StaticL2PEvaluator& evaluator : l2p_evaluators_) {
-    write_values(payload, evaluator.potential, precision_);
+  payload.scalar(m2l_plan.coefficient_count);
+  payload.scalar(m2l_plan.matrix_count);
+  payload.scalar(m2l_plan.level_count);
+  write_values(payload, m2l_plan.multipole_scaling, identity.precision);
+  write_values(payload, m2l_plan.local_scaling, identity.precision);
+  payload.vector(m2l_plan.target_row_offsets);
+  payload.vector(m2l_plan.source_nodes);
+  payload.vector(m2l_plan.matrix_ids);
+  payload.vector(m2l_plan.source_levels);
+  payload.vector(m2l_plan.target_levels);
+  payload.vector(m2l_plan.interaction_levels);
+  payload.vector(m2l_plan.level_target_begin);
+  payload.vector(m2l_plan.level_target_end);
+  payload.vector(m2l_plan.target_level_offsets);
+  payload.vector(m2l_plan.target_nodes_by_level);
+  payload.vector(m2l_plan.node_levels);
+  payload.scalar<std::uint64_t>(l2p_evaluators.size());
+  for (const StaticL2PEvaluator& evaluator : l2p_evaluators) {
+    write_values(payload, evaluator.potential, identity.precision);
     for (const auto& row : evaluator.field) {
-      write_values(payload, row, precision_);
+      write_values(payload, row, identity.precision);
     }
   }
-  payload.scalar(p2p_operator_.source_count);
-  payload.scalar(p2p_operator_.target_count);
-  payload.vector(p2p_operator_.row_offsets);
-  payload.scalar<std::uint64_t>(p2p_operator_.blocks.size());
-  write_p2p_blocks(payload, p2p_operator_.blocks, precision_);
+  payload.scalar(p2p_operator.source_count);
+  payload.scalar(p2p_operator.target_count);
+  payload.vector(p2p_operator.row_offsets);
+  payload.scalar<std::uint64_t>(p2p_operator.blocks.size());
+  write_p2p_blocks(payload, p2p_operator.blocks, identity.precision);
   const std::size_t bytes = write_cache(
-      cache_path(cache_directory_, "plans", geometry_cache_key_),
-      {CacheKind::Plan, expansion_basis_, expansion_order(), precision_,
-       tree_->leaf_level(), geometry_cache_key_, geometry_hash_digest_},
+      cache_path(identity.directory, "plans", identity.geometry_key),
+      {CacheKind::Plan, identity.basis, identity.order, identity.precision,
+       tree.leaf_level(), identity.geometry_key, identity.geometry_hash_digest},
       payload.bytes());
-  const_cast<StaticPlanStatistics&>(static_plan_statistics_)
-      .cache_bytes_written += bytes;
-  const_cast<StaticPlanStatistics&>(static_plan_statistics_)
-      .geometry_cache_write.add(
-          std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-              .count());
+  statistics.cache_bytes_written += bytes;
+  statistics.geometry_cache_write.add(
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+          .count());
 }
 
-} // namespace cdfmm
+} // namespace cdfmm::detail::cache

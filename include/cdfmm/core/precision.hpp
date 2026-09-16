@@ -15,4 +15,12 @@ enum class StaticPrecision {
     Float64
 };
 
+/** @brief Expansion basis used by the reusable far-field hierarchy. */
+enum class ExpansionBasis {
+    /// Factorial-normalised total-degree Cartesian Taylor coefficients.
+    Cartesian,
+    /// Minimal real tesseral solid harmonics ordered by degree then m.
+    Spherical
+};
+
 } // namespace cdfmm

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
 namespace cdfmm {
@@ -31,6 +32,22 @@ struct FloatStaticCoefficientOperator {
     int input_size{0};
     int output_size{0};
     std::vector<FloatStaticOperatorEntry> entries{};
+};
+
+/** @brief Immutable leaf index and geometry-specific P2M coefficient map. */
+struct P2MPlan {
+    int leaf{0};
+    std::size_t begin{0};
+    std::size_t count{0};
+    StaticCoefficientOperator operator_map{};
+};
+
+/** @brief FP32 leaf index and quantised P2M coefficient map. */
+struct FloatP2MPlan {
+    int leaf{0};
+    std::size_t begin{0};
+    std::size_t count{0};
+    FloatStaticCoefficientOperator operator_map{};
 };
 
 } // namespace cdfmm

@@ -12,6 +12,8 @@
 #include "cdfmm/operators/operators.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 
+#include "cache/internal.hpp"
+
 namespace cdfmm {
 
 namespace {
@@ -138,7 +140,18 @@ void UniformFmm::build_static_plan() {
       expansion_basis_ == ExpansionBasis::Spherical;
   static_plan_statistics_.tree_bytes = (tree_ ? tree_->memory_statistics().total_bytes() : 0);
   static_plan_statistics_.topology_bytes = topology_->memory_bytes();
-  bool universal_available = load_universal_cache();
+  // Plan preparation owns the cache-vs-build decision: it supplies identity
+  // and payload state to the cache boundary and decides whether to build and
+  // write on a miss. The cache functions never reach into `this`.
+  const detail::cache::UniversalCacheIdentity universal_identity{
+      cache_enabled_,        cache_directory_, universal_cache_key_,
+      periodic_cache_key_,   expansion_basis_, precision_,
+      expansion_order(),     periodic_.enabled};
+  bool universal_available = detail::cache::load_universal_cache(
+      universal_identity, coefficient_count(),
+      {m2m_operators_, l2l_operators_, m2l_plan_.matrices,
+       periodic_operator_available_},
+      static_plan_statistics_);
   const bool universal_cache_loaded = universal_available;
   const bool periodic_required = periodic_.enabled && !topology_->nodes.empty() &&
       topology_->nodes[static_cast<std::size_t>(topology_->root)].source_count() != 0 &&
@@ -148,7 +161,9 @@ void UniformFmm::build_static_plan() {
   if (universal_write_required) {
     build_missing_universal_operators(universal_available, periodic_required);
     universal_available = true;
-    write_universal_cache();
+    detail::cache::write_universal_cache(
+        universal_identity, coefficient_count(), m2m_operators_,
+        l2l_operators_, m2l_plan_.matrices, static_plan_statistics_);
   }
   if (universal_available) {
     // The universal bank always owns exactly eight child-class templates.
@@ -174,9 +189,18 @@ void UniformFmm::build_static_plan() {
       }
     }
   }
+  const detail::cache::GeometryCacheIdentity geometry_identity{
+      cache_enabled_,    cache_directory_, geometry_cache_key_,
+      geometry_hash_digest_, expansion_basis_, precision_, expansion_order()};
   if (universal_available &&
       (!periodic_required || periodic_operator_available_) &&
-      load_geometry_cache()) {
+      detail::cache::load_geometry_cache(
+          geometry_identity, *tree_, *topology_, fixed_target_source_indices_,
+          {p2m_plans_, p2m_plans_float_, m2l_plan_, m2l_plan_float_,
+           l2p_evaluators_, l2p_evaluators_float_, p2p_operator_,
+           p2p_operator_float_, p2p_compact_plan_, p2p_compact_plan_float_,
+           p2p_bsr_plan_float_},
+          geometry_cache_loaded_direct_float_, static_plan_statistics_)) {
     static_plan_statistics_.m2l_operators =
         static_cast<std::size_t>(precision_ == StaticPrecision::Float32
                                      ? m2l_plan_float_.matrix_count
@@ -798,7 +822,9 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.total.add(elapsed_seconds(total_start));
   ++static_plan_statistics_.construction_count;
 
-  write_geometry_cache();
+  detail::cache::write_geometry_cache(
+      geometry_identity, *tree_, fixed_target_source_indices_, p2m_plans_,
+      m2l_plan_, l2p_evaluators_, p2p_operator_, static_plan_statistics_);
 
   if (precision_ == StaticPrecision::Float32) {
     quantise_static_plan_to_float();

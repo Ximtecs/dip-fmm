@@ -17,9 +17,7 @@
 // This unit serialises and deserialises already-defined solver data. Cold
 // construction of the translation mathematics stays in the operator and
 // plan-preparation layers.
-namespace cdfmm {
-
-using namespace detail::cache;
+namespace cdfmm::detail::cache {
 
 namespace {
 
@@ -28,130 +26,136 @@ constexpr std::size_t kUniversalClassCount =
 
 } // namespace
 
-bool UniformFmm::load_universal_cache() {
-  if (!cache_enabled_) {
+bool load_universal_cache(const UniversalCacheIdentity& identity,
+                          const int coefficient_count,
+                          UniversalCachePayload payload,
+                          StaticPlanStatistics& statistics) {
+  if (!identity.enabled) {
     return false;
   }
   const auto start = std::chrono::steady_clock::now();
   try {
-    const auto payload = read_cache(
-        cache_path(cache_directory_, "universal", universal_cache_key_),
-        {CacheKind::Universal, expansion_basis_, expansion_order(), precision_,
-         -1, universal_cache_key_, {}},
-        static_plan_statistics_.cache_bytes_read);
-    Reader reader(payload);
+    const auto file = read_cache(
+        cache_path(identity.directory, "universal", identity.universal_key),
+        {CacheKind::Universal, identity.basis, identity.order,
+         identity.precision, -1, identity.universal_key, {}},
+        statistics.cache_bytes_read);
+    Reader reader(file);
     for (int child = 0; child < 8; ++child) {
-      m2m_operators_[child] = read_operator(reader, precision_);
+      payload.m2m_operators[static_cast<std::size_t>(child)] =
+          read_operator(reader, identity.precision);
     }
     for (int child = 0; child < 8; ++child) {
-      l2l_operators_[child] = read_operator(reader, precision_);
+      payload.l2l_operators[static_cast<std::size_t>(child)] =
+          read_operator(reader, identity.precision);
     }
-    m2l_plan_.matrices = read_values(reader, precision_);
+    payload.m2l_matrices = read_values(reader, identity.precision);
     reader.require_end();
     const std::size_t expected = kUniversalClassCount *
-        static_cast<std::size_t>(coefficient_count()) * coefficient_count();
-    if (m2l_plan_.matrices.size() != expected) {
+        static_cast<std::size_t>(coefficient_count) * coefficient_count;
+    if (payload.m2l_matrices.size() != expected) {
       throw std::runtime_error("universal M2L bank size mismatch");
     }
-    static_plan_statistics_.universal_cache_hit = true;
-    static_plan_statistics_.universal_cache_load.add(
+    statistics.universal_cache_hit = true;
+    statistics.universal_cache_load.add(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
             .count());
   } catch (const std::exception&) {
-    static_plan_statistics_.universal_cache_lookup.add(
+    statistics.universal_cache_lookup.add(
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
             .count());
     return false;
   }
-  static_plan_statistics_.universal_cache_lookup.add(
+  statistics.universal_cache_lookup.add(
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
           .count());
 
-  if (!periodic_.enabled) {
+  if (!identity.periodic_enabled) {
     return true;
   }
   const auto periodic_start = std::chrono::steady_clock::now();
   try {
-    const auto payload = read_cache(
-        cache_path(cache_directory_, "periodic", periodic_cache_key_),
-        {CacheKind::Periodic, expansion_basis_, expansion_order(), precision_,
-         -1, periodic_cache_key_, {}},
-        static_plan_statistics_.cache_bytes_read);
-    Reader reader(payload);
-    std::vector<double> periodic = read_values(reader, precision_);
+    const auto file = read_cache(
+        cache_path(identity.directory, "periodic", identity.periodic_key),
+        {CacheKind::Periodic, identity.basis, identity.order,
+         identity.precision, -1, identity.periodic_key, {}},
+        statistics.cache_bytes_read);
+    Reader reader(file);
+    std::vector<double> periodic = read_values(reader, identity.precision);
     reader.require_end();
     const std::size_t expected =
-        static_cast<std::size_t>(coefficient_count()) * coefficient_count();
+        static_cast<std::size_t>(coefficient_count) * coefficient_count;
     if (periodic.size() != expected) {
       throw std::runtime_error("periodic matrix size mismatch");
     }
-    m2l_plan_.matrices.insert(m2l_plan_.matrices.end(), periodic.begin(),
-                              periodic.end());
-    static_plan_statistics_.periodic_cache_hit = true;
-    periodic_operator_available_ = true;
-    static_plan_statistics_.periodic_cache_load.add(
+    payload.m2l_matrices.insert(payload.m2l_matrices.end(), periodic.begin(),
+                                periodic.end());
+    statistics.periodic_cache_hit = true;
+    payload.periodic_operator_available = true;
+    statistics.periodic_cache_load.add(
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                      periodic_start)
             .count());
   } catch (const std::exception&) {
-    static_plan_statistics_.periodic_cache_lookup.add(
+    statistics.periodic_cache_lookup.add(
         std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                      periodic_start)
             .count());
     return true;
   }
-  static_plan_statistics_.periodic_cache_lookup.add(
+  statistics.periodic_cache_lookup.add(
       std::chrono::duration<double>(std::chrono::steady_clock::now() -
                                    periodic_start)
           .count());
   return true;
 }
 
-void UniformFmm::write_universal_cache() const {
-  if (!cache_enabled_) {
+void write_universal_cache(
+    const UniversalCacheIdentity& identity, const int coefficient_count,
+    const std::array<StaticCoefficientOperator, 8>& m2m_operators,
+    const std::array<StaticCoefficientOperator, 8>& l2l_operators,
+    const std::vector<double>& m2l_matrices, StaticPlanStatistics& statistics) {
+  if (!identity.enabled) {
     return;
   }
   const auto start = std::chrono::steady_clock::now();
   Writer payload;
-  for (const auto& value : m2m_operators_) {
-    write_operator(payload, value, precision_);
+  for (const auto& value : m2m_operators) {
+    write_operator(payload, value, identity.precision);
   }
-  for (const auto& value : l2l_operators_) {
-    write_operator(payload, value, precision_);
+  for (const auto& value : l2l_operators) {
+    write_operator(payload, value, identity.precision);
   }
   const std::size_t matrix_values =
-      static_cast<std::size_t>(coefficient_count()) * coefficient_count();
+      static_cast<std::size_t>(coefficient_count) * coefficient_count;
   const std::size_t universal_values = kUniversalClassCount * matrix_values;
   write_values(payload,
-               std::span<const double>(m2l_plan_.matrices.data(), universal_values),
-               precision_);
+               std::span<const double>(m2l_matrices.data(), universal_values),
+               identity.precision);
   const std::size_t bytes = write_cache(
-      cache_path(cache_directory_, "universal", universal_cache_key_),
-      {CacheKind::Universal, expansion_basis_, expansion_order(), precision_,
-       -1, universal_cache_key_, {}},
+      cache_path(identity.directory, "universal", identity.universal_key),
+      {CacheKind::Universal, identity.basis, identity.order,
+       identity.precision, -1, identity.universal_key, {}},
       payload.bytes());
-  const_cast<StaticPlanStatistics&>(static_plan_statistics_)
-      .cache_bytes_written += bytes;
+  statistics.cache_bytes_written += bytes;
 
-  if (periodic_.enabled && m2l_plan_.matrices.size() >=
-                               universal_values + matrix_values) {
+  if (identity.periodic_enabled &&
+      m2l_matrices.size() >= universal_values + matrix_values) {
     Writer periodic_payload;
     write_values(periodic_payload,
-                 std::span<const double>(m2l_plan_.matrices.data() + universal_values,
+                 std::span<const double>(m2l_matrices.data() + universal_values,
                                          matrix_values),
-                 precision_);
+                 identity.precision);
     const std::size_t periodic_bytes = write_cache(
-        cache_path(cache_directory_, "periodic", periodic_cache_key_),
-        {CacheKind::Periodic, expansion_basis_, expansion_order(), precision_,
-         -1, periodic_cache_key_, {}},
+        cache_path(identity.directory, "periodic", identity.periodic_key),
+        {CacheKind::Periodic, identity.basis, identity.order,
+         identity.precision, -1, identity.periodic_key, {}},
         periodic_payload.bytes());
-    const_cast<StaticPlanStatistics&>(static_plan_statistics_)
-        .cache_bytes_written += periodic_bytes;
+    statistics.cache_bytes_written += periodic_bytes;
   }
-  const_cast<StaticPlanStatistics&>(static_plan_statistics_)
-      .universal_cache_write.add(
-          std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-              .count());
+  statistics.universal_cache_write.add(
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+          .count());
 }
 
-} // namespace cdfmm
+} // namespace cdfmm::detail::cache

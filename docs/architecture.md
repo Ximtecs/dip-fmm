@@ -545,10 +545,12 @@ transitional layout:
   `parameter_selection.hpp` still includes the complete `uniform_fmm.hpp` API.
 - the cache subsystem under `cache/` separates the file container and root
   policy, payload records, identity, and the universal/periodic and
-  geometry-plan payloads. Its entry points remain `UniformFmm` members, so
-  cache code still has intimate knowledge of the topology and operator
-  representations it persists; deeper encapsulation awaits an API/ABI step.
-  `cache/format.cpp` still builds the derived compact P2P representation
+  geometry-plan payloads. A later cache/plan-preparation boundary cleanup (see
+  "Cache/plan-preparation boundary cleanup" below) removed the remaining
+  `UniformFmm` entry points: every cache function is now a free function
+  taking an explicit identity/payload record built from specific solver/plan
+  types, and `src/fmm/execution_setup.cpp`/`plan_preparation.cpp` are the sole
+  callers. `cache/format.cpp` still builds the derived compact P2P representation
   while decoding the canonical blocks in the same pass, but it now does so by
   calling `assign_static_p2p_compact_row` (`src/plan/p2p/compact_row.hpp`, an
   internal implementation header, not an installed public path), the same
@@ -747,6 +749,93 @@ in `plan_preparation.cpp` that treats uniform- and adaptive-built topologies
 differently, and all public `AdaptiveTree`/`StaticFmmTopology`/
 `build_uniform_fmm_topology` signatures — is unchanged.
 
+### Cache/plan-preparation boundary cleanup
+
+A later task audited the `UniformFmm`/cache-persistence boundary that Phase 1
+and the internal-duplication cleanup had both left recorded as open: cache
+entry points (`initialise_cache_keys`, `load_universal_cache`,
+`write_universal_cache`, `load_geometry_cache`, `write_geometry_cache`) were
+private `UniformFmm` member functions defined in `src/cache/*.cpp`, so
+`src/cache/internal.hpp` included the complete `cdfmm/uniform_fmm.hpp` and
+cache translation units had direct access to essentially all private solver
+state. A dependency map (two read-only workers, one over
+`src/cache/*`/`uniform_fmm.hpp`/`src/fmm/*`, one over the public/ABI/Python/test
+compatibility surface) classified every field each of the five functions read
+or wrote as cache identity, persisted payload, statistics, or unrelated
+plan/lifecycle state, and confirmed none of the five were referenced outside
+`src/cache/*.cpp` and `src/fmm/*.cpp`, so no public/ABI/Python compatibility
+constraint bore on the redesign.
+
+The chosen design is narrow free functions plus explicit records, not a
+service object or a friend god-class. Every cache entry point is now a free
+function in `cdfmm::detail::cache` taking one of three explicit records
+declared in `internal.hpp`: `CacheIdentityInputs`/`CacheIdentity` (identity;
+`keys.cpp`), `UniversalCacheIdentity`/`UniversalCachePayload` (the
+depth-independent bank and periodic root; `universal.cpp`), and
+`GeometryCacheIdentity`/`GeometryCachePayload` (the geometry-dependent plan;
+`geometry.cpp`). Payload records hold references to already-existing
+`UniformFmm` members (`m2m_operators_`, `m2l_plan_`, `p2m_plans_`, and so on)
+rather than a second copy of solver state; identity records hold small
+values (strings, enums, an `int`) plus references to the `UniformTree`/
+`StaticFmmTopology`/geometry data the identity is computed from.
+`src/fmm/execution_setup.cpp` (identity) and `src/fmm/plan_preparation.cpp`
+(universal/geometry load and write) assemble these records from `UniformFmm`'s
+private state, call the free functions, and copy results back; they remain
+the sole callers and plan preparation remains the sole owner of the
+cache-vs-build decision. No `UniformFmm` cache method survives: all five
+private declarations were removed from `include/cdfmm/uniform_fmm.hpp`, and
+the three trivial `universal_cache_key()`/`geometry_cache_key()`/
+`periodic_cache_key()` public accessors (previously also defined in
+`keys.cpp`) moved to `src/fmm/uniform_fmm.cpp`, which already owns
+`UniformFmm` lifecycle/accessors.
+
+Two narrow types moved out of `uniform_fmm.hpp` to make the removal possible
+without an ABI-affecting layout change: `P2MPlan`/`FloatP2MPlan` (previously
+private nested structs of `UniformFmm`, needed by the geometry payload) moved
+to `include/cdfmm/plan/static_coefficient.hpp` as free-standing types
+alongside `StaticCoefficientOperator`; `ExpansionBasis` (previously declared
+directly in `uniform_fmm.hpp`, needed by `CacheDescriptor`) moved to
+`include/cdfmm/core/precision.hpp` alongside `StaticPrecision`. Both were
+already unreachable except through `UniformFmm`'s public API by value, so
+neither move changes any public name's meaning; `uniform_fmm.hpp` still
+transitively provides both through its existing includes.
+`sizeof(UniformFmm)` is unchanged (verified: 7272 bytes before and after), and
+no public C++, C ABI, Python, or Fortran surface changed.
+
+`StaticPlanStatistics` continued to be mutated directly by cache free
+functions (hits, byte counts, phase timings), matching prior behaviour: it is
+already a narrow plan-layer type declared in `include/cdfmm/timings.hpp` with
+no dependency on `UniformFmm`, so this is not a coupling concern, and
+introducing an alternative returned-result type for every cache call would
+have added complexity without narrowing anything. The persisted format, cache
+keys, and cache-key hash inputs/order are byte-for-byte unchanged; so is the
+direct FP32 decode path and the asymmetric FP32-only failure cleanup that
+`cache/AGENTS.md` already documented. Cache misses/corruption remain silent
+and non-fatal.
+
+Validation: portable `dev` (fresh) CTest 198 total, 193 passed, 4 expected
+skips, and the same pre-existing "static triangular translations match M2M
+and L2L references" failure confirmed identical on the unmodified `03be467`
+baseline (unrelated floating-point comparison, not touched by this task);
+Python 137 passed/7 skipped. Focused `ctest -R 'cache' -E 'tetrahedron
+pairs|tetrahedron dispatch'`: 11 total, 9 passed, 2 expected oneMKL/CUDA
+skips. A standalone cross-version probe (public-API-only source, unchanged
+between builds) wrote an 8-file FP64/FP32 free/periodic cache corpus with an
+isolated `v0.1.0` build, then read it back at HEAD: identical universal/
+periodic/geometry cache keys, cache hits on every scenario (including
+periodic), zero bytes written, cache files byte-identical before/after
+(`sha256sum`), and field results bit-identical. A before/after timing probe
+(identical geometry/options, both built without LTO to permit direct
+linking) showed no measurable warm-construction slowdown (~0.725 s vs
+~0.726 s mean over 5 repeats on a ~4,500-point case, within run-to-run
+noise). CUDA + oneMKL `notebooks` (fresh, RTX 5090 SM120, CUDA 13.3.73):
+**198/198 CTest with zero skips** (including the triangular-translation case,
+which is sensitive to build configuration and passes here, matching this
+project's established pattern of zero-skip CUDA+oneMKL runs), and the full
+focused cache selector 11/11, including the two CUDA/oneMKL-gated cases that
+the portable build skips; Python 143 passed/1 skipped against the
+`build-notebooks` module. `git diff --check` clean.
+
 ## Refactor validation contract
 
 Each production-code step starts and ends with the same relevant build and
@@ -935,11 +1024,18 @@ no accidental backend fallback occurs.
 
 ## Phase 2 handoff
 
-Recorded, not started. Phase 2 requires its own explicit task.
+Recorded, not started as a whole; several items below are already resolved by
+narrow follow-up tasks after Phase 1 closure, as noted inline. Each remaining
+item still requires its own explicit task.
 
-- **Implementation deduplication.** The canonical-to-compact P2P packing rule
-  stated independently by `cache/format.cpp` and `plan/p2p/compact.cpp`; the
-  factorial helper duplicated against `MultiIndexSet::factorial`.
+Resolved since Phase 1 closure, kept here only as a record: the
+canonical-to-compact P2P packing rule and the duplicated factorial helper
+(internal-duplication cleanup); the `StaticFmmTopology`/tree-to-plan seam
+(tree/topology boundary cleanup, see above); and cache entry points as
+`UniformFmm` members (cache/plan-preparation boundary cleanup, see above —
+every cache function is now a free function taking an explicit identity/
+payload record, and no `UniformFmm` cache method remains).
+
 - **Remaining flat-file and public-header homes.** Relocating the coherent flat
   units `src/periodic.cpp`, `src/parameter_selection.cpp`, and
   `src/validation.cpp`; giving `timings.hpp`, `periodic.hpp`, `uniform_fmm.hpp`,
@@ -947,14 +1043,7 @@ Recorded, not started. Phase 2 requires its own explicit task.
   subsystem homes behind their retained public façades. Do these where they
   clarify ownership, not for symmetry.
 - **Remaining public-header seam.** `parameter_selection.hpp` including the
-  complete `uniform_fmm.hpp`. (The `StaticFmmTopology`/tree-to-plan seam
-  recorded here through Phase 1 — `tree/uniform_topology.hpp` and
-  `adaptive_tree.hpp` returning `StaticFmmTopology` — was audited and
-  resolved by the tree/topology boundary cleanup: see "Tree/topology
-  boundary cleanup".)
-- **Plan/cache duplication and encapsulation.** Cache entry points remain
-  `UniformFmm` members, so cache code retains intimate knowledge of the
-  representations it persists. Deeper encapsulation needs an API/ABI step.
+  complete `uniform_fmm.hpp`.
 - **API and internal simplification.** Relocating the CUDA availability queries
   out of `uniform_fmm.hpp`; introducing a CMake package configuration; stopping
   CUDA libraries propagating from `cdfmm_core` to consumers. Each is an API or
@@ -964,12 +1053,18 @@ Recorded, not started. Phase 2 requires its own explicit task.
   largest units. Size locates audit work; it does not mandate splitting.
 - **Obsolete test/doc/example audit and repository pruning**, and the future
   `tests/{unit,backend,integration}` and `benchmarks/{direct,p2p,far_field,fmm}`
-  taxonomies.
+  taxonomies. This follows the API/packaging cleanup above, once it is
+  complete.
 - **Coverage gaps.** CI remains portable CPU only; oneMKL, CUDA, and Fortran
   are validated manually. Most CUDA-gated C++ cases return through `SUCCEED()`
   rather than a true `SKIP()`, so a portable-CPU run reports them as passed;
   only four cases report a real CTest skip. Making that distinction visible
   would make portable-run results easier to read literally.
 
-A future `v0.2` release tag or branch is a separate, explicit release step. No
-release ref was created by this closure.
+The next planned cleanup is the public/internal API and packaging step above
+(canonical homes for the remaining substantive flat public headers, the
+`parameter_selection.hpp` → `uniform_fmm.hpp` dependency, CUDA availability
+declarations, a CMake package/export interface, and downstream CUDA
+dependency propagation), followed by repository pruning. A future `v0.2`
+release tag or branch is a separate, explicit step that only follows both;
+none was created by this closure.

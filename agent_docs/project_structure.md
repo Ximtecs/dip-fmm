@@ -210,7 +210,15 @@ namespace `cdfmm::detail::cache`; nothing is installed and there is no public
 cache API. The persistent format and the cache keys are compatibility
 contracts, so `src/cache/AGENTS.md` governs changes there.
 `fmm/plan_preparation.cpp` remains the coordinator that asks for cached data,
-builds what is missing, and asks for a write.
+builds what is missing, and asks for a write. No file under `src/cache/`
+defines a `UniformFmm` member function or includes `cdfmm/uniform_fmm.hpp`;
+every cache entry point is a free function taking an explicit identity/payload
+record (`CacheIdentityInputs`/`CacheIdentity`,
+`UniversalCacheIdentity`/`UniversalCachePayload`,
+`GeometryCacheIdentity`/`GeometryCachePayload`) built from specific
+solver/plan/tree/topology types, assembled by
+`src/fmm/execution_setup.cpp`/`plan_preparation.cpp`, which remain the sole
+callers.
 
 The CPU backend now follows the responsibility taxonomy
 `backend/cpu/{direct,p2p,m2l,far_field}/`. P2P keeps all canonical and derived
@@ -278,9 +286,6 @@ src/backend/cuda/fmm/internal.hpp -> cdfmm/uniform_fmm.hpp
     The CUDA backend implements the public availability queries declared there
     (cuda_m2l_p2p_available, cuda_m2l_available). A definition must see its
     declaration. Not an inversion.
-
-src/cache/internal.hpp -> cdfmm/uniform_fmm.hpp
-    The sanctioned cache -> already-defined solver data edge.
 
 canonical headers -> cdfmm/timings.hpp, cdfmm/periodic.hpp
     Substantive public headers awaiting a subsystem home, not façades.

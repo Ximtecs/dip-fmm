@@ -26,9 +26,7 @@
 // representation are part of the on-disk contract. Equivalent physical
 // geometry must keep producing the same key, and geometry that differs today
 // must keep producing a different one.
-namespace cdfmm {
-
-using namespace detail::cache;
+namespace cdfmm::detail::cache {
 
 namespace {
 
@@ -331,51 +329,55 @@ void hash_permutation(Sha256& hash, const std::span<const int> permutation,
 
 } // namespace
 
-void UniformFmm::initialise_cache_keys(const UniformFmmOptions& options) {
-  if (supplied_topology_) {
-    cache_enabled_ = false;
-    return;
+CacheIdentity compute_cache_identity(const bool supplied_topology,
+                                     const bool option_enable_cache,
+                                     const CacheIdentityInputs& inputs,
+                                     StaticPlanStatistics& statistics) {
+  if (supplied_topology) {
+    return {};
   }
   const auto start = std::chrono::steady_clock::now();
-  cache_enabled_ = options.enable_cache && !environment_disables_cache();
-  cache_directory_ = cache_root().string();
+  CacheIdentity identity;
+  identity.enabled = option_enable_cache && !environment_disables_cache();
+  identity.directory = cache_root().string();
   std::ostringstream universal;
-  universal << "operators_" << basis_name(expansion_basis_) << "_p"
-            << std::setw(2) << std::setfill('0') << expansion_order() << '_'
-            << precision_name(precision_) << "_m2m-m2l-l2l_v02.bin";
-  universal_cache_key_ = universal.str();
+  universal << "operators_" << basis_name(inputs.expansion_basis) << "_p"
+            << std::setw(2) << std::setfill('0') << inputs.expansion_order
+            << '_' << precision_name(inputs.precision)
+            << "_m2m-m2l-l2l_v02.bin";
+  identity.universal_key = universal.str();
 
-  if (periodic_.enabled) {
+  if (inputs.periodic.enabled) {
     std::ostringstream periodic;
-    periodic << "periodic_" << basis_name(expansion_basis_) << "_p"
-             << std::setw(2) << std::setfill('0') << expansion_order() << '_'
-             << precision_name(precision_) << "_zerok0_tol"
-             << cache_number(periodic_.setup_tolerance)
+    periodic << "periodic_" << basis_name(inputs.expansion_basis) << "_p"
+             << std::setw(2) << std::setfill('0') << inputs.expansion_order
+             << '_' << precision_name(inputs.precision) << "_zerok0_tol"
+             << cache_number(inputs.periodic.setup_tolerance)
              << "_v02.bin";
-    periodic_cache_key_ = periodic.str();
+    identity.periodic_key = periodic.str();
   }
 
   Sha256 hash;
   hash_value(hash, kCacheSchemaVersion);
   hash_value(hash, kOperatorVersion);
-  hash_value(hash, static_cast<std::uint32_t>(expansion_basis_));
-  hash_value(hash, static_cast<std::uint32_t>(precision_));
-  hash_value(hash, expansion_order());
-  hash_value(hash, tree_->leaf_level());
-  hash_value(hash, static_cast<std::uint32_t>(source_geometry_));
-  hash_value(hash, static_cast<std::uint32_t>(target_geometry_));
-  hash_value(hash, static_cast<std::uint32_t>(near_field_source_model_));
-  hash_value(hash, static_cast<std::uint32_t>(near_field_target_model_));
-  hash_value(hash, static_cast<std::uint32_t>(far_field_source_model_));
-  hash_value(hash, static_cast<std::uint32_t>(far_field_target_model_));
+  hash_value(hash, static_cast<std::uint32_t>(inputs.expansion_basis));
+  hash_value(hash, static_cast<std::uint32_t>(inputs.precision));
+  hash_value(hash, inputs.expansion_order);
+  hash_value(hash, inputs.tree.leaf_level());
+  hash_value(hash, static_cast<std::uint32_t>(inputs.source_geometry));
+  hash_value(hash, static_cast<std::uint32_t>(inputs.target_geometry));
+  hash_value(hash, static_cast<std::uint32_t>(inputs.near_field_source_model));
+  hash_value(hash, static_cast<std::uint32_t>(inputs.near_field_target_model));
+  hash_value(hash, static_cast<std::uint32_t>(inputs.far_field_source_model));
+  hash_value(hash, static_cast<std::uint32_t>(inputs.far_field_target_model));
   // Derived P2P execution packing is part of the plan identity. The cached
   // canonical operator remains reusable, while the cache key prevents a
   // reduced-symmetry request from being reported as a default packing.
-  hash_value(hash, use_reduced_symmetry_p2p_);
-  hash_value(hash, periodic_.enabled);
-  hash_value(hash, periodic_.axes);
-  hash_value(hash, static_cast<std::uint32_t>(periodic_.convention));
-  hash_value(hash, periodic_.setup_tolerance);
+  hash_value(hash, inputs.use_reduced_symmetry_p2p);
+  hash_value(hash, inputs.periodic.enabled);
+  hash_value(hash, inputs.periodic.axes);
+  hash_value(hash, static_cast<std::uint32_t>(inputs.periodic.convention));
+  hash_value(hash, inputs.periodic.setup_tolerance);
   const auto hash_positions = [&hash](const std::span<const Vec3> positions) {
     hash_value(hash, static_cast<std::uint64_t>(positions.size()));
     const auto grid = detect_uniform_grid(positions);
@@ -391,9 +393,9 @@ void UniformFmm::initialise_cache_keys(const UniformFmmOptions& options) {
     }
     return grid;
   };
-  const auto source_grid = hash_positions(tree_->sorted_source_positions());
-  const auto target_grid = hash_positions(tree_->sorted_target_positions());
-  const auto hash_sizes = [&hash](const std::vector<CuboidSize>& sizes) {
+  const auto source_grid = hash_positions(inputs.tree.sorted_source_positions());
+  const auto target_grid = hash_positions(inputs.tree.sorted_target_positions());
+  const auto hash_sizes = [&hash](const std::span<const CuboidSize> sizes) {
     hash_value(hash, static_cast<std::uint64_t>(sizes.size()));
     if (!sizes.empty() && std::all_of(
             sizes.begin() + 1, sizes.end(), [&sizes](const CuboidSize& size) {
@@ -418,7 +420,7 @@ void UniformFmm::initialise_cache_keys(const UniformFmmOptions& options) {
     }
   };
   const auto hash_tetrahedra = [&hash](
-                                  const std::vector<Tetrahedron>& tetrahedra) {
+                                  const std::span<const Tetrahedron> tetrahedra) {
     hash_value(hash, static_cast<std::uint64_t>(tetrahedra.size()));
     // Keep a common record compact while retaining one-per-particle geometry
     // exactly. Coordinates are representative-relative and already in the
@@ -452,45 +454,35 @@ void UniformFmm::initialise_cache_keys(const UniformFmmOptions& options) {
       }
     }
   };
-  hash_sizes(sorted_source_sizes_);
-  hash_sizes(sorted_target_sizes_);
-  hash_tetrahedra(sorted_source_tetrahedra_);
-  hash_tetrahedra(sorted_target_tetrahedra_);
-  hash_permutation(hash, tree_->source_permutation(),
-                   tree_->sorted_source_positions(), source_grid);
-  hash_permutation(hash, tree_->target_permutation(),
-                   tree_->sorted_target_positions(), target_grid);
-  hash_value(hash, fixed_target_source_indices_.has_value());
-  if (fixed_target_source_indices_) {
-    for (const int value : *fixed_target_source_indices_) {
+  hash_sizes(inputs.sorted_source_sizes);
+  hash_sizes(inputs.sorted_target_sizes);
+  hash_tetrahedra(inputs.sorted_source_tetrahedra);
+  hash_tetrahedra(inputs.sorted_target_tetrahedra);
+  hash_permutation(hash, inputs.tree.source_permutation(),
+                   inputs.tree.sorted_source_positions(), source_grid);
+  hash_permutation(hash, inputs.tree.target_permutation(),
+                   inputs.tree.sorted_target_positions(), target_grid);
+  hash_value(hash, inputs.fixed_target_source_indices.has_value());
+  if (inputs.fixed_target_source_indices) {
+    for (const int value : *inputs.fixed_target_source_indices) {
       hash_value(hash, value);
     }
   }
   const std::string digest = hexadecimal(hash.finish());
-  geometry_hash_digest_ = digest;
+  identity.geometry_hash_digest = digest;
   std::ostringstream plan;
-  plan << "plan_" << basis_name(expansion_basis_) << "_p" << std::setw(2)
-       << std::setfill('0') << expansion_order() << "_d" << std::setw(2)
-       << tree_->leaf_level() << '_' << precision_name(precision_) << "_N_"
-       << tree_->sorted_source_positions().size() << "_p2p_"
-       << (use_reduced_symmetry_p2p_ ? "reduced_symmetry" : "canonical")
+  plan << "plan_" << basis_name(inputs.expansion_basis) << "_p"
+       << std::setw(2) << std::setfill('0') << inputs.expansion_order << "_d"
+       << std::setw(2) << inputs.tree.leaf_level() << '_'
+       << precision_name(inputs.precision) << "_N_"
+       << inputs.tree.sorted_source_positions().size() << "_p2p_"
+       << (inputs.use_reduced_symmetry_p2p ? "reduced_symmetry" : "canonical")
        << '_' << digest << "_v04.bin";
-  geometry_cache_key_ = plan.str();
-  static_plan_statistics_.geometry_hash.add(
+  identity.geometry_key = plan.str();
+  statistics.geometry_hash.add(
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
           .count());
+  return identity;
 }
 
-const std::string& UniformFmm::universal_cache_key() const noexcept {
-  return universal_cache_key_;
-}
-
-const std::string& UniformFmm::geometry_cache_key() const noexcept {
-  return geometry_cache_key_;
-}
-
-const std::string& UniformFmm::periodic_cache_key() const noexcept {
-  return periodic_cache_key_;
-}
-
-} // namespace cdfmm
+} // namespace cdfmm::detail::cache

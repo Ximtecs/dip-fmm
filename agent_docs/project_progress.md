@@ -1,5 +1,50 @@
 # Project progress
 
+## Cache/plan-preparation boundary cleanup: COMPLETE — 2026-09-16
+
+Cache persistence (`initialise_cache_keys`, `load_universal_cache`,
+`write_universal_cache`, `load_geometry_cache`, `write_geometry_cache`) was
+five private `UniformFmm` member functions defined in `src/cache/*.cpp`,
+which forced `src/cache/internal.hpp` to include the complete
+`cdfmm/uniform_fmm.hpp`. A dependency audit (two read-only workers)
+classified every field the five functions touched and confirmed none of them
+is referenced outside `src/cache/*.cpp`/`src/fmm/*.cpp`, so no public/ABI/
+Python/Fortran constraint bore on the redesign. Every cache entry point is
+now a free function in `cdfmm::detail::cache` taking an explicit identity/
+payload record (`CacheIdentityInputs`/`CacheIdentity`,
+`UniversalCacheIdentity`/`UniversalCachePayload`,
+`GeometryCacheIdentity`/`GeometryCachePayload`) built from specific
+solver/plan/tree/topology types; `src/fmm/execution_setup.cpp` and
+`plan_preparation.cpp` assemble these records and remain the sole callers, so
+plan preparation remains the sole owner of the cache-vs-build decision. No
+`UniformFmm` cache method survives; all five private declarations were
+removed. `P2MPlan`/`FloatP2MPlan` moved from private nested `UniformFmm`
+types to `include/cdfmm/plan/static_coefficient.hpp`; `ExpansionBasis` moved
+from `uniform_fmm.hpp` to `include/cdfmm/core/precision.hpp`. Neither move
+changes `sizeof(UniformFmm)` (verified: 7272 bytes before and after) or any
+public/ABI/Python surface. Persistent format, cache keys, and all documented
+cache invariants (direct FP32 decode, asymmetric FP32-only failure cleanup,
+non-fatal miss/corruption behaviour) are unchanged. See
+`agent_docs/latest_session_work.md` for full validation evidence: full CPU
+CTest 198 total (193 passed, 4 expected skips, the same pre-existing
+unrelated triangular-translation failure), Python 137/7; a cross-version
+`v0.1.0` cache-compatibility probe with identical keys/hits/zero
+writes/byte-identical files/bit-identical results; a before/after warm-cache
+timing probe showing no measurable slowdown; and a full CUDA+oneMKL
+`notebooks` run at 198/198 with zero skips.
+
+Still open, each its own future task: the flat-header/packaging relocation
+candidates (`periodic.cpp`, `parameter_selection.cpp`, `validation.cpp`, and
+the headers awaiting a canonical subsystem home, including
+`parameter_selection.hpp` including the complete `uniform_fmm.hpp`); CUDA
+availability declarations and a CMake package/export interface; and
+repository pruning.
+
+An unrelated, pre-existing `Article1/` directory (untracked, ~640 GB) was
+found renamed to `Article1_old/` during this session, apparently by a
+concurrent unrelated process on this shared machine — not touched by
+anything in this task. Left as found and flagged for the user.
+
 ## Tree/topology/FMM-plan boundary cleanup: COMPLETE — 2026-09-16
 
 Two parts. First, a narrow carry-over correction: `assign_static_p2p_compact_row`
