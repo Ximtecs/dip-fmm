@@ -5,11 +5,11 @@
 #include <string>
 #include <vector>
 
+#include "cdfmm/backend/cuda/availability.hpp"
 #include "cdfmm/core/output_flags.hpp"
 #include "cdfmm/math/potential_field.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 #include "cdfmm/timings.hpp"
-#include "cdfmm/uniform_fmm.hpp"
 #include "backend/cuda/common/runtime.hpp"
 #include "backend/cuda/far_field/internal.hpp"
 

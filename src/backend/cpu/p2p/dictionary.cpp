@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <type_traits>
 
-#include "cdfmm/tensor_dictionary.hpp"
+#include "cdfmm/plan/p2p/tensor_dictionary.hpp"
 
 #if defined(__AVX2__) && defined(__FMA__)
 #include <immintrin.h>

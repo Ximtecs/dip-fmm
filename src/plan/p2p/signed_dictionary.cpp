@@ -10,7 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include "cdfmm/tensor_dictionary.hpp"
+#include "cdfmm/plan/p2p/tensor_dictionary.hpp"
 #include "dictionary_detail.hpp"
 
 namespace cdfmm {

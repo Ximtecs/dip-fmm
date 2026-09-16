@@ -6,7 +6,8 @@
 #include <string>
 #include <vector>
 
-#include "cdfmm/uniform_fmm.hpp"
+#include "cdfmm/backend/execution.hpp"
+#include "cdfmm/math/vec3.hpp"
 
 namespace cdfmm {
 

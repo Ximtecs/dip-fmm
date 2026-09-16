@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "cdfmm/operators/p2p.hpp"
+#include "cdfmm/uniform_fmm.hpp"
 
 namespace cdfmm {
 namespace {

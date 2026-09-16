@@ -9,6 +9,9 @@
 #include <string>
 #include <vector>
 
+#include "cdfmm/backend/cuda/availability.hpp"
+#include "cdfmm/backend/execution.hpp"
+#include "cdfmm/backend/mkl/availability.hpp"
 #include "cdfmm/coefficients.hpp"
 #include "cdfmm/cuboid.hpp"
 #include "cdfmm/multi_index.hpp"
@@ -28,26 +31,6 @@ namespace cdfmm {
 enum class SphericalM2LBackend {
     /// Reusable dense real matrix for each integer displacement class.
     StaticDense
-};
-
-/** @brief Location and implementation used for a complete FMM evaluation. */
-enum class ExecutionBackend {
-    /// Resolve conservatively to the portable CPU static backend.
-    Auto,
-    /// Independent Cartesian CPU traversal for validation.
-    CpuReference,
-    /// Canonical static plan executed on the CPU.
-    CpuStatic,
-    /// Hybrid CPU hierarchy with CUDA M2L and P2P.
-    CudaM2LP2P,
-    /// User-facing alias for the hybrid CUDA backend.
-    CudaPartial = CudaM2LP2P,
-    /// Complete field-only device-resident static FMM.
-    CudaFull,
-    /// Compatibility alias for the hybrid CUDA backend.
-    CudaM2L = CudaM2LP2P,
-    /// Compatibility alias for the hybrid CUDA backend.
-    CudaM2LStaticP2P = CudaM2LP2P
 };
 
 /** @brief Dense multiplication implementation for cached static M2L matrices.
@@ -86,30 +69,12 @@ struct StaticExecutionPlan {
   StaticOperatorExecutor p2p{StaticOperatorExecutor::Portable};
 };
 
-/** @brief Reports whether this build includes the oneMKL matrix backend. */
-[[nodiscard]] bool one_mkl_available() noexcept;
-
-/** @brief Reports whether the library was compiled with CUDA support. */
-[[nodiscard]] bool cuda_compiled() noexcept;
-
-/** @brief Reports whether this build can access a CUDA device. */
-[[nodiscard]] bool cuda_available() noexcept;
-
-/** @brief Reports whether the O(N^2) CUDA direct reference is available. */
-[[nodiscard]] bool cuda_direct_available() noexcept;
-
-/** @brief Reports whether hybrid CUDA static M2L/P2P is available. */
-[[nodiscard]] bool cuda_m2l_p2p_available() noexcept;
-
-/** @brief Compatibility alias for `cuda_m2l_p2p_available()`. */
-[[nodiscard]] bool cuda_m2l_available() noexcept;
-
-/** @brief Reports whether a complete device-resident CUDA FMM is implemented.
- */
-[[nodiscard]] bool cuda_full_available() noexcept;
-
-/** @brief Returns a concise description of the selected CUDA device. */
-[[nodiscard]] std::string cuda_device_description();
+// CUDA and oneMKL backend capability queries (`cuda_compiled`,
+// `cuda_available`, `cuda_direct_available`, `cuda_m2l_p2p_available`,
+// `cuda_m2l_available`, `cuda_full_available`, `cuda_device_description`,
+// `one_mkl_available`) are declared by the canonical
+// `cdfmm/backend/cuda/availability.hpp` and `cdfmm/backend/mkl/availability.hpp`
+// headers included above, and remain available here transitively.
 
 //------------------------------------------------------------------------------
 // Public types
