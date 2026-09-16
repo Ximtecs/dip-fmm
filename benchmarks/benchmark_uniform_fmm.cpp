@@ -642,6 +642,10 @@ int main(int argc, char** argv)
         );
         std::array<int, 3> grid_dimensions{1, 1, 1};
         if (options.regular_grid) {
+            // Distribute the factors of two round-robin over the axes; any
+            // remaining odd factor stretches the shortest axis so that
+            // counts such as 3 * 2^k or 5 * 2^k give a lattice with a
+            // uniform, non-power-of-two number of particles per leaf.
             int remaining = options.sources;
             int axis = 2;
             while (remaining > 1 && remaining % 2 == 0) {
@@ -649,9 +653,10 @@ int main(int argc, char** argv)
                 remaining /= 2;
                 axis = (axis + 2) % 3;
             }
-            if (remaining != 1) {
-                throw std::invalid_argument(
-                    "--regular-grid currently requires a power-of-two count");
+            if (remaining > 1) {
+                const auto shortest = std::min_element(
+                    grid_dimensions.begin(), grid_dimensions.end());
+                *shortest *= remaining;
             }
             std::size_t particle = 0;
             for (int iz = 0; iz < grid_dimensions[2]; ++iz) {
@@ -664,6 +669,9 @@ int main(int argc, char** argv)
                     }
                 }
             }
+            std::cerr << "Regular grid: " << grid_dimensions[0] << " x "
+                      << grid_dimensions[1] << " x " << grid_dimensions[2]
+                      << " particles\n";
         } else {
             for (Vec3& position : source_positions) {
                 position = {distribution(generator), distribution(generator),
