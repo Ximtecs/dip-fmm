@@ -41,7 +41,7 @@ void apply_static_p2p_tensor_dictionary_plan(
         const std::size_t begin = block.tensor_offset + static_cast<std::size_t>(local_target) * block.source_count;
         for (int local_source = 0; local_source < block.source_count; ++local_source) {
           const int source = block.source_begin + local_source;
-          if (plan.skip_for_identity && source == self) continue;
+          if (block.skip_for_identity != 0 && source == self) continue;
           const std::uint32_t token = plan.tokens[begin + local_source];
           const auto id = tensor6_token_id(token);
           const auto signs = tensor6_token_sign_mask(token);
@@ -88,7 +88,7 @@ void apply_static_p2p_tensor_dictionary_plan(
             static_cast<std::size_t>(local_target) * block.source_count;
         for (int local_source = 0; local_source < block.source_count; ++local_source) {
           const int source = block.source_begin + local_source;
-          if (plan.skip_for_identity && source == self) {
+          if (block.skip_for_identity != 0 && source == self) {
             continue;
           }
           const std::uint32_t token = plan.tokens[begin + local_source];

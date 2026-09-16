@@ -149,7 +149,7 @@ void apply_static_p2p_leaf_plan(
                 for (int local_source = 0; local_source < block.source_count;
                      ++local_source) {
                     const int source = block.source_begin + local_source;
-                    if (source == self) {
+                    if (block.skip_for_identity != 0 && source == self) {
                         continue;
                     }
                     const std::size_t index = tensor_begin + local_source;
@@ -247,7 +247,7 @@ void apply_static_p2p_leaf_plan(
         for (int local_source = 0; local_source < block.source_count;
              ++local_source) {
           const int source = block.source_begin + local_source;
-          if (source == self) {
+          if (block.skip_for_identity != 0 && source == self) {
             continue;
           }
           const std::size_t index = tensor_begin + local_source;

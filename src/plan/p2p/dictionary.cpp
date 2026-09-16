@@ -14,16 +14,11 @@ StaticP2PTensorDictionaryPlan build_static_p2p_tensor_dictionary_plan(
 {
     const StaticP2PLeafPlan leaf =
         build_static_p2p_leaf_plan(operator_map, leaf_pairs);
+    // Identity handling travels with every dense block; the plan-level flag
+    // only summarises whether any block omits identity pairs.
     bool skip_for_identity = false;
-    bool first = true;
-    for (const StaticDipoleBlock& block : operator_map.blocks) {
-        const bool current = block.skip_for_identity != 0;
-        if (!first && current != skip_for_identity) {
-            throw std::invalid_argument(
-                "Tensor6 dictionary requires a uniform self-identity policy");
-        }
-        skip_for_identity = current;
-        first = false;
+    for (const StaticP2PLeafBlock& block : leaf.blocks) {
+        skip_for_identity = skip_for_identity || block.skip_for_identity != 0;
     }
     return plan_detail::build_tensor_dictionary_from_leaf<
         double, StaticP2PTensorDictionaryPlan>(leaf, skip_for_identity);

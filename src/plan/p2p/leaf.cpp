@@ -57,7 +57,10 @@ StaticP2PLeafPlan build_static_p2p_leaf_plan(
         leaf_block.source_begin = pair.source_begin;
         leaf_block.source_count = pair.source_count;
         leaf_block.tensor_offset = result.tensors[0].size();
-        result.blocks.push_back(leaf_block);
+        // The identity policy is a property of the canonical interactions,
+        // not of the packing: every pair of one dense block must agree, and
+        // the block carries that value to the executors.
+        int block_skip_for_identity = -1;
         occupied_target_ranges.emplace(pair.target_begin, pair.target_count);
         occupied_source_ranges.emplace(pair.source_begin, pair.source_count);
 
@@ -78,6 +81,13 @@ StaticP2PLeafPlan build_static_p2p_leaf_plan(
                     throw std::invalid_argument(
                         "static P2P leaf pairs are not dense and unique");
                 }
+                const int skip = block.skip_for_identity != 0 ? 1 : 0;
+                if (block_skip_for_identity < 0) {
+                    block_skip_for_identity = skip;
+                } else if (block_skip_for_identity != skip) {
+                    throw std::invalid_argument(
+                        "static P2P leaf pair mixes identity policies");
+                }
                 covered[entry] = 1;
                 ++expected_source;
                 result.tensors[0].push_back(block.xx);
@@ -92,6 +102,8 @@ StaticP2PLeafPlan build_static_p2p_leaf_plan(
                     "static P2P leaf pair omits canonical interactions");
             }
         }
+        leaf_block.skip_for_identity = std::max(block_skip_for_identity, 0);
+        result.blocks.push_back(leaf_block);
     }
     result.leaf_row_offsets.push_back(static_cast<int>(result.blocks.size()));
     if (std::find(covered.begin(), covered.end(), 0) != covered.end()) {

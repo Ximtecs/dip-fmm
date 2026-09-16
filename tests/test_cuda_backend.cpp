@@ -1084,6 +1084,75 @@ TEST_CASE("regular-grid layout hint keeps finite and periodic CUDA policies",
           P2PExecutionPacking::TensorDictionary);
 }
 
+TEST_CASE("CUDA tensor packings retain finite self fields under an identity map",
+          "[cuda][manual][identity]") {
+  if (!cuda_m2l_p2p_available()) {
+    SUCCEED("CUDA static P2P is unavailable");
+    return;
+  }
+  // Two rectangular prisms that are both sources and targets, evaluated with
+  // an identity map. Finite sources carry no identity marker, so every packed
+  // executor must keep the physical self tensor; the same packings built from
+  // point sources must omit the singular self pair. Only the canonical
+  // metadata distinguishes the two cases.
+  const std::vector<Vec3> positions{{-0.15, 0.02, 0.01}, {0.17, -0.03, 0.02}};
+  const std::array<CuboidSize, 1> sizes{{{0.2, 0.18, 0.16}}};
+  const std::vector<std::array<int, 2>> interactions{
+      {0, 0}, {0, 1}, {1, 0}, {1, 1}};
+  const std::vector<StaticP2PLeafPair> leaf_pairs{{0, 2, 0, 2}};
+  const std::vector<int> identities{0, 1};
+  const std::vector<Vec3> moments{{0.7, -0.4, 0.2}, {-0.3, 0.5, 0.9}};
+
+  for (const SourceGeometry source_geometry :
+       {SourceGeometry::PointDipole, SourceGeometry::RectangularPrism}) {
+    const std::span<const CuboidSize> source_sizes =
+        source_geometry == SourceGeometry::PointDipole
+            ? std::span<const CuboidSize>{}
+            : std::span<const CuboidSize>(sizes);
+    const StaticP2POperator canonical = build_static_p2p_operator(
+        positions, positions, interactions, source_geometry, source_sizes,
+        TargetGeometry::RectangularPrism, sizes);
+    std::vector<Vec3> expected(positions.size());
+    apply_static_p2p_operator(canonical, moments, expected, identities);
+
+    const auto verify = [&](CudaP2PPlan &plan) {
+      std::vector<Vec3> actual(positions.size());
+      plan.evaluate(moments, identities, actual);
+      for (std::size_t target = 0; target < actual.size(); ++target) {
+        REQUIRE(actual[target].x ==
+                Catch::Approx(expected[target].x).margin(2.0e-12));
+        REQUIRE(actual[target].y ==
+                Catch::Approx(expected[target].y).margin(2.0e-12));
+        REQUIRE(actual[target].z ==
+                Catch::Approx(expected[target].z).margin(2.0e-12));
+      }
+    };
+    CudaP2PPlan canonical_cuda(canonical, identities);
+    verify(canonical_cuda);
+    CudaP2PPlan compact_cuda(build_static_p2p_compact_plan(canonical),
+                             identities);
+    verify(compact_cuda);
+    CudaP2PPlan leaf_cuda(build_static_p2p_leaf_plan(canonical, leaf_pairs),
+                          identities);
+    verify(leaf_cuda);
+    CudaP2PPlan bsr_cuda(build_static_p2p_bsr_plan(canonical, identities));
+    verify(bsr_cuda);
+    const StaticP2PSignedTensorDictionaryPlan dictionary =
+        build_static_p2p_signed_tensor_dictionary_plan(canonical, leaf_pairs,
+                                                       identities);
+    CudaP2PPlan source_warp(dictionary);
+    verify(source_warp);
+    CudaP2PPlan target_owned(dictionary, true, false);
+    verify(target_owned);
+    CudaP2PPlan microtiles(dictionary, false, true);
+    verify(microtiles);
+    // Dynamic identities on the canonical, compact and leaf plans behave
+    // the same way when the map arrives per evaluation.
+    CudaP2PPlan dynamic_leaf(build_static_p2p_leaf_plan(canonical, leaf_pairs));
+    verify(dynamic_leaf);
+  }
+}
+
 TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
           "[cuda][manual]") {
   if (!cuda_m2l_p2p_available()) {

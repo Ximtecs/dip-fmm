@@ -10,7 +10,13 @@
 
 namespace cdfmm {
 
-/** @brief Exact-bit magnitude/sign Tensor6 dictionary derived from FP64 rows. */
+/**
+ * @brief Exact-bit magnitude/sign Tensor6 dictionary derived from FP64 rows.
+ *
+ * Identity handling is carried per dense block (`StaticP2PLeafBlock::
+ * skip_for_identity`); `skip_for_identity` here only records whether any block
+ * omits identity pairs.
+ */
 struct StaticP2PTensorDictionaryPlan {
     int source_count{0};
     int target_count{0};

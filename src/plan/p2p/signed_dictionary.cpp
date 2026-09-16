@@ -43,7 +43,9 @@ build_static_p2p_signed_tensor_dictionary_plan(
     result.blocks = leaf.blocks;
     result.target_tile_size = target_tile_size;
 
-    // Fixed point self interactions become ordinary exact-zero lookups.
+    // Fixed point self interactions become ordinary exact-zero lookups.  Only
+    // blocks whose canonical interactions carry the identity marker encode
+    // them; a finite-body self tensor is stored like any other value.
     for (auto& component : result.tensors) {
         component.push_back(0.0);
     }
@@ -81,7 +83,8 @@ build_static_p2p_signed_tensor_dictionary_plan(
                 for (int local_target = 0;
                      local_target < target_count; ++local_target) {
                     const int target = target_begin + local_target;
-                    const bool is_self = !target_source_indices.empty() &&
+                    const bool is_self = block.skip_for_identity != 0 &&
+                        !target_source_indices.empty() &&
                         source == target_source_indices[
                             static_cast<std::size_t>(target)];
                     if (is_self) {

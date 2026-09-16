@@ -71,6 +71,7 @@ __global__ void compact_p2p_kernel(
     const int target_count,
     const int* row_offsets,
     const int* source_indices,
+    const unsigned char* skip_for_identity,
     const Scalar* tensors,
     const std::size_t interaction_count,
     const Vector* moments,
@@ -87,7 +88,7 @@ __global__ void compact_p2p_kernel(
   for (int entry = row_offsets[target]; entry < row_offsets[target + 1];
        ++entry) {
     const int source = source_indices[entry];
-    if (source == self) {
+    if (skip_for_identity[entry] != 0 && source == self) {
       continue;
     }
     const std::size_t index = static_cast<std::size_t>(entry);
@@ -120,8 +121,9 @@ void launch_compact_p2p(
       (plan.target_count + static_operator_threads - 1) /
           static_operator_threads,
       static_operator_threads, 0, stream>>>(
-      plan.target_count, plan.row_offsets, plan.source_indices, plan.tensors,
-      plan.interaction_count, moments, self_indices, fields);
+      plan.target_count, plan.row_offsets, plan.source_indices,
+      plan.skip_for_identity, plan.tensors, plan.interaction_count, moments,
+      self_indices, fields);
   check_cuda(cudaGetLastError(), "launch compact static P2P kernel");
 }
 
@@ -176,7 +178,7 @@ __global__ void __launch_bounds__(leaf_p2p_threads) leaf_p2p_kernel(
     for (int local_source = source_slot; local_source < block.source_count;
          local_source += source_slots) {
       const int source = block.source_begin + local_source;
-      if (!active || source == self) {
+      if (!active || (block.skip_for_identity != 0 && source == self)) {
         continue;
       }
       const Vector moment = moments[source];
@@ -1754,6 +1756,7 @@ template <typename Scalar>
 void release_compact_p2p(CudaCompactP2PDeviceView<Scalar> &plan) noexcept {
   cudaFree(plan.row_offsets);
   cudaFree(plan.source_indices);
+  cudaFree(plan.skip_for_identity);
   cudaFree(plan.tensors);
   plan = {};
 }
@@ -2069,6 +2072,11 @@ CudaP2PPlan::CudaP2PPlan(
   check_cuda(cudaMalloc(&plan.compact.source_indices,
                         std::max(index_bytes, sizeof(int))),
              "allocate compact P2P sources");
+  const std::size_t identity_bytes =
+      compact.skip_for_identity.size() * sizeof(unsigned char);
+  check_cuda(cudaMalloc(&plan.compact.skip_for_identity,
+                        std::max(identity_bytes, sizeof(unsigned char))),
+             "allocate compact P2P identity markers");
   check_cuda(cudaMalloc(&plan.compact.tensors,
                         std::max(tensor_bytes, sizeof(double))),
              "allocate compact P2P tensors");
@@ -2080,6 +2088,10 @@ CudaP2PPlan::CudaP2PPlan(
                           compact.source_indices.data(), index_bytes,
                           cudaMemcpyHostToDevice),
                "upload compact P2P sources");
+    check_cuda(cudaMemcpy(plan.compact.skip_for_identity,
+                          compact.skip_for_identity.data(), identity_bytes,
+                          cudaMemcpyHostToDevice),
+               "upload compact P2P identity markers");
     for (std::size_t component = 0; component < 6; ++component) {
       check_cuda(cudaMemcpy(
                      plan.compact.tensors +
@@ -2090,12 +2102,13 @@ CudaP2PPlan::CudaP2PPlan(
                  "upload compact P2P tensor component");
     }
   }
-  plan.statistics.setup_h2d_bytes += row_bytes + index_bytes + tensor_bytes;
+  plan.statistics.setup_h2d_bytes +=
+      row_bytes + index_bytes + identity_bytes + tensor_bytes;
   plan.statistics.persistent_device_bytes +=
-      row_bytes + index_bytes + tensor_bytes;
+      row_bytes + index_bytes + identity_bytes + tensor_bytes;
   plan.statistics.p2p_interaction_count = compact.source_indices.size();
   plan.statistics.p2p_tensor_bytes = tensor_bytes;
-  plan.statistics.p2p_index_bytes = index_bytes;
+  plan.statistics.p2p_index_bytes = index_bytes + identity_bytes;
   plan.statistics.p2p_row_metadata_bytes = row_bytes;
   plan.statistics.p2p_threads_per_block = static_operator_threads;
 }
@@ -2159,6 +2172,11 @@ CudaP2PPlan::CudaP2PPlan(
   check_cuda(cudaMalloc(&plan.compact_float.source_indices,
                         std::max(index_bytes, sizeof(int))),
              "allocate FP32 compact P2P sources");
+  const std::size_t identity_bytes =
+      compact.skip_for_identity.size() * sizeof(unsigned char);
+  check_cuda(cudaMalloc(&plan.compact_float.skip_for_identity,
+                        std::max(identity_bytes, sizeof(unsigned char))),
+             "allocate FP32 compact P2P identity markers");
   check_cuda(cudaMalloc(&plan.compact_float.tensors,
                         std::max(tensor_bytes, sizeof(float))),
              "allocate FP32 compact P2P tensors");
@@ -2173,6 +2191,10 @@ CudaP2PPlan::CudaP2PPlan(
                           compact.source_indices.data(), index_bytes,
                           cudaMemcpyHostToDevice),
                "upload FP32 compact P2P sources");
+    check_cuda(cudaMemcpy(plan.compact_float.skip_for_identity,
+                          compact.skip_for_identity.data(), identity_bytes,
+                          cudaMemcpyHostToDevice),
+               "upload FP32 compact P2P identity markers");
     for (std::size_t component = 0; component < 6; ++component) {
       check_cuda(cudaMemcpy(
                      plan.compact_float.tensors +
@@ -2183,12 +2205,13 @@ CudaP2PPlan::CudaP2PPlan(
                  "upload FP32 compact P2P tensor component");
     }
   }
-  plan.statistics.setup_h2d_bytes += row_bytes + index_bytes + tensor_bytes;
+  plan.statistics.setup_h2d_bytes +=
+      row_bytes + index_bytes + identity_bytes + tensor_bytes;
   plan.statistics.persistent_device_bytes +=
-      row_bytes + index_bytes + tensor_bytes;
+      row_bytes + index_bytes + identity_bytes + tensor_bytes;
   plan.statistics.p2p_interaction_count = compact.source_indices.size();
   plan.statistics.p2p_tensor_bytes = tensor_bytes;
-  plan.statistics.p2p_index_bytes = index_bytes;
+  plan.statistics.p2p_index_bytes = index_bytes + identity_bytes;
   plan.statistics.p2p_row_metadata_bytes = row_bytes;
   plan.statistics.p2p_threads_per_block = static_operator_threads;
 }

@@ -230,6 +230,100 @@ TEST_CASE("empty-identity BSR preserves finite cuboid self fields",
   }
 }
 
+TEST_CASE("derived P2P packings obey canonical identity metadata for finite and point sources",
+          "[cuboid][p2p][identity]") {
+  // One target leaf with two particles that are both sources and targets.
+  // With an identity map, a point source omits its singular self pair while
+  // a finite source keeps its physical self tensor.  Every derived packing
+  // must reproduce the canonical operator with the identity map supplied,
+  // because the decision travels with the tensors, not with the executor.
+  const std::vector<Vec3> positions{{-0.15, 0.02, 0.01}, {0.17, -0.03, 0.02}};
+  const std::array<CuboidSize, 1> sizes{{{0.2, 0.18, 0.16}}};
+  const std::vector<std::array<int, 2>> interactions{
+      {0, 0}, {0, 1}, {1, 0}, {1, 1}};
+  const std::vector<StaticP2PLeafPair> leaf_pairs{{0, 2, 0, 2}};
+  const std::vector<int> identities{0, 1};
+  const std::vector<Vec3> moments{{0.7, -0.4, 0.2}, {-0.3, 0.5, 0.9}};
+
+  for (const SourceGeometry source_geometry :
+       {SourceGeometry::PointDipole, SourceGeometry::RectangularPrism}) {
+    const std::span<const CuboidSize> source_sizes =
+        source_geometry == SourceGeometry::PointDipole
+            ? std::span<const CuboidSize>{}
+            : std::span<const CuboidSize>(sizes);
+    const StaticP2POperator canonical = build_static_p2p_operator(
+        positions, positions, interactions, source_geometry, source_sizes,
+        TargetGeometry::RectangularPrism, sizes);
+    const bool point_source = source_geometry == SourceGeometry::PointDipole;
+    for (const StaticDipoleBlock& block : canonical.blocks) {
+      REQUIRE((block.skip_for_identity != 0) == point_source);
+    }
+    std::vector<Vec3> expected(positions.size());
+    apply_static_p2p_operator(canonical, moments, expected, identities);
+
+    // Finite self fields must actually contribute, so that omitting them
+    // would be detected below.
+    if (!point_source) {
+      std::vector<Vec3> without_self(positions.size());
+      StaticP2POperator dropped = canonical;
+      for (StaticDipoleBlock& block : dropped.blocks) {
+        if (block.target == block.source) {
+          block = {block.target, block.source, 0.0, 0.0, 0.0,
+                   0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0};
+        }
+      }
+      apply_static_p2p_operator(dropped, moments, without_self, identities);
+      REQUIRE(std::abs(without_self[0].x - expected[0].x) > 1.0e-6);
+    }
+
+    const auto require_matches = [&](const std::vector<Vec3>& actual) {
+      for (std::size_t target = 0; target < actual.size(); ++target) {
+        REQUIRE(actual[target].x ==
+                Catch::Approx(expected[target].x).margin(2.0e-13));
+        REQUIRE(actual[target].y ==
+                Catch::Approx(expected[target].y).margin(2.0e-13));
+        REQUIRE(actual[target].z ==
+                Catch::Approx(expected[target].z).margin(2.0e-13));
+      }
+    };
+
+    const StaticP2PCompactPlan compact =
+        build_static_p2p_compact_plan(canonical);
+    std::vector<Vec3> compact_result(positions.size());
+    apply_static_p2p_compact_plan(compact, moments, compact_result, identities);
+    require_matches(compact_result);
+
+    const StaticP2PLeafPlan leaf =
+        build_static_p2p_leaf_plan(canonical, leaf_pairs);
+    REQUIRE(leaf.blocks.size() == 1);
+    REQUIRE((leaf.blocks[0].skip_for_identity != 0) == point_source);
+    std::vector<Vec3> leaf_result(positions.size());
+    apply_static_p2p_leaf_plan(leaf, moments, leaf_result, identities);
+    require_matches(leaf_result);
+
+    const StaticP2PTensorDictionaryPlan dictionary =
+        build_static_p2p_tensor_dictionary_plan(canonical, leaf_pairs);
+    REQUIRE(dictionary.skip_for_identity == point_source);
+    std::vector<Vec3> dictionary_result(positions.size());
+    apply_static_p2p_tensor_dictionary_plan(dictionary, moments,
+                                            dictionary_result, identities);
+    require_matches(dictionary_result);
+
+    const StaticP2PSignedTensorDictionaryPlan signed_dictionary =
+        build_static_p2p_signed_tensor_dictionary_plan(canonical, leaf_pairs,
+                                                       identities);
+    std::vector<Vec3> signed_result(positions.size());
+    apply_static_p2p_signed_tensor_dictionary_plan(signed_dictionary, moments,
+                                                   signed_result);
+    require_matches(signed_result);
+
+    const StaticP2PBsrPlan bsr = build_static_p2p_bsr_plan(canonical, identities);
+    std::vector<Vec3> bsr_result(positions.size());
+    apply_static_p2p_bsr_plan(bsr, moments, bsr_result, identities);
+    require_matches(bsr_result);
+  }
+}
+
 #ifdef CDFMM_USE_OPENMP
 TEST_CASE("parallel dense cuboid construction preserves every tensor entry",
           "[cuboid][openmp]") {

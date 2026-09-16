@@ -19,11 +19,20 @@ struct StaticP2PLeafPair {
     int source_count{0};
 };
 
-/** @brief Metadata for one dense target/source tensor block. */
+/**
+ * @brief Metadata for one dense target/source tensor block.
+ *
+ * `skip_for_identity` carries the canonical identity policy of the block's
+ * interactions: non-zero means a target whose identity map names one of the
+ * block's sources omits that (singular point-dipole) pair, zero means every
+ * stored tensor is applied, including a physical finite-body self tensor.
+ * Executors obey this flag; they never infer identity handling from geometry.
+ */
 struct StaticP2PLeafBlock {
     int source_begin{0};
     int source_count{0};
     std::size_t tensor_offset{0};
+    int skip_for_identity{0};
 };
 
 /** @brief Dense leaf-pair packing derived from canonical FP64 target rows. */

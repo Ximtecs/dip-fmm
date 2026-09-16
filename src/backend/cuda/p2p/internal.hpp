@@ -51,6 +51,8 @@ struct CudaCompactP2PDeviceView {
   std::size_t interaction_count{0};
   int *row_offsets{nullptr};
   int *source_indices{nullptr};
+  /// Canonical per-pair identity marker (see StaticP2PCompactPlan).
+  unsigned char *skip_for_identity{nullptr};
   Scalar *tensors{nullptr};
 };
 
