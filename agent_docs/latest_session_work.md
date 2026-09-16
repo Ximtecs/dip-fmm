@@ -1,5 +1,24 @@
 # Latest session work
 
+## 2026-09-16 — CUDA execution policy and regular-grid hint (3A follow-up)
+
+Starting HEAD `a187c76`. Added `src/backend/cuda/execution_policy.{hpp,cpp}`,
+one deterministic module that resolves the CUDA strategy choices found in
+Phase 3A from constructed-plan facts (precision, geometry, periodicity,
+fixed identity, occupied leaves and mean leaf occupancy, pair and translation
+counts, BSR estimate/budget, options): the P2P packing (leaf block / BSR /
+canonical / signed dictionary), the dictionary executor, the grouped-M2L
+pairs-per-thread rule and the M2M/L2L lane-group rule, which the executors
+now query instead of owning. New public hint
+`SpatialLayout {General, RegularGrid}` in `cdfmm/backend/execution.hpp`,
+`UniformFmmOptions::spatial_layout` (default `General`, Python
+`SpatialLayout.GENERAL/REGULAR_GRID`). `RegularGrid` selects the reduced-
+symmetry dictionary automatically for non-periodic point sources with a fixed
+identity map on CUDA backends, with power-of-two microtiles below 48 targets
+per leaf and target-owned above (calibrated at 4-128 per leaf); explicit
+options keep precedence and meaning. Not in the cache identity. Details,
+calibration and benchmarks in `agent_docs/performance_optimization.md`.
+
 ## 2026-09-16 — GPU evaluation optimization (Phase 3A)
 
 Starting HEAD `293144bf` (Phase 2 closure) is the fixed performance

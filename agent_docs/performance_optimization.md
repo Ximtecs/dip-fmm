@@ -486,3 +486,141 @@ at 50k particles P2M 1.4 ms, M2M 2.2 ms, L2L 2.0 ms, L2P 0.8 ms of 7.4 ms,
 against 1.6 ms of GPU work — so `cuda-partial` is 3-5x slower than
 `cuda-full` at every size above 10k. Level-serialised M2M/L2L with a barrier
 per level and per-target scalar L2P are the first candidates.
+
+## CUDA execution policy and regular-grid hint (3A follow-up)
+
+Starting HEAD `a187c76`. Goal: one deterministic internal policy module that
+owns the CUDA strategy choices found in Phase 3A, plus a public
+`SpatialLayout` hint so lattices get the reduced-symmetry dictionary without
+the experimental flags. No kernel changed; no cache format or key changed.
+
+### Module
+
+`src/backend/cuda/execution_policy.{hpp,cpp}` (compiled in every build, host
+only). `resolve_cuda_execution_policy(inputs)` maps plan facts to concrete
+choices; `m2l_pairs_per_thread(precision, translations)` and
+`translation_lanes_for_outputs(outputs)` are queried by the M2L and
+far-field executors so the rules live in one place. Inputs come from the
+constructed topology and the options in `UniformFmm::resolve_cuda_execution_policy()`
+(called at the end of `initialise_p2p_policy`, before any packing is derived):
+precision, `spatial_layout`, CUDA backend selected, effective point source,
+periodic, fixed identity available, the three explicit dictionary options,
+source/target counts, order, coefficient count, depth, occupied target leaf
+count, mean targets per occupied target leaf, list-1 pair count (from
+`p2p_leaf_records`), M2L translation count, BSR(3) size estimate and budget.
+
+Rules (in precedence order):
+
+1. explicit `use_reduced_symmetry_p2p` and the dictionary is valid
+   (non-periodic; point sources need a fixed identity map) -> signed
+   dictionary; executor from the explicit flags with their documented
+   meaning (`cuda_dictionary_target_owned` > `cuda_dictionary_power2_microtiles`
+   > source-warp);
+2. `SpatialLayout::RegularGrid`, CUDA backend, non-periodic point sources
+   with a fixed identity map -> signed dictionary; executor = explicit flag
+   if set, else power-of-two microtiles when the mean occupancy is below
+   48 targets per leaf, target-owned otherwise;
+3. non-periodic point sources -> leaf block (Phase 3A default);
+4. finite sources or fixed-identity points, non-periodic, BSR estimate within
+   `cuda_p2p_bsr_max_bytes` -> cuSPARSE BSR(3);
+5. otherwise canonical rows.
+
+M2L: 16 pairs per thread for FP32 plans with >= 250k translations, else 8.
+M2M/L2L: 32 lanes per output for levels with <= 65536 outputs, else 4.
+If a dictionary is selected but its plan cannot be derived, the plan falls
+back to the General rules (3-5). CPU backends ignore the hint and keep
+`use_reduced_symmetry_p2p` as their only dictionary switch.
+
+### Dictionary executor calibration (regular lattices, `cuda-full`, p=6)
+
+P2P device phase [us] (evaluation median in parentheses); `occN` is the mean
+number of targets per leaf; N = 131072/d5, 32768/d4, 65536/d4, 131072/d4,
+262144/d4, 65536/d3.
+
+| Occupancy | Precision | source-warp | target-owned | power-of-two | best |
+|---|---|---:|---:|---:|---|
+| 4 | FP32 | 212 (2587) | **65 (2426)** | 80 (2471) | owned |
+| 4 | FP64 | 1523 (19566) | **373 (18272)** | 411 (18483) | owned |
+| 8 | FP32 | 69 (388) | 59 (368) | **39 (365)** | pow2 |
+| 8 | FP64 | 453 (2655) | 347 (2295) | **184 (2281)** | pow2 |
+| 16 | FP32 | 312 (673) | 233 (588) | **193 (590)** | pow2 |
+| 16 | FP64 | 904 (3258) | 955 (2894) | **652 (2843)** | pow2 |
+| 32 | FP32 | 600 (1184) | 526 (1072) | **525 (1168)** | tie |
+| 32 | FP64 | **1783 (4396)** | 2139 (4249) | 1980 (4593) | warp |
+| 64 | FP32 | 1551 (2455) | **1440 (2307)** | 1701 (2621) | owned |
+| 64 | FP64 | **6500 (9220)** | 6680 (9402) | 6667 (9398) | warp (3 %) |
+| 128 | FP32 | **974 (1214)** | 1339 (1599) | 1679 (1962) | warp |
+| 128 | FP64 | **4605 (5131)** | 7646 (8234) | 6987 (7664) | warp |
+
+Together with the Phase-3A study (32^3/d3, 64 per leaf: target-owned 440 vs
+warp 517 vs pow2 725 us FP32; 1149 vs 2341 vs 2449 us FP64) the simple rule
+"power-of-two microtiles below 48 targets per leaf, target-owned above" is
+best or within a few percent of best from 8 to 64 per leaf, which covers the
+depths the parameter adviser produces. Known limits, recorded rather than
+encoded: at 4 per leaf target-owned is 15 % faster on a P2P phase that is
+3 % of the evaluation (0.6 % end to end), and at 128 per leaf (a shallow
+tree the adviser would not choose) the source-warp kernel is 1.4-1.7x faster
+than target-owned; that executor remains reachable through the explicit
+`use_reduced_symmetry_p2p` option.
+
+### Benchmarks (policy commit versus `a187c76`, identical builds)
+
+General random points (policy resolves to the same choices as before;
+this is a no-regression check), evaluation medians [us], before -> after:
+
+| Case | cuda-full FP32 | cuda-full FP64 | cuda-partial FP32 | cuda-partial FP64 |
+|---|---|---|---|---|
+| S 10k p4 d3 | 189 -> 188 | 302 -> 302 | 393 -> 400 | 477 -> 478 |
+| M 50k p6 d4 | 758 -> 758 | 2919 -> 2909 | 7276 -> 7384 | 11230 -> 10093 |
+| L 100k p6 d4 | 1924 -> 1924 | 4738 -> 4808 (see note) | 10337 -> 10578 | 15316 -> 15543 |
+
+All `cuda-full` differences are inside the +-0.3 % noise floor except
+L FP64 (+1.5 % in the matrix run). The resolved policy is identical there
+(leaf block, 8 pairs per thread); eight back-to-back alternating runs gave
+before 4.709/4.728/4.690/4.735 ms and after 4.743/4.748/4.717/4.739 ms, an
+overlapping 1 % scatter, so no regression is attributed to the change. `cuda-partial`
+differences are inside that path's 1-9 % CPU-dominated noise.
+
+Regular lattices, `cuda-full`, `--spatial-layout regular-grid` with no
+explicit dictionary options, against the best explicit executor of the
+Phase-3A study and the leaf-block default:
+
+| Case | Occupancy | Precision | Automatic (executor chosen) | Best explicit | Leaf block (General) |
+|---|---:|---|---:|---:|---:|
+| 32^3 d4 | 8 | FP32 | **366 us** (pow2) | 367 (pow2) | 512 |
+| 32^3 d4 | 8 | FP64 | **2284** (pow2) | 2298 (owned) / 2301 (pow2) | 2382 |
+| 32^3 d3 | 64 | FP32 | **532** (owned) | 537 (owned) | 809 |
+| 32^3 d3 | 64 | FP64 | **1345** (owned) | 1342 (owned) | 1706 |
+| 64^3 d5 | 8 | FP32 | **3125** (pow2) | 3082 (owned) / 3119 (pow2) | 3696 |
+| 64^3 d5 | 8 | FP64 | **19703** (pow2) | 19652 (owned) / 19712 (pow2) | 20476 |
+| 64^3 d4 | 64 | FP32 | **2304** (owned) | 2331 (owned) | 7210 |
+| 64^3 d4 | 64 | FP64 | **9252** (owned) | 9374 (owned) | 15185 |
+
+The automatic choice is within 1.4 % of the best explicit executor in every
+case (and 1.4-3.1x faster than the General leaf block where P2P dominates);
+it is 0.2-1.4 % slower than target-owned at 8 per leaf on the 64^3 lattice,
+where P2P is under 6 % of the evaluation.
+
+### Cache and correctness
+
+- `SpatialLayout` is not part of the persistent cache identity: the cached
+  geometry payload is the canonical operator, and the dictionary/leaf/BSR
+  packings are derived after loading (`use_reduced_symmetry_p2p` stays in
+  the key as before; no format or key changed, no cache invalidated).
+- CTest: 71/71 policy/CUDA/precision/P2P/M2L cases with the cache disabled,
+  202/202 full run with the cache (one oneMKL-only skip); new cases
+  "CUDA execution policy resolves the P2P packing from layout and options",
+  "regular-grid layout hint selects the dictionary on CUDA plans" (both
+  backends, depths 1 and 2, explicit overrides, dynamic identities, FP32
+  agreement), "regular-grid layout hint keeps finite and periodic CUDA
+  policies".
+- Python: `SpatialLayout.GENERAL/REGULAR_GRID`, `UniformFmmOptions.spatial_layout`,
+  `UniformFmm.spatial_layout`; new tests for the round trip and the CUDA
+  dictionary selection.
+- Compute Sanitizer memcheck on the automatic regular-grid dictionary
+  (8 per leaf -> microtiles, 64 per leaf -> target-owned, FP32 and FP64) and
+  racecheck on the hybrid path: no errors.
+- Defect found while validating: the FP32 CUDA path only quantised the
+  dictionary plan when the explicit flag was set, so the layout-selected
+  FP32 dictionary silently fell back to leaf blocks; fixed in the same
+  commit and covered by the FP32 assertion of the new test.

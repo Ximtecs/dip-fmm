@@ -1,5 +1,16 @@
 # Project progress
 
+## CUDA execution policy and regular-grid hint (3A follow-up): COMPLETE — 2026-09-16
+
+`src/backend/cuda/execution_policy.{hpp,cpp}` centralises the CUDA strategy
+choices (P2P packing/executor, M2L pairs per thread, translation lane groups)
+as a deterministic function of plan facts; `UniformFmmOptions::spatial_layout`
+(`SpatialLayout::General` default, `RegularGrid` hint) selects the
+reduced-symmetry dictionary and an occupancy-matched executor automatically on
+lattices, within 1.4 % of the best explicit executor and 1.4-3.1x faster than
+the general default where P2P dominates. General defaults unchanged. Phases
+3B/3C/3D and 4 remain unstarted.
+
 ## GPU evaluation optimization (Phase 3A): COMPLETE — 2026-09-16
 
 Repeated CUDA evaluation was profiled and optimised against the fixed
