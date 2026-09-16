@@ -3,6 +3,7 @@
 #include "cdfmm/backend/cuda/m2l.hpp"
 #include "backend/cuda/m2l/internal.hpp"
 #include "backend/cuda/common/error.hpp"
+#include "backend/cuda/execution_policy.hpp"
 #include "backend/cuda/common/runtime.hpp"
 
 #include <algorithm>
@@ -142,9 +143,8 @@ struct CudaM2LClassGroup {
 
 inline constexpr int m2l_group_threads = 256;
 inline constexpr int m2l_group_alpha_tile = 16;
-// Pairs per thread: 16 keeps FP32 register use moderate and halves the
-// shared-memory matrix loads per FMA for large plans; FP64 and small plans
-// (too few blocks to fill the GPU) use 8.
+// The two instantiated pairs-per-thread widths; the CUDA execution policy
+// (backend/cuda/execution_policy.hpp) decides which one a plan uses.
 inline constexpr int m2l_group_pairs_wide = 16;
 inline constexpr int m2l_group_pairs_narrow = 8;
 
@@ -522,14 +522,16 @@ private:
     // dynamic shared memory: one alpha slab of the matrix plus one slab of
     // staged multipoles must fit.
     constexpr std::size_t shared_budget = 48 * 1024;
-    constexpr std::size_t wide_pair_threshold = 250000;
     const std::size_t slab_bytes =
         static_cast<std::size_t>(m2l_group_alpha_tile) * sizeof(Scalar);
-    pairs_per_thread_ =
-        (sizeof(Scalar) == sizeof(float) &&
-         data.source_nodes.size() >= wide_pair_threshold)
-            ? m2l_group_pairs_wide
-            : m2l_group_pairs_narrow;
+    // The CUDA execution policy owns the pairs-per-thread rule.
+    pairs_per_thread_ = cuda_policy::m2l_pairs_per_thread(
+        sizeof(Scalar) == sizeof(float) ? StaticPrecision::Float32
+                                        : StaticPrecision::Float64,
+        data.source_nodes.size());
+    if (pairs_per_thread_ != m2l_group_pairs_wide) {
+      pairs_per_thread_ = m2l_group_pairs_narrow;
+    }
     int slots = coefficient_count_ > 0
         ? m2l_group_threads / coefficient_count_
         : 0;

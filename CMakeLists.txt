@@ -91,6 +91,7 @@ add_library(cdfmm_core
     src/cache/universal.cpp
     src/cache/geometry.cpp
     src/backend/cpu/p2p/near_field.cpp
+    src/backend/cuda/execution_policy.cpp
     src/parameter_selection.cpp
 )
 if(CDFMM_ENABLE_CUDA)

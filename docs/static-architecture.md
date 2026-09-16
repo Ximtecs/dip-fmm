@@ -84,9 +84,11 @@ plans keep each packing resident on the device and compare one-thread-per-row,
 one-block-per-leaf, and cuSPARSE execution. Production CPU execution uses SoA.
 Production hybrid and full CUDA execution use the dense leaf-block packing
 for point sources (one warp per target-leaf/source-leaf block, six symmetric
-tensor values per pair, dynamic or fixed self identities), BSR(3) for finite
-sources when the configured memory budget permits, and canonical rows
-otherwise. See the
+tensor values per pair, dynamic or fixed self identities), the signed tensor
+dictionary when the user declares `SpatialLayout::RegularGrid` or requests
+reduced symmetry explicitly, BSR(3) for finite sources when the configured
+memory budget permits, and canonical rows otherwise; the choice is made by
+the CUDA execution policy described in [backends](backends.md). See the
 [static P2P execution study](static-p2p.md) for storage, correctness
 constraints, and measured dispatch recommendations.
 

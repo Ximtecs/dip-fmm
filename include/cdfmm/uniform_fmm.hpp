@@ -141,6 +141,17 @@ struct UniformFmmOptions {
   /// @brief Maximum persistent bytes permitted for an automatic CUDA BSR plan.
   std::size_t cuda_p2p_bsr_max_bytes{20ULL * 1024ULL * 1024ULL * 1024ULL};
   /**
+   * @brief Performance hint about the point layout.
+   *
+   * `General` keeps the measured defaults. `RegularGrid` lets the CUDA
+   * backends select the reduced-symmetry tensor-dictionary P2P packing and its
+   * occupancy-matched executor automatically for non-periodic point sources
+   * with a fixed identity map. Explicit `use_reduced_symmetry_p2p` and
+   * executor options take precedence; CPU backends ignore the hint. The
+   * result is identical for either value; a wrong hint only costs time.
+   */
+  SpatialLayout spatial_layout{SpatialLayout::General};
+  /**
    * @brief Explicitly enables the experimental reduced-symmetry P2P packing.
    *
    * The default retains particle-row SoA so benchmark comparisons are
@@ -330,6 +341,8 @@ public:
   [[nodiscard]] StaticExecutionPlan execution_plan() const noexcept;
   /// @brief Returns the resolved P2P storage packing used for evaluation.
   [[nodiscard]] P2PExecutionPacking p2p_execution_packing() const noexcept;
+  /// @brief Returns the spatial layout hint the plan was constructed with.
+  [[nodiscard]] SpatialLayout spatial_layout() const noexcept;
   /// @brief Returns CUDA traffic and persistent-allocation diagnostics.
   [[nodiscard]] const CudaPlanStatistics &cuda_plan_statistics() const;
   /// @brief Returns one-time static-plan timing and memory information.
@@ -404,6 +417,7 @@ private:
   class CudaM2LPlanOwner;
   class CudaP2PPlanOwner;
   class CudaFullPlanOwner;
+  class CudaExecutionPolicyOwner;
   UniformFmm(NormalisedGeometry geometry,
              const UniformFmmOptions& physical_options);
   [[nodiscard]] static NormalisedGeometry normalise_geometry(
@@ -419,6 +433,7 @@ private:
   void initialise_source_geometry(const UniformFmmOptions &options);
   void initialise_target_geometry(const UniformFmmOptions &options);
   void initialise_p2p_policy(const UniformFmmOptions &options);
+  void resolve_cuda_execution_policy();
   void build_reduced_symmetry_p2p_packing();
   void print_initialisation_summary(const UniformFmmOptions &options) const;
   void build_cuda_p2p_plan();
@@ -523,6 +538,10 @@ private:
   bool cuda_dictionary_target_owned_{false};
   bool cuda_dictionary_power2_microtiles_{false};
   int signed_p2p_target_tile_size_{32};
+  SpatialLayout spatial_layout_{SpatialLayout::General};
+  // Resolved CUDA strategy choices; opaque so the public header stays free of
+  // backend types.
+  std::unique_ptr<CudaExecutionPolicyOwner> cuda_policy_{};
   mutable CudaPlanStatistics empty_cuda_statistics_{};
   std::unique_ptr<CudaM2LPlanOwner> cuda_m2l_plan_{};
   std::unique_ptr<CudaP2PPlanOwner> cuda_p2p_plan_{};

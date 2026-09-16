@@ -218,3 +218,48 @@ def test_fixed_identity_option_is_used_when_evaluate_omits_the_map():
 
     np.testing.assert_allclose(implicit, explicit, rtol=0.0, atol=0.0)
     assert options.cuda_p2p_bsr_max_bytes == 1234
+
+
+def test_spatial_layout_option_round_trips():
+    sources = np.array([[-0.75, 0.0, 0.0], [0.75, 0.0, 0.0]])
+    options = cdfmm.UniformFmmOptions()
+    assert options.spatial_layout == cdfmm.SpatialLayout.GENERAL
+    options.spatial_layout = cdfmm.SpatialLayout.REGULAR_GRID
+    options.expansion_basis = cdfmm.ExpansionBasis.CARTESIAN
+    options.precision = cdfmm.StaticPrecision.FLOAT64
+    options.backend = cdfmm.ExecutionBackend.CPU_STATIC
+    options.tree.max_level = 1
+    options.enable_cache = False
+    # CPU backends record the hint but keep their own packing policy.
+    fmm = cdfmm.UniformFmm(sources, sources, options)
+    assert fmm.spatial_layout == cdfmm.SpatialLayout.REGULAR_GRID
+    assert fmm.p2p_execution_packing == cdfmm.P2PExecutionPacking.PARTICLE_ROW_SOA
+
+
+def test_regular_grid_hint_selects_cuda_dictionary():
+    if not cdfmm.cuda_full_available():
+        pytest.skip("CUDA full backend is unavailable")
+    axis = np.linspace(-0.875, 0.875, 8)
+    grid = np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), axis=-1)
+    positions = grid.reshape(-1, 3)
+    moments = np.tile(np.array([[0.3, -0.2, 0.5]]), (positions.shape[0], 1))
+    identities = np.arange(positions.shape[0], dtype=np.int32)
+    options = cdfmm.UniformFmmOptions()
+    options.precision = cdfmm.StaticPrecision.FLOAT64
+    options.expansion_order = 4
+    options.tree.max_level = 2
+    options.backend = cdfmm.ExecutionBackend.CUDA_FULL
+    options.fixed_target_source_indices = identities.tolist()
+    options.enable_cache = False
+    general = cdfmm.UniformFmm(positions, positions, options)
+    assert general.p2p_execution_packing == cdfmm.P2PExecutionPacking.LEAF_BLOCK
+    options.spatial_layout = cdfmm.SpatialLayout.REGULAR_GRID
+    regular = cdfmm.UniformFmm(positions, positions, options)
+    assert regular.spatial_layout == cdfmm.SpatialLayout.REGULAR_GRID
+    assert (
+        regular.p2p_execution_packing
+        == cdfmm.P2PExecutionPacking.TENSOR_DICTIONARY
+    )
+    expected = general.evaluate(moments, target_source_indices=identities)
+    actual = regular.evaluate(moments, target_source_indices=identities)
+    np.testing.assert_allclose(actual["H"], expected["H"], rtol=1e-9, atol=1e-12)

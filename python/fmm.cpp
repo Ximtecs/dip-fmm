@@ -55,6 +55,7 @@ void bind_fmm_options(py::module_& module)
                      &UniformFmmOptions::fixed_target_source_indices)
       .def_readwrite("cuda_p2p_bsr_max_bytes",
                      &UniformFmmOptions::cuda_p2p_bsr_max_bytes)
+      .def_readwrite("spatial_layout", &UniformFmmOptions::spatial_layout)
       .def_readwrite("use_reduced_symmetry_p2p",
                      &UniformFmmOptions::use_reduced_symmetry_p2p)
       .def_readwrite("cuda_dictionary_target_owned",
@@ -261,6 +262,7 @@ void bind_fmm(py::module_& module)
       })
       .def_property_readonly("p2p_execution_packing",
                              &UniformFmm::p2p_execution_packing)
+      .def_property_readonly("spatial_layout", &UniformFmm::spatial_layout)
       .def_property_readonly("execution_plan", &UniformFmm::execution_plan)
       .def_property_readonly("cuda_plan_statistics", [](const UniformFmm& fmm) {
         const CudaPlanStatistics& statistics = fmm.cuda_plan_statistics();

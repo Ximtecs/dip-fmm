@@ -53,6 +53,7 @@ struct Options {
     bool reduced_symmetry_p2p{false};
     bool dictionary_target_owned{false};
     bool dictionary_power2_microtiles{false};
+    std::string spatial_layout{"general"};
     std::string precision{"float32"};
     std::string backend{"cpu-static-matrix"};
     std::string expansion_basis{"spherical"};
@@ -155,6 +156,7 @@ Options parse_options(const int argc, char** argv)
         else if (key == "--backend") options.backend = value;
         else if (key == "--expansion-basis") options.expansion_basis = value;
         else if (key == "--precision") options.precision = value;
+        else if (key == "--spatial-layout") options.spatial_layout = value;
         else if (key == "--output") options.output = value;
         else throw std::invalid_argument("Unknown option: " + key);
     }
@@ -175,6 +177,11 @@ Options parse_options(const int argc, char** argv)
     }
     if (options.precision != "float32" && options.precision != "float64") {
         throw std::invalid_argument("--precision must be float32 or float64");
+    }
+    if (options.spatial_layout != "general" &&
+        options.spatial_layout != "regular-grid") {
+        throw std::invalid_argument(
+            "--spatial-layout must be general or regular-grid");
     }
     return options;
 }
@@ -713,6 +720,9 @@ int main(int argc, char** argv)
             fmm_options.far_field_target_model = TargetModel::Point;
         }
 
+        fmm_options.spatial_layout = options.spatial_layout == "regular-grid"
+            ? cdfmm::SpatialLayout::RegularGrid
+            : cdfmm::SpatialLayout::General;
         fmm_options.use_reduced_symmetry_p2p = options.reduced_symmetry_p2p;
         fmm_options.cuda_dictionary_target_owned =
             options.dictionary_target_owned;

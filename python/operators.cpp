@@ -29,6 +29,9 @@ void bind_operators(py::module_& module)
       .value("CUDA_FULL", ExecutionBackend::CudaFull)
       .value("CUDA_M2L", ExecutionBackend::CudaM2L)
       .value("CUDA_M2L_STATIC_P2P", ExecutionBackend::CudaM2LStaticP2P);
+  py::enum_<SpatialLayout>(module, "SpatialLayout")
+      .value("GENERAL", SpatialLayout::General)
+      .value("REGULAR_GRID", SpatialLayout::RegularGrid);
   py::enum_<P2PExecutionPacking>(module, "P2PExecutionPacking")
       .value("REFERENCE", P2PExecutionPacking::Reference)
       .value("CANONICAL_AOS", P2PExecutionPacking::CanonicalAos)

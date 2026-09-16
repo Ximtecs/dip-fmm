@@ -41,6 +41,9 @@ src/
 |-- backend/cpu/far_field/{executor,entries,translation}.{cpp,hpp}
 |                                          portable far-field mechanics
 |-- backend/mkl/{m2l,direct/dense}.cpp      oneMKL execution
+|-- backend/cuda/execution_policy.{hpp,cpp} deterministic CUDA strategy choices
+|                                          (P2P packing/executor, M2L and
+|                                          translation tuning) from plan facts
 |-- backend/cuda/common/error.hpp           shared CUDA error helpers
 |-- backend/cuda/common/runtime.{hpp,cu}    CUDA runtime helpers
 |-- backend/cuda/direct/{direct,dense}.cu   CUDA point/dense direct execution

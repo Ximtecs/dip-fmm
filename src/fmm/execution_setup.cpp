@@ -59,18 +59,20 @@ StaticP2POperator promote_p2p_operator(const FloatStaticP2POperator &source) {
   return promoted;
 }
 
-template <typename Operator>
-std::size_t estimate_bsr_bytes(const Operator& p2p,
-                               const std::size_t scalar_bytes) {
-  const std::size_t interactions = p2p.blocks.size();
-  const std::size_t tensor_bytes = 9 * interactions * scalar_bytes;
-  const std::size_t index_bytes = interactions * sizeof(int);
-  // StaticP2PBsrPlan stores one identity entry per target, including -1
-  // entries when no self exclusion is requested.
-  const std::size_t metadata_bytes =
-      (p2p.row_offsets.size() +
-       static_cast<std::size_t>(p2p.target_count)) * sizeof(int);
-  return tensor_bytes + index_bytes + metadata_bytes;
+// The policy may select the dictionary before its plan exists; if the plan
+// could not be derived, the plan falls back to the General defaults.
+cuda_policy::CudaExecutionPolicy effective_cuda_policy(
+    const cuda_policy::CudaExecutionPolicyInputs &inputs,
+    const cuda_policy::CudaExecutionPolicy &policy,
+    const bool dictionary_plan_available) {
+  if (policy.p2p_packing != cuda_policy::CudaP2PPacking::SignedDictionary ||
+      dictionary_plan_available) {
+    return policy;
+  }
+  cuda_policy::CudaExecutionPolicyInputs fallback = inputs;
+  fallback.explicit_reduced_symmetry = false;
+  fallback.spatial_layout = SpatialLayout::General;
+  return cuda_policy::resolve_cuda_execution_policy(fallback);
 }
 
 void validate_model_options(const UniformFmmOptions& options)
@@ -327,6 +329,7 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
 
 void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
   cuda_p2p_bsr_max_bytes_ = options.cuda_p2p_bsr_max_bytes;
+  spatial_layout_ = options.spatial_layout;
   use_reduced_symmetry_p2p_ = options.use_reduced_symmetry_p2p;
   cuda_dictionary_target_owned_ =
       options.cuda_dictionary_target_owned;
@@ -339,6 +342,7 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
         "signed_p2p_target_tile_size must be in [1, 128]");
   }
   if (!options.fixed_target_source_indices.has_value()) {
+    resolve_cuda_execution_policy();
     return;
   }
 
@@ -363,16 +367,69 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
       source_geometry_ == SourceGeometry::PointDipole ||
       near_field_source_model_ == SourceModel::PointDipole;
   if (!effective_point_source) {
+    resolve_cuda_execution_policy();
     return;
   }
 
   fixed_target_source_indices_ = identities;
   prepare_self_indices(identities);
   fixed_sorted_self_indices_ = sorted_self_indices_;
+  resolve_cuda_execution_policy();
+}
+
+void UniformFmm::resolve_cuda_execution_policy() {
+  // Every input is a constructed-topology or option fact, so the policy is
+  // deterministic and available before any packing is derived.
+  cuda_policy::CudaExecutionPolicyInputs inputs;
+  inputs.precision = precision_;
+  inputs.spatial_layout = spatial_layout_;
+  inputs.cuda_backend = backend_ == ExecutionBackend::CudaM2LP2P ||
+                        backend_ == ExecutionBackend::CudaFull;
+  inputs.effective_point_source =
+      source_geometry_ == SourceGeometry::PointDipole ||
+      near_field_source_model_ == SourceModel::PointDipole;
+  inputs.periodic = periodic_.enabled;
+  inputs.fixed_identity_available = fixed_target_source_indices_.has_value();
+  inputs.explicit_reduced_symmetry = use_reduced_symmetry_p2p_;
+  inputs.explicit_dictionary_target_owned = cuda_dictionary_target_owned_;
+  inputs.explicit_dictionary_power2_microtiles =
+      cuda_dictionary_power2_microtiles_;
+  inputs.source_count = topology_->sorted_source_positions.size();
+  inputs.target_count = topology_->sorted_target_positions.size();
+  inputs.expansion_order = expansion_order();
+  inputs.coefficient_count = coefficient_count();
+  inputs.tree_depth = topology_->maximum_level;
+  inputs.occupied_target_leaf_count = topology_->target_leaves.size();
+  inputs.mean_leaf_occupancy =
+      inputs.occupied_target_leaf_count == 0
+          ? 0.0
+          : static_cast<double>(inputs.target_count) /
+                static_cast<double>(inputs.occupied_target_leaf_count);
+  std::size_t pairs = 0;
+  for (const StaticP2PLeafRecord &record : topology_->p2p_leaf_records) {
+    pairs += record.target_count * record.source_count;
+  }
+  inputs.p2p_pair_count = pairs;
+  inputs.m2l_translation_count = topology_->m2l_interactions.size();
+  // BSR(3) stores nine values and one index per pair plus row metadata.
+  inputs.bsr_estimate_bytes =
+      pairs * (9 * (precision_ == StaticPrecision::Float32 ? sizeof(float)
+                                                            : sizeof(double)) +
+               sizeof(int)) +
+      (inputs.target_count * 2 + 1) * sizeof(int);
+  inputs.bsr_budget_bytes = cuda_p2p_bsr_max_bytes_;
+  cuda_policy_ = std::make_unique<CudaExecutionPolicyOwner>();
+  cuda_policy_->inputs = inputs;
+  cuda_policy_->policy = cuda_policy::resolve_cuda_execution_policy(inputs);
 }
 
 void UniformFmm::build_reduced_symmetry_p2p_packing() {
-  if (!use_reduced_symmetry_p2p_ || periodic_.enabled) {
+  // The dictionary is derived when the user asked for it or when the CUDA
+  // policy selected it from the regular-grid layout hint.
+  const bool dictionary_selected =
+      cuda_policy_ && cuda_policy_->policy.p2p_packing ==
+                          cuda_policy::CudaP2PPacking::SignedDictionary;
+  if (!dictionary_selected || periodic_.enabled) {
     return;
   }
   // The branch-free point-dipole executor encodes fixed self pairs as the
@@ -539,90 +596,69 @@ void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
 }
 
 void UniformFmm::build_cuda_p2p_plan() {
-  // A BSR plan bakes identity suppression into its values and therefore
-  // cannot accept a dynamic identity map.  Keep the canonical CUDA plan for
-  // effective point sources unless a fixed map was supplied; finite sources
-  // retain the BSR fast path because their identity map is intentionally
-  // ignored.
-  const bool effective_point_source =
-      source_geometry_ == SourceGeometry::PointDipole ||
-      near_field_source_model_ == SourceModel::PointDipole;
-  const bool bsr_identity_compatible =
-      !effective_point_source || fixed_target_source_indices_.has_value();
-  // Point sources take the dense leaf-block packing: it streams six tensor
-  // values per pair instead of nine and keeps every self identity dynamic, so
-  // it needs neither a fixed map nor the BSR memory budget. Periodic images
-  // repeat leaf pairs and keep the canonical/BSR selection.
-  const bool leaf_compatible = effective_point_source && !periodic_.enabled;
+  using cuda_policy::CudaDictionaryExecutor;
+  using cuda_policy::CudaP2PPacking;
+  const bool dictionary_plan_available =
+      precision_ == StaticPrecision::Float32
+          ? p2p_tensor_dictionary_plan_float_.has_value()
+          : p2p_tensor_dictionary_plan_.has_value();
+  const cuda_policy::CudaExecutionPolicy policy = effective_cuda_policy(
+      cuda_policy_->inputs, cuda_policy_->policy, dictionary_plan_available);
+  cuda_policy_->policy = policy;
+  const bool target_owned =
+      policy.dictionary_executor == CudaDictionaryExecutor::TargetOwned;
+  const bool power2_microtiles =
+      policy.dictionary_executor == CudaDictionaryExecutor::PowerOfTwoMicrotiles;
   const std::span<const int> fixed_identities =
       fixed_target_source_indices_.has_value()
           ? std::span<const int>(fixed_sorted_self_indices_)
           : std::span<const int>{};
-  if (precision_ == StaticPrecision::Float32) {
-    if (use_reduced_symmetry_p2p_ &&
-        p2p_tensor_dictionary_plan_float_.has_value()) {
+  if (policy.p2p_packing == CudaP2PPacking::SignedDictionary) {
+    if (precision_ == StaticPrecision::Float32) {
       cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-          std::make_unique<CudaP2PPlan>(
-              *p2p_tensor_dictionary_plan_float_,
-              cuda_dictionary_target_owned_,
-              cuda_dictionary_power2_microtiles_));
-      p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
-      return;
-    }
-    if (leaf_compatible) {
+          std::make_unique<CudaP2PPlan>(*p2p_tensor_dictionary_plan_float_,
+                                        target_owned, power2_microtiles));
+    } else {
       cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-          std::make_unique<CudaP2PPlan>(build_cuda_leaf_plan_float(),
-                                        fixed_identities));
-      p2p_execution_packing_ = P2PExecutionPacking::LeafBlock;
-      return;
+          std::make_unique<CudaP2PPlan>(*p2p_tensor_dictionary_plan_,
+                                        target_owned, power2_microtiles));
     }
-    if (!periodic_.enabled && bsr_identity_compatible &&
-        estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
-            cuda_p2p_bsr_max_bytes_) {
-      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-          std::make_unique<CudaP2PPlan>(p2p_bsr_plan_float_));
-      p2p_execution_packing_ = P2PExecutionPacking::CudaBsr3;
-      return;
-    }
-    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-        std::make_unique<CudaP2PPlan>(p2p_operator_float_, fixed_identities));
-    p2p_execution_packing_ = P2PExecutionPacking::CanonicalAos;
-    return;
-  }
-  if (use_reduced_symmetry_p2p_ &&
-      p2p_tensor_dictionary_plan_.has_value()) {
-    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-        std::make_unique<CudaP2PPlan>(
-            *p2p_tensor_dictionary_plan_,
-            cuda_dictionary_target_owned_,
-            cuda_dictionary_power2_microtiles_));
     p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     return;
   }
-  if (leaf_compatible) {
-    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-        std::make_unique<CudaP2PPlan>(build_cuda_leaf_plan(),
-                                      fixed_identities));
+  if (policy.p2p_packing == CudaP2PPacking::LeafBlock) {
+    if (precision_ == StaticPrecision::Float32) {
+      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+          std::make_unique<CudaP2PPlan>(build_cuda_leaf_plan_float(),
+                                        fixed_identities));
+    } else {
+      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+          std::make_unique<CudaP2PPlan>(build_cuda_leaf_plan(),
+                                        fixed_identities));
+    }
     p2p_execution_packing_ = P2PExecutionPacking::LeafBlock;
     return;
   }
-  if (!periodic_.enabled && bsr_identity_compatible &&
-      estimate_bsr_bytes(p2p_operator_, sizeof(double)) <=
-          cuda_p2p_bsr_max_bytes_) {
-    const std::span<const int> bsr_identities =
-        fixed_target_source_indices_.has_value()
-            ? std::span<const int>(fixed_sorted_self_indices_)
-            : std::span<const int>{};
-    StaticP2PBsrPlan bsr =
-        build_static_p2p_bsr_plan(p2p_operator_, bsr_identities);
-    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-        std::make_unique<CudaP2PPlan>(bsr));
+  if (policy.p2p_packing == CudaP2PPacking::Bsr3) {
+    if (precision_ == StaticPrecision::Float32) {
+      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+          std::make_unique<CudaP2PPlan>(p2p_bsr_plan_float_));
+    } else {
+      const StaticP2PBsrPlan bsr =
+          build_static_p2p_bsr_plan(p2p_operator_, fixed_identities);
+      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+          std::make_unique<CudaP2PPlan>(bsr));
+    }
     p2p_execution_packing_ = P2PExecutionPacking::CudaBsr3;
     return;
   }
-
-  cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
-      std::make_unique<CudaP2PPlan>(p2p_operator_, fixed_identities));
+  if (precision_ == StaticPrecision::Float32) {
+    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+        std::make_unique<CudaP2PPlan>(p2p_operator_float_, fixed_identities));
+  } else {
+    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+        std::make_unique<CudaP2PPlan>(p2p_operator_, fixed_identities));
+  }
   p2p_execution_packing_ = P2PExecutionPacking::CanonicalAos;
 }
 
@@ -662,12 +698,21 @@ void UniformFmm::build_backend_packing() {
 }
 
 void UniformFmm::build_cuda_full_plan() {
-  const bool effective_point_source =
-      source_geometry_ == SourceGeometry::PointDipole ||
-      near_field_source_model_ == SourceModel::PointDipole;
-  const bool bsr_identity_compatible =
-      !effective_point_source || fixed_target_source_indices_.has_value();
-  const bool leaf_compatible = effective_point_source && !periodic_.enabled;
+  using cuda_policy::CudaDictionaryExecutor;
+  using cuda_policy::CudaP2PPacking;
+  const bool dictionary_plan_available =
+      precision_ == StaticPrecision::Float32
+          ? p2p_tensor_dictionary_plan_float_.has_value()
+          : p2p_tensor_dictionary_plan_.has_value();
+  const cuda_policy::CudaExecutionPolicy policy = effective_cuda_policy(
+      cuda_policy_->inputs, cuda_policy_->policy, dictionary_plan_available);
+  cuda_policy_->policy = policy;
+  const bool target_owned =
+      policy.dictionary_executor == CudaDictionaryExecutor::TargetOwned;
+  const bool power2_microtiles =
+      policy.dictionary_executor == CudaDictionaryExecutor::PowerOfTwoMicrotiles;
+  const bool use_leaf = policy.p2p_packing == CudaP2PPacking::LeafBlock;
+  const bool use_bsr = policy.p2p_packing == CudaP2PPacking::Bsr3;
   if (precision_ == StaticPrecision::Float32) {
     FloatCudaFullPlanData data;
     data.coefficient_count = coefficient_count();
@@ -741,36 +786,22 @@ void UniformFmm::build_cuda_full_plan() {
         }
       }
     }
-    if (use_reduced_symmetry_p2p_ &&
-        p2p_tensor_dictionary_plan_float_.has_value()) {
-      data.use_p2p_dictionary = true;
-      data.p2p_dictionary_target_owned = cuda_dictionary_target_owned_;
-      data.p2p_dictionary_power2_microtiles =
-          cuda_dictionary_power2_microtiles_;
-      data.p2p_dictionary =
-          std::move(*p2p_tensor_dictionary_plan_float_);
-    } else {
-      if (fixed_target_source_indices_.has_value()) {
-        data.has_fixed_self_indices = true;
-        data.fixed_self_indices = fixed_sorted_self_indices_;
-      }
-      if (leaf_compatible) {
-        data.use_p2p_leaf = true;
-        data.p2p_leaf = build_cuda_leaf_plan_float();
-      } else if (!periodic_.enabled && bsr_identity_compatible &&
-                 estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
-                     cuda_p2p_bsr_max_bytes_) {
-        data.use_p2p_bsr = true;
-      }
+    if (fixed_target_source_indices_.has_value()) {
+      data.has_fixed_self_indices = true;
+      data.fixed_self_indices = fixed_sorted_self_indices_;
     }
-    if (data.use_p2p_dictionary) {
-      if (fixed_target_source_indices_.has_value()) {
-        data.has_fixed_self_indices = true;
-        data.fixed_self_indices = fixed_sorted_self_indices_;
-      }
-    } else if (data.use_p2p_bsr) {
+    if (policy.p2p_packing == CudaP2PPacking::SignedDictionary) {
+      data.use_p2p_dictionary = true;
+      data.p2p_dictionary_target_owned = target_owned;
+      data.p2p_dictionary_power2_microtiles = power2_microtiles;
+      data.p2p_dictionary = std::move(*p2p_tensor_dictionary_plan_float_);
+    } else if (use_leaf) {
+      data.use_p2p_leaf = true;
+      data.p2p_leaf = build_cuda_leaf_plan_float();
+    } else if (use_bsr) {
+      data.use_p2p_bsr = true;
       data.p2p_bsr = std::move(p2p_bsr_plan_float_);
-    } else if (!data.use_p2p_leaf) {
+    } else {
       data.p2p = p2p_operator_float_;
     }
     p2p_execution_packing_ = data.use_p2p_dictionary
@@ -855,38 +886,26 @@ void UniformFmm::build_cuda_full_plan() {
       }
     }
   }
-  if (use_reduced_symmetry_p2p_ &&
-      p2p_tensor_dictionary_plan_.has_value()) {
-    data.use_p2p_dictionary = true;
-    data.p2p_dictionary_target_owned = cuda_dictionary_target_owned_;
-    data.p2p_dictionary_power2_microtiles =
-        cuda_dictionary_power2_microtiles_;
-    data.p2p_dictionary = std::move(*p2p_tensor_dictionary_plan_);
-    if (fixed_target_source_indices_.has_value()) {
-      data.has_fixed_self_indices = true;
-      data.fixed_self_indices = fixed_sorted_self_indices_;
-    }
-  } else {
-    if (fixed_target_source_indices_.has_value()) {
-      data.has_fixed_self_indices = true;
-      data.fixed_self_indices = fixed_sorted_self_indices_;
-    }
-    if (leaf_compatible) {
-      data.use_p2p_leaf = true;
-      data.p2p_leaf = build_cuda_leaf_plan();
-    } else if (!periodic_.enabled && bsr_identity_compatible &&
-               estimate_bsr_bytes(p2p_operator_, sizeof(double)) <=
-                   cuda_p2p_bsr_max_bytes_) {
-      const std::span<const int> bsr_identities =
-          fixed_target_source_indices_.has_value()
-              ? std::span<const int>(fixed_sorted_self_indices_)
-              : std::span<const int>{};
-      data.p2p_bsr = build_static_p2p_bsr_plan(
-          p2p_operator_, bsr_identities);
-      data.use_p2p_bsr = true;
-    }
+  if (fixed_target_source_indices_.has_value()) {
+    data.has_fixed_self_indices = true;
+    data.fixed_self_indices = fixed_sorted_self_indices_;
   }
-  if (!data.use_p2p_dictionary && !data.use_p2p_bsr && !data.use_p2p_leaf) {
+  if (policy.p2p_packing == CudaP2PPacking::SignedDictionary) {
+    data.use_p2p_dictionary = true;
+    data.p2p_dictionary_target_owned = target_owned;
+    data.p2p_dictionary_power2_microtiles = power2_microtiles;
+    data.p2p_dictionary = std::move(*p2p_tensor_dictionary_plan_);
+  } else if (use_leaf) {
+    data.use_p2p_leaf = true;
+    data.p2p_leaf = build_cuda_leaf_plan();
+  } else if (use_bsr) {
+    const std::span<const int> bsr_identities =
+        fixed_target_source_indices_.has_value()
+            ? std::span<const int>(fixed_sorted_self_indices_)
+            : std::span<const int>{};
+    data.p2p_bsr = build_static_p2p_bsr_plan(p2p_operator_, bsr_identities);
+    data.use_p2p_bsr = true;
+  } else {
     data.p2p = p2p_operator_;
   }
   p2p_execution_packing_ = data.use_p2p_dictionary

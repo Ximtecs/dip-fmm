@@ -14,6 +14,8 @@
 #include "cdfmm/cuda_p2p.hpp"
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/uniform_fmm.hpp"
+
+#include "backend/cuda/execution_policy.hpp"
 #include "cdfmm/validation.hpp"
 
 using namespace cdfmm;
@@ -765,6 +767,305 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
         REQUIRE(full.cuda_plan_statistics().evaluation_h2d_calls == 2);
         REQUIRE(full.cuda_plan_statistics().evaluation_d2h_calls == 2);
     }
+}
+
+namespace {
+
+// 8 x 8 x 8 lattice inside the unit cube: a regular grid whose leaves hold
+// 8 points at depth 2 and 64 points at depth 1.
+std::vector<Vec3> lattice_positions() {
+  std::vector<Vec3> positions;
+  for (int z = 0; z < 8; ++z) {
+    for (int y = 0; y < 8; ++y) {
+      for (int x = 0; x < 8; ++x) {
+        positions.push_back({-0.875 + 0.25 * x, -0.875 + 0.25 * y,
+                             -0.875 + 0.25 * z});
+      }
+    }
+  }
+  return positions;
+}
+
+std::vector<Vec3> lattice_moments(const std::size_t count) {
+  std::vector<Vec3> moments;
+  for (std::size_t index = 0; index < count; ++index) {
+    const double value = static_cast<double>(index);
+    moments.push_back({std::sin(0.3 * value), std::cos(0.7 * value),
+                       std::sin(0.11 * value + 0.5)});
+  }
+  return moments;
+}
+
+UniformFmmOptions lattice_cuda_options(const ExecutionBackend backend,
+                                       const int depth,
+                                       const std::vector<int> &identities) {
+  UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Spherical;
+  options.expansion_order = 4;
+  options.tree.max_level = depth;
+  options.tree.root_centre = Vec3{};
+  options.tree.root_half_width = 1.0;
+  options.backend = backend;
+  options.precision = StaticPrecision::Float64;
+  options.fixed_target_source_indices = identities;
+  options.enable_cache = false;
+  return options;
+}
+
+void require_fields_match(const std::vector<PotentialField> &actual,
+                          const std::vector<PotentialField> &expected,
+                          const double margin) {
+  REQUIRE(actual.size() == expected.size());
+  for (std::size_t target = 0; target < actual.size(); ++target) {
+    REQUIRE(actual[target].H.x == Catch::Approx(expected[target].H.x).margin(margin));
+    REQUIRE(actual[target].H.y == Catch::Approx(expected[target].H.y).margin(margin));
+    REQUIRE(actual[target].H.z == Catch::Approx(expected[target].H.z).margin(margin));
+  }
+}
+
+} // namespace
+
+TEST_CASE("CUDA execution policy resolves the P2P packing from layout and options",
+          "[cuda][policy]") {
+  using cdfmm::cuda_policy::CudaDictionaryExecutor;
+  using cdfmm::cuda_policy::CudaExecutionPolicyInputs;
+  using cdfmm::cuda_policy::CudaP2PPacking;
+  using cdfmm::cuda_policy::resolve_cuda_execution_policy;
+
+  REQUIRE(UniformFmmOptions{}.spatial_layout == SpatialLayout::General);
+
+  CudaExecutionPolicyInputs inputs;
+  inputs.cuda_backend = true;
+  inputs.effective_point_source = true;
+  inputs.fixed_identity_available = true;
+  inputs.target_count = 4096;
+  inputs.occupied_target_leaf_count = 512;
+  inputs.mean_leaf_occupancy = 8.0;
+  inputs.bsr_budget_bytes = 1ULL << 40;
+
+  SECTION("General point sources keep the leaf-block default") {
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::LeafBlock);
+    inputs.fixed_identity_available = false;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::LeafBlock);
+  }
+  SECTION("RegularGrid selects the dictionary and an occupancy-matched executor") {
+    inputs.spatial_layout = SpatialLayout::RegularGrid;
+    const auto low = resolve_cuda_execution_policy(inputs);
+    REQUIRE(low.p2p_packing == CudaP2PPacking::SignedDictionary);
+    REQUIRE(low.dictionary_from_layout);
+    inputs.mean_leaf_occupancy = 64.0;
+    const auto high = resolve_cuda_execution_policy(inputs);
+    REQUIRE(high.p2p_packing == CudaP2PPacking::SignedDictionary);
+    REQUIRE(high.dictionary_executor == CudaDictionaryExecutor::TargetOwned);
+    REQUIRE((low.dictionary_executor == CudaDictionaryExecutor::TargetOwned ||
+             low.dictionary_executor ==
+                 CudaDictionaryExecutor::PowerOfTwoMicrotiles));
+  }
+  SECTION("RegularGrid without identity, periodic, or on a CPU backend keeps the defaults") {
+    inputs.spatial_layout = SpatialLayout::RegularGrid;
+    inputs.fixed_identity_available = false;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::LeafBlock);
+    inputs.fixed_identity_available = true;
+    inputs.periodic = true;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::CanonicalRows);
+    inputs.periodic = false;
+    inputs.cuda_backend = false;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing !=
+            CudaP2PPacking::SignedDictionary);
+  }
+  SECTION("RegularGrid finite sources keep the BSR policy") {
+    inputs.spatial_layout = SpatialLayout::RegularGrid;
+    inputs.effective_point_source = false;
+    inputs.bsr_estimate_bytes = 1024;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::Bsr3);
+    inputs.bsr_budget_bytes = 0;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::CanonicalRows);
+  }
+  SECTION("explicit options win over the layout hint and keep their meaning") {
+    inputs.spatial_layout = SpatialLayout::RegularGrid;
+    inputs.mean_leaf_occupancy = 64.0;
+    inputs.explicit_dictionary_power2_microtiles = true;
+    REQUIRE(resolve_cuda_execution_policy(inputs).dictionary_executor ==
+            CudaDictionaryExecutor::PowerOfTwoMicrotiles);
+    inputs.explicit_dictionary_target_owned = true;
+    REQUIRE(resolve_cuda_execution_policy(inputs).dictionary_executor ==
+            CudaDictionaryExecutor::TargetOwned);
+    // Explicit reduced symmetry on a general layout: dictionary with the
+    // documented source-warp default when no executor flag is set.
+    inputs.spatial_layout = SpatialLayout::General;
+    inputs.explicit_dictionary_target_owned = false;
+    inputs.explicit_dictionary_power2_microtiles = false;
+    inputs.explicit_reduced_symmetry = true;
+    const auto explicit_policy = resolve_cuda_execution_policy(inputs);
+    REQUIRE(explicit_policy.p2p_packing == CudaP2PPacking::SignedDictionary);
+    REQUIRE(!explicit_policy.dictionary_from_layout);
+    REQUIRE(explicit_policy.dictionary_executor ==
+            CudaDictionaryExecutor::SourceWarp);
+  }
+  SECTION("tuning rules are the measured Phase-3A thresholds") {
+    REQUIRE(cdfmm::cuda_policy::m2l_pairs_per_thread(StaticPrecision::Float32,
+                                                      1000000) == 16);
+    REQUIRE(cdfmm::cuda_policy::m2l_pairs_per_thread(StaticPrecision::Float32,
+                                                      1000) == 8);
+    REQUIRE(cdfmm::cuda_policy::m2l_pairs_per_thread(StaticPrecision::Float64,
+                                                      1000000) == 8);
+    REQUIRE(cdfmm::cuda_policy::translation_lanes_for_outputs(1000) == 32);
+    REQUIRE(cdfmm::cuda_policy::translation_lanes_for_outputs(1000000) == 4);
+  }
+}
+
+TEST_CASE("regular-grid layout hint selects the dictionary on CUDA plans",
+          "[cuda][policy][manual]") {
+  if (!cuda_m2l_p2p_available() || !cuda_full_available()) {
+    SUCCEED("Both CUDA FMM modes are required");
+    return;
+  }
+  const std::vector<Vec3> positions = lattice_positions();
+  const std::vector<Vec3> moments = lattice_moments(positions.size());
+  std::vector<int> identities(positions.size());
+  std::iota(identities.begin(), identities.end(), 0);
+
+  for (const int depth : {1, 2}) {
+    UniformFmmOptions cpu_options =
+        lattice_cuda_options(ExecutionBackend::CpuStatic, depth, identities);
+    UniformFmm reference(positions, positions, cpu_options);
+    const auto expected =
+        reference.evaluate(moments, OutputFlags::Field, identities);
+
+    for (const ExecutionBackend backend :
+         {ExecutionBackend::CudaPartial, ExecutionBackend::CudaFull}) {
+      CAPTURE(depth, backend);
+      UniformFmmOptions options =
+          lattice_cuda_options(backend, depth, identities);
+
+      UniformFmm general(positions, positions, options);
+      REQUIRE(general.spatial_layout() == SpatialLayout::General);
+      REQUIRE(general.p2p_execution_packing() ==
+              P2PExecutionPacking::LeafBlock);
+      require_fields_match(
+          general.evaluate(moments, OutputFlags::Field, identities), expected,
+          3.0e-11);
+
+      options.spatial_layout = SpatialLayout::RegularGrid;
+      UniformFmm regular(positions, positions, options);
+      REQUIRE(regular.spatial_layout() == SpatialLayout::RegularGrid);
+      REQUIRE(regular.p2p_execution_packing() ==
+              P2PExecutionPacking::TensorDictionary);
+      // Automatic executors: whole-warp kernels report 256 (target-owned) or
+      // 128 (power-of-two microtiles) threads per block.
+      const std::size_t automatic_threads =
+          regular.cuda_plan_statistics().p2p_threads_per_block;
+      REQUIRE((automatic_threads == 256 || automatic_threads == 128));
+      require_fields_match(
+          regular.evaluate(moments, OutputFlags::Field, identities), expected,
+          3.0e-11);
+
+      // An explicit executor request wins over the automatic choice.
+      options.cuda_dictionary_target_owned = true;
+      UniformFmm owned(positions, positions, options);
+      REQUIRE(owned.p2p_execution_packing() ==
+              P2PExecutionPacking::TensorDictionary);
+      REQUIRE(owned.cuda_plan_statistics().p2p_threads_per_block == 256);
+      options.cuda_dictionary_target_owned = false;
+      options.cuda_dictionary_power2_microtiles = true;
+      UniformFmm power2(positions, positions, options);
+      REQUIRE(power2.cuda_plan_statistics().p2p_threads_per_block == 128);
+      require_fields_match(
+          power2.evaluate(moments, OutputFlags::Field, identities), expected,
+          3.0e-11);
+
+      // The explicit reduced-symmetry option keeps its source-warp default
+      // whatever the layout says.
+      UniformFmmOptions explicit_options =
+          lattice_cuda_options(backend, depth, identities);
+      explicit_options.use_reduced_symmetry_p2p = true;
+      UniformFmm explicit_dictionary(positions, positions, explicit_options);
+      REQUIRE(explicit_dictionary.p2p_execution_packing() ==
+              P2PExecutionPacking::TensorDictionary);
+      REQUIRE(explicit_dictionary.cuda_plan_statistics().p2p_threads_per_block ==
+              (depth == 2 ? 32 : 64));
+
+      // Without a fixed identity map the dictionary is not valid: leaf block.
+      UniformFmmOptions dynamic_options = options;
+      dynamic_options.fixed_target_source_indices.reset();
+      dynamic_options.cuda_dictionary_power2_microtiles = false;
+      UniformFmm dynamic(positions, positions, dynamic_options);
+      REQUIRE(dynamic.p2p_execution_packing() == P2PExecutionPacking::LeafBlock);
+    }
+  }
+
+  // FP32 through the regular-grid dictionary agrees with the FP64 reference.
+  UniformFmmOptions fp32_options =
+      lattice_cuda_options(ExecutionBackend::CudaFull, 2, identities);
+  fp32_options.spatial_layout = SpatialLayout::RegularGrid;
+  fp32_options.precision = StaticPrecision::Float32;
+  UniformFmm fp32(positions, positions, fp32_options);
+  REQUIRE(fp32.p2p_execution_packing() == P2PExecutionPacking::TensorDictionary);
+  UniformFmmOptions fp64_options =
+      lattice_cuda_options(ExecutionBackend::CpuStatic, 2, identities);
+  UniformFmm fp64(positions, positions, fp64_options);
+  const auto expected = fp64.evaluate(moments, OutputFlags::Field, identities);
+  const auto actual = fp32.evaluate(moments, OutputFlags::Field, identities);
+  double numerator = 0.0;
+  double denominator = 0.0;
+  for (std::size_t index = 0; index < actual.size(); ++index) {
+    const Vec3 difference = actual[index].H - expected[index].H;
+    numerator += difference.x * difference.x + difference.y * difference.y +
+                 difference.z * difference.z;
+    numerator += 0.0;
+    const Vec3 reference = expected[index].H;
+    denominator += reference.x * reference.x + reference.y * reference.y +
+                   reference.z * reference.z;
+  }
+  REQUIRE(std::sqrt(numerator / denominator) < 3.0e-5);
+}
+
+TEST_CASE("regular-grid layout hint keeps finite and periodic CUDA policies",
+          "[cuda][policy][manual]") {
+  if (!cuda_m2l_p2p_available()) {
+    SUCCEED("CUDA M2L/P2P is unavailable");
+    return;
+  }
+  const std::vector<Vec3> positions = lattice_positions();
+  std::vector<int> identities(positions.size());
+  std::iota(identities.begin(), identities.end(), 0);
+
+  // Finite (prism) sources: BSR(3) exactly as for the general layout.
+  UniformFmmOptions finite;
+  finite.expansion_basis = ExpansionBasis::Cartesian;
+  finite.expansion_order = 2;
+  finite.tree.max_level = 1;
+  finite.tree.root_centre = Vec3{};
+  finite.tree.root_half_width = 1.0;
+  finite.backend = ExecutionBackend::CudaPartial;
+  finite.precision = StaticPrecision::Float64;
+  finite.source_geometry = SourceGeometry::RectangularPrism;
+  finite.source_sizes = {CuboidSize{0.1, 0.08, 0.06}};
+  finite.spatial_layout = SpatialLayout::RegularGrid;
+  finite.enable_cache = false;
+  UniformFmm finite_plan(positions, positions, finite);
+  REQUIRE(finite_plan.p2p_execution_packing() == P2PExecutionPacking::CudaBsr3);
+
+  // Periodic point sources keep the canonical rows the periodic path uses.
+  UniformFmmOptions periodic =
+      lattice_cuda_options(ExecutionBackend::CudaPartial, 2, identities);
+  periodic.periodic.enabled = true;
+  periodic.periodic.centre = Vec3{};
+  periodic.periodic.lengths = {2.0, 2.0, 2.0};
+  UniformFmmOptions periodic_general = periodic;
+  periodic.spatial_layout = SpatialLayout::RegularGrid;
+  UniformFmm periodic_regular(positions, positions, periodic);
+  UniformFmm periodic_plain(positions, positions, periodic_general);
+  REQUIRE(periodic_regular.p2p_execution_packing() ==
+          periodic_plain.p2p_execution_packing());
+  REQUIRE(periodic_regular.p2p_execution_packing() !=
+          P2PExecutionPacking::TensorDictionary);
 }
 
 TEST_CASE("CUDA BSR memory budget selects the canonical fallback",

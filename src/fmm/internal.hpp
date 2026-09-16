@@ -5,6 +5,7 @@
 #include "cdfmm/backend/cuda/m2l.hpp"
 #include "cdfmm/backend/cuda/p2p.hpp"
 
+#include "backend/cuda/execution_policy.hpp"
 #include "backend/cuda/fmm/internal.hpp"
 #include "backend/mkl/m2l.hpp"
 
@@ -49,6 +50,13 @@ class UniformFmm::CudaFullPlanOwner {
 public:
   explicit CudaFullPlanOwner(std::unique_ptr<CudaFullPlan> value);
   std::unique_ptr<CudaFullPlan> plan;
+};
+
+/** @brief Resolved CUDA execution policy of one plan (see execution_policy.hpp). */
+class UniformFmm::CudaExecutionPolicyOwner {
+public:
+  cuda_policy::CudaExecutionPolicyInputs inputs{};
+  cuda_policy::CudaExecutionPolicy policy{};
 };
 
 } // namespace cdfmm

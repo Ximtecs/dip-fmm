@@ -876,8 +876,9 @@ void UniformFmm::quantise_static_plan_to_float() {
       backend_ == ExecutionBackend::CudaFull;
   if (uses_cuda_plan) {
     p2p_compact_plan_float_ = {};
-    if (use_reduced_symmetry_p2p_ &&
-        p2p_tensor_dictionary_plan_.has_value()) {
+    // The FP64 dictionary exists only when the CUDA execution policy (an
+    // explicit option or the regular-grid hint) selected it.
+    if (p2p_tensor_dictionary_plan_.has_value()) {
       p2p_tensor_dictionary_plan_float_ =
           quantise_static_p2p_signed_tensor_dictionary_plan(
               *p2p_tensor_dictionary_plan_);

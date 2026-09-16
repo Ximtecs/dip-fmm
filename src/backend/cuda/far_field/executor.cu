@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "backend/cuda/common/error.hpp"
+#include "backend/cuda/execution_policy.hpp"
 #include "backend/cuda/far_field/entries.cuh"
 #include "backend/cuda/far_field/internal.hpp"
 #include "backend/cuda/far_field/translation.cuh"
@@ -20,15 +21,12 @@ namespace {
 
 using cuda_detail::check_cuda;
 
-// Lane groups per CSR row / translated output; see the kernel comments. M2M
-// outputs reduce over up to eight children and need a whole warp to keep
-// enough loads in flight; L2L outputs have one parent.
+// Lane group per CSR row; see the kernel comment.
 inline constexpr int entry_row_lanes = 8;
+// The two instantiated translation lane widths; the CUDA execution policy
+// (backend/cuda/execution_policy.hpp) chooses per level launch.
 inline constexpr int translation_lanes = 4;
-// Small levels are latency-bound and take a whole warp per output; large
-// levels are throughput-bound and take four lanes.
 inline constexpr int wide_translation_lanes = 32;
-inline constexpr std::size_t wide_translation_outputs = 65536;
 
 } // namespace
 
@@ -374,7 +372,8 @@ void enqueue_translation_level(const DeviceTranslation<Scalar> &translation,
   }
   const std::size_t outputs =
       static_cast<std::size_t>(target_count) * coefficient_count;
-  if (outputs <= wide_translation_outputs) {
+  if (cuda_policy::translation_lanes_for_outputs(outputs) ==
+      wide_translation_lanes) {
     launch_translation_level<Scalar, wide_translation_lanes>(
         translation, level, coefficient_count, input, output, stream,
         description);

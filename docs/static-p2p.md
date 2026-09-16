@@ -16,8 +16,11 @@ regular grid. It applies to point and finite cuboid P2P operators alike.
 Fixed point self interactions use an exact zero dictionary variant; finite
 cuboid centre interactions are retained.
 
-The dictionary is experimental and is selected only when
-`use_reduced_symmetry_p2p` is explicitly enabled. The reported plan statistics
+The dictionary is selected when `use_reduced_symmetry_p2p` is explicitly
+enabled, or automatically by the CUDA execution policy when
+`UniformFmmOptions::spatial_layout` is `SpatialLayout::RegularGrid` for a
+non-periodic point-source plan with a fixed identity map (see
+[backends](backends.md)). The reported plan statistics
 include tensor counts and canonical/dictionary persistent-memory fields for
 benchmark inspection. Its CPU executor owns disjoint target tiles with static
 OpenMP scheduling and traverses sources using register-resident SIMD
@@ -32,8 +35,8 @@ One 128-thread block owns each `(target leaf, target tile)` item, one thread
 owns one target, and source moments are staged in shared memory in batches of
 128. The dictionary kernel consumes the already-encoded point-self zero
 variant (or physical cuboid self tensor), so it has no runtime identity or
-geometry branch. Without the explicit reduced-symmetry option, the existing
-CUDA BSR/canonical selection policy is unchanged.
+geometry branch. Without the explicit reduced-symmetry option or the regular-grid layout hint,
+the CUDA leaf-block/BSR/canonical selection policy is unchanged.
 
 ## Sweep-based recommendation
 

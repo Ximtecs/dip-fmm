@@ -24,6 +24,36 @@ and P2P packing rather than leaving `Auto` ambiguous.
 | `DenseDirectPlan` | — | — | — | — | — | CPU dense exact | Host geometry tensors |
 | `CudaDirectPlan` | — | — | — | — | — | CUDA dense exact | Persistent device geometry and scratch |
 
+### CUDA execution policy
+
+Within a selected CUDA backend the implementation strategy is resolved once,
+deterministically, by `src/backend/cuda/execution_policy.{hpp,cpp}` from
+facts of the constructed plan — precision, source geometry, periodicity,
+whether a fixed identity map exists, the number of occupied target leaves and
+the mean targets per leaf, the list-1 pair and M2L translation counts, the
+BSR(3) size estimate and budget — together with the options. Nothing is
+measured at run time, and the choice never changes the mathematical result.
+
+| Situation | List-1 P2P packing | Dictionary executor |
+|---|---|---|
+| explicit `use_reduced_symmetry_p2p` (valid) | signed tensor dictionary | `cuda_dictionary_target_owned` > `cuda_dictionary_power2_microtiles` > source-warp |
+| `spatial_layout = RegularGrid`, non-periodic point sources with a fixed identity map | signed tensor dictionary | explicit executor option if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned above |
+| `General`, non-periodic point sources | dense leaf blocks (one warp per leaf pair) | — |
+| finite sources, non-periodic, BSR estimate within `cuda_p2p_bsr_max_bytes` | cuSPARSE BSR(3) | — |
+| otherwise (periodic, over budget) | canonical target rows | — |
+
+Explicit options therefore take precedence over the layout hint, and the
+hint only fills in what was left unspecified. `SpatialLayout::RegularGrid`
+is a performance hint for point lattices with repeated displacement tensors;
+on irregular coordinates the dictionary still evaluates exactly but stores one
+variant per pair and runs slower. CPU backends ignore the hint. The same
+module owns the grouped-M2L pairs-per-thread rule (16 for FP32 plans with at
+least 250k translations, otherwise 8) and the M2M/L2L lane-group rule (32
+lanes per output for levels with at most 65536 outputs, otherwise 4). The
+resolved choices appear in the initialisation summary as `spatial_layout`
+and `cuda_policy.*`. Neither the hint nor the derived packing enters the
+persistent geometry cache; the cached canonical operator is shared.
+
 `Portable` and `OneMkl` in the table are values of `StaticMatrixBackend`.
 oneMKL accelerates M2L only: interactions sharing a normalised transfer matrix
 are gathered into columns, multiplied with SGEMM or DGEMM, and scattered to

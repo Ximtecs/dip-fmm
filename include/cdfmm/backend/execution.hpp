@@ -23,4 +23,20 @@ enum class ExecutionBackend {
     CudaM2LStaticP2P = CudaM2LP2P
 };
 
+/**
+ * @brief User-supplied hint about the arrangement of the point coordinates.
+ *
+ * The hint only steers derived execution choices (which CUDA P2P packing and
+ * kernel execute the same canonical operator); it never changes the physical
+ * problem or the mathematical result. An inaccurate hint can only cost
+ * performance.
+ */
+enum class SpatialLayout {
+    /// Arbitrary, random, or irregular coordinates: the measured defaults.
+    General,
+    /// Points on a regular lattice with repeated displacement structure, so
+    /// the reduced-symmetry (signed tensor dictionary) P2P packing pays off.
+    RegularGrid
+};
+
 } // namespace cdfmm

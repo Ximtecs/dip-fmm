@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "cdfmm/backend/cpu/p2p.hpp"
+#include "fmm/internal.hpp"
 
 namespace cdfmm {
 
@@ -200,6 +201,32 @@ void UniformFmm::print_initialisation_summary(
   stream << "  executor.l2p: " << name(executors.l2p) << '\n';
   stream << "  executor.p2p: " << name(executors.p2p) << '\n';
   stream << "  p2p_packing: " << name(p2p_execution_packing_) << '\n';
+  stream << "  spatial_layout: " << cuda_policy::name(spatial_layout_) << '\n';
+  if (cuda_policy_ && (backend_ == ExecutionBackend::CudaM2LP2P ||
+                       backend_ == ExecutionBackend::CudaFull)) {
+    const cuda_policy::CudaExecutionPolicy &policy = cuda_policy_->policy;
+    const cuda_policy::CudaExecutionPolicyInputs &inputs =
+        cuda_policy_->inputs;
+    stream << "  cuda_policy.p2p_packing: "
+           << cuda_policy::name(policy.p2p_packing) << '\n';
+    if (policy.p2p_packing == cuda_policy::CudaP2PPacking::SignedDictionary) {
+      stream << "  cuda_policy.dictionary_executor: "
+             << cuda_policy::name(policy.dictionary_executor)
+             << (policy.dictionary_from_layout ? " (from spatial_layout)"
+                                               : " (explicit)")
+             << '\n';
+    }
+    stream << "  cuda_policy.mean_leaf_occupancy: "
+           << inputs.mean_leaf_occupancy << '\n';
+    stream << "  cuda_policy.p2p_pairs: " << inputs.p2p_pair_count << '\n';
+    stream << "  cuda_policy.m2l_translations: "
+           << inputs.m2l_translation_count << '\n';
+    stream << "  cuda_policy.m2l_pairs_per_thread: "
+           << policy.m2l_pairs_per_thread << '\n';
+    stream << "  cuda_policy.translation_lanes: " << policy.translation_wide_lanes
+           << " (<= " << policy.translation_wide_outputs << " outputs), "
+           << policy.translation_lanes << " (larger levels)" << '\n';
+  }
   stream << "  p2p.signed_target_tile_size: "
          << signed_p2p_target_tile_size_ << '\n';
   stream << "  p2p.signed_simd_path: " << static_p2p_signed_simd_path()

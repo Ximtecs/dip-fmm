@@ -92,6 +92,9 @@ StaticExecutionPlan UniformFmm::execution_plan() const noexcept {
 P2PExecutionPacking UniformFmm::p2p_execution_packing() const noexcept {
   return p2p_execution_packing_;
 }
+SpatialLayout UniformFmm::spatial_layout() const noexcept {
+  return spatial_layout_;
+}
 const CudaPlanStatistics &UniformFmm::cuda_plan_statistics() const {
   if (cuda_full_plan_) {
     return cuda_full_plan_->plan->statistics();
