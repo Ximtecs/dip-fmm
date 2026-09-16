@@ -10,6 +10,7 @@ add_executable(cdfmm_tests
   test_cuda_p2p_stub.cpp
   test_multi_index.cpp
   test_p2p.cpp
+  test_p2p_geometry_matrix.cpp
   test_taylor_jet.cpp
   test_laplace_derivatives.cpp
   test_p2m_m2l_l2p.cpp
