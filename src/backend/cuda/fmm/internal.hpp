@@ -67,6 +67,8 @@ struct CudaFullPlanData {
   bool p2p_dictionary_target_owned{false};
   /** @brief Selects power-of-two target microtiles for dictionary P2P. */
   bool p2p_dictionary_power2_microtiles{false};
+  /** @brief Creates the far-field stream at the greatest stream priority. */
+  bool far_field_stream_priority{false};
   bool has_fixed_self_indices{false};
 };
 
@@ -97,6 +99,8 @@ struct FloatCudaFullPlanData {
   bool p2p_dictionary_target_owned{false};
   /** @brief Selects power-of-two target microtiles for dictionary P2P. */
   bool p2p_dictionary_power2_microtiles{false};
+  /** @brief Creates the far-field stream at the greatest stream priority. */
+  bool far_field_stream_priority{false};
   bool has_fixed_self_indices{false};
 };
 

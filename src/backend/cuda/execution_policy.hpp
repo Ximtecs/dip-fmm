@@ -66,6 +66,10 @@ struct CudaExecutionPolicy {
   bool dictionary_from_layout{false};
   /// Pairs per thread of the grouped M2L kernel.
   int m2l_pairs_per_thread{8};
+  /// Create the device-resident backend's far-field stream at the greatest
+  /// stream priority so its short latency-bound kernels are scheduled ahead
+  /// of the concurrent P2P kernel (see `far_field_stream_priority`).
+  bool far_field_stream_priority{true};
   /// Lane group per M2M/L2L output for levels with at most `translation_wide_outputs`.
   int translation_wide_lanes{32};
   /// Lane group per M2M/L2L output for larger levels.
@@ -94,6 +98,22 @@ explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
 
 /** @brief Lane group per translated output for one M2M/L2L level launch. */
 [[nodiscard]] int translation_lanes_for_outputs(std::size_t outputs);
+
+/**
+ * @brief Whether the full backend's far-field stream should outrank its P2P
+ * stream, from the estimated device costs of the two branches.
+ *
+ * Measured on the RTX 5090 (Phase-3 P2P unification): with the far field
+ * prioritised, evaluations were 4-10 % faster wherever the far field is
+ * shorter than a few times the P2P kernel (its many short kernels no longer
+ * stretch behind the SM-saturating P2P kernel, which absorbs the delay), but
+ * 3 % slower when a deep tree makes the far field several times longer than
+ * P2P (the small P2P kernel is then starved to the very end instead of hiding
+ * inside the far field). The rule keeps equal priorities in that regime.
+ */
+[[nodiscard]] bool far_field_stream_priority(std::size_t p2p_pair_count,
+                                             std::size_t m2l_translation_count,
+                                             int coefficient_count) noexcept;
 
 /** @brief Leaf occupancy below which the power-of-two microtile executor is chosen. */
 [[nodiscard]] double dictionary_microtile_occupancy_limit();

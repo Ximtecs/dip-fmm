@@ -1128,6 +1128,7 @@ void UniformFmm::build_cuda_full_plan() {
       data.has_fixed_self_indices = true;
       data.fixed_self_indices = fixed_sorted_self_indices_;
     }
+    data.far_field_stream_priority = policy.far_field_stream_priority;
     if (policy.p2p_packing == CudaP2PPacking::SignedDictionary) {
       data.use_p2p_dictionary = true;
       data.p2p_dictionary_target_owned = target_owned;
@@ -1228,6 +1229,7 @@ void UniformFmm::build_cuda_full_plan() {
     data.has_fixed_self_indices = true;
     data.fixed_self_indices = fixed_sorted_self_indices_;
   }
+  data.far_field_stream_priority = policy.far_field_stream_priority;
   if (policy.p2p_packing == CudaP2PPacking::SignedDictionary) {
     data.use_p2p_dictionary = true;
     data.p2p_dictionary_target_owned = target_owned;

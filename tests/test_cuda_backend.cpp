@@ -955,6 +955,23 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
     REQUIRE(explicit_policy.dictionary_executor ==
             CudaDictionaryExecutor::SourceWarp);
   }
+  SECTION("the far-field stream outranks P2P unless the far field dominates") {
+    // M-like plan (640k translations of 49 coefficients, 16.3M pairs):
+    // far field about 340 us versus P2P about 290 us -> prioritise.
+    REQUIRE(cdfmm::cuda_policy::far_field_stream_priority(16300000, 640000, 49));
+    // 128 points per leaf: P2P dominates outright.
+    REQUIRE(cdfmm::cuda_policy::far_field_stream_priority(192000000, 40000, 49));
+    // Deep tree (200k points, depth 5): 4.9M translations, 35.8M pairs ->
+    // the far field is more than three times the P2P kernel -> equal.
+    REQUIRE(!cdfmm::cuda_policy::far_field_stream_priority(35800000, 4900000, 49));
+    inputs.p2p_pair_count = 35800000;
+    inputs.m2l_translation_count = 4900000;
+    inputs.coefficient_count = 49;
+    REQUIRE(!resolve_cuda_execution_policy(inputs).far_field_stream_priority);
+    inputs.p2p_pair_count = 192000000;
+    inputs.m2l_translation_count = 40000;
+    REQUIRE(resolve_cuda_execution_policy(inputs).far_field_stream_priority);
+  }
   SECTION("tuning rules are the measured Phase-3A thresholds") {
     REQUIRE(cdfmm::cuda_policy::m2l_pairs_per_thread(StaticPrecision::Float32,
                                                       1000000) == 16);

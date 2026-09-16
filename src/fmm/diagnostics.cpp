@@ -241,6 +241,8 @@ void UniformFmm::print_initialisation_summary(
            << inputs.m2l_translation_count << '\n';
     stream << "  cuda_policy.m2l_pairs_per_thread: "
            << policy.m2l_pairs_per_thread << '\n';
+    stream << "  cuda_policy.far_field_stream_priority: "
+           << policy.far_field_stream_priority << '\n';
     stream << "  cuda_policy.translation_lanes: " << policy.translation_wide_lanes
            << " (<= " << policy.translation_wide_outputs << " outputs), "
            << policy.translation_lanes << " (larger levels)" << '\n';

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "backend/cuda/fmm/internal.hpp"
+#include "backend/cuda/common/stream.hpp"
 #include "profile.hpp"
 #include "cdfmm/backend/cuda/m2l.hpp"
 #include "backend/cuda/common/error.hpp"
@@ -174,9 +175,14 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
              ? data.p2p_bsr.source_indices.size()
              : (data.use_p2p_leaf ? data.p2p_leaf.tensors[0].size()
                                   : data.p2p.blocks.size()));
-  check_cuda(cudaStreamCreateWithFlags(&plan.far_field_stream,
-                                       cudaStreamNonBlocking),
-             "create full FMM far-field stream");
+  if (data.far_field_stream_priority) {
+    cuda_detail::create_priority_stream(plan.far_field_stream,
+                                        "create full FMM far-field stream");
+  } else {
+    check_cuda(cudaStreamCreateWithFlags(&plan.far_field_stream,
+                                         cudaStreamNonBlocking),
+               "create full FMM far-field stream");
+  }
   check_cuda(cudaStreamCreateWithFlags(&plan.near_field_stream,
                                        cudaStreamNonBlocking),
              "create full FMM near-field stream");
@@ -393,9 +399,14 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
              : (data.use_p2p_leaf ? data.p2p_leaf.tensors[0].size()
                                   : data.p2p.blocks.size()));
 
-  check_cuda(cudaStreamCreateWithFlags(&plan.far_field_stream,
-                                       cudaStreamNonBlocking),
-             "create FP32 full FMM far-field stream");
+  if (data.far_field_stream_priority) {
+    cuda_detail::create_priority_stream(
+        plan.far_field_stream, "create FP32 full FMM far-field stream");
+  } else {
+    check_cuda(cudaStreamCreateWithFlags(&plan.far_field_stream,
+                                         cudaStreamNonBlocking),
+               "create FP32 full FMM far-field stream");
+  }
   check_cuda(cudaStreamCreateWithFlags(&plan.near_field_stream,
                                        cudaStreamNonBlocking),
              "create FP32 full FMM near-field stream");

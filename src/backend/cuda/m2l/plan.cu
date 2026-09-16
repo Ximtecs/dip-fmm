@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cdfmm/backend/cuda/m2l.hpp"
+#include "backend/cuda/common/stream.hpp"
 #include "backend/cuda/m2l/internal.hpp"
 #include "backend/cuda/common/error.hpp"
 #include "backend/cuda/execution_policy.hpp"
@@ -791,8 +792,8 @@ CudaM2LPlan::CudaM2LPlan(const FloatStaticM2LPlan &data)
                             std::max(coefficient_values * sizeof(float),
                                      std::size_t{1})),
              "allocate pinned FP32 M2L locals");
-  check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
-             "create canonical FP32 M2L stream");
+  cuda_detail::create_priority_stream(plan.stream,
+                                      "create canonical FP32 M2L stream");
   check_cuda(cudaEventCreate(&plan.start), "create M2L event");
   check_cuda(cudaEventCreate(&plan.h2d), "create M2L event");
   check_cuda(cudaEventCreate(&plan.scale), "create M2L event");
@@ -834,8 +835,8 @@ CudaM2LPlan::CudaM2LPlan(const StaticM2LPlan& data)
                             std::max(coefficient_values * sizeof(double),
                                      std::size_t{1})),
              "allocate pinned M2L locals");
-  check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
-             "create canonical M2L stream");
+  cuda_detail::create_priority_stream(plan.stream,
+                                      "create canonical M2L stream");
   check_cuda(cudaEventCreate(&plan.start), "create M2L event");
   check_cuda(cudaEventCreate(&plan.h2d), "create M2L event");
   check_cuda(cudaEventCreate(&plan.scale), "create M2L event");

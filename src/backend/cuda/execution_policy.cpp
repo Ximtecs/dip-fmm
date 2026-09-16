@@ -32,7 +32,28 @@ constexpr int translation_narrow_lanes = 4;
 constexpr double dictionary_microtile_occupancy = 48.0;
 constexpr double dictionary_source_warp_occupancy = 72.0;
 
+// Device-cost estimates behind the stream-priority rule: about 18 ps per
+// list-1 pair for the leaf-block kernel (3.95 ms for 192M pairs) and 0.22 ps
+// per M2L multiply-add (translations x coefficient_count^2; 2.6 ms for 4.9M
+// translations of 49 coefficients), both from the FP32 measurements of the
+// Phase-3 P2P unification. Only their ratio matters.
+constexpr double p2p_picoseconds_per_pair = 18.0;
+constexpr double m2l_picoseconds_per_flop = 0.22;
+constexpr double far_field_dominance_ratio = 3.0;
+
 } // namespace
+
+bool far_field_stream_priority(const std::size_t p2p_pair_count,
+                               const std::size_t m2l_translation_count,
+                               const int coefficient_count) noexcept {
+  const double p2p_picoseconds =
+      p2p_picoseconds_per_pair * static_cast<double>(p2p_pair_count);
+  const double far_field_picoseconds =
+      m2l_picoseconds_per_flop * static_cast<double>(m2l_translation_count) *
+      static_cast<double>(coefficient_count) *
+      static_cast<double>(coefficient_count);
+  return far_field_picoseconds < far_field_dominance_ratio * p2p_picoseconds;
+}
 
 int m2l_pairs_per_thread(const StaticPrecision precision,
                          const std::size_t m2l_translation_count) {
@@ -95,6 +116,9 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
   policy.translation_wide_lanes = translation_wide_lanes;
   policy.translation_lanes = translation_narrow_lanes;
   policy.translation_wide_outputs = translation_wide_outputs;
+  policy.far_field_stream_priority = far_field_stream_priority(
+      inputs.p2p_pair_count, inputs.m2l_translation_count,
+      inputs.coefficient_count);
 
   if (inputs.explicit_packing.has_value()) {
     // An explicit request is honoured verbatim; the caller has already
