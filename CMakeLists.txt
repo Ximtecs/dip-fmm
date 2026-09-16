@@ -3,7 +3,11 @@ cmake_minimum_required(VERSION 3.20)
 # oneMKL's CMake package uses the detected C compiler family to expose the
 # matching OpenMP threading layer.  Enable C even though cdfmm itself is C++ so
 # GNU builds can select MKL_THREADING=gnu_thread.
-project(cartesian_dipole_fmm LANGUAGES C CXX)
+#
+# The project version matches the released Python package version
+# (`pyproject.toml`); it feeds the installed CMake package version file and is
+# not itself a v0.2 release marker.
+project(cartesian_dipole_fmm VERSION 0.1.0 LANGUAGES C CXX)
 
 option(CDFMM_BUILD_TESTS "Build C++ tests" ON)
 option(CDFMM_BUILD_EXAMPLES "Build examples" ON)
@@ -241,6 +245,7 @@ cdfmm_enable_ipo(cdfmm_core)
 # The shared integration boundary contains only plain C symbols.  Its C++
 # implementation and all backend resources remain private behind an opaque plan.
 add_library(cdfmm_c SHARED src/bindings/c_api.cpp)
+add_library(cdfmm::cdfmm_c ALIAS cdfmm_c)
 target_link_libraries(cdfmm_c PRIVATE cdfmm_core)
 target_include_directories(cdfmm_c PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -331,6 +336,7 @@ endif()
 
 include(GNUInstallDirs)
 install(TARGETS cdfmm_c
+  EXPORT cdfmm_c-targets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
@@ -345,6 +351,29 @@ install(DIRECTORY include/cdfmm/
   PATTERN "AGENTS.md" EXCLUDE)
 install(FILES fortran/cdfmm_fortran.f90 DESTINATION ${CMAKE_INSTALL_DATADIR}/cdfmm/fortran)
 
+# Minimal downstream CMake package: `find_package(cdfmm CONFIG)` followed by
+# `target_link_libraries(consumer PRIVATE cdfmm::cdfmm_c)`. `cdfmm_c` is the
+# only installed target, so it is the only one exported; `cdfmm_core` is a
+# private static implementation library that is never installed.
+include(CMakePackageConfigHelpers)
+set(CDFMM_PACKAGE_CONFIG_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/cdfmm")
+install(EXPORT cdfmm_c-targets
+  FILE cdfmm_c-targets.cmake
+  NAMESPACE cdfmm::
+  DESTINATION "${CDFMM_PACKAGE_CONFIG_DESTINATION}")
+configure_package_config_file(
+  cmake/cdfmmConfig.cmake.in
+  "${CMAKE_CURRENT_BINARY_DIR}/cdfmmConfig.cmake"
+  INSTALL_DESTINATION "${CDFMM_PACKAGE_CONFIG_DESTINATION}")
+write_basic_package_version_file(
+  "${CMAKE_CURRENT_BINARY_DIR}/cdfmmConfigVersion.cmake"
+  VERSION ${PROJECT_VERSION}
+  COMPATIBILITY SameMajorVersion)
+install(FILES
+  "${CMAKE_CURRENT_BINARY_DIR}/cdfmmConfig.cmake"
+  "${CMAKE_CURRENT_BINARY_DIR}/cdfmmConfigVersion.cmake"
+  DESTINATION "${CDFMM_PACKAGE_CONFIG_DESTINATION}")
+
 # A normal rebuild must not require users to remove a previous installation by
 # hand. Keep this target deliberately narrower than the install prefix: Conda,
 # CUDA, oneMKL, Jupyter, unrelated headers, and persistent caches are untouched.
@@ -353,7 +382,8 @@ set(CDFMM_CLEAN_INSTALL_COMMANDS
           "${CMAKE_INSTALL_FULL_LIBDIR}/$<TARGET_FILE_NAME:cdfmm_c>"
   COMMAND ${CMAKE_COMMAND} -E rm -rf
           "${CMAKE_INSTALL_FULL_INCLUDEDIR}/cdfmm"
-          "${CMAKE_INSTALL_FULL_DATADIR}/cdfmm")
+          "${CMAKE_INSTALL_FULL_DATADIR}/cdfmm"
+          "${CMAKE_INSTALL_PREFIX}/${CDFMM_PACKAGE_CONFIG_DESTINATION}")
 if(CDFMM_BUILD_PYTHON)
   list(APPEND CDFMM_CLEAN_INSTALL_COMMANDS
     COMMAND ${CMAKE_COMMAND} -E rm -f

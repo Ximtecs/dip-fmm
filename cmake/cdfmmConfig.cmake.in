@@ -1,0 +1,14 @@
+@PACKAGE_INIT@
+
+# `cdfmm_c` is the only installed/exported target: a shared library exposing
+# the stable, unconditional C ABI (`include/cdfmm/c_api.h`). Its private
+# static implementation library, `cdfmm_core`, resolves OpenMP, oneMKL, and
+# CUDA at its own build/link step; none of those are part of `cdfmm_c`'s
+# public link interface, so this file deliberately calls no
+# `find_dependency(...)`. A downstream consumer only needs the installed
+# headers and `libcdfmm_c` itself; the CUDA/oneMKL runtime shared libraries
+# it may depend on at load time are an ordinary transitive shared-library
+# runtime requirement, not a CMake package dependency.
+include("${CMAKE_CURRENT_LIST_DIR}/cdfmm_c-targets.cmake")
+
+check_required_components(cdfmm)

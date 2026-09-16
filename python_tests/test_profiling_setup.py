@@ -19,7 +19,7 @@ def test_notebook_preset_supports_gnu_mkl_without_intel_header_leakage():
     cuda = configure_presets["cuda"]
     notebooks = configure_presets["notebooks"]
 
-    assert "project(cartesian_dipole_fmm LANGUAGES C CXX)" in cmake_source
+    assert "project(cartesian_dipole_fmm VERSION 0.1.0 LANGUAGES C CXX)" in cmake_source
     assert notebooks["cacheVariables"]["MKL_THREADING"] == "gnu_thread"
     assert cuda["environment"]["CPATH"] == ""
     assert cuda["environment"]["CPLUS_INCLUDE_PATH"] == ""
