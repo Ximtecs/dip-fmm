@@ -27,6 +27,12 @@
 
 namespace cdfmm {
 
+namespace cuda_policy {
+// Internal execution-policy inputs (src/backend/cuda/execution_policy.hpp);
+// only named here so option validation can annotate them privately.
+struct CudaExecutionPolicyInputs;
+} // namespace cuda_policy
+
 /** @brief Implemented M2L strategy for real spherical expansions. */
 enum class SphericalM2LBackend {
     /// Reusable dense real matrix for each integer displacement class.
@@ -45,7 +51,17 @@ enum class StaticMatrixBackend {
 /** @brief Executor selected for one operator in the shared static traversal. */
 enum class StaticOperatorExecutor { Reference, Portable, OneMkl, Cuda };
 
-/** @brief Storage packing selected for repeated list1 P2P execution. */
+/**
+ * @brief Storage packing selected for repeated list1 P2P execution.
+ *
+ * Every value except `PointGeometry` names a stored-tensor executor: it
+ * consumes the canonical pair tensors and their identity metadata and is
+ * independent of the source/target geometry that produced them.
+ * `PointGeometry` is the one deliberate exception, a fused geometry
+ * evaluation for point sources and point targets. `Auto` is a request value
+ * only (see `UniformFmmOptions::p2p_packing`); a constructed plan always
+ * reports the concrete packing it executes.
+ */
 enum class P2PExecutionPacking {
   Reference,
   CanonicalAos,
@@ -56,7 +72,9 @@ enum class P2PExecutionPacking {
   LeafBlock,
   /// CPU point-source pairs recomputed from the sorted positions (no stored
   /// tensors): the canonical list-1 records are swept per target leaf.
-  PointGeometry
+  PointGeometry,
+  /// Request value: let the backend's execution policy choose.
+  Auto
 };
 
 /**
@@ -161,6 +179,22 @@ struct UniformFmmOptions {
    * intentional rather than selected by an implicit policy.
    */
     bool use_reduced_symmetry_p2p{false};
+
+    /**
+     * @brief Explicit list-1 P2P execution packing.
+     *
+     * `Auto` keeps the backend policy (see docs/backends.md). Any other value
+     * is honoured verbatim and takes precedence over `spatial_layout`,
+     * `use_reduced_symmetry_p2p` and the BSR memory budget, so tests and
+     * benchmarks can execute one canonical operator with a chosen packing.
+     * The result is identical for every packing the plan can execute. A
+     * packing the selected backend or plan cannot execute (for example
+     * `PointGeometry` with finite near-field geometry, `LeafBlock` on a CPU
+     * backend, or `CudaBsr3` for point sources without
+     * `fixed_target_source_indices`) throws `std::invalid_argument` naming
+     * the reason at construction.
+     */
+    P2PExecutionPacking p2p_packing{P2PExecutionPacking::Auto};
 
     /**
      * @brief Explicitly selects the global one-thread-per-target CUDA
@@ -344,6 +378,8 @@ public:
   [[nodiscard]] StaticExecutionPlan execution_plan() const noexcept;
   /// @brief Returns the resolved P2P storage packing used for evaluation.
   [[nodiscard]] P2PExecutionPacking p2p_execution_packing() const noexcept;
+  /// @brief Returns the packing requested at construction (`Auto` by default).
+  [[nodiscard]] P2PExecutionPacking requested_p2p_packing() const noexcept;
   /// @brief Returns the spatial layout hint the plan was constructed with.
   [[nodiscard]] SpatialLayout spatial_layout() const noexcept;
   /// @brief Returns CUDA traffic and persistent-allocation diagnostics.
@@ -435,11 +471,14 @@ private:
   void build_backend_packing();
   void build_cpu_far_field_packing();
   [[nodiscard]] bool selects_point_geometry_p2p() const noexcept;
+  [[nodiscard]] P2PExecutionPacking resolve_cpu_p2p_packing() const noexcept;
   void quantise_static_plan_to_float();
   void initialise_source_geometry(const UniformFmmOptions &options);
   void initialise_target_geometry(const UniformFmmOptions &options);
   void initialise_p2p_policy(const UniformFmmOptions &options);
   void resolve_cuda_execution_policy();
+  void apply_p2p_packing_request(
+      cuda_policy::CudaExecutionPolicyInputs &inputs) const;
   void build_reduced_symmetry_p2p_packing();
   void print_initialisation_summary(const UniformFmmOptions &options) const;
   void build_cuda_p2p_plan();
@@ -539,6 +578,7 @@ private:
   std::vector<CuboidSize> sorted_target_sizes_{};
   std::vector<Tetrahedron> sorted_target_tetrahedra_{};
   P2PExecutionPacking p2p_execution_packing_{P2PExecutionPacking::Reference};
+  P2PExecutionPacking requested_p2p_packing_{P2PExecutionPacking::Auto};
   std::size_t cuda_p2p_bsr_max_bytes_{20ULL * 1024ULL * 1024ULL * 1024ULL};
   bool use_reduced_symmetry_p2p_{false};
   bool cuda_dictionary_target_owned_{false};

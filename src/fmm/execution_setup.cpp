@@ -75,6 +75,11 @@ cuda_policy::CudaExecutionPolicy effective_cuda_policy(
       dictionary_plan_available) {
     return policy;
   }
+  if (inputs.explicit_packing.has_value()) {
+    throw std::runtime_error(
+        "the explicitly requested TensorDictionary P2P packing could not be "
+        "derived for this plan");
+  }
   cuda_policy::CudaExecutionPolicyInputs fallback = inputs;
   fallback.explicit_reduced_symmetry = false;
   fallback.spatial_layout = SpatialLayout::General;
@@ -337,6 +342,7 @@ void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
   cuda_p2p_bsr_max_bytes_ = options.cuda_p2p_bsr_max_bytes;
   spatial_layout_ = options.spatial_layout;
   use_reduced_symmetry_p2p_ = options.use_reduced_symmetry_p2p;
+  requested_p2p_packing_ = options.p2p_packing;
   cuda_dictionary_target_owned_ =
       options.cuda_dictionary_target_owned;
   cuda_dictionary_power2_microtiles_ =
@@ -424,9 +430,117 @@ void UniformFmm::resolve_cuda_execution_policy() {
                sizeof(int)) +
       (inputs.target_count * 2 + 1) * sizeof(int);
   inputs.bsr_budget_bytes = cuda_p2p_bsr_max_bytes_;
+  apply_p2p_packing_request(inputs);
   cuda_policy_ = std::make_unique<CudaExecutionPolicyOwner>();
   cuda_policy_->inputs = inputs;
   cuda_policy_->policy = cuda_policy::resolve_cuda_execution_policy(inputs);
+}
+
+void UniformFmm::apply_p2p_packing_request(
+    cuda_policy::CudaExecutionPolicyInputs &inputs) const {
+  // An explicit packing is validated once, here, against plan facts rather
+  // than geometry names: stored-tensor packings only care about periodic
+  // image records and how identity handling reaches the executor.
+  using cuda_policy::CudaP2PPacking;
+  const P2PExecutionPacking requested = requested_p2p_packing_;
+  if (requested == P2PExecutionPacking::Auto) {
+    return;
+  }
+  const auto reject = [&](const std::string &reason) {
+    throw std::invalid_argument(
+        std::string("UniformFmmOptions::p2p_packing = ") +
+        std::string(detail::p2p_packing_name(requested)) +
+        " cannot execute this plan on backend " +
+        std::string(detail::execution_backend_name(backend_)) + ": " +
+        reason);
+  };
+  const bool effective_point_target =
+      target_geometry_ == TargetGeometry::Point ||
+      near_field_target_model_ == TargetModel::Point;
+
+  if (backend_ == ExecutionBackend::CpuReference) {
+    if (requested != P2PExecutionPacking::Reference) {
+      reject("CpuReference evaluates the mathematical reference list-1 "
+             "kernel only; select CpuStatic or a CUDA backend for stored-"
+             "tensor packings");
+    }
+    return;
+  }
+  if (requested == P2PExecutionPacking::Reference) {
+    reject("Reference is the CpuReference backend's executor");
+  }
+
+  const bool cuda_backend = inputs.cuda_backend;
+  if (!cuda_backend) {
+    switch (requested) {
+    case P2PExecutionPacking::CanonicalAos:
+    case P2PExecutionPacking::ParticleRowSoa:
+      return;
+    case P2PExecutionPacking::PointGeometry:
+      if (!inputs.effective_point_source || !effective_point_target) {
+        reject("PointGeometry recomputes point-dipole pairs from the "
+               "positions; finite near-field sources or targets need their "
+               "stored pair tensors (ParticleRowSoa, CanonicalAos or "
+               "TensorDictionary)");
+      }
+      if (inputs.periodic) {
+        reject("PointGeometry is enabled for free-space plans only; "
+               "periodic plans use ParticleRowSoa");
+      }
+      return;
+    case P2PExecutionPacking::TensorDictionary: {
+      const char *reason = cuda_policy::explicit_packing_rejection(
+          inputs, CudaP2PPacking::SignedDictionary);
+      if (reason != nullptr) {
+        reject(reason);
+      }
+      inputs.explicit_reduced_symmetry = true;
+      return;
+    }
+    case P2PExecutionPacking::LeafBlock:
+    case P2PExecutionPacking::CudaBsr3:
+      reject("LeafBlock and CudaBsr3 are CUDA execution packings; CpuStatic "
+             "executes CanonicalAos, ParticleRowSoa, TensorDictionary or "
+             "PointGeometry");
+    default:
+      break;
+    }
+    return;
+  }
+
+  std::optional<CudaP2PPacking> packing;
+  switch (requested) {
+  case P2PExecutionPacking::CanonicalAos:
+    packing = CudaP2PPacking::CanonicalRows;
+    break;
+  case P2PExecutionPacking::LeafBlock:
+    packing = CudaP2PPacking::LeafBlock;
+    break;
+  case P2PExecutionPacking::CudaBsr3:
+    packing = CudaP2PPacking::Bsr3;
+    break;
+  case P2PExecutionPacking::TensorDictionary:
+    packing = CudaP2PPacking::SignedDictionary;
+    break;
+  case P2PExecutionPacking::ParticleRowSoa:
+    reject("ParticleRowSoa is the CPU row packing; CUDA backends execute "
+           "CanonicalAos, LeafBlock, CudaBsr3 or TensorDictionary");
+  case P2PExecutionPacking::PointGeometry:
+    reject("PointGeometry is the CPU position-based executor; CUDA backends "
+           "execute stored tensors (CanonicalAos, LeafBlock, CudaBsr3 or "
+           "TensorDictionary)");
+  default:
+    break;
+  }
+  const char *reason =
+      cuda_policy::explicit_packing_rejection(inputs, *packing);
+  if (reason != nullptr) {
+    reject(reason);
+  }
+  inputs.explicit_packing = packing;
+  if (*packing == CudaP2PPacking::SignedDictionary) {
+    inputs.explicit_reduced_symmetry = true;
+  }
 }
 
 void UniformFmm::build_reduced_symmetry_p2p_packing() {
@@ -707,9 +821,14 @@ void UniformFmm::build_backend_packing() {
 }
 
 bool UniformFmm::selects_point_geometry_p2p() const noexcept {
-  // Point sources and point targets, no periodic images and no explicit
-  // dictionary request: every list-1 pair is the point-dipole formula of two
-  // resident positions, so recomputing it is cheaper than streaming tensors.
+  // Automatic policy: point sources and point targets, no periodic images and
+  // no dictionary request. Every list-1 pair is then the point-dipole formula
+  // of two resident positions, so recomputing it is cheaper than streaming
+  // tensors. An explicit request bypasses this rule (see
+  // resolve_cpu_p2p_packing).
+  if (requested_p2p_packing_ != P2PExecutionPacking::Auto) {
+    return requested_p2p_packing_ == P2PExecutionPacking::PointGeometry;
+  }
   const bool effective_point_source =
       source_geometry_ == SourceGeometry::PointDipole ||
       near_field_source_model_ == SourceModel::PointDipole;
@@ -718,6 +837,25 @@ bool UniformFmm::selects_point_geometry_p2p() const noexcept {
       near_field_target_model_ == TargetModel::Point;
   return effective_point_source && effective_point_target &&
          !periodic_.enabled && !use_reduced_symmetry_p2p_;
+}
+
+P2PExecutionPacking UniformFmm::resolve_cpu_p2p_packing() const noexcept {
+  // The dictionary exists only when it was selected (explicitly or through
+  // the reduced-symmetry option) and could be derived; it then wins.
+  if (p2p_tensor_dictionary_plan_.has_value() ||
+      p2p_tensor_dictionary_plan_float_.has_value()) {
+    return P2PExecutionPacking::TensorDictionary;
+  }
+  switch (requested_p2p_packing_) {
+  case P2PExecutionPacking::CanonicalAos:
+  case P2PExecutionPacking::ParticleRowSoa:
+  case P2PExecutionPacking::PointGeometry:
+    return requested_p2p_packing_;
+  default:
+    break;
+  }
+  return selects_point_geometry_p2p() ? P2PExecutionPacking::PointGeometry
+                                      : P2PExecutionPacking::ParticleRowSoa;
 }
 
 void UniformFmm::build_cpu_far_field_packing() {

@@ -1153,6 +1153,113 @@ TEST_CASE("CUDA tensor packings retain finite self fields under an identity map"
   }
 }
 
+TEST_CASE("explicit P2P packing requests are honoured by both CUDA backends",
+          "[cuda][manual][packing]") {
+  if (!cuda_m2l_p2p_available() || !cuda_full_available()) {
+    SUCCEED("CUDA backends are unavailable");
+    return;
+  }
+  std::vector<Vec3> positions;
+  for (int index = 0; index < 96; ++index) {
+    positions.push_back(
+        {-0.9 + 1.8 * static_cast<double>((index * 17) % 29) / 28.0,
+         -0.9 + 1.8 * static_cast<double>((index * 11) % 31) / 30.0,
+         -0.9 + 1.8 * static_cast<double>((index * 7) % 37) / 36.0});
+  }
+  std::vector<Vec3> moments(positions.size());
+  for (std::size_t index = 0; index < moments.size(); ++index) {
+    const double value = static_cast<double>(index);
+    moments[index] = {std::sin(value), std::cos(1.3 * value),
+                      std::sin(0.7 * value)};
+  }
+  std::vector<int> identities(positions.size());
+  std::iota(identities.begin(), identities.end(), 0);
+
+  const auto require_close = [&](const std::vector<PotentialField> &actual,
+                                 const std::vector<PotentialField> &expected,
+                                 const double tolerance) {
+    double scale = 0.0;
+    for (const PotentialField &value : expected) {
+      scale = std::max({scale, std::abs(value.H.x), std::abs(value.H.y),
+                        std::abs(value.H.z)});
+    }
+    for (std::size_t index = 0; index < actual.size(); ++index) {
+      REQUIRE(std::abs(actual[index].H.x - expected[index].H.x) <=
+              tolerance * scale);
+      REQUIRE(std::abs(actual[index].H.y - expected[index].H.y) <=
+              tolerance * scale);
+      REQUIRE(std::abs(actual[index].H.z - expected[index].H.z) <=
+              tolerance * scale);
+    }
+  };
+
+  for (const SourceGeometry geometry :
+       {SourceGeometry::PointDipole, SourceGeometry::RectangularPrism}) {
+    UniformFmmOptions options;
+    options.backend = ExecutionBackend::CpuStatic;
+    options.precision = StaticPrecision::Float64;
+    options.expansion_order = 3;
+    options.tree.max_level = 2;
+    options.enable_cache = false;
+    options.source_geometry = geometry;
+    if (geometry == SourceGeometry::RectangularPrism) {
+      options.source_sizes = {RectangularPrism{0.04, 0.03, 0.05}};
+      options.far_field_source_model = SourceModel::PointDipole;
+    } else {
+      options.fixed_target_source_indices = identities;
+    }
+    UniformFmm reference(positions, positions, options);
+    const auto expected = reference.evaluate(moments, OutputFlags::Field);
+
+    for (const ExecutionBackend backend :
+         {ExecutionBackend::CudaPartial, ExecutionBackend::CudaFull}) {
+      for (const P2PExecutionPacking packing :
+           {P2PExecutionPacking::CanonicalAos, P2PExecutionPacking::LeafBlock,
+            P2PExecutionPacking::CudaBsr3,
+            P2PExecutionPacking::TensorDictionary}) {
+        options.backend = backend;
+        options.p2p_packing = packing;
+        options.cuda_p2p_bsr_max_bytes = 0; // explicit BSR ignores the budget
+        UniformFmm forced(positions, positions, options);
+        REQUIRE(forced.requested_p2p_packing() == packing);
+        REQUIRE(forced.p2p_execution_packing() == packing);
+        require_close(forced.evaluate(moments, OutputFlags::Field), expected,
+                      1.0e-11);
+      }
+    }
+  }
+
+  // CPU-only packings and identity-dependent packings without a fixed map
+  // are rejected with the reason.
+  const auto require_rejection = [&](const UniformFmmOptions &options,
+                                     const char *fragment) {
+    try {
+      UniformFmm fmm(positions, positions, options);
+      FAIL("construction should have rejected the packing request");
+    } catch (const std::invalid_argument &error) {
+      const std::string message = error.what();
+      REQUIRE(message.find(fragment) != std::string::npos);
+    }
+  };
+  UniformFmmOptions options;
+  options.backend = ExecutionBackend::CudaPartial;
+  options.enable_cache = false;
+  options.p2p_packing = P2PExecutionPacking::PointGeometry;
+  require_rejection(options, "CPU position-based executor");
+  options.p2p_packing = P2PExecutionPacking::ParticleRowSoa;
+  require_rejection(options, "CPU row packing");
+  options.p2p_packing = P2PExecutionPacking::CudaBsr3;
+  require_rejection(options, "fixed_target_source_indices");
+  options.p2p_packing = P2PExecutionPacking::TensorDictionary;
+  require_rejection(options, "fixed_target_source_indices");
+  options.backend = ExecutionBackend::CudaFull;
+  options.p2p_packing = P2PExecutionPacking::LeafBlock;
+  options.periodic.enabled = true;
+  options.periodic.centre = Vec3{};
+  options.periodic.lengths = Vec3{2.0, 2.0, 2.0};
+  require_rejection(options, "periodic image records");
+}
+
 TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
           "[cuda][manual]") {
   if (!cuda_m2l_p2p_available()) {

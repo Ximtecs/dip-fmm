@@ -301,11 +301,7 @@ void UniformFmm::build_static_plan() {
     if (backend_ == ExecutionBackend::CpuStatic) {
       // A cache hit derives the row packing as well; the CPU packing step
       // releases it again when positions replace the stored tensors.
-      p2p_execution_packing_ = p2p_tensor_dictionary_plan_.has_value()
-          ? P2PExecutionPacking::TensorDictionary
-          : (selects_point_geometry_p2p()
-                 ? P2PExecutionPacking::PointGeometry
-                 : P2PExecutionPacking::ParticleRowSoa);
+      p2p_execution_packing_ = resolve_cpu_p2p_packing();
     }
     if (precision_ == StaticPrecision::Float32) {
       quantise_static_plan_to_float();
@@ -794,10 +790,7 @@ void UniformFmm::build_static_plan() {
         error.what());
   }
   if (backend_ == ExecutionBackend::CpuStatic) {
-    p2p_execution_packing_ = p2p_tensor_dictionary_plan_
-        ? P2PExecutionPacking::TensorDictionary
-        : (point_geometry_p2p ? P2PExecutionPacking::PointGeometry
-                              : P2PExecutionPacking::ParticleRowSoa);
+    p2p_execution_packing_ = resolve_cpu_p2p_packing();
   }
   static_plan_statistics_.p2p_interactions = p2p_operator_.blocks.size();
   static_plan_statistics_.p2p_value_bytes =

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 
 #include "cdfmm/backend/execution.hpp"
 #include "cdfmm/core/precision.hpp"
@@ -33,6 +34,9 @@ struct CudaExecutionPolicyInputs {
   bool fixed_identity_available{false};
   /// Explicit user options; they take precedence over the layout hint.
   bool explicit_reduced_symmetry{false};
+  /// Explicit packing request (`UniformFmmOptions::p2p_packing`), already
+  /// accepted by `explicit_packing_rejection`; resolution honours it verbatim.
+  std::optional<CudaP2PPacking> explicit_packing{};
   bool explicit_dictionary_target_owned{false};
   bool explicit_dictionary_power2_microtiles{false};
   std::size_t source_count{0};
@@ -68,6 +72,17 @@ struct CudaExecutionPolicy {
 /** @brief Resolves every CUDA strategy choice deterministically from the inputs. */
 [[nodiscard]] CudaExecutionPolicy
 resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs);
+
+/**
+ * @brief Explains why an explicitly requested packing cannot execute a plan.
+ *
+ * Returns nullptr when the packing is valid for the plan facts. The reasons
+ * are representational (periodic image records, identity handling baked in at
+ * construction), never the geometry that produced the tensors.
+ */
+[[nodiscard]] const char *
+explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
+                           CudaP2PPacking packing) noexcept;
 
 /** @brief Grouped M2L pairs per thread for one plan (used by the executor). */
 [[nodiscard]] int m2l_pairs_per_thread(StaticPrecision precision,

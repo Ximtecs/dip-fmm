@@ -98,6 +98,8 @@ std::string_view name(const P2PExecutionPacking value) {
     return "leaf_block";
   case P2PExecutionPacking::PointGeometry:
     return "point_geometry";
+  case P2PExecutionPacking::Auto:
+    return "auto";
   }
   return "unknown";
 }
@@ -174,6 +176,18 @@ void append_size_option(std::ostringstream& stream, const char* label,
 
 } // namespace
 
+namespace detail {
+
+std::string_view p2p_packing_name(const P2PExecutionPacking value) noexcept {
+  return name(value);
+}
+
+std::string_view execution_backend_name(const ExecutionBackend value) noexcept {
+  return name(value);
+}
+
+} // namespace detail
+
 void UniformFmm::print_initialisation_summary(
     const UniformFmmOptions& options) const {
   const StaticExecutionPlan executors = execution_plan();
@@ -202,6 +216,8 @@ void UniformFmm::print_initialisation_summary(
   stream << "  executor.l2l: " << name(executors.l2l) << '\n';
   stream << "  executor.l2p: " << name(executors.l2p) << '\n';
   stream << "  executor.p2p: " << name(executors.p2p) << '\n';
+  stream << "  p2p_packing.requested: " << name(requested_p2p_packing_)
+         << '\n';
   stream << "  p2p_packing: " << name(p2p_execution_packing_) << '\n';
   stream << "  spatial_layout: " << cuda_policy::name(spatial_layout_) << '\n';
   if (cuda_policy_ && (backend_ == ExecutionBackend::CudaM2LP2P ||

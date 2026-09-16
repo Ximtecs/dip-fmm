@@ -92,6 +92,10 @@ StaticExecutionPlan UniformFmm::execution_plan() const noexcept {
 P2PExecutionPacking UniformFmm::p2p_execution_packing() const noexcept {
   return p2p_execution_packing_;
 }
+
+P2PExecutionPacking UniformFmm::requested_p2p_packing() const noexcept {
+  return requested_p2p_packing_;
+}
 SpatialLayout UniformFmm::spatial_layout() const noexcept {
   return spatial_layout_;
 }

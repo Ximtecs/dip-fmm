@@ -263,3 +263,49 @@ def test_regular_grid_hint_selects_cuda_dictionary():
     expected = general.evaluate(moments, target_source_indices=identities)
     actual = regular.evaluate(moments, target_source_indices=identities)
     np.testing.assert_allclose(actual["H"], expected["H"], rtol=1e-9, atol=1e-12)
+
+
+def test_explicit_p2p_packing_request_is_honoured_and_reported():
+    rng = np.random.default_rng(11)
+    positions = rng.uniform(-0.9, 0.9, size=(64, 3))
+    moments = rng.uniform(-1.0, 1.0, size=(64, 3))
+    identities = np.arange(positions.shape[0], dtype=np.int32)
+    options = cdfmm.UniformFmmOptions()
+    assert options.p2p_packing == cdfmm.P2PExecutionPacking.AUTO
+    options.precision = cdfmm.StaticPrecision.FLOAT64
+    options.expansion_order = 3
+    options.tree.max_level = 2
+    options.backend = cdfmm.ExecutionBackend.CPU_STATIC
+    options.fixed_target_source_indices = identities.tolist()
+    options.enable_cache = False
+    automatic = cdfmm.UniformFmm(positions, positions, options)
+    assert automatic.requested_p2p_packing == cdfmm.P2PExecutionPacking.AUTO
+    assert automatic.p2p_execution_packing == cdfmm.P2PExecutionPacking.POINT_GEOMETRY
+    expected = automatic.evaluate(moments, target_source_indices=identities)
+    for packing in (
+        cdfmm.P2PExecutionPacking.CANONICAL_AOS,
+        cdfmm.P2PExecutionPacking.PARTICLE_ROW_SOA,
+        cdfmm.P2PExecutionPacking.TENSOR_DICTIONARY,
+        cdfmm.P2PExecutionPacking.POINT_GEOMETRY,
+    ):
+        options.p2p_packing = packing
+        forced = cdfmm.UniformFmm(positions, positions, options)
+        assert forced.requested_p2p_packing == packing
+        assert forced.p2p_execution_packing == packing
+        actual = forced.evaluate(moments, target_source_indices=identities)
+        np.testing.assert_allclose(actual["H"], expected["H"], rtol=1e-11, atol=1e-13)
+
+
+def test_unsupported_explicit_p2p_packing_raises_with_reason():
+    positions = np.array([[-0.25, 0.0, 0.0], [0.25, 0.0, 0.0]])
+    options = cdfmm.UniformFmmOptions()
+    options.backend = cdfmm.ExecutionBackend.CPU_STATIC
+    options.enable_cache = False
+    options.p2p_packing = cdfmm.P2PExecutionPacking.LEAF_BLOCK
+    with pytest.raises(ValueError, match="CUDA execution packings"):
+        cdfmm.UniformFmm(positions, positions, options)
+    options.p2p_packing = cdfmm.P2PExecutionPacking.POINT_GEOMETRY
+    options.source_geometry = cdfmm.SourceGeometry.RECTANGULAR_PRISM
+    options.source_sizes = [cdfmm.RectangularPrism(0.05, 0.05, 0.05)]
+    with pytest.raises(ValueError, match="PointGeometry"):
+        cdfmm.UniformFmm(positions, positions, options)

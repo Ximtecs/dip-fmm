@@ -275,6 +275,9 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
             *topology_, std::span<const Vec3>(sorted_dipole_moments_),
             std::span<Vec3>(near_fields_),
             std::span<const int>(sorted_self_indices_));
+      } else if (p2p_execution_packing_ == P2PExecutionPacking::CanonicalAos) {
+        apply_static_p2p_operator(p2p_operator_, sorted_dipole_moments_,
+                                  near_fields_, sorted_self_indices_);
       } else {
         detail::evaluate_static_near_field(p2p_compact_plan_,
                                            sorted_dipole_moments_, near_fields_,
@@ -597,6 +600,10 @@ void UniformFmm::evaluate_into_float32_impl(
             *topology_, std::span<const FloatVec3>(sorted_dipole_moments_float_),
             std::span<FloatVec3>(near_fields_float_),
             std::span<const int>(sorted_self_indices_));
+      } else if (p2p_execution_packing_ == P2PExecutionPacking::CanonicalAos) {
+        apply_static_p2p_operator(p2p_operator_float_,
+                                  sorted_dipole_moments_float_,
+                                  near_fields_float_, sorted_self_indices_);
       } else {
         apply_static_p2p_compact_plan(p2p_compact_plan_float_,
                                       sorted_dipole_moments_float_,

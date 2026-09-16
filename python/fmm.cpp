@@ -58,6 +58,7 @@ void bind_fmm_options(py::module_& module)
       .def_readwrite("spatial_layout", &UniformFmmOptions::spatial_layout)
       .def_readwrite("use_reduced_symmetry_p2p",
                      &UniformFmmOptions::use_reduced_symmetry_p2p)
+      .def_readwrite("p2p_packing", &UniformFmmOptions::p2p_packing)
       .def_readwrite("cuda_dictionary_target_owned",
                      &UniformFmmOptions::cuda_dictionary_target_owned)
       .def_readwrite("cuda_dictionary_power2_microtiles",
@@ -262,6 +263,8 @@ void bind_fmm(py::module_& module)
       })
       .def_property_readonly("p2p_execution_packing",
                              &UniformFmm::p2p_execution_packing)
+      .def_property_readonly("requested_p2p_packing",
+                             &UniformFmm::requested_p2p_packing)
       .def_property_readonly("spatial_layout", &UniformFmm::spatial_layout)
       .def_property_readonly("execution_plan", &UniformFmm::execution_plan)
       .def_property_readonly("cuda_plan_statistics", [](const UniformFmm& fmm) {

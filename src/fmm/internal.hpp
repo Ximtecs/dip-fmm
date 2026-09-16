@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <string_view>
+
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/backend/cuda/m2l.hpp"
 #include "cdfmm/backend/cuda/p2p.hpp"
@@ -73,5 +75,15 @@ public:
   cuda_policy::CudaExecutionPolicyInputs inputs{};
   cuda_policy::CudaExecutionPolicy policy{};
 };
+
+namespace detail {
+
+/// Initialisation-summary spellings, shared with option validation messages.
+[[nodiscard]] std::string_view p2p_packing_name(
+    P2PExecutionPacking value) noexcept;
+[[nodiscard]] std::string_view execution_backend_name(
+    ExecutionBackend value) noexcept;
+
+} // namespace detail
 
 } // namespace cdfmm

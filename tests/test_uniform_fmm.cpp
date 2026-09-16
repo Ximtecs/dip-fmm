@@ -431,6 +431,185 @@ TEST_CASE("FMM initialisation reports requested and resolved options")
             std::string::npos);
 }
 
+namespace {
+
+std::vector<Vec3> packing_test_positions(const std::size_t count,
+                                         const unsigned seed)
+{
+    std::mt19937 generator(seed);
+    std::uniform_real_distribution<double> distribution(-0.9, 0.9);
+    std::vector<Vec3> positions(count);
+    for (Vec3& position : positions) {
+        position = {distribution(generator), distribution(generator),
+                    distribution(generator)};
+    }
+    return positions;
+}
+
+void require_fields_close(const std::vector<PotentialField>& actual,
+                          const std::vector<PotentialField>& expected,
+                          const double tolerance)
+{
+    REQUIRE(actual.size() == expected.size());
+    double scale = 0.0;
+    for (const PotentialField& value : expected) {
+        scale = std::max({scale, std::abs(value.H.x), std::abs(value.H.y),
+                          std::abs(value.H.z)});
+    }
+    for (std::size_t index = 0; index < actual.size(); ++index) {
+        REQUIRE(std::abs(actual[index].H.x - expected[index].H.x) <=
+                tolerance * scale);
+        REQUIRE(std::abs(actual[index].H.y - expected[index].H.y) <=
+                tolerance * scale);
+        REQUIRE(std::abs(actual[index].H.z - expected[index].H.z) <=
+                tolerance * scale);
+    }
+}
+
+} // namespace
+
+TEST_CASE("explicit P2P packing requests resolve and agree on CpuStatic",
+          "[uniform_fmm][p2p][packing]")
+{
+    const std::vector<Vec3> positions = packing_test_positions(96, 7U);
+    std::vector<Vec3> moments(positions.size());
+    for (std::size_t index = 0; index < moments.size(); ++index) {
+        const double value = static_cast<double>(index);
+        moments[index] = {std::sin(value), std::cos(1.3 * value),
+                          std::sin(0.7 * value)};
+    }
+    std::vector<int> identities(positions.size());
+    std::iota(identities.begin(), identities.end(), 0);
+
+    for (const StaticPrecision precision :
+         {StaticPrecision::Float64, StaticPrecision::Float32}) {
+        UniformFmmOptions options;
+        options.backend = ExecutionBackend::CpuStatic;
+        options.precision = precision;
+        options.expansion_order = 3;
+        options.tree.max_level = 2;
+        options.fixed_target_source_indices = identities;
+        options.enable_cache = false;
+
+        UniformFmm automatic(positions, positions, options);
+        REQUIRE(automatic.requested_p2p_packing() == P2PExecutionPacking::Auto);
+        REQUIRE(automatic.p2p_execution_packing() ==
+                P2PExecutionPacking::PointGeometry);
+        const auto expected = automatic.evaluate(moments, OutputFlags::Field);
+        const double tolerance =
+            precision == StaticPrecision::Float32 ? 5.0e-5 : 1.0e-12;
+
+        for (const P2PExecutionPacking packing :
+             {P2PExecutionPacking::CanonicalAos,
+              P2PExecutionPacking::ParticleRowSoa,
+              P2PExecutionPacking::TensorDictionary,
+              P2PExecutionPacking::PointGeometry}) {
+            options.p2p_packing = packing;
+            UniformFmm forced(positions, positions, options);
+            REQUIRE(forced.requested_p2p_packing() == packing);
+            REQUIRE(forced.p2p_execution_packing() == packing);
+            require_fields_close(forced.evaluate(moments, OutputFlags::Field),
+                                 expected, tolerance);
+        }
+    }
+
+    // Finite sources: the stored-tensor packings agree with each other, and
+    // the automatic policy keeps the SoA rows.
+    UniformFmmOptions prism_options;
+    prism_options.backend = ExecutionBackend::CpuStatic;
+    prism_options.precision = StaticPrecision::Float64;
+    prism_options.expansion_order = 3;
+    prism_options.tree.max_level = 2;
+    prism_options.source_geometry = SourceGeometry::RectangularPrism;
+    prism_options.source_sizes = {RectangularPrism{0.04, 0.03, 0.05}};
+    prism_options.far_field_source_model = SourceModel::PointDipole;
+    prism_options.enable_cache = false;
+    UniformFmm prism_automatic(positions, positions, prism_options);
+    REQUIRE(prism_automatic.p2p_execution_packing() ==
+            P2PExecutionPacking::ParticleRowSoa);
+    const auto prism_expected =
+        prism_automatic.evaluate(moments, OutputFlags::Field);
+    for (const P2PExecutionPacking packing :
+         {P2PExecutionPacking::CanonicalAos,
+          P2PExecutionPacking::TensorDictionary}) {
+        prism_options.p2p_packing = packing;
+        UniformFmm forced(positions, positions, prism_options);
+        REQUIRE(forced.p2p_execution_packing() == packing);
+        require_fields_close(forced.evaluate(moments, OutputFlags::Field),
+                             prism_expected, 1.0e-12);
+    }
+}
+
+TEST_CASE("unsupported explicit P2P packing requests fail with a reason",
+          "[uniform_fmm][p2p][packing]")
+{
+    const std::vector<Vec3> positions{{-0.25, 0.0, 0.0}, {0.25, 0.0, 0.0}};
+    const auto require_rejection = [&](const UniformFmmOptions& options,
+                                       const char* fragment) {
+        try {
+            UniformFmm fmm(positions, positions, options);
+            FAIL("construction should have rejected the packing request");
+        } catch (const std::invalid_argument& error) {
+            const std::string message = error.what();
+            REQUIRE(message.find("p2p_packing") != std::string::npos);
+            REQUIRE(message.find(fragment) != std::string::npos);
+        }
+    };
+
+    UniformFmmOptions options;
+    options.backend = ExecutionBackend::CpuStatic;
+    options.enable_cache = false;
+
+    options.p2p_packing = P2PExecutionPacking::LeafBlock;
+    require_rejection(options, "CUDA execution packings");
+    options.p2p_packing = P2PExecutionPacking::CudaBsr3;
+    require_rejection(options, "CUDA execution packings");
+    options.p2p_packing = P2PExecutionPacking::Reference;
+    require_rejection(options, "CpuReference");
+
+    // The dictionary encodes point self pairs at construction.
+    options.p2p_packing = P2PExecutionPacking::TensorDictionary;
+    require_rejection(options, "fixed_target_source_indices");
+
+    // PointGeometry needs point sources and point targets in the near field.
+    options.p2p_packing = P2PExecutionPacking::PointGeometry;
+    options.source_geometry = SourceGeometry::RectangularPrism;
+    options.source_sizes = {RectangularPrism{0.05, 0.05, 0.05}};
+    require_rejection(options, "PointGeometry");
+    options.source_geometry = SourceGeometry::PointDipole;
+    options.source_sizes.clear();
+    options.target_geometry = TargetGeometry::Tetrahedron;
+    options.target_tetrahedra = {test_tetrahedron()};
+    require_rejection(options, "PointGeometry");
+
+    // The reference backend has exactly one executor.
+    UniformFmmOptions reference;
+    reference.backend = ExecutionBackend::CpuReference;
+    reference.expansion_basis = ExpansionBasis::Cartesian;
+    reference.p2p_packing = P2PExecutionPacking::CanonicalAos;
+    reference.enable_cache = false;
+    require_rejection(reference, "CpuReference");
+    reference.p2p_packing = P2PExecutionPacking::Reference;
+    UniformFmm accepted(positions, positions, reference);
+    REQUIRE(accepted.p2p_execution_packing() == P2PExecutionPacking::Reference);
+
+    // The initialisation summary reports both the request and the result.
+    UniformFmmOptions summary_options;
+    summary_options.backend = ExecutionBackend::CpuStatic;
+    summary_options.p2p_packing = P2PExecutionPacking::CanonicalAos;
+    summary_options.enable_cache = false;
+    std::ostringstream output;
+    std::streambuf* previous = std::cout.rdbuf(output.rdbuf());
+    {
+        UniformFmm fmm(positions, positions, summary_options);
+    }
+    std::cout.rdbuf(previous);
+    REQUIRE(output.str().find("p2p_packing.requested: canonical_aos") !=
+            std::string::npos);
+    REQUIRE(output.str().find("p2p_packing: canonical_aos") !=
+            std::string::npos);
+}
+
 TEST_CASE("automatic FMM execution resolves to a truthful CPU backend")
 {
     const std::vector<Vec3> positions{{-0.25, 0.0, 0.0}, {0.25, 0.0, 0.0}};

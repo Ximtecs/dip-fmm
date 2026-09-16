@@ -55,6 +55,49 @@ double dictionary_source_warp_occupancy_limit() {
   return dictionary_source_warp_occupancy;
 }
 
+const char *
+explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
+                           const CudaP2PPacking packing) noexcept {
+  const bool identity_baked_in =
+      inputs.effective_point_source && !inputs.fixed_identity_available;
+  switch (packing) {
+  case CudaP2PPacking::CanonicalRows:
+    return nullptr;
+  case CudaP2PPacking::LeafBlock:
+    if (inputs.periodic) {
+      return "LeafBlock packs one dense block per (target leaf, source leaf) "
+             "pair of the canonical rows and cannot represent periodic image "
+             "records; periodic plans use CanonicalAos";
+    }
+    return nullptr;
+  case CudaP2PPacking::Bsr3:
+    if (inputs.periodic) {
+      return "CudaBsr3 stores one sparse block per (target, source) pair and "
+             "cannot represent periodic image records; periodic plans use "
+             "CanonicalAos";
+    }
+    if (identity_baked_in) {
+      return "CudaBsr3 bakes the point-source self exclusion into its values "
+             "at construction; supply fixed_target_source_indices or select "
+             "CanonicalAos or LeafBlock";
+    }
+    return nullptr;
+  case CudaP2PPacking::SignedDictionary:
+    if (inputs.periodic) {
+      return "TensorDictionary packs dense leaf pairs of the canonical rows "
+             "and cannot represent periodic image records; periodic plans use "
+             "CanonicalAos";
+    }
+    if (identity_baked_in) {
+      return "TensorDictionary encodes point-source self pairs as its zero "
+             "variant at construction; supply fixed_target_source_indices or "
+             "select CanonicalAos or LeafBlock";
+    }
+    return nullptr;
+  }
+  return "unknown CUDA P2P packing";
+}
+
 CudaExecutionPolicy
 resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
   CudaExecutionPolicy policy;
@@ -63,6 +106,20 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
   policy.translation_wide_lanes = translation_wide_lanes;
   policy.translation_lanes = translation_narrow_lanes;
   policy.translation_wide_outputs = translation_wide_outputs;
+
+  if (inputs.explicit_packing.has_value()) {
+    // An explicit request is honoured verbatim; the caller has already
+    // rejected packings the plan cannot execute. The executor flags keep
+    // their documented meaning for the dictionary.
+    policy.p2p_packing = *inputs.explicit_packing;
+    policy.dictionary_executor =
+        inputs.explicit_dictionary_target_owned
+            ? CudaDictionaryExecutor::TargetOwned
+            : (inputs.explicit_dictionary_power2_microtiles
+                   ? CudaDictionaryExecutor::PowerOfTwoMicrotiles
+                   : CudaDictionaryExecutor::SourceWarp);
+    return policy;
+  }
 
   // The signed dictionary encodes fixed point-source self pairs as the zero
   // variant and has no periodic image support, so it needs a point source
