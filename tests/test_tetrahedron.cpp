@@ -926,3 +926,58 @@ TEST_CASE("polyhedron pair tensors stay accurate across the far-separation switc
     REQUIRE(maximum_component_difference(remote_tensor, remote_point) <
             1.0e-4 * remote_scale);
 }
+
+TEST_CASE("tetrahedron point tensor is continuous across an edge-line extension")
+{
+    // A point collinear with a tetrahedron edge but outside the segment is a
+    // regular exterior point; the atanh edge primitives diverge individually
+    // there and their naive difference lost every digit.  The value on the
+    // line must match the values a little off the line from both sides.
+    Tetrahedron tetrahedron;
+    const std::array<Vec3, 4> base{{{-0.25, -0.25, -0.25},
+                                    {0.75, -0.25, -0.25},
+                                    {-0.25, 0.75, -0.25},
+                                    {-0.25, -0.25, 0.75}}};
+    for (std::size_t vertex = 0; vertex < 4; ++vertex) {
+        const Vec3 v = base[vertex] * 0.04;
+        tetrahedron.vertices[vertex] = {v.z, v.x, v.y};
+    }
+    // The edge from (-0.01,-0.01,-0.01) to (0.03,-0.01,-0.01) extends along x.
+    const Vec3 on_line{-0.02, -0.01, -0.01};
+    const PairTensor exact = tetrahedron_point_tensor(on_line, tetrahedron);
+    require_finite(exact);
+    for (const double offset : {1.0e-12, 1.0e-9, 1.0e-6}) {
+        for (const Vec3 shift : {Vec3{0.0, offset, 0.0}, Vec3{0.0, -offset, 0.0},
+                                 Vec3{0.0, 0.0, offset}, Vec3{0.0, offset, -offset}}) {
+            const PairTensor nearby =
+                tetrahedron_point_tensor(on_line + shift, tetrahedron);
+            // The field varies smoothly at 1e-6 (relative change ~5e-5 per
+            // 1e-6 of displacement at this distance), so compare loosely
+            // there and tightly closer in.
+            const double tolerance = offset >= 1.0e-6 ? 2.0e-4 : 1.0e-7;
+            REQUIRE(maximum_component_difference(nearby, exact) <
+                    tolerance * 1.0e4);
+        }
+    }
+    // Reciprocity of the corrected kernel with the finite pair formulation.
+    const PairTensor reciprocal = point_tetrahedron_tensor(on_line * -1.0,
+                                                           tetrahedron);
+    require_tight_close(reciprocal, exact);
+
+    // Independent check farther out on the same edge line, where the 8^3
+    // Gauss average of the point-dipole tensor over the tetrahedron is
+    // converged: by reciprocity it equals the tetrahedron's field at the
+    // point.
+    const Vec3 far_on_line{-0.11, -0.01, -0.01};
+    const PairTensor far_exact = tetrahedron_point_tensor(far_on_line,
+                                                          tetrahedron);
+    const PairTensor quadrature = average_over_tetrahedron(
+        far_on_line * -1.0, tetrahedron, [&](const Vec3& point) {
+            return point_tensor(point);
+        });
+    require_close(far_exact, quadrature, 2.0e-6);
+    const PairTensor far_nearby = tetrahedron_point_tensor(
+        far_on_line + Vec3{0.0, 1.0e-9, -1.0e-9}, tetrahedron);
+    REQUIRE(maximum_component_difference(far_nearby, far_exact) <
+            1.0e-7 * std::abs(far_exact.xx));
+}

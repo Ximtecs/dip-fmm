@@ -93,56 +93,6 @@ Vec3 tetrahedron_outward_normal(
     return scale(normal, 1.0 / length);
 }
 
-// This is the principal atan quotient used by TileTriangle's P_Nzz/Q_Nzz
-// primitives.  It is intentionally not atan2: those primitives use the sign
-// of the normal coordinate as part of the one-sided limiting behaviour.
-long double safe_atan_ratio(const long double numerator,
-                            const long double denominator)
-{
-    if (denominator != 0.0) {
-        return std::atan(numerator / denominator);
-    }
-    if (numerator == 0.0) {
-        return 0.0;
-    }
-    return std::copysign(0.5 * std::numbers::pi, numerator);
-}
-
-// MagTense evaluates atanh ratios which are mathematically in (-1,1), but a
-// rounded denominator can put a ratio outside that interval.  Clamping to a
-// one-sided endpoint keeps the analytical cancellation finite in that case.
-long double safe_atanh_ratio(const long double numerator,
-                             const long double denominator)
-{
-    if (denominator == 0.0) {
-        if (numerator == 0.0) {
-            return 0.0;
-        }
-        return std::copysign(std::numeric_limits<long double>::infinity(),
-                             numerator);
-    }
-
-    const long double ratio = numerator / denominator;
-    if (!std::isfinite(ratio)) {
-        return std::copysign(std::numeric_limits<long double>::infinity(),
-                             ratio);
-    }
-
-    if (ratio >= 1.0) {
-        // These ratios are bounded by one analytically.  Even a somewhat
-        // larger excursion can occur after subtracting nearly equal squared
-        // distances in the far field; treating it as the endpoint preserves
-        // the finite cancellation between the two edge primitives.
-        return std::atanh(1.0L - 32.0L *
-                          std::numeric_limits<long double>::epsilon());
-    }
-    if (ratio <= -1.0) {
-        return std::atanh(-1.0L + 32.0L *
-                          std::numeric_limits<long double>::epsilon());
-    }
-    return std::atanh(ratio);
-}
-
 // The limiting value used by TileTriangle when a point lies exactly on a
 // local coordinate plane.  It selects the positive side for an exact zero;
 // callers can supply a signed value for a one-sided limit.
@@ -155,11 +105,47 @@ double nonzero_coordinate(const double value)
     return threshold;
 }
 
-// The following three functions are direct double-precision adaptations of
+// Difference atanh(a2/R2) - atanh(a1/R1) of the edge primitive between the
+// two endpoints of one straight edge.  `a1`, `a2` are the signed positions of
+// the endpoints along the edge line measured from the foot of the evaluation
+// point, and `b2` is the squared perpendicular distance of the point from that
+// line, so R_i = sqrt(a_i^2 + b2) are the endpoint distances.  Written as
+// atanh(a/R) the two terms diverge like ln(1/b) whenever the point is
+// collinear with the edge; their difference is finite when the foot lies
+// outside the segment and the logs of b cancel exactly in the closed form
+// below, which removes the catastrophic cancellation of the naive quotient.
+long double edge_atanh_difference(const long double a1, const long double a2,
+                                  const long double b2)
+{
+    const long double r1 = std::sqrt(a1 * a1 + b2);
+    const long double r2 = std::sqrt(a2 * a2 + b2);
+    if (a1 * a2 > 0.0L) {
+        const long double sign = a1 > 0.0L ? 1.0L : -1.0L;
+        return sign * std::log((r2 + std::abs(a2)) / (r1 + std::abs(a1)));
+    }
+    // The foot lies on the segment: each term is finite for b2 > 0 and the
+    // edge itself (b2 == 0) is a genuine singularity, reported as infinite so
+    // the caller's finiteness check rejects it.
+    const auto term = [b2](const long double a, const long double r) {
+        if (a == 0.0L) {
+            return 0.0L;
+        }
+        if (!(b2 > 0.0L)) {
+            return std::copysign(std::numeric_limits<long double>::infinity(),
+                                 a);
+        }
+        return std::copysign(std::log((r + std::abs(a)) / std::sqrt(b2)), a);
+    };
+    return term(a2, r2) - term(a1, r1);
+}
+
+// The following three functions are double-precision adaptations of
 // TileTriangle.f90's Nxz, Nyz and Nzz primitives.  Their arguments describe a
 // right-triangle representation in the local face frame: the base endpoints
 // are (x=0,l) and the apex has coordinates (0,h), with h>0.  The expressions
-// are the analytical edge primitives, not numerical quadrature.
+// are the analytical edge primitives, not numerical quadrature.  The atanh
+// edge terms are evaluated through `edge_atanh_difference`, which is exact for
+// evaluation points collinear with an edge outside the triangle.
 double triangle_nxz(const Vec3& r, const double l, const double h)
 {
     const long double rx = r.x;
@@ -167,21 +153,19 @@ double triangle_nxz(const Vec3& r, const double l, const double h)
     const long double rz = r.z;
     const long double L = l;
     const long double H = h;
-    const auto f = [&](const long double yp) {
-        const long double root = std::hypot(
-            std::hypot(L - rx - yp * L / H, ry - yp), rz);
-        const long double diagonal = std::hypot(L, H);
-        const long double numerator = L * L - L * rx + H * ry -
-            H * yp * (1.0L + L * L / (H * H));
-        return H / diagonal * safe_atanh_ratio(numerator, diagonal * root);
-    };
-    const auto g = [&](const long double yp) {
-        const long double denominator =
-            std::sqrt(rx * rx + (ry - yp) * (ry - yp) + rz * rz);
-        return safe_atanh_ratio(r.y - yp, denominator);
-    };
-    return static_cast<double>(-(f(H) - f(0.0L) - (g(H) - g(0.0L))) /
-                               four_pi);
+    const long double diagonal = std::hypot(L, H);
+    // Hypotenuse from (L, 0) to (0, H): signed endpoint positions along the
+    // edge direction (-L, H)/|diagonal| relative to the point's foot.
+    const long double hypotenuse_offset = (L * L - L * rx + H * ry) / diagonal;
+    const long double hypotenuse_distance = (H * rx + L * ry - L * H) / diagonal;
+    const long double hypotenuse_b2 =
+        hypotenuse_distance * hypotenuse_distance + rz * rz;
+    const long double f_difference = H / diagonal * edge_atanh_difference(
+        hypotenuse_offset, hypotenuse_offset - diagonal, hypotenuse_b2);
+    // Vertical edge from (0, 0) to (0, H).
+    const long double g_difference = edge_atanh_difference(
+        ry, ry - H, rx * rx + rz * rz);
+    return static_cast<double>(-(f_difference - g_difference) / four_pi);
 }
 
 double triangle_nyz(const Vec3& r, const double l, const double h)
@@ -191,44 +175,48 @@ double triangle_nyz(const Vec3& r, const double l, const double h)
     const long double rz = r.z;
     const long double L = l;
     const long double H = h;
-    const auto k = [&](const long double xp) {
-        const long double root = std::hypot(
-            std::hypot(rx - xp, ry - H + xp * H / L), rz);
-        const long double diagonal = std::hypot(L, H);
-        const long double numerator = H * H - H * ry + L * rx -
-            L * xp * (1.0L + H * H / (L * L));
-        return l / diagonal * safe_atanh_ratio(numerator, diagonal * root);
-    };
-    const auto ell = [&](const long double xp) {
-        const long double denominator =
-            std::sqrt((rx - xp) * (rx - xp) + ry * ry + rz * rz);
-        return safe_atanh_ratio(rx - xp, denominator);
-    };
-    return static_cast<double>(-(k(L) - k(0.0L) - (ell(L) - ell(0.0L))) /
-                               four_pi);
+    const long double diagonal = std::hypot(L, H);
+    // Hypotenuse from (0, H) to (L, 0): signed endpoint positions along the
+    // edge direction (L, -H)/|diagonal| relative to the point's foot.
+    const long double hypotenuse_offset = (H * H - H * ry + L * rx) / diagonal;
+    const long double hypotenuse_distance = (H * rx + L * ry - L * H) / diagonal;
+    const long double hypotenuse_b2 =
+        hypotenuse_distance * hypotenuse_distance + rz * rz;
+    const long double k_difference = L / diagonal * edge_atanh_difference(
+        hypotenuse_offset, hypotenuse_offset - diagonal, hypotenuse_b2);
+    // Horizontal edge from (0, 0) to (L, 0).
+    const long double ell_difference = edge_atanh_difference(
+        rx, rx - L, ry * ry + rz * rz);
+    return static_cast<double>(-(k_difference - ell_difference) / four_pi);
 }
 
-double triangle_nzz(const Vec3& r, const double l, const double h)
+// Normal component of the face integral: -Omega/(4 pi), where Omega is the
+// signed solid angle of the local triangle (x_first, 0), (0, h), (x_third, 0)
+// seen from r.  Omega = 2 atan2(a.(b x c), |a||b||c| + (a.b)|c| + (b.c)|a|
+// + (c.a)|b|) with a, b, c the vertex vectors from the point.
+double triangle_solid_angle_column(const Vec3& r, const double x_first,
+                                   const double x_third, const double h)
 {
-    const long double rx = r.x;
-    const long double ry = r.y;
-    const long double rz = r.z;
-    const long double L = l;
-    const long double H = h;
-    const auto p = [&](const long double xp) {
-        const long double root = std::hypot(
-            std::hypot(rx - xp, ry - H + xp * H / L), rz);
-        const long double numerator = rx * (H - ry) -
-            xp * (H * (1.0L - rx / L) - ry) -
-            H * (rx * rx + rz * rz) / L;
-        return safe_atan_ratio(numerator, rz * root);
-    };
-    const auto q = [&](const long double xp) {
-        return -safe_atan_ratio((rx - xp) * ry,
-                                rz * std::hypot(std::hypot(rx - xp, ry), rz));
-    };
-    return static_cast<double>(-(p(L) - p(0.0L) - (q(L) - q(0.0L))) /
-                               four_pi);
+    const long double ax = static_cast<long double>(x_first) - r.x;
+    const long double ay = -static_cast<long double>(r.y);
+    const long double az = -static_cast<long double>(r.z);
+    const long double bx = -static_cast<long double>(r.x);
+    const long double by = static_cast<long double>(h) - r.y;
+    const long double bz = az;
+    const long double cx = static_cast<long double>(x_third) - r.x;
+    const long double cy = ay;
+    const long double cz = az;
+    const long double a_norm = std::sqrt(ax * ax + ay * ay + az * az);
+    const long double b_norm = std::sqrt(bx * bx + by * by + bz * bz);
+    const long double c_norm = std::sqrt(cx * cx + cy * cy + cz * cz);
+    const long double triple = ax * (by * cz - bz * cy) +
+        ay * (bz * cx - bx * cz) + az * (bx * cy - by * cx);
+    const long double denominator = a_norm * b_norm * c_norm +
+        (ax * bx + ay * by + az * bz) * c_norm +
+        (bx * cx + by * cy + bz * cz) * a_norm +
+        (cx * ax + cy * ay + cz * az) * b_norm;
+    const long double solid_angle = 2.0L * std::atan2(triple, denominator);
+    return static_cast<double>(-solid_angle / four_pi);
 }
 
 struct FaceFrame {
@@ -328,14 +316,19 @@ Matrix3 face_tensor(const std::array<Vec3, 4>& face,
 
     // The local result has only its third column.  Transforming it as
     // P*N_local*P^T gives (integral R/R^3) tensor-product normal^T for this
-    // face, exactly as in MagTense's getN_Triangle.
+    // face, exactly as in MagTense's getN_Triangle.  The in-plane entries are
+    // the edge (log) primitives; the normal entry is the flux of R/R^3
+    // through the face, i.e. the signed solid angle the triangle subtends at
+    // the point, evaluated with the Van Oosterom-Strackee formula, which is
+    // well conditioned everywhere except on the face itself (the nudged
+    // normal coordinate keeps the one-sided convention for exact zeros).
     const double local_column[3]{
         triangle_nxz(r, frame.x_first, frame.height) -
             triangle_nxz(r, frame.x_third, frame.height),
         triangle_nyz(r, frame.x_first, frame.height) -
             triangle_nyz(r, frame.x_third, frame.height),
-            triangle_nzz(r, frame.x_first, frame.height) -
-            triangle_nzz(r, frame.x_third, frame.height)};
+        triangle_solid_angle_column(r, frame.x_first, frame.x_third,
+                                    frame.height)};
     const Vec3 global_column = frame.e1 * local_column[0] +
         frame.e2 * local_column[1] + frame.normal * local_column[2];
     Matrix3 result;
