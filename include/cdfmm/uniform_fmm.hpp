@@ -51,7 +51,9 @@ enum class P2PExecutionPacking {
   CanonicalAos,
   ParticleRowSoa,
   TensorDictionary,
-  CudaBsr3
+  CudaBsr3,
+  /// Dense target-leaf/source-leaf SoA blocks executed one warp per block.
+  LeafBlock
 };
 
 /**
@@ -421,6 +423,8 @@ private:
   void print_initialisation_summary(const UniformFmmOptions &options) const;
   void build_cuda_p2p_plan();
   void build_cuda_full_plan();
+  [[nodiscard]] StaticP2PLeafPlan build_cuda_leaf_plan() const;
+  [[nodiscard]] FloatStaticP2PLeafPlan build_cuda_leaf_plan_float() const;
   [[nodiscard]] int coefficient_degree(int coefficient) const;
   void prepare_moments(std::span<const Vec3> dipole_moments);
   void prepare_moments_float(std::span<const Vec3> dipole_moments);

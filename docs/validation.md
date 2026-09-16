@@ -115,8 +115,9 @@ static result when a device is available. Geometry and tensor values are
 uploaded once; evaluation traffic contains moments, identities, and fields.
 
 The canonical tensor stores six symmetric values with one shared row structure.
-Portable CPU production uses the derived particle-row SoA packing. CUDA can
-derive full BSR(3) blocks when a fixed identity map and memory budget permit;
-otherwise it retains canonical target rows. Leaf-grouped and alternative BSR
-packings remain available for validation and performance studies. See
+Portable CPU production uses the derived particle-row SoA packing. CUDA
+derives dense leaf blocks for point sources, full BSR(3) blocks for finite
+sources when the memory budget permits, and otherwise retains canonical target
+rows. The remaining packings stay available for validation and performance
+studies. See
 [Static P2P execution study](static-p2p.md).

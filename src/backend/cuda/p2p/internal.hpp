@@ -58,11 +58,14 @@ template <typename Scalar>
 struct CudaLeafP2PDeviceView {
   int target_count{0};
   int target_leaf_count{0};
+  int block_count{0};
   int threads_per_block{0};
   std::size_t interaction_count{0};
   int *target_begins{nullptr};
   int *target_counts{nullptr};
   int *leaf_row_offsets{nullptr};
+  /// Target leaf of every dense block; one warp executes one block.
+  int *block_target_leaves{nullptr};
   StaticP2PLeafBlock *leaf_blocks{nullptr};
   Scalar *tensors{nullptr};
 };
@@ -152,6 +155,15 @@ void upload_cuda_canonical(
     CudaP2PDeviceView<FloatStaticDipoleBlock> &device,
     CudaPlanStatistics &statistics, cudaStream_t stream,
     const char *allocation_operation, const char *upload_operation);
+
+void upload_cuda_leaf(
+    const StaticP2PLeafPlan &host, CudaLeafP2PDeviceView<double> &device,
+    CudaPlanStatistics &statistics, const char *allocation_operation,
+    const char *upload_operation);
+void upload_cuda_leaf(
+    const FloatStaticP2PLeafPlan &host, CudaLeafP2PDeviceView<float> &device,
+    CudaPlanStatistics &statistics, const char *allocation_operation,
+    const char *upload_operation);
 
 void upload_cuda_bsr(
     const StaticP2PBsrPlan &host, CudaBsrP2PDeviceView<double> &device,

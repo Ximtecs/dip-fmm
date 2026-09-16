@@ -29,8 +29,9 @@ their setup tolerance is independently selectable. Geometry files contain tree
 topology and Morton permutations, self metadata, P2M, M2L connectivity and
 level scaling, L2P, and exact canonical P2P data; they do not duplicate the
 universal matrices. The selected execution packing is deliberately not stored:
-portable CPU derives particle-row SoA, while CUDA derives canonical AoS or
-BSR(3) according to the fixed-identity contract and memory budget. CUDA then
+portable CPU derives particle-row SoA, while CUDA derives dense leaf blocks
+for point sources and canonical AoS or BSR(3) for finite sources according to
+the memory budget. CUDA then
 uploads that derived representation to the selected device. Backend-only host
 state and CUDA device allocations are recreated for each process.
 

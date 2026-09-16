@@ -10,6 +10,8 @@
 #include "cdfmm/backend/cuda/m2l.hpp"
 #include "cdfmm/backend/cuda/p2p.hpp"
 #include "cdfmm/operators/operators.hpp"
+#include "cdfmm/plan/p2p/leaf.hpp"
+#include "cdfmm/plan/precision.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 
 #include "backend/cuda/fmm/internal.hpp"
@@ -24,6 +26,37 @@ using Clock = std::chrono::steady_clock;
 
 double elapsed_seconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+// Dense leaf rectangles of the canonical list-1 topology, in canonical order.
+std::vector<StaticP2PLeafPair> leaf_pairs_from_topology(
+    const StaticFmmTopology &topology) {
+  std::vector<StaticP2PLeafPair> leaf_pairs;
+  leaf_pairs.reserve(topology.p2p_leaf_records.size());
+  for (const StaticP2PLeafRecord &record : topology.p2p_leaf_records) {
+    leaf_pairs.push_back({static_cast<int>(record.target_begin),
+                          static_cast<int>(record.target_count),
+                          static_cast<int>(record.source_begin),
+                          static_cast<int>(record.source_count)});
+  }
+  return leaf_pairs;
+}
+
+// A cache loaded directly at FP32 has no FP64 canonical operator; the leaf
+// builder is FP64-only, so widen the stored values without changing them.
+StaticP2POperator promote_p2p_operator(const FloatStaticP2POperator &source) {
+  StaticP2POperator promoted;
+  promoted.source_count = source.source_count;
+  promoted.target_count = source.target_count;
+  promoted.row_offsets = source.row_offsets;
+  promoted.blocks.reserve(source.blocks.size());
+  for (const FloatStaticDipoleBlock &block : source.blocks) {
+    promoted.blocks.push_back({block.target, block.source, block.px, block.py,
+                               block.pz, block.xx, block.xy, block.xz,
+                               block.yy, block.yz, block.zz,
+                               block.skip_for_identity});
+  }
+  return promoted;
 }
 
 template <typename Operator>
@@ -516,6 +549,15 @@ void UniformFmm::build_cuda_p2p_plan() {
       near_field_source_model_ == SourceModel::PointDipole;
   const bool bsr_identity_compatible =
       !effective_point_source || fixed_target_source_indices_.has_value();
+  // Point sources take the dense leaf-block packing: it streams six tensor
+  // values per pair instead of nine and keeps every self identity dynamic, so
+  // it needs neither a fixed map nor the BSR memory budget. Periodic images
+  // repeat leaf pairs and keep the canonical/BSR selection.
+  const bool leaf_compatible = effective_point_source && !periodic_.enabled;
+  const std::span<const int> fixed_identities =
+      fixed_target_source_indices_.has_value()
+          ? std::span<const int>(fixed_sorted_self_indices_)
+          : std::span<const int>{};
   if (precision_ == StaticPrecision::Float32) {
     if (use_reduced_symmetry_p2p_ &&
         p2p_tensor_dictionary_plan_float_.has_value()) {
@@ -527,6 +569,13 @@ void UniformFmm::build_cuda_p2p_plan() {
       p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
       return;
     }
+    if (leaf_compatible) {
+      cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+          std::make_unique<CudaP2PPlan>(build_cuda_leaf_plan_float(),
+                                        fixed_identities));
+      p2p_execution_packing_ = P2PExecutionPacking::LeafBlock;
+      return;
+    }
     if (!periodic_.enabled && bsr_identity_compatible &&
         estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
             cuda_p2p_bsr_max_bytes_) {
@@ -535,10 +584,6 @@ void UniformFmm::build_cuda_p2p_plan() {
       p2p_execution_packing_ = P2PExecutionPacking::CudaBsr3;
       return;
     }
-    const std::span<const int> fixed_identities =
-        fixed_target_source_indices_.has_value()
-            ? std::span<const int>(fixed_sorted_self_indices_)
-            : std::span<const int>{};
     cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
         std::make_unique<CudaP2PPlan>(p2p_operator_float_, fixed_identities));
     p2p_execution_packing_ = P2PExecutionPacking::CanonicalAos;
@@ -552,6 +597,13 @@ void UniformFmm::build_cuda_p2p_plan() {
             cuda_dictionary_target_owned_,
             cuda_dictionary_power2_microtiles_));
     p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
+    return;
+  }
+  if (leaf_compatible) {
+    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+        std::make_unique<CudaP2PPlan>(build_cuda_leaf_plan(),
+                                      fixed_identities));
+    p2p_execution_packing_ = P2PExecutionPacking::LeafBlock;
     return;
   }
   if (!periodic_.enabled && bsr_identity_compatible &&
@@ -569,13 +621,25 @@ void UniformFmm::build_cuda_p2p_plan() {
     return;
   }
 
-  const std::span<const int> fixed_identities =
-      fixed_target_source_indices_.has_value()
-          ? std::span<const int>(fixed_sorted_self_indices_)
-          : std::span<const int>{};
   cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
       std::make_unique<CudaP2PPlan>(p2p_operator_, fixed_identities));
   p2p_execution_packing_ = P2PExecutionPacking::CanonicalAos;
+}
+
+StaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan() const {
+  return build_static_p2p_leaf_plan(p2p_operator_,
+                                    leaf_pairs_from_topology(*topology_));
+}
+
+FloatStaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan_float() const {
+  const std::vector<StaticP2PLeafPair> leaf_pairs =
+      leaf_pairs_from_topology(*topology_);
+  if (geometry_cache_loaded_direct_float_) {
+    return quantise_static_p2p_leaf_plan(build_static_p2p_leaf_plan(
+        promote_p2p_operator(p2p_operator_float_), leaf_pairs));
+  }
+  return quantise_static_p2p_leaf_plan(
+      build_static_p2p_leaf_plan(p2p_operator_, leaf_pairs));
 }
 
 void UniformFmm::build_backend_packing() {
@@ -605,6 +669,7 @@ void UniformFmm::build_cuda_full_plan() {
       near_field_source_model_ == SourceModel::PointDipole;
   const bool bsr_identity_compatible =
       !effective_point_source || fixed_target_source_indices_.has_value();
+  const bool leaf_compatible = effective_point_source && !periodic_.enabled;
   if (precision_ == StaticPrecision::Float32) {
     FloatCudaFullPlanData data;
     data.coefficient_count = coefficient_count();
@@ -691,9 +756,12 @@ void UniformFmm::build_cuda_full_plan() {
         data.has_fixed_self_indices = true;
         data.fixed_self_indices = fixed_sorted_self_indices_;
       }
-      if (!periodic_.enabled && bsr_identity_compatible &&
-          estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
-              cuda_p2p_bsr_max_bytes_) {
+      if (leaf_compatible) {
+        data.use_p2p_leaf = true;
+        data.p2p_leaf = build_cuda_leaf_plan_float();
+      } else if (!periodic_.enabled && bsr_identity_compatible &&
+                 estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
+                     cuda_p2p_bsr_max_bytes_) {
         data.use_p2p_bsr = true;
       }
     }
@@ -704,13 +772,15 @@ void UniformFmm::build_cuda_full_plan() {
       }
     } else if (data.use_p2p_bsr) {
       data.p2p_bsr = std::move(p2p_bsr_plan_float_);
-    } else {
+    } else if (!data.use_p2p_leaf) {
       data.p2p = p2p_operator_float_;
     }
     p2p_execution_packing_ = data.use_p2p_dictionary
         ? P2PExecutionPacking::TensorDictionary
-        : (data.use_p2p_bsr ? P2PExecutionPacking::CudaBsr3
-                            : P2PExecutionPacking::CanonicalAos);
+        : (data.use_p2p_bsr
+               ? P2PExecutionPacking::CudaBsr3
+               : (data.use_p2p_leaf ? P2PExecutionPacking::LeafBlock
+                                    : P2PExecutionPacking::CanonicalAos));
     cuda_full_plan_ = std::make_unique<CudaFullPlanOwner>(
         std::make_unique<CudaFullPlan>(data));
     return;
@@ -803,9 +873,12 @@ void UniformFmm::build_cuda_full_plan() {
       data.has_fixed_self_indices = true;
       data.fixed_self_indices = fixed_sorted_self_indices_;
     }
-    if (!periodic_.enabled && bsr_identity_compatible &&
-        estimate_bsr_bytes(p2p_operator_, sizeof(double)) <=
-            cuda_p2p_bsr_max_bytes_) {
+    if (leaf_compatible) {
+      data.use_p2p_leaf = true;
+      data.p2p_leaf = build_cuda_leaf_plan();
+    } else if (!periodic_.enabled && bsr_identity_compatible &&
+               estimate_bsr_bytes(p2p_operator_, sizeof(double)) <=
+                   cuda_p2p_bsr_max_bytes_) {
       const std::span<const int> bsr_identities =
           fixed_target_source_indices_.has_value()
               ? std::span<const int>(fixed_sorted_self_indices_)
@@ -815,13 +888,15 @@ void UniformFmm::build_cuda_full_plan() {
       data.use_p2p_bsr = true;
     }
   }
-  if (!data.use_p2p_dictionary && !data.use_p2p_bsr) {
+  if (!data.use_p2p_dictionary && !data.use_p2p_bsr && !data.use_p2p_leaf) {
     data.p2p = p2p_operator_;
   }
   p2p_execution_packing_ = data.use_p2p_dictionary
       ? P2PExecutionPacking::TensorDictionary
-      : (data.use_p2p_bsr ? P2PExecutionPacking::CudaBsr3
-                          : P2PExecutionPacking::CanonicalAos);
+      : (data.use_p2p_bsr
+             ? P2PExecutionPacking::CudaBsr3
+             : (data.use_p2p_leaf ? P2PExecutionPacking::LeafBlock
+                                  : P2PExecutionPacking::CanonicalAos));
   cuda_full_plan_ =
       std::make_unique<CudaFullPlanOwner>(std::make_unique<CudaFullPlan>(data));
 }

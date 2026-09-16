@@ -345,7 +345,8 @@ TEST_CASE("CUDA static P2P packings agree with canonical CPU rows",
   verify(compact_cuda);
   CudaP2PPlan leaf_cuda(leaf, identities);
   verify(leaf_cuda);
-  REQUIRE(leaf_cuda.statistics().p2p_scratch_bytes > 0);
+  // The warp-per-block leaf kernel stages nothing in shared memory.
+  REQUIRE(leaf_cuda.statistics().p2p_scratch_bytes == 0);
   REQUIRE(leaf_cuda.statistics().p2p_leaf_metadata_bytes > 0);
   CudaP2PPlan bsr_cuda(bsr);
   verify(bsr_cuda);
@@ -647,11 +648,15 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
         options.backend = ExecutionBackend::CudaFull;
         UniformFmm full(sources, targets, options);
 
+        // Point sources select the dense leaf-block packing, which keeps the
+        // fixed identity map resident on the device.
         REQUIRE(partial.p2p_execution_packing() ==
-                P2PExecutionPacking::CudaBsr3);
-        REQUIRE(full.p2p_execution_packing() == P2PExecutionPacking::CudaBsr3);
-        REQUIRE(partial.cuda_plan_statistics().p2p_identity_bytes == 0);
-        REQUIRE(full.cuda_plan_statistics().p2p_identity_bytes == 0);
+                P2PExecutionPacking::LeafBlock);
+        REQUIRE(full.p2p_execution_packing() == P2PExecutionPacking::LeafBlock);
+        REQUIRE(partial.cuda_plan_statistics().p2p_identity_bytes ==
+                targets.size() * sizeof(int));
+        REQUIRE(full.cuda_plan_statistics().p2p_identity_bytes ==
+                targets.size() * sizeof(int));
 
         const auto expected =
             cpu.evaluate(moments, OutputFlags::Field, identities);
@@ -769,14 +774,18 @@ TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
     return;
   }
 
+  // Finite sources keep BSR(3) as their default packing (their self fields are
+  // physical), so the memory budget is what decides between BSR and canonical
+  // rows; point sources take the leaf-block packing regardless of the budget.
   const std::vector<Vec3> positions{
       {-0.5, 0.0, 0.0}, {0.25, 0.1, -0.2}, {0.4, -0.3, 0.2}};
-  const std::vector<int> identities{0, 1, 2};
   UniformFmmOptions options;
   options.expansion_basis = ExpansionBasis::Cartesian;
+  options.expansion_order = 2;
   options.backend = ExecutionBackend::CudaPartial;
   options.tree.max_level = 0;
-  options.fixed_target_source_indices = identities;
+  options.source_geometry = SourceGeometry::RectangularPrism;
+  options.source_sizes = {CuboidSize{0.05, 0.04, 0.03}};
   options.cuda_p2p_bsr_max_bytes = 0;
 
   UniformFmm fmm(positions, positions, options);
@@ -784,6 +793,21 @@ TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
   REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::CanonicalAos);
   REQUIRE(fmm.cuda_plan_statistics().p2p_identity_bytes ==
           positions.size() * sizeof(int));
+
+  options.cuda_p2p_bsr_max_bytes = 20ULL * 1024ULL * 1024ULL * 1024ULL;
+  UniformFmm within_budget(positions, positions, options);
+  REQUIRE(within_budget.p2p_execution_packing() ==
+          P2PExecutionPacking::CudaBsr3);
+
+  const std::vector<int> identities{0, 1, 2};
+  UniformFmmOptions point_options;
+  point_options.expansion_basis = ExpansionBasis::Cartesian;
+  point_options.backend = ExecutionBackend::CudaPartial;
+  point_options.tree.max_level = 0;
+  point_options.fixed_target_source_indices = identities;
+  point_options.cuda_p2p_bsr_max_bytes = 0;
+  UniformFmm point(positions, positions, point_options);
+  REQUIRE(point.p2p_execution_packing() == P2PExecutionPacking::LeafBlock);
 }
 
 TEST_CASE("CUDA BSR supports finite cuboid point and cuboid self fields",

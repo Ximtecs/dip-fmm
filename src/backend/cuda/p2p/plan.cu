@@ -125,81 +125,82 @@ void launch_compact_p2p(
   check_cuda(cudaGetLastError(), "launch compact static P2P kernel");
 }
 
-constexpr int p2p_source_batch_size = 128;
+constexpr int leaf_p2p_threads = 128;
 
+// One warp per dense (target leaf, source leaf) block. Lanes are laid out as
+// `stride` consecutive targets (the smallest power of two covering the leaf,
+// at most 32) times `32 / stride` source slots, so every tensor component
+// load is a contiguous run of `target_count` values (the CUDA copy of the
+// leaf plan is source-major inside a block) and the moment of one source is
+// uniform across a lane group. Source-slot partial fields are combined with
+// shuffles and the block's contribution is added atomically, because the
+// other source leaves of the same target leaf run in other warps. The number
+// of warps in flight is the number of dense blocks, which keeps the memory
+// system busy even for trees with a few particles per leaf.
 template <typename Scalar, typename Vector>
-__global__ void leaf_p2p_kernel(
-    const int* target_begins,
-    const int* target_counts,
-    const int* leaf_row_offsets,
-    const StaticP2PLeafBlock* leaf_blocks,
-    const Scalar* tensors,
-    const std::size_t interaction_count,
-    const Vector* moments,
-    const int* self_indices,
-    Vector* fields)
-{
-  extern __shared__ unsigned char shared_storage[];
-  Vector *shared_moments = reinterpret_cast<Vector *>(shared_storage);
-  const int target_leaf = blockIdx.x;
+__global__ void __launch_bounds__(leaf_p2p_threads) leaf_p2p_kernel(
+    const int *__restrict__ block_target_leaves,
+    const int *__restrict__ target_begins,
+    const int *__restrict__ target_counts,
+    const StaticP2PLeafBlock *__restrict__ leaf_blocks,
+    const Scalar *__restrict__ tensors, const std::size_t interaction_count,
+    const int block_count, const Vector *__restrict__ moments,
+    const int *__restrict__ self_indices, Vector *__restrict__ fields) {
+  const int warp = static_cast<int>((blockIdx.x * blockDim.x + threadIdx.x) >> 5);
+  const int lane = static_cast<int>(threadIdx.x & 31);
+  if (warp >= block_count) {
+    return;
+  }
+  const int target_leaf = block_target_leaves[warp];
   const int target_begin = target_begins[target_leaf];
   const int target_count = target_counts[target_leaf];
+  const StaticP2PLeafBlock block = leaf_blocks[warp];
 
-  // All threads execute every source-batch barrier. Threads outside the final
-  // target batch participate in staging but do not accumulate or write.
+  int stride = 32;
+  while (stride > 1 && (stride >> 1) >= target_count) {
+    stride >>= 1;
+  }
+  const int source_slots = 32 / stride;
+  const int source_slot = lane / stride;
+  const int target_slot = lane - source_slot * stride;
+
   for (int target_base = 0; target_base < target_count;
-       target_base += blockDim.x) {
-    const int local_target = target_base + threadIdx.x;
+       target_base += stride) {
+    const int local_target = target_base + target_slot;
     const bool active = local_target < target_count;
-    const int target = target_begin + local_target;
+    const int target = target_begin + (active ? local_target : 0);
     const int self = active ? self_indices[target] : -1;
-    Vector field{};
-
-    for (int block_index = leaf_row_offsets[target_leaf];
-         block_index < leaf_row_offsets[target_leaf + 1]; ++block_index) {
-      const StaticP2PLeafBlock leaf_block = leaf_blocks[block_index];
-      for (int source_base = 0; source_base < leaf_block.source_count;
-           source_base += p2p_source_batch_size) {
-        const int batch_count = min(
-            p2p_source_batch_size, leaf_block.source_count - source_base);
-        for (int local_source = threadIdx.x; local_source < batch_count;
-             local_source += blockDim.x) {
-          shared_moments[local_source] =
-              moments[leaf_block.source_begin + source_base + local_source];
-        }
-        __syncthreads();
-
-        if (active) {
-          for (int batch_source = 0; batch_source < batch_count;
-               ++batch_source) {
-            const int local_source = source_base + batch_source;
-            const int source = leaf_block.source_begin + local_source;
-            if (source == self) {
-              continue;
-            }
-
-            // CUDA tensors are transposed during setup to source-major order.
-            // Consecutive target threads therefore read consecutive entries.
-            const std::size_t index = leaf_block.tensor_offset +
-                static_cast<std::size_t>(local_source) * target_count +
-                local_target;
-            const Vector moment = shared_moments[batch_source];
-            const Scalar xx = tensors[index];
-            const Scalar xy = tensors[interaction_count + index];
-            const Scalar xz = tensors[2 * interaction_count + index];
-            const Scalar yy = tensors[3 * interaction_count + index];
-            const Scalar yz = tensors[4 * interaction_count + index];
-            const Scalar zz = tensors[5 * interaction_count + index];
-            field.x += xx * moment.x + xy * moment.y + xz * moment.z;
-            field.y += xy * moment.x + yy * moment.y + yz * moment.z;
-            field.z += xz * moment.x + yz * moment.y + zz * moment.z;
-          }
-        }
-        __syncthreads();
+    Scalar hx = Scalar{0};
+    Scalar hy = Scalar{0};
+    Scalar hz = Scalar{0};
+    for (int local_source = source_slot; local_source < block.source_count;
+         local_source += source_slots) {
+      const int source = block.source_begin + local_source;
+      if (!active || source == self) {
+        continue;
       }
+      const Vector moment = moments[source];
+      const std::size_t index = block.tensor_offset +
+          static_cast<std::size_t>(local_source) * target_count + local_target;
+      const Scalar xx = tensors[index];
+      const Scalar xy = tensors[interaction_count + index];
+      const Scalar xz = tensors[2 * interaction_count + index];
+      const Scalar yy = tensors[3 * interaction_count + index];
+      const Scalar yz = tensors[4 * interaction_count + index];
+      const Scalar zz = tensors[5 * interaction_count + index];
+      hx += xx * moment.x + xy * moment.y + xz * moment.z;
+      hy += xy * moment.x + yy * moment.y + yz * moment.z;
+      hz += xz * moment.x + yz * moment.y + zz * moment.z;
     }
-    if (active) {
-      fields[target] = field;
+    for (int offset = stride; offset < 32; offset <<= 1) {
+      hx += __shfl_xor_sync(0xffffffffU, hx, offset);
+      hy += __shfl_xor_sync(0xffffffffU, hy, offset);
+      hz += __shfl_xor_sync(0xffffffffU, hz, offset);
+    }
+    if (active && source_slot == 0) {
+      atomicAdd(&fields[target].x, hx);
+      atomicAdd(&fields[target].y, hy);
+      atomicAdd(&fields[target].z, hz);
     }
   }
 }
@@ -329,20 +330,21 @@ void launch_leaf_p2p(
   if (plan.target_count == 0) {
     return;
   }
+  // Blocks accumulate atomically, so the fields start from zero.
   check_cuda(
       cudaMemsetAsync(
           fields, 0, static_cast<std::size_t>(plan.target_count) * sizeof(Vector),
           stream),
       "clear leaf P2P fields");
-  if (plan.target_leaf_count == 0) {
+  if (plan.block_count == 0) {
     return;
   }
-  leaf_p2p_kernel<<<
-      plan.target_leaf_count, plan.threads_per_block,
-      p2p_source_batch_size * sizeof(Vector), stream>>>(
-      plan.target_begins, plan.target_counts, plan.leaf_row_offsets,
-      plan.leaf_blocks, plan.tensors, plan.interaction_count, moments,
-      self_indices, fields);
+  constexpr int warps_per_block = leaf_p2p_threads / 32;
+  leaf_p2p_kernel<<<(plan.block_count + warps_per_block - 1) / warps_per_block,
+                    leaf_p2p_threads, 0, stream>>>(
+      plan.block_target_leaves, plan.target_begins, plan.target_counts,
+      plan.leaf_blocks, plan.tensors, plan.interaction_count, plan.block_count,
+      moments, self_indices, fields);
   check_cuda(cudaGetLastError(), "launch leaf-block static P2P kernel");
 }
 
@@ -1536,6 +1538,134 @@ void upload_cuda_canonical_impl(
   statistics.setup_h2d_bytes += row_bytes + block_bytes;
 }
 
+// Uploads a dense leaf packing. Portable leaf tensors are target-major; the
+// CUDA copy transposes every block to source-major so that the lanes of one
+// warp read consecutive targets. The per-block target leaf map lets one warp
+// own one block without searching the leaf row offsets.
+template <typename Scalar, typename Plan>
+void upload_cuda_leaf_typed(const Plan &leaf,
+                            CudaLeafP2PDeviceView<Scalar> &device,
+                            CudaPlanStatistics &statistics,
+                            const char *allocation_operation,
+                            const char *upload_operation) {
+  device.target_count = leaf.target_count;
+  device.target_leaf_count = static_cast<int>(leaf.target_begins.size());
+  device.block_count = static_cast<int>(leaf.blocks.size());
+  device.interaction_count = leaf.tensors[0].size();
+  device.threads_per_block = leaf_p2p_threads;
+
+  std::vector<int> block_target_leaves(leaf.blocks.size(), 0);
+  for (std::size_t target_leaf = 0; target_leaf < leaf.target_begins.size();
+       ++target_leaf) {
+    for (int block_index = leaf.leaf_row_offsets[target_leaf];
+         block_index < leaf.leaf_row_offsets[target_leaf + 1]; ++block_index) {
+      block_target_leaves[static_cast<std::size_t>(block_index)] =
+          static_cast<int>(target_leaf);
+    }
+  }
+
+  const std::size_t target_metadata_bytes =
+      (leaf.target_begins.size() + leaf.target_counts.size()) * sizeof(int);
+  const std::size_t row_bytes = leaf.leaf_row_offsets.size() * sizeof(int);
+  const std::size_t block_leaf_bytes = block_target_leaves.size() * sizeof(int);
+  const std::size_t block_bytes =
+      leaf.blocks.size() * sizeof(StaticP2PLeafBlock);
+  const std::size_t tensor_bytes = leaf.tensors[0].size() * 6 * sizeof(Scalar);
+  const auto allocate = [&](void **pointer, const std::size_t bytes) {
+    check_cuda(cudaMalloc(pointer, std::max(bytes, std::size_t{1})),
+               allocation_operation);
+  };
+  allocate(reinterpret_cast<void **>(&device.target_begins),
+           leaf.target_begins.size() * sizeof(int));
+  allocate(reinterpret_cast<void **>(&device.target_counts),
+           leaf.target_counts.size() * sizeof(int));
+  allocate(reinterpret_cast<void **>(&device.leaf_row_offsets), row_bytes);
+  allocate(reinterpret_cast<void **>(&device.block_target_leaves),
+           block_leaf_bytes);
+  allocate(reinterpret_cast<void **>(&device.leaf_blocks), block_bytes);
+  allocate(reinterpret_cast<void **>(&device.tensors), tensor_bytes);
+
+  const auto upload = [&](void *destination, const void *source,
+                          const std::size_t bytes) {
+    if (bytes != 0) {
+      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
+                 upload_operation);
+    }
+  };
+  upload(device.target_begins, leaf.target_begins.data(),
+         leaf.target_begins.size() * sizeof(int));
+  upload(device.target_counts, leaf.target_counts.data(),
+         leaf.target_counts.size() * sizeof(int));
+  upload(device.leaf_row_offsets, leaf.leaf_row_offsets.data(), row_bytes);
+  upload(device.block_target_leaves, block_target_leaves.data(),
+         block_leaf_bytes);
+  upload(device.leaf_blocks, leaf.blocks.data(), block_bytes);
+
+  std::array<std::vector<Scalar>, 6> transposed;
+  for (auto &component : transposed) {
+    component.resize(leaf.tensors[0].size());
+  }
+  for (std::size_t target_leaf = 0; target_leaf < leaf.target_begins.size();
+       ++target_leaf) {
+    const int target_count = leaf.target_counts[target_leaf];
+    for (int block_index = leaf.leaf_row_offsets[target_leaf];
+         block_index < leaf.leaf_row_offsets[target_leaf + 1]; ++block_index) {
+      const StaticP2PLeafBlock &block =
+          leaf.blocks[static_cast<std::size_t>(block_index)];
+      for (int local_target = 0; local_target < target_count; ++local_target) {
+        for (int local_source = 0; local_source < block.source_count;
+             ++local_source) {
+          const std::size_t source_index = block.tensor_offset +
+              static_cast<std::size_t>(local_target) * block.source_count +
+              local_source;
+          const std::size_t destination_index = block.tensor_offset +
+              static_cast<std::size_t>(local_source) * target_count +
+              local_target;
+          for (std::size_t component = 0; component < 6; ++component) {
+            transposed[component][destination_index] =
+                leaf.tensors[component][source_index];
+          }
+        }
+      }
+    }
+  }
+  for (std::size_t component = 0; component < 6; ++component) {
+    upload(device.tensors + component * leaf.tensors[0].size(),
+           transposed[component].data(),
+           transposed[component].size() * sizeof(Scalar));
+  }
+
+  const std::size_t total_bytes = target_metadata_bytes + row_bytes +
+      block_leaf_bytes + block_bytes + tensor_bytes;
+  statistics.setup_h2d_bytes += total_bytes;
+  statistics.persistent_device_bytes += total_bytes;
+  statistics.p2p_interaction_count = leaf.tensors[0].size();
+  statistics.p2p_tensor_bytes = tensor_bytes;
+  statistics.p2p_row_metadata_bytes = row_bytes;
+  statistics.p2p_leaf_metadata_bytes =
+      target_metadata_bytes + block_leaf_bytes + block_bytes;
+  statistics.p2p_scratch_bytes = 0;
+  statistics.p2p_threads_per_block = leaf_p2p_threads;
+}
+
+void upload_cuda_leaf(const StaticP2PLeafPlan &host,
+                      CudaLeafP2PDeviceView<double> &device,
+                      CudaPlanStatistics &statistics,
+                      const char *allocation_operation,
+                      const char *upload_operation) {
+  upload_cuda_leaf_typed(host, device, statistics, allocation_operation,
+                         upload_operation);
+}
+
+void upload_cuda_leaf(const FloatStaticP2PLeafPlan &host,
+                      CudaLeafP2PDeviceView<float> &device,
+                      CudaPlanStatistics &statistics,
+                      const char *allocation_operation,
+                      const char *upload_operation) {
+  upload_cuda_leaf_typed(host, device, statistics, allocation_operation,
+                         upload_operation);
+}
+
 void upload_cuda_canonical(
     const StaticP2POperator &host,
     CudaP2PDeviceView<StaticDipoleBlock> &device,
@@ -1633,6 +1763,7 @@ void release_leaf_p2p(CudaLeafP2PDeviceView<Scalar> &plan) noexcept {
   cudaFree(plan.target_begins);
   cudaFree(plan.target_counts);
   cudaFree(plan.leaf_row_offsets);
+  cudaFree(plan.block_target_leaves);
   cudaFree(plan.leaf_blocks);
   cudaFree(plan.tensors);
   plan = {};
@@ -2070,111 +2201,8 @@ CudaP2PPlan::CudaP2PPlan(
 {
   auto& plan = *implementation_;
   plan.kind = Implementation::Kind::Leaf;
-  plan.leaf.target_count = plan.target_count;
-  plan.leaf.target_leaf_count = static_cast<int>(leaf.target_begins.size());
-  plan.leaf.interaction_count = leaf.tensors[0].size();
-  int maximum_target_count = 1;
-  for (const int target_count : leaf.target_counts) {
-    maximum_target_count = std::max(maximum_target_count, target_count);
-  }
-  plan.leaf.threads_per_block = 32;
-  while (plan.leaf.threads_per_block < maximum_target_count &&
-         plan.leaf.threads_per_block < 256) {
-    plan.leaf.threads_per_block *= 2;
-  }
-
-  const std::size_t target_metadata_bytes =
-      (leaf.target_begins.size() + leaf.target_counts.size()) * sizeof(int);
-  const std::size_t row_bytes = leaf.leaf_row_offsets.size() * sizeof(int);
-  const std::size_t block_bytes =
-      leaf.blocks.size() * sizeof(StaticP2PLeafBlock);
-  const std::size_t tensor_bytes =
-      leaf.tensors[0].size() * 6 * sizeof(double);
-  check_cuda(cudaMalloc(&plan.leaf.target_begins,
-                        std::max(leaf.target_begins.size() * sizeof(int),
-                                 sizeof(int))),
-             "allocate leaf P2P target begins");
-  check_cuda(cudaMalloc(&plan.leaf.target_counts,
-                        std::max(leaf.target_counts.size() * sizeof(int),
-                                 sizeof(int))),
-             "allocate leaf P2P target counts");
-  check_cuda(cudaMalloc(&plan.leaf.leaf_row_offsets,
-                        std::max(row_bytes, sizeof(int))),
-             "allocate leaf P2P rows");
-  check_cuda(cudaMalloc(&plan.leaf.leaf_blocks,
-                        std::max(block_bytes, sizeof(StaticP2PLeafBlock))),
-             "allocate leaf P2P blocks");
-  check_cuda(cudaMalloc(&plan.leaf.tensors,
-                        std::max(tensor_bytes, sizeof(double))),
-             "allocate leaf P2P tensors");
-
-  const auto upload = [](void* destination, const void* source,
-                         const std::size_t bytes, const char* operation) {
-    if (bytes != 0) {
-      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
-                 operation);
-    }
-  };
-  upload(plan.leaf.target_begins, leaf.target_begins.data(),
-         leaf.target_begins.size() * sizeof(int),
-         "upload leaf P2P target begins");
-  upload(plan.leaf.target_counts, leaf.target_counts.data(),
-         leaf.target_counts.size() * sizeof(int),
-         "upload leaf P2P target counts");
-  upload(plan.leaf.leaf_row_offsets, leaf.leaf_row_offsets.data(), row_bytes,
-         "upload leaf P2P rows");
-  upload(plan.leaf.leaf_blocks, leaf.blocks.data(), block_bytes,
-         "upload leaf P2P blocks");
-
-  // Portable leaf tensors are target-major. CUDA transposes each dense leaf
-  // rectangle so neighbouring target threads read consecutive coefficients.
-  std::array<std::vector<double>, 6> transposed;
-  for (auto& component : transposed) {
-    component.resize(leaf.tensors[0].size());
-  }
-  for (std::size_t target_leaf = 0;
-       target_leaf < leaf.target_begins.size(); ++target_leaf) {
-    const int target_count = leaf.target_counts[target_leaf];
-    for (int block_index = leaf.leaf_row_offsets[target_leaf];
-         block_index < leaf.leaf_row_offsets[target_leaf + 1]; ++block_index) {
-      const StaticP2PLeafBlock& block =
-          leaf.blocks[static_cast<std::size_t>(block_index)];
-      for (int local_target = 0; local_target < target_count; ++local_target) {
-        for (int local_source = 0; local_source < block.source_count;
-             ++local_source) {
-          const std::size_t source_index = block.tensor_offset +
-              static_cast<std::size_t>(local_target) * block.source_count +
-              local_source;
-          const std::size_t destination_index = block.tensor_offset +
-              static_cast<std::size_t>(local_source) * target_count +
-              local_target;
-          for (std::size_t component = 0; component < 6; ++component) {
-            transposed[component][destination_index] =
-                leaf.tensors[component][source_index];
-          }
-        }
-      }
-    }
-  }
-  for (std::size_t component = 0; component < 6; ++component) {
-    upload(plan.leaf.tensors + component * leaf.tensors[0].size(),
-           transposed[component].data(),
-           transposed[component].size() * sizeof(double),
-           "upload transposed leaf P2P tensor component");
-  }
-
-  plan.statistics.setup_h2d_bytes +=
-      target_metadata_bytes + row_bytes + block_bytes + tensor_bytes;
-  plan.statistics.persistent_device_bytes +=
-      target_metadata_bytes + row_bytes + block_bytes + tensor_bytes;
-  plan.statistics.p2p_interaction_count = leaf.tensors[0].size();
-  plan.statistics.p2p_tensor_bytes = tensor_bytes;
-  plan.statistics.p2p_row_metadata_bytes = row_bytes;
-  plan.statistics.p2p_leaf_metadata_bytes =
-      target_metadata_bytes + block_bytes;
-  plan.statistics.p2p_scratch_bytes =
-      p2p_source_batch_size * sizeof(Vec3);
-  plan.statistics.p2p_threads_per_block = plan.leaf.threads_per_block;
+  upload_cuda_leaf(leaf, plan.leaf, plan.statistics,
+                   "allocate leaf P2P data", "upload leaf P2P data");
 }
 
 CudaP2PPlan::CudaP2PPlan(
@@ -2184,108 +2212,8 @@ CudaP2PPlan::CudaP2PPlan(
                   true, StaticPrecision::Float32) {
   auto &plan = *implementation_;
   plan.kind = Implementation::Kind::Leaf;
-  plan.leaf_float.target_count = plan.target_count;
-  plan.leaf_float.target_leaf_count =
-      static_cast<int>(leaf.target_begins.size());
-  plan.leaf_float.interaction_count = leaf.tensors[0].size();
-  int maximum_target_count = 1;
-  for (const int target_count : leaf.target_counts) {
-    maximum_target_count = std::max(maximum_target_count, target_count);
-  }
-  plan.leaf_float.threads_per_block = 32;
-  while (plan.leaf_float.threads_per_block < maximum_target_count &&
-         plan.leaf_float.threads_per_block < 256) {
-    plan.leaf_float.threads_per_block *= 2;
-  }
-
-  const std::size_t target_metadata_bytes =
-      (leaf.target_begins.size() + leaf.target_counts.size()) * sizeof(int);
-  const std::size_t row_bytes = leaf.leaf_row_offsets.size() * sizeof(int);
-  const std::size_t block_bytes =
-      leaf.blocks.size() * sizeof(StaticP2PLeafBlock);
-  const std::size_t tensor_bytes = leaf.tensors[0].size() * 6 * sizeof(float);
-  check_cuda(cudaMalloc(&plan.leaf_float.target_begins,
-                        std::max(leaf.target_begins.size() * sizeof(int),
-                                 sizeof(int))),
-             "allocate FP32 leaf P2P target begins");
-  check_cuda(cudaMalloc(&plan.leaf_float.target_counts,
-                        std::max(leaf.target_counts.size() * sizeof(int),
-                                 sizeof(int))),
-             "allocate FP32 leaf P2P target counts");
-  check_cuda(cudaMalloc(&plan.leaf_float.leaf_row_offsets,
-                        std::max(row_bytes, sizeof(int))),
-             "allocate FP32 leaf P2P rows");
-  check_cuda(cudaMalloc(&plan.leaf_float.leaf_blocks,
-                        std::max(block_bytes, sizeof(StaticP2PLeafBlock))),
-             "allocate FP32 leaf P2P blocks");
-  check_cuda(cudaMalloc(&plan.leaf_float.tensors,
-                        std::max(tensor_bytes, sizeof(float))),
-             "allocate FP32 leaf P2P tensors");
-  const auto upload = [](void *destination, const void *source,
-                         const std::size_t bytes, const char *operation) {
-    if (bytes != 0) {
-      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
-                 operation);
-    }
-  };
-  upload(plan.leaf_float.target_begins, leaf.target_begins.data(),
-         leaf.target_begins.size() * sizeof(int),
-         "upload FP32 leaf P2P target begins");
-  upload(plan.leaf_float.target_counts, leaf.target_counts.data(),
-         leaf.target_counts.size() * sizeof(int),
-         "upload FP32 leaf P2P target counts");
-  upload(plan.leaf_float.leaf_row_offsets, leaf.leaf_row_offsets.data(),
-         row_bytes, "upload FP32 leaf P2P rows");
-  upload(plan.leaf_float.leaf_blocks, leaf.blocks.data(), block_bytes,
-         "upload FP32 leaf P2P blocks");
-
-  std::array<std::vector<float>, 6> transposed;
-  for (auto &component : transposed) {
-    component.resize(leaf.tensors[0].size());
-  }
-  for (std::size_t target_leaf = 0;
-       target_leaf < leaf.target_begins.size(); ++target_leaf) {
-    const int target_count = leaf.target_counts[target_leaf];
-    for (int block_index = leaf.leaf_row_offsets[target_leaf];
-         block_index < leaf.leaf_row_offsets[target_leaf + 1]; ++block_index) {
-      const StaticP2PLeafBlock &block =
-          leaf.blocks[static_cast<std::size_t>(block_index)];
-      for (int local_target = 0; local_target < target_count; ++local_target) {
-        for (int local_source = 0; local_source < block.source_count;
-             ++local_source) {
-          const std::size_t source_index = block.tensor_offset +
-              static_cast<std::size_t>(local_target) * block.source_count +
-              local_source;
-          const std::size_t destination_index = block.tensor_offset +
-              static_cast<std::size_t>(local_source) * target_count +
-              local_target;
-          for (std::size_t component = 0; component < 6; ++component) {
-            transposed[component][destination_index] =
-                leaf.tensors[component][source_index];
-          }
-        }
-      }
-    }
-  }
-  for (std::size_t component = 0; component < 6; ++component) {
-    upload(plan.leaf_float.tensors + component * leaf.tensors[0].size(),
-           transposed[component].data(),
-           transposed[component].size() * sizeof(float),
-           "upload transposed FP32 leaf P2P tensor component");
-  }
-  plan.statistics.setup_h2d_bytes +=
-      target_metadata_bytes + row_bytes + block_bytes + tensor_bytes;
-  plan.statistics.persistent_device_bytes +=
-      target_metadata_bytes + row_bytes + block_bytes + tensor_bytes;
-  plan.statistics.p2p_interaction_count = leaf.tensors[0].size();
-  plan.statistics.p2p_tensor_bytes = tensor_bytes;
-  plan.statistics.p2p_row_metadata_bytes = row_bytes;
-  plan.statistics.p2p_leaf_metadata_bytes =
-      target_metadata_bytes + block_bytes;
-  plan.statistics.p2p_scratch_bytes =
-      p2p_source_batch_size * sizeof(FloatVec3);
-  plan.statistics.p2p_threads_per_block =
-      plan.leaf_float.threads_per_block;
+  upload_cuda_leaf(leaf, plan.leaf_float, plan.statistics,
+                   "allocate FP32 leaf P2P data", "upload FP32 leaf P2P data");
 }
 
 CudaP2PPlan::CudaP2PPlan(

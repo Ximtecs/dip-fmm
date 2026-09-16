@@ -57,9 +57,12 @@ struct CudaFullPlanData {
   StaticP2POperator p2p{};
   StaticP2PBsrPlan p2p_bsr{};
   StaticP2PSignedTensorDictionaryPlan p2p_dictionary{};
+  StaticP2PLeafPlan p2p_leaf{};
   std::vector<int> fixed_self_indices{};
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
+  /** @brief Selects the warp-per-block dense leaf packing. */
+  bool use_p2p_leaf{false};
   /** @brief Selects one-thread-per-target dictionary P2P execution. */
   bool p2p_dictionary_target_owned{false};
   /** @brief Selects power-of-two target microtiles for dictionary P2P. */
@@ -84,9 +87,12 @@ struct FloatCudaFullPlanData {
   FloatStaticP2POperator p2p{};
   FloatStaticP2PBsrPlan p2p_bsr{};
   FloatStaticP2PSignedTensorDictionaryPlan p2p_dictionary{};
+  FloatStaticP2PLeafPlan p2p_leaf{};
   std::vector<int> fixed_self_indices{};
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
+  /** @brief Selects the warp-per-block dense leaf packing. */
+  bool use_p2p_leaf{false};
   /** @brief Selects one-thread-per-target dictionary P2P execution. */
   bool p2p_dictionary_target_owned{false};
   /** @brief Selects power-of-two target microtiles for dictionary P2P. */

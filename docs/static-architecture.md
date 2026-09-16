@@ -82,9 +82,11 @@ target-row tensor. Execution experiments derive source-only SoA, compact dense
 leaf rectangles, or full BSR(3) blocks without changing it. Standalone CUDA
 plans keep each packing resident on the device and compare one-thread-per-row,
 one-block-per-leaf, and cuSPARSE execution. Production CPU execution uses SoA.
-Production hybrid and full CUDA execution use BSR(3) when a fixed self-identity
-map is supplied and its configured memory budget permits; otherwise they use
-canonical rows. See the
+Production hybrid and full CUDA execution use the dense leaf-block packing
+for point sources (one warp per target-leaf/source-leaf block, six symmetric
+tensor values per pair, dynamic or fixed self identities), BSR(3) for finite
+sources when the configured memory budget permits, and canonical rows
+otherwise. See the
 [static P2P execution study](static-p2p.md) for storage, correctness
 constraints, and measured dispatch recommendations.
 

@@ -93,6 +93,8 @@ std::string_view name(const P2PExecutionPacking value) {
     return "tensor_dictionary";
   case P2PExecutionPacking::CudaBsr3:
     return "cuda_bsr3";
+  case P2PExecutionPacking::LeafBlock:
+    return "leaf_block";
   }
   return "unknown";
 }
