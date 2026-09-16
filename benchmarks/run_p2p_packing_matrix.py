@@ -39,6 +39,17 @@ COLUMNS = [
 def run_case(binary: str, name: str, arguments: list[str], evaluations: int,
              warmups: int, samples: int, threads: int, scratch: Path) -> dict:
     output = scratch / (name.replace("/", "_") + ".csv")
+    if output.exists() and output.stat().st_size > 0:
+        # A completed case is reused so an interrupted matrix resumes.
+        print("=", name, "(reusing)", file=sys.stderr, flush=True)
+        with output.open() as stream:
+            row = next(csv.DictReader(stream))
+        row["case"] = name
+        row["backend"] = row.get("execution_backend", "")
+        row["precision"] = (arguments[arguments.index("--precision") + 1]
+                            if "--precision" in arguments else "float32")
+        row["regular_grid"] = "1" if "--regular-grid" in arguments else "0"
+        return {column: row.get(column, "") for column in COLUMNS}
     command = [
         binary, "--no-direct", "--no-workload-comparison",
         "--accuracy-targets", "0", "--warmups", str(warmups),
