@@ -50,6 +50,9 @@ struct Options {
     bool profile{false};
     bool regular_grid{false};
     bool exact_cuboid_p2p{false};
+    bool reduced_symmetry_p2p{false};
+    bool dictionary_target_owned{false};
+    bool dictionary_power2_microtiles{false};
     std::string precision{"float32"};
     std::string backend{"cpu-static-matrix"};
     std::string expansion_basis{"spherical"};
@@ -116,6 +119,20 @@ Options parse_options(const int argc, char** argv)
         }
         if (key == "--exact-cuboid-p2p") {
             options.exact_cuboid_p2p = true;
+            continue;
+        }
+        // Experimental reduced-symmetry (signed tensor dictionary) P2P and
+        // its CUDA executor selectors; they mirror UniformFmmOptions.
+        if (key == "--reduced-symmetry-p2p") {
+            options.reduced_symmetry_p2p = true;
+            continue;
+        }
+        if (key == "--dictionary-target-owned") {
+            options.dictionary_target_owned = true;
+            continue;
+        }
+        if (key == "--dictionary-power2-microtiles") {
+            options.dictionary_power2_microtiles = true;
             continue;
         }
         if (index + 1 >= argc) {
@@ -695,6 +712,12 @@ int main(int argc, char** argv)
             fmm_options.far_field_source_model = SourceModel::PointDipole;
             fmm_options.far_field_target_model = TargetModel::Point;
         }
+
+        fmm_options.use_reduced_symmetry_p2p = options.reduced_symmetry_p2p;
+        fmm_options.cuda_dictionary_target_owned =
+            options.dictionary_target_owned;
+        fmm_options.cuda_dictionary_power2_microtiles =
+            options.dictionary_power2_microtiles;
 
         UniformFmmOptions selected_options = fmm_options;
         if (selected_backend == BenchmarkBackend::CpuReference ||

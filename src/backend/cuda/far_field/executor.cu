@@ -20,9 +20,15 @@ namespace {
 
 using cuda_detail::check_cuda;
 
-// Lane groups per CSR row / translated output; see the kernel comments.
+// Lane groups per CSR row / translated output; see the kernel comments. M2M
+// outputs reduce over up to eight children and need a whole warp to keep
+// enough loads in flight; L2L outputs have one parent.
 inline constexpr int entry_row_lanes = 8;
 inline constexpr int translation_lanes = 4;
+// Small levels are latency-bound and take a whole warp per output; large
+// levels are throughput-bound and take four lanes.
+inline constexpr int wide_translation_lanes = 32;
+inline constexpr std::size_t wide_translation_outputs = 65536;
 
 } // namespace
 
@@ -325,25 +331,22 @@ std::size_t build_translation(
          matrix_values.size() * sizeof(Scalar);
 }
 
-template <typename Scalar>
-void enqueue_translation_level(const DeviceTranslation<Scalar> &translation,
-                               const int level, const int coefficient_count,
-                               const Scalar *input, Scalar *output,
-                               cudaStream_t stream, const char *description) {
+template <typename Scalar, int lanes>
+void launch_translation_level(const DeviceTranslation<Scalar> &translation,
+                              const int level, const int coefficient_count,
+                              const Scalar *input, Scalar *output,
+                              cudaStream_t stream, const char *description) {
   const int target_count =
       translation.level_target_count[static_cast<std::size_t>(level)];
-  if (target_count == 0) {
-    return;
-  }
   const int target_begin =
       translation.level_target_begin[static_cast<std::size_t>(level)];
   const std::size_t level_matrix_rows =
       static_cast<std::size_t>(8) * (coefficient_count + 1);
   const std::size_t level_matrix_entries =
       static_cast<std::size_t>(8) * translation.entries_per_matrix;
-  const std::size_t items = static_cast<std::size_t>(target_count) *
-                            coefficient_count * translation_lanes;
-  translate_targets_kernel<Scalar, translation_lanes>
+  const std::size_t items =
+      static_cast<std::size_t>(target_count) * coefficient_count * lanes;
+  translate_targets_kernel<Scalar, lanes>
       <<<(items + far_field_threads - 1) / far_field_threads,
          far_field_threads, 0, stream>>>(
       translation.targets + target_begin,
@@ -357,6 +360,29 @@ void enqueue_translation_level(const DeviceTranslation<Scalar> &translation,
           static_cast<std::size_t>(level - 1) * level_matrix_entries,
       target_count, coefficient_count, input, output);
   check_cuda(cudaGetLastError(), description);
+}
+
+template <typename Scalar>
+void enqueue_translation_level(const DeviceTranslation<Scalar> &translation,
+                               const int level, const int coefficient_count,
+                               const Scalar *input, Scalar *output,
+                               cudaStream_t stream, const char *description) {
+  const int target_count =
+      translation.level_target_count[static_cast<std::size_t>(level)];
+  if (target_count == 0) {
+    return;
+  }
+  const std::size_t outputs =
+      static_cast<std::size_t>(target_count) * coefficient_count;
+  if (outputs <= wide_translation_outputs) {
+    launch_translation_level<Scalar, wide_translation_lanes>(
+        translation, level, coefficient_count, input, output, stream,
+        description);
+  } else {
+    launch_translation_level<Scalar, translation_lanes>(
+        translation, level, coefficient_count, input, output, stream,
+        description);
+  }
 }
 
 } // namespace

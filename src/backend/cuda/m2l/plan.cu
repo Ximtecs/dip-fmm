@@ -142,7 +142,11 @@ struct CudaM2LClassGroup {
 
 inline constexpr int m2l_group_threads = 256;
 inline constexpr int m2l_group_alpha_tile = 16;
-inline constexpr int m2l_group_pairs_per_thread = 8;
+// Pairs per thread: 16 keeps FP32 register use moderate and halves the
+// shared-memory matrix loads per FMA for large plans; FP64 and small plans
+// (too few blocks to fill the GPU) use 8.
+inline constexpr int m2l_group_pairs_wide = 16;
+inline constexpr int m2l_group_pairs_narrow = 8;
 
 // Transfer-class grouped M2L. Every block owns one shared matrix and up to
 // `pairs_per_block` (source, target) pairs using it. The matrix is streamed
@@ -154,7 +158,7 @@ inline constexpr int m2l_group_pairs_per_thread = 8;
 // staging, and local level scaling before the final accumulation, so the
 // arithmetic matches the target-row kernels exactly up to summation order.
 // Different classes contribute to the same target, hence the atomic adds.
-template <typename Scalar>
+template <typename Scalar, int pairs_per_thread>
 __global__ void __launch_bounds__(m2l_group_threads)
 apply_grouped_m2l_kernel(const Scalar *__restrict__ matrices,
                          const CudaM2LClassGroup *__restrict__ groups,
@@ -174,7 +178,6 @@ apply_grouped_m2l_kernel(const Scalar *__restrict__ matrices,
   Scalar *multipole_tile =
       matrix_tile + m2l_group_alpha_tile * coefficient_count;
 
-  constexpr int pairs_per_thread = m2l_group_pairs_per_thread;
   const int n = coefficient_count;
   const CudaM2LClassGroup group = groups[blockIdx.x];
   const int pair_count = group.pair_end - group.pair_begin;
@@ -227,16 +230,15 @@ apply_grouped_m2l_kernel(const Scalar *__restrict__ matrices,
         const Scalar *values =
             multipole_tile + alpha * pairs_per_block + first_pair;
         if constexpr (sizeof(Scalar) == sizeof(float)) {
-          const float4 low = *reinterpret_cast<const float4 *>(values);
-          const float4 high = *reinterpret_cast<const float4 *>(values + 4);
-          accumulator[0] += matrix_value * low.x;
-          accumulator[1] += matrix_value * low.y;
-          accumulator[2] += matrix_value * low.z;
-          accumulator[3] += matrix_value * low.w;
-          accumulator[4] += matrix_value * high.x;
-          accumulator[5] += matrix_value * high.y;
-          accumulator[6] += matrix_value * high.z;
-          accumulator[7] += matrix_value * high.w;
+#pragma unroll
+          for (int q = 0; q < pairs_per_thread; q += 4) {
+            const float4 pair_values =
+                *reinterpret_cast<const float4 *>(values + q);
+            accumulator[q] += matrix_value * pair_values.x;
+            accumulator[q + 1] += matrix_value * pair_values.y;
+            accumulator[q + 2] += matrix_value * pair_values.z;
+            accumulator[q + 3] += matrix_value * pair_values.w;
+          }
         } else {
 #pragma unroll
           for (int q = 0; q < pairs_per_thread; q += 2) {
@@ -310,12 +312,21 @@ public:
       // separate scaling pass; the event still marks the phase boundary.
       check_cuda(cudaEventRecord(scale_complete, stream),
                  "record M2L scaling completion");
-      apply_grouped_m2l_kernel<<<group_count_, m2l_group_threads,
-                                 group_shared_bytes_, stream>>>(
-          matrices_, groups_, pair_sources_, pair_targets_,
-          pair_source_levels_, pair_target_levels_, multipole_scaling_,
-          local_scaling_, coefficient_count_, pairs_per_block_, multipoles,
-          locals);
+      if (pairs_per_thread_ == m2l_group_pairs_wide) {
+        apply_grouped_m2l_kernel<Scalar, m2l_group_pairs_wide>
+            <<<group_count_, m2l_group_threads, group_shared_bytes_, stream>>>(
+                matrices_, groups_, pair_sources_, pair_targets_,
+                pair_source_levels_, pair_target_levels_, multipole_scaling_,
+                local_scaling_, coefficient_count_, pairs_per_block_,
+                multipoles, locals);
+      } else {
+        apply_grouped_m2l_kernel<Scalar, m2l_group_pairs_narrow>
+            <<<group_count_, m2l_group_threads, group_shared_bytes_, stream>>>(
+                matrices_, groups_, pair_sources_, pair_targets_,
+                pair_source_levels_, pair_target_levels_, multipole_scaling_,
+                local_scaling_, coefficient_count_, pairs_per_block_,
+                multipoles, locals);
+      }
       check_cuda(cudaGetLastError(), "launch grouped static M2L kernel");
       return;
     }
@@ -507,11 +518,29 @@ private:
     // by matrix id and cut into blocks of `pairs_per_block_`. Every block then
     // stages exactly one matrix. Coefficient counts above one block of threads
     // fall back to the target-row kernels.
-    const int slots = coefficient_count_ > 0
+    // Slots are bounded by the thread count and by the default 48 KiB of
+    // dynamic shared memory: one alpha slab of the matrix plus one slab of
+    // staged multipoles must fit.
+    constexpr std::size_t shared_budget = 48 * 1024;
+    constexpr std::size_t wide_pair_threshold = 250000;
+    const std::size_t slab_bytes =
+        static_cast<std::size_t>(m2l_group_alpha_tile) * sizeof(Scalar);
+    pairs_per_thread_ =
+        (sizeof(Scalar) == sizeof(float) &&
+         data.source_nodes.size() >= wide_pair_threshold)
+            ? m2l_group_pairs_wide
+            : m2l_group_pairs_narrow;
+    int slots = coefficient_count_ > 0
         ? m2l_group_threads / coefficient_count_
         : 0;
+    while (slots > 0 &&
+           slab_bytes * (static_cast<std::size_t>(coefficient_count_) +
+                         static_cast<std::size_t>(slots) * pairs_per_thread_) >
+               shared_budget) {
+      --slots;
+    }
     if (slots > 0 && !active_rows.empty()) {
-      pairs_per_block_ = slots * m2l_group_pairs_per_thread;
+      pairs_per_block_ = slots * pairs_per_thread_;
       std::vector<int> class_offsets(static_cast<std::size_t>(data.matrix_count) + 1, 0);
       for (const CudaM2LActiveRow &row : active_rows) {
         for (int interaction = row.interaction_begin;
@@ -657,6 +686,7 @@ private:
   int *pair_target_levels_{nullptr};
   int group_count_{0};
   int pairs_per_block_{0};
+  int pairs_per_thread_{m2l_group_pairs_narrow};
   std::size_t group_shared_bytes_{0};
   std::size_t grouped_metadata_bytes_{0};
   int node_count_{0};
