@@ -26,12 +26,12 @@ options.far_field_source_model   # P2M source treatment
 options.far_field_target_model   # L2P target treatment
 ```
 
-Exact near-field P2P supports point↔point, prism↔point, point↔prism,
-prism↔prism, tetrahedron↔point, point↔tetrahedron, and
-tetrahedron↔tetrahedron. The tetrahedron↔tetrahedron tensor is evaluated during
-plan construction and cached for repeated application; finite tetrahedron self
-interactions are retained. Prism↔tetrahedron and tetrahedron↔prism remain
-unsupported.
+Exact near-field P2P supports all nine source/target combinations of point,
+rectangular prism, and tetrahedron. The tetrahedron↔tetrahedron,
+prism↔tetrahedron, and tetrahedron↔prism tensors are evaluated during plan
+construction from the shared polyhedron surface formulation (see
+[math](math.md)) and cached for repeated application; finite self
+interactions are retained for every finite source.
 For tetrahedron point evaluations on a face, the analytical boundary value uses
 the MagTense-compatible one-sided limiting convention; edge and vertex
 coincidences remain singular.

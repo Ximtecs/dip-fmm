@@ -71,11 +71,11 @@ representative-relative tetrahedron sources, plus point, rectangular-prism,
 and tetrahedron targets. `near_field_source_model`,
 `near_field_target_model`, `far_field_source_model`, and
 `far_field_target_model` select source and target treatment independently.
-Exact tetrahedron P2P supports point↔tetrahedron endpoint pairs and
-tetrahedron↔tetrahedron pairs. The finite tetrahedron pair tensor is evaluated
-during static-plan construction and cached for repeated P2P application, with
-finite self interactions retained. Prism↔tetrahedron and tetrahedron↔prism
-exact pairs remain unsupported.
+Exact P2P supports every source/target combination of point, rectangular
+prism, and tetrahedron. The finite tetrahedron↔tetrahedron,
+prism↔tetrahedron, and tetrahedron↔prism pair tensors are evaluated during
+static-plan construction and cached for repeated P2P application, with finite
+self interactions retained.
 
 CPU static and reference-capable paths support the applicable field,
 potential, or combined output modes. CUDA-full is the device-resident repeated

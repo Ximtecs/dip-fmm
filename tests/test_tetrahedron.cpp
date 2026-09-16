@@ -9,6 +9,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include "cdfmm/rectangular_prism.hpp"
 #include "cdfmm/tetrahedron.hpp"
 #include "geometry/primitives/tetrahedron_detail.hpp"
 
@@ -590,4 +591,338 @@ TEST_CASE("exact tetrahedron pair agrees with independent target quadrature")
     const PairTensor quadrature = average_point_tensor_over_target(
         displacement, tetrahedron, tetrahedron);
     require_close(exact, quadrature, 2.0e-7);
+}
+
+namespace {
+
+// Eight-point Gauss-Legendre rule on [0, 1], shared by the independent
+// target-average references below.
+constexpr std::array<double, 8> gauss8_node{{
+    0.0198550717512319, 0.1016667612931866,
+    0.2372337950418355, 0.4082826787521751,
+    0.5917173212478249, 0.7627662049581645,
+    0.8983332387068134, 0.9801449282487681}};
+constexpr std::array<double, 8> gauss8_weight{{
+    0.0506142681451881, 0.1111905172266872,
+    0.1568533229389436, 0.1813418916891809,
+    0.1813418916891809, 0.1568533229389436,
+    0.1111905172266872, 0.0506142681451881}};
+
+void accumulate_scaled(PairTensor& sum, const PairTensor& value,
+                       const double weight)
+{
+    sum.xx += weight * value.xx;
+    sum.xy += weight * value.xy;
+    sum.xz += weight * value.xz;
+    sum.yy += weight * value.yy;
+    sum.yz += weight * value.yz;
+    sum.zz += weight * value.zz;
+}
+
+// Volume average of a point-evaluated source tensor over a tetrahedron
+// target, using the Duffy-type collapsed cube.
+template <typename PointTensor>
+PairTensor average_over_tetrahedron(const Vec3& displacement,
+                                    const Tetrahedron& target,
+                                    PointTensor&& point_tensor)
+{
+    const Vec3 edge_b = target.vertices[1] - target.vertices[0];
+    const Vec3 edge_c = target.vertices[2] - target.vertices[0];
+    const Vec3 edge_d = target.vertices[3] - target.vertices[0];
+    PairTensor result{};
+    for (int i = 0; i < 8; ++i) {
+        const double u = gauss8_node[static_cast<std::size_t>(i)];
+        for (int j = 0; j < 8; ++j) {
+            const double v = gauss8_node[static_cast<std::size_t>(j)];
+            for (int k = 0; k < 8; ++k) {
+                const double w = gauss8_node[static_cast<std::size_t>(k)];
+                const Vec3 offset = target.vertices[0] + edge_b * u +
+                    edge_c * ((1.0 - u) * v) +
+                    edge_d * ((1.0 - u) * (1.0 - v) * w);
+                const double weight = 6.0 *
+                    gauss8_weight[static_cast<std::size_t>(i)] *
+                    gauss8_weight[static_cast<std::size_t>(j)] *
+                    gauss8_weight[static_cast<std::size_t>(k)] *
+                    (1.0 - u) * (1.0 - u) * (1.0 - v);
+                accumulate_scaled(result, point_tensor(displacement + offset),
+                                  weight);
+            }
+        }
+    }
+    return result;
+}
+
+// Volume average of a point-evaluated source tensor over a prism target.
+template <typename PointTensor>
+PairTensor average_over_prism(const Vec3& displacement,
+                              const RectangularPrism& target,
+                              PointTensor&& point_tensor)
+{
+    PairTensor result{};
+    for (int i = 0; i < 8; ++i) {
+        const double x = (gauss8_node[static_cast<std::size_t>(i)] - 0.5) *
+            target.hx;
+        for (int j = 0; j < 8; ++j) {
+            const double y = (gauss8_node[static_cast<std::size_t>(j)] - 0.5) *
+                target.hy;
+            for (int k = 0; k < 8; ++k) {
+                const double z =
+                    (gauss8_node[static_cast<std::size_t>(k)] - 0.5) *
+                    target.hz;
+                const double weight =
+                    gauss8_weight[static_cast<std::size_t>(i)] *
+                    gauss8_weight[static_cast<std::size_t>(j)] *
+                    gauss8_weight[static_cast<std::size_t>(k)];
+                accumulate_scaled(
+                    result, point_tensor(displacement + Vec3{x, y, z}),
+                    weight);
+            }
+        }
+    }
+    return result;
+}
+
+// Kuhn decomposition of an axis-aligned prism into six tetrahedra of equal
+// volume, each returned relative to its own centroid together with that
+// centroid.
+struct PrismTetrahedron {
+    Tetrahedron tetrahedron{};
+    Vec3 centroid{};
+};
+
+std::array<PrismTetrahedron, 6> kuhn_decomposition(
+    const RectangularPrism& prism)
+{
+    const std::array<double, 3> half{{0.5 * prism.hx, 0.5 * prism.hy,
+                                      0.5 * prism.hz}};
+    const std::array<std::array<int, 3>, 6> permutations{{
+        {{0, 1, 2}}, {{0, 2, 1}}, {{1, 0, 2}},
+        {{1, 2, 0}}, {{2, 0, 1}}, {{2, 1, 0}}}};
+    std::array<PrismTetrahedron, 6> result{};
+    for (std::size_t index = 0; index < 6; ++index) {
+        std::array<std::array<double, 3>, 4> corners{};
+        corners[0] = {{-half[0], -half[1], -half[2]}};
+        std::array<double, 3> current = corners[0];
+        for (std::size_t step = 0; step < 2; ++step) {
+            const std::size_t axis =
+                static_cast<std::size_t>(permutations[index][step]);
+            current[axis] += 2.0 * half[axis];
+            corners[step + 1] = current;
+        }
+        corners[3] = {{half[0], half[1], half[2]}};
+        std::array<Vec3, 4> vertices{};
+        Vec3 centroid{};
+        for (std::size_t vertex = 0; vertex < 4; ++vertex) {
+            vertices[vertex] = {corners[vertex][0], corners[vertex][1],
+                                corners[vertex][2]};
+            centroid += vertices[vertex];
+        }
+        centroid = centroid * 0.25;
+        for (Vec3& vertex : vertices) {
+            vertex = vertex - centroid;
+        }
+        result[index] = {Tetrahedron{vertices}, centroid};
+    }
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("exact prism tetrahedron pair agrees with independent target quadrature")
+{
+    const RectangularPrism prism{0.6, 0.4, 0.5};
+    const Tetrahedron tetrahedron = scale_tetrahedron(reference_tetrahedron(),
+                                                      0.8);
+    const Vec3 displacement{1.3, -0.9, 1.1};
+    const PairTensor exact = rectangular_prism_tetrahedron_tensor(
+        displacement, prism, tetrahedron);
+    const PairTensor quadrature = average_over_tetrahedron(
+        displacement, tetrahedron, [&](const Vec3& point) {
+            return rectangular_prism_point_tensor(point, prism);
+        });
+    require_close(exact, quadrature, 2.0e-7);
+}
+
+TEST_CASE("exact tetrahedron prism pair agrees with independent target quadrature")
+{
+    const RectangularPrism prism{0.5, 0.7, 0.35};
+    const Tetrahedron tetrahedron = centred_physical_tetrahedron({{
+        {-0.3, 0.2, 0.4},
+        {0.7, -0.5, 0.1},
+        {0.4, 0.9, -0.6},
+        {0.1, 0.3, 0.8},
+    }});
+    const Vec3 displacement{-1.2, 1.4, 0.9};
+    const PairTensor exact = tetrahedron_rectangular_prism_tensor(
+        displacement, tetrahedron, prism);
+    const PairTensor quadrature = average_over_prism(
+        displacement, prism, [&](const Vec3& point) {
+            return tetrahedron_point_tensor(point, tetrahedron);
+        });
+    require_close(exact, quadrature, 2.0e-7);
+}
+
+TEST_CASE("prism tetrahedron pair obeys reciprocity and the prism decomposition")
+{
+    const RectangularPrism prism{0.6, 0.4, 0.5};
+    const Tetrahedron tetrahedron = centred_physical_tetrahedron({{
+        {-0.3, 0.2, 0.4},
+        {0.7, -0.5, 0.1},
+        {0.4, 0.9, -0.6},
+        {0.1, 0.3, 0.8},
+    }});
+    const Vec3 displacement{0.9, -0.7, 0.6};
+    const PairTensor forward = rectangular_prism_tetrahedron_tensor(
+        displacement, prism, tetrahedron);
+    const PairTensor reverse = tetrahedron_rectangular_prism_tensor(
+        displacement * -1.0, tetrahedron, prism);
+    require_tight_close(forward, reverse);
+
+    // The prism is the union of six tetrahedra carrying one sixth of its
+    // total moment each, so the prism pair is the equal-weight sum of the
+    // already validated tetrahedron pairs.
+    PairTensor decomposed{};
+    for (const PrismTetrahedron& piece : kuhn_decomposition(prism)) {
+        REQUIRE(tetrahedron_volume(piece.tetrahedron) ==
+                Catch::Approx(prism.volume() / 6.0));
+        accumulate_scaled(
+            decomposed,
+            tetrahedron_tetrahedron_tensor(displacement - piece.centroid,
+                                           piece.tetrahedron, tetrahedron),
+            1.0 / 6.0);
+    }
+    require_close(forward, decomposed, 2.0e-10);
+
+    // Touching bodies (a tetrahedron vertex on the prism face) stay finite.
+    const Vec3 touching{0.5 * prism.hx - tetrahedron.vertices[1].x, 0.0, 0.0};
+    require_finite(rectangular_prism_tetrahedron_tensor(
+        touching, prism, tetrahedron));
+}
+
+TEST_CASE("polyhedron surface formulation reproduces the MagTense prism pair")
+{
+    const RectangularPrism source{0.6, 0.4, 0.5};
+    const RectangularPrism target{0.3, 0.45, 0.25};
+    const detail::PolyhedronSurface source_surface =
+        detail::prepare_rectangular_prism_surface(source);
+    const detail::PolyhedronSurface target_surface =
+        detail::prepare_rectangular_prism_surface(target);
+    REQUIRE(source_surface.faces.size() == 12);
+    REQUIRE(source_surface.volume == Catch::Approx(source.volume()));
+    const auto surface_pair = [&](const Vec3& displacement,
+                                  const detail::PolyhedronSurface& s,
+                                  const detail::PolyhedronSurface& t) {
+        return detail::polyhedron_polyhedron_tensor(
+            displacement, s.faces, s.outward_normals, s.volume, t.faces,
+            t.outward_normals, t.volume);
+    };
+
+    const Vec3 separated{1.3, -0.7, 0.4};
+    require_close(surface_pair(separated, source_surface, target_surface),
+                  rectangular_prism_rectangular_prism_tensor(
+                      separated, source, target), 2.0e-10);
+
+    // Shared face between the two prisms.
+    const Vec3 touching{0.5 * (source.hx + target.hx), 0.05, -0.02};
+    require_close(surface_pair(touching, source_surface, target_surface),
+                  rectangular_prism_rectangular_prism_tensor(
+                      touching, source, target), 2.0e-10);
+
+    // Coincident identical prisms: the finite self-demagnetisation tensor,
+    // whose trace is -1/V in the total-moment normalisation (tr N = 1).
+    const PairTensor self = surface_pair({}, source_surface, source_surface);
+    require_close(self, rectangular_prism_rectangular_prism_tensor(
+                      {}, source, source), 2.0e-9);
+    REQUIRE(self.xx + self.yy + self.zz ==
+            Catch::Approx(-1.0 / source.volume()).epsilon(1.0e-9));
+}
+
+TEST_CASE("prism tetrahedron pair has far-field and shrinking limits")
+{
+    const RectangularPrism prism{0.6, 0.4, 0.5};
+    const Tetrahedron tetrahedron = scale_tetrahedron(reference_tetrahedron(),
+                                                      0.8);
+    const Vec3 far{60.0, 40.0, -50.0};
+    const PairTensor far_tensor = rectangular_prism_tetrahedron_tensor(
+        far, prism, tetrahedron);
+    const PairTensor point = point_tensor(far);
+    const double scale = std::abs(point.xx) + std::abs(point.yy) +
+        std::abs(point.zz);
+    // Both bodies are within a fraction of a unit of their representatives,
+    // so the finite-size correction at |r| ~ 88 is O((size/r)^2) ~ 1e-4.
+    REQUIRE(maximum_component_difference(far_tensor, point) < 1.0e-3 * scale);
+    REQUIRE(maximum_component_difference(far_tensor, point) > 1.0e-7 * scale);
+
+    // A shrinking prism source converges to the point-to-tetrahedron tensor.
+    const Vec3 separated{1.4, -0.9, 1.1};
+    const PairTensor limit = point_tetrahedron_tensor(separated, tetrahedron);
+    double previous_error = std::numeric_limits<double>::infinity();
+    for (const double factor : {0.5, 0.25, 0.125}) {
+        const RectangularPrism shrunk{factor * prism.hx, factor * prism.hy,
+                                      factor * prism.hz};
+        const double error = maximum_component_difference(
+            rectangular_prism_tetrahedron_tensor(separated, shrunk,
+                                                 tetrahedron), limit);
+        REQUIRE(error < previous_error);
+        previous_error = error;
+    }
+}
+
+TEST_CASE("polyhedron pair tensors stay accurate across the far-separation switch")
+{
+    // The analytical surface integrals lose relative accuracy when the
+    // separation greatly exceeds the face size; beyond
+    // `polyhedron_far_separation_factor` summed circumradii the exact source
+    // field is averaged over the target instead.  Both branches must agree
+    // with the independent 8^3 quadrature on either side of the switch.
+    const RectangularPrism prism{0.6, 0.4, 0.5};
+    const Tetrahedron tetrahedron = reference_tetrahedron();
+    const detail::PolyhedronBody prism_body =
+        detail::prepare_polyhedron_body(prism);
+    const detail::PolyhedronBody tetrahedron_body =
+        detail::prepare_polyhedron_body(tetrahedron);
+    const double radii = prism_body.surface.circumradius +
+        tetrahedron_body.surface.circumradius;
+    REQUIRE(prism_body.surface.circumradius ==
+            Catch::Approx(0.5 * std::sqrt(0.36 + 0.16 + 0.25)));
+    const Vec3 direction{0.6, -0.4, 0.5};
+    const Vec3 unit = direction * (1.0 / std::sqrt(dot(direction, direction)));
+    for (const double factor : {0.9, 1.1, 3.0, 30.0}) {
+        const Vec3 displacement =
+            unit * (factor * detail::polyhedron_far_separation_factor * radii);
+        const PairTensor prism_tet = rectangular_prism_tetrahedron_tensor(
+            displacement, prism, tetrahedron);
+        const PairTensor prism_tet_quadrature = average_over_tetrahedron(
+            displacement, tetrahedron, [&](const Vec3& point) {
+                return rectangular_prism_point_tensor(point, prism);
+            });
+        require_close(prism_tet, prism_tet_quadrature, 1.0e-8);
+
+        const PairTensor tet_prism = tetrahedron_rectangular_prism_tensor(
+            displacement, tetrahedron, prism);
+        const PairTensor tet_prism_quadrature = average_over_prism(
+            displacement, prism, [&](const Vec3& point) {
+                return tetrahedron_point_tensor(point, tetrahedron);
+            });
+        require_close(tet_prism, tet_prism_quadrature, 1.0e-8);
+
+        const PairTensor tet_tet = tetrahedron_tetrahedron_tensor(
+            displacement, tetrahedron, tetrahedron);
+        const PairTensor tet_tet_quadrature = average_over_tetrahedron(
+            displacement, tetrahedron, [&](const Vec3& point) {
+                return tetrahedron_point_tensor(point, tetrahedron);
+            });
+        require_close(tet_tet, tet_tet_quadrature, 1.0e-8);
+    }
+
+    // Far beyond the switch the analytical surface sum alone has no valid
+    // digits, while the body-level tensor stays close to the point limit.
+    const Vec3 remote = unit * 150.0;
+    const PairTensor remote_tensor = tetrahedron_tetrahedron_tensor(
+        remote, tetrahedron, tetrahedron);
+    const PairTensor remote_point = point_tensor(remote);
+    const double remote_scale = std::abs(remote_point.xx) +
+        std::abs(remote_point.yy) + std::abs(remote_point.zz);
+    REQUIRE(maximum_component_difference(remote_tensor, remote_point) <
+            1.0e-4 * remote_scale);
 }

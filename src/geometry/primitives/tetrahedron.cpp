@@ -8,9 +8,12 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace cdfmm {
@@ -946,6 +949,9 @@ PreparedTetrahedron prepare_tetrahedron(const Tetrahedron& tetrahedron)
     PreparedTetrahedron prepared;
     prepared.volume = tetrahedron_volume(tetrahedron);
     prepared.vertices = tetrahedron.vertices;
+    for (const Vec3& vertex : prepared.vertices) {
+        prepared.circumradius = std::max(prepared.circumradius, norm(vertex));
+    }
     for (int face_index = 0; face_index < 4; ++face_index) {
         const auto& indices = tetrahedron_face_vertices[
             static_cast<std::size_t>(face_index)];
@@ -961,14 +967,308 @@ PreparedTetrahedron prepare_tetrahedron(const Tetrahedron& tetrahedron)
     return prepared;
 }
 
+namespace {
+
+// Applies the total-moment normalisation -1/(4 pi V_s V_t) to the accumulated
+// face-pair sum and symmetrises the harmless last-bit asymmetry of the
+// independently evaluated face integrals.
+PairTensor normalise_polyhedron_pair_tensor(Matrix3 tensor,
+                                            const double source_volume,
+                                            const double target_volume)
+{
+    const long double normalisation = -1.0L /
+        (four_pi * static_cast<long double>(source_volume) *
+         static_cast<long double>(target_volume));
+    for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            tensor.value[row][column] = static_cast<double>(
+                normalisation * static_cast<long double>(
+                    tensor.value[row][column]));
+            if (!std::isfinite(tensor.value[row][column])) {
+                throw std::domain_error(
+                    "polyhedron pair tensor is not finite");
+            }
+        }
+    }
+    for (int row = 0; row < 3; ++row) {
+        for (int column = row + 1; column < 3; ++column) {
+            const double average = 0.5 * (tensor.value[row][column] +
+                                          tensor.value[column][row]);
+            tensor.value[row][column] = average;
+            tensor.value[column][row] = average;
+        }
+    }
+    return to_pair_tensor(tensor);
+}
+
+} // namespace
+
+PolyhedronSurface prepare_tetrahedron_surface(const Tetrahedron& tetrahedron)
+{
+    const PreparedTetrahedron prepared = prepare_tetrahedron(tetrahedron);
+    PolyhedronSurface surface;
+    surface.volume = prepared.volume;
+    surface.circumradius = prepared.circumradius;
+    surface.faces.assign(prepared.faces.begin(), prepared.faces.end());
+    surface.outward_normals.assign(prepared.outward_normals.begin(),
+                                   prepared.outward_normals.end());
+    return surface;
+}
+
+PolyhedronSurface prepare_rectangular_prism_surface(
+    const RectangularPrism& prism)
+{
+    if (!(prism.hx > 0.0 && prism.hy > 0.0 && prism.hz > 0.0) ||
+        !std::isfinite(prism.hx) || !std::isfinite(prism.hy) ||
+        !std::isfinite(prism.hz)) {
+        throw std::invalid_argument(
+            "rectangular prism dimensions must be positive and finite");
+    }
+    const std::array<double, 3> half{{0.5 * prism.hx, 0.5 * prism.hy,
+                                      0.5 * prism.hz}};
+    PolyhedronSurface surface;
+    surface.volume = prism.hx * prism.hy * prism.hz;
+    surface.circumradius = std::sqrt(half[0] * half[0] + half[1] * half[1] +
+                                     half[2] * half[2]);
+    surface.faces.reserve(12);
+    surface.outward_normals.reserve(12);
+    // Each of the six faces has one fixed coordinate `axis = sign * half`
+    // and is split along a diagonal into two triangles.  The two free axes
+    // are visited in cyclic order so the four corners form a simple loop;
+    // the triangle orientation itself does not matter because the outward
+    // normal is stored explicitly.
+    constexpr std::array<std::array<int, 2>, 4> corner_signs{{
+        {{-1, -1}}, {{1, -1}}, {{1, 1}}, {{-1, 1}}}};
+    for (int axis = 0; axis < 3; ++axis) {
+        const int second = (axis + 1) % 3;
+        const int third = (axis + 2) % 3;
+        for (const int sign : {-1, 1}) {
+            std::array<Vec3, 4> corners{};
+            for (std::size_t corner = 0; corner < 4; ++corner) {
+                std::array<double, 3> coordinate{};
+                coordinate[static_cast<std::size_t>(axis)] =
+                    sign * half[static_cast<std::size_t>(axis)];
+                coordinate[static_cast<std::size_t>(second)] =
+                    corner_signs[corner][0] *
+                    half[static_cast<std::size_t>(second)];
+                coordinate[static_cast<std::size_t>(third)] =
+                    corner_signs[corner][1] *
+                    half[static_cast<std::size_t>(third)];
+                corners[corner] = {coordinate[0], coordinate[1], coordinate[2]};
+            }
+            std::array<double, 3> normal{};
+            normal[static_cast<std::size_t>(axis)] = static_cast<double>(sign);
+            const Vec3 outward{normal[0], normal[1], normal[2]};
+            surface.faces.push_back({corners[0], corners[1], corners[2]});
+            surface.outward_normals.push_back(outward);
+            surface.faces.push_back({corners[0], corners[2], corners[3]});
+            surface.outward_normals.push_back(outward);
+        }
+    }
+    return surface;
+}
+
+PairTensor polyhedron_polyhedron_tensor(
+    const Vec3& target_minus_source_representative,
+    const std::span<const std::array<Vec3, 3>> source_faces,
+    const std::span<const Vec3> source_outward_normals,
+    const double source_volume,
+    const std::span<const std::array<Vec3, 3>> target_faces,
+    const std::span<const Vec3> target_outward_normals,
+    const double target_volume)
+{
+    if (source_faces.size() != source_outward_normals.size() ||
+        target_faces.size() != target_outward_normals.size() ||
+        source_faces.empty() || target_faces.empty()) {
+        throw std::invalid_argument(
+            "polyhedron surfaces need one outward normal per face");
+    }
+    if (!(source_volume > 0.0) || !(target_volume > 0.0)) {
+        throw std::invalid_argument("polyhedron volumes must be positive");
+    }
+    Matrix3 tensor{};
+    for (std::size_t target_face = 0; target_face < target_faces.size();
+         ++target_face) {
+        std::array<Vec3, 3> translated_target{};
+        for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+            translated_target[vertex] = target_faces[target_face][vertex] +
+                target_minus_source_representative;
+        }
+        for (std::size_t source_face = 0; source_face < source_faces.size();
+             ++source_face) {
+            const double integral = triangle_triangle_laplace_integral(
+                translated_target, source_faces[source_face]);
+            if (!std::isfinite(integral)) {
+                throw std::domain_error(
+                    "polyhedron face-pair integral is not finite");
+            }
+            add_scaled_outer_product(
+                tensor, integral, target_outward_normals[target_face],
+                source_outward_normals[source_face]);
+        }
+    }
+    return normalise_polyhedron_pair_tensor(tensor, source_volume,
+                                            target_volume);
+}
+
+namespace {
+
+// Six-point Gauss-Legendre rule on [0, 1].  With the far-separation factor
+// above, the exact source field is analytic on a Bernstein ellipse of
+// parameter rho > 10 around the target, so the rule is converged well below
+// 1e-12 relative error.
+constexpr std::array<double, 6> gauss6_node{{
+    0.033765242898423986, 0.169395306766867743,
+    0.380690406958401546, 0.619309593041598454,
+    0.830604693233132257, 0.966234757101576014}};
+constexpr std::array<double, 6> gauss6_weight{{
+    0.085662246189585173, 0.180380786524069304,
+    0.233956967286345524, 0.233956967286345524,
+    0.180380786524069304, 0.085662246189585173}};
+
+void accumulate_scaled(PairTensor& sum, const PairTensor& value,
+                       const double weight) noexcept
+{
+    sum.xx += weight * value.xx;
+    sum.xy += weight * value.xy;
+    sum.xz += weight * value.xz;
+    sum.yy += weight * value.yy;
+    sum.yz += weight * value.yz;
+    sum.zz += weight * value.zz;
+}
+
+// Exact field tensor of a finite body at a point relative to its representative.
+PairTensor body_point_tensor(const PolyhedronBody& body, const Vec3& point)
+{
+    return std::visit(
+        [&](const auto& record) -> PairTensor {
+            using Record = std::decay_t<decltype(record)>;
+            if constexpr (std::is_same_v<Record, RectangularPrism>) {
+                return rectangular_prism_point_tensor(point, record);
+            } else {
+                return tetrahedron_point_tensor(point, record);
+            }
+        },
+        body.record);
+}
+
+// Volume average of the source point tensor over the target body, using a
+// collapsed-cube (Duffy) map for a tetrahedron and a tensor-product rule for
+// a prism.  Only used when the separation makes the integrand smooth.
+PairTensor average_source_tensor_over_target(
+    const Vec3& target_minus_source_representative,
+    const PolyhedronBody& source,
+    const PolyhedronBody& target)
+{
+    PairTensor result{};
+    const Vec3& d = target_minus_source_representative;
+    if (const auto* prism = std::get_if<RectangularPrism>(&target.record)) {
+        for (std::size_t i = 0; i < 6; ++i) {
+            const double x = (gauss6_node[i] - 0.5) * prism->hx;
+            for (std::size_t j = 0; j < 6; ++j) {
+                const double y = (gauss6_node[j] - 0.5) * prism->hy;
+                for (std::size_t k = 0; k < 6; ++k) {
+                    const double z = (gauss6_node[k] - 0.5) * prism->hz;
+                    accumulate_scaled(
+                        result,
+                        body_point_tensor(source, d + Vec3{x, y, z}),
+                        gauss6_weight[i] * gauss6_weight[j] * gauss6_weight[k]);
+                }
+            }
+        }
+        return result;
+    }
+    const Tetrahedron& tetrahedron = std::get<Tetrahedron>(target.record);
+    const Vec3 edge_b = tetrahedron.vertices[1] - tetrahedron.vertices[0];
+    const Vec3 edge_c = tetrahedron.vertices[2] - tetrahedron.vertices[0];
+    const Vec3 edge_d = tetrahedron.vertices[3] - tetrahedron.vertices[0];
+    for (std::size_t i = 0; i < 6; ++i) {
+        const double u = gauss6_node[i];
+        for (std::size_t j = 0; j < 6; ++j) {
+            const double v = gauss6_node[j];
+            for (std::size_t k = 0; k < 6; ++k) {
+                const double w = gauss6_node[k];
+                const Vec3 offset = tetrahedron.vertices[0] + edge_b * u +
+                    edge_c * ((1.0 - u) * v) +
+                    edge_d * ((1.0 - u) * (1.0 - v) * w);
+                // The Jacobian of the collapsed cube is 6 V (1-u)^2 (1-v);
+                // dividing by V gives the volume average directly.
+                const double weight = 6.0 * gauss6_weight[i] *
+                    gauss6_weight[j] * gauss6_weight[k] * (1.0 - u) *
+                    (1.0 - u) * (1.0 - v);
+                accumulate_scaled(result, body_point_tensor(source, d + offset),
+                                  weight);
+            }
+        }
+    }
+    return result;
+}
+
+bool far_separated(const Vec3& target_minus_source_representative,
+                   const double source_circumradius,
+                   const double target_circumradius) noexcept
+{
+    return norm(target_minus_source_representative) >
+        polyhedron_far_separation_factor *
+        (source_circumradius + target_circumradius);
+}
+
+} // namespace
+
+PolyhedronBody prepare_polyhedron_body(const RectangularPrism& prism)
+{
+    return {prepare_rectangular_prism_surface(prism), prism};
+}
+
+PolyhedronBody prepare_polyhedron_body(const Tetrahedron& tetrahedron)
+{
+    return {prepare_tetrahedron_surface(tetrahedron), tetrahedron};
+}
+
+PairTensor polyhedron_pair_tensor(
+    const Vec3& target_minus_source_representative,
+    const PolyhedronBody& source,
+    const PolyhedronBody& target)
+{
+    if (far_separated(target_minus_source_representative,
+                      source.surface.circumradius,
+                      target.surface.circumradius)) {
+        return average_source_tensor_over_target(
+            target_minus_source_representative, source, target);
+    }
+    return polyhedron_polyhedron_tensor(
+        target_minus_source_representative, source.surface.faces,
+        source.surface.outward_normals, source.surface.volume,
+        target.surface.faces, target.surface.outward_normals,
+        target.surface.volume);
+}
+
 PairTensor tetrahedron_tetrahedron_tensor_prepared(
     const Vec3& target_minus_source_representative,
     const PreparedTetrahedron& source,
     const PreparedTetrahedron& target,
     const bool coincident_same_geometry)
 {
+    if (!coincident_same_geometry &&
+        far_separated(target_minus_source_representative, source.circumradius,
+                      target.circumradius)) {
+        // Widely separated pairs average the exact source field over the
+        // target instead of cancelling large face integrals.
+        return average_source_tensor_over_target(
+            target_minus_source_representative,
+            PolyhedronBody{{}, Tetrahedron{source.vertices}},
+            PolyhedronBody{{}, Tetrahedron{target.vertices}});
+    }
+    if (!coincident_same_geometry) {
+        // A displaced or differently shaped pair is the general polyhedron
+        // case; the coincident branch below only halves the face-pair work.
+        return polyhedron_polyhedron_tensor(
+            target_minus_source_representative, source.faces,
+            source.outward_normals, source.volume, target.faces,
+            target.outward_normals, target.volume);
+    }
     Matrix3 tensor{};
-    if (coincident_same_geometry) {
+    {
         for (int target_face = 0; target_face < 4; ++target_face) {
             for (int source_face = target_face; source_face < 4;
                  ++source_face) {
@@ -995,56 +1295,9 @@ PairTensor tetrahedron_tetrahedron_tensor_prepared(
                 }
             }
         }
-    } else {
-        for (int target_face = 0; target_face < 4; ++target_face) {
-            std::array<Vec3, 3> translated_target{};
-            for (int vertex = 0; vertex < 3; ++vertex) {
-                translated_target[static_cast<std::size_t>(vertex)] =
-                    target.faces[static_cast<std::size_t>(target_face)][
-                        static_cast<std::size_t>(vertex)] +
-                    target_minus_source_representative;
-            }
-            for (int source_face = 0; source_face < 4; ++source_face) {
-                const double integral = triangle_triangle_laplace_integral(
-                    translated_target,
-                    source.faces[static_cast<std::size_t>(source_face)]);
-                if (!std::isfinite(integral)) {
-                    throw std::domain_error(
-                        "tetrahedron face-pair integral is not finite");
-                }
-                add_scaled_outer_product(
-                    tensor, integral,
-                    target.outward_normals[
-                        static_cast<std::size_t>(target_face)],
-                    source.outward_normals[
-                        static_cast<std::size_t>(source_face)]);
-            }
-        }
     }
-
-    const long double normalisation = -1.0L /
-        (four_pi * static_cast<long double>(source.volume) *
-         static_cast<long double>(target.volume));
-    for (int row = 0; row < 3; ++row) {
-        for (int column = 0; column < 3; ++column) {
-            tensor.value[row][column] = static_cast<double>(
-                normalisation * static_cast<long double>(
-                    tensor.value[row][column]));
-            if (!std::isfinite(tensor.value[row][column])) {
-                throw std::domain_error(
-                    "tetrahedron-to-tetrahedron tensor is not finite");
-            }
-        }
-    }
-    for (int row = 0; row < 3; ++row) {
-        for (int column = row + 1; column < 3; ++column) {
-            const double average = 0.5 * (tensor.value[row][column] +
-                                          tensor.value[column][row]);
-            tensor.value[row][column] = average;
-            tensor.value[column][row] = average;
-        }
-    }
-    return to_pair_tensor(tensor);
+    return normalise_polyhedron_pair_tensor(tensor, source.volume,
+                                            target.volume);
 }
 
 } // namespace detail
@@ -1190,6 +1443,28 @@ PairTensor tetrahedron_tetrahedron_tensor(
         prepared_source,
         prepared_target,
         zero_displacement && exact_same_geometry);
+}
+
+PairTensor rectangular_prism_tetrahedron_tensor(
+    const Vec3& target_minus_source_representative,
+    const RectangularPrism& source,
+    const Tetrahedron& target)
+{
+    return detail::polyhedron_pair_tensor(
+        target_minus_source_representative,
+        detail::prepare_polyhedron_body(source),
+        detail::prepare_polyhedron_body(target));
+}
+
+PairTensor tetrahedron_rectangular_prism_tensor(
+    const Vec3& target_minus_source_representative,
+    const Tetrahedron& source,
+    const RectangularPrism& target)
+{
+    return detail::polyhedron_pair_tensor(
+        target_minus_source_representative,
+        detail::prepare_polyhedron_body(source),
+        detail::prepare_polyhedron_body(target));
 }
 
 } // namespace cdfmm

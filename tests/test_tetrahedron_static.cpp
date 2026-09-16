@@ -128,21 +128,91 @@ TEST_CASE("static P2P dispatches tetrahedron point and point tetrahedron")
     REQUIRE(point_tetra.blocks[0].zz == Catch::Approx(expected_point_tetra.zz));
 }
 
-TEST_CASE("unsupported exact prism tetrahedron P2P fails at construction")
+TEST_CASE("static P2P dispatches prism tetrahedron and tetrahedron prism")
 {
     const Tetrahedron tetrahedron = centred_reference_tetrahedron();
     const std::array<Tetrahedron, 1> tetrahedra{{tetrahedron}};
     const std::array<RectangularPrism, 1> prisms{{{0.4, 0.3, 0.2}}};
-    const std::array<Vec3, 1> positions{{{0.0, 0.0, 0.0}}};
+    const std::array<Vec3, 1> sources{{{0.0, 0.0, 0.0}}};
+    const std::array<Vec3, 1> targets{{{0.9, -0.4, 0.3}}};
     const std::array<std::array<int, 2>, 1> interactions{{{{0, 0}}}};
 
-    REQUIRE_THROWS_AS(build_static_p2p_operator(
-                          positions, positions, interactions,
-                          SourceGeometry::Tetrahedron,
-                          std::span<const RectangularPrism>{}, tetrahedra,
-                          TargetGeometry::RectangularPrism, prisms,
-                          std::span<const Tetrahedron>{}),
-                      std::invalid_argument);
+    const StaticP2POperator tetra_prism = build_static_p2p_operator(
+        targets, sources, interactions, SourceGeometry::Tetrahedron,
+        std::span<const RectangularPrism>{}, tetrahedra,
+        TargetGeometry::RectangularPrism, prisms,
+        std::span<const Tetrahedron>{});
+    const PairTensor expected_tetra_prism = tetrahedron_rectangular_prism_tensor(
+        targets[0] - sources[0], tetrahedron, prisms[0]);
+    REQUIRE(tetra_prism.blocks.size() == 1);
+    REQUIRE(tetra_prism.blocks[0].skip_for_identity == 0);
+    REQUIRE(tetra_prism.blocks[0].xx == Catch::Approx(expected_tetra_prism.xx));
+    REQUIRE(tetra_prism.blocks[0].xy == Catch::Approx(expected_tetra_prism.xy));
+    REQUIRE(tetra_prism.blocks[0].zz == Catch::Approx(expected_tetra_prism.zz));
+
+    const StaticP2POperator prism_tetra = build_static_p2p_operator(
+        targets, sources, interactions, SourceGeometry::RectangularPrism,
+        prisms, std::span<const Tetrahedron>{}, TargetGeometry::Tetrahedron,
+        std::span<const RectangularPrism>{}, tetrahedra);
+    const PairTensor expected_prism_tetra = rectangular_prism_tetrahedron_tensor(
+        targets[0] - sources[0], prisms[0], tetrahedron);
+    REQUIRE(prism_tetra.blocks.size() == 1);
+    REQUIRE(prism_tetra.blocks[0].skip_for_identity == 0);
+    REQUIRE(prism_tetra.blocks[0].xx == Catch::Approx(expected_prism_tetra.xx));
+    REQUIRE(prism_tetra.blocks[0].yz == Catch::Approx(expected_prism_tetra.yz));
+    REQUIRE(prism_tetra.blocks[0].zz == Catch::Approx(expected_prism_tetra.zz));
+
+    // Reciprocity: with total-moment normalisation the mutual tensor of two
+    // bodies is symmetric under exchanging their roles.
+    REQUIRE(prism_tetra.blocks[0].xx ==
+            Catch::Approx(tetrahedron_rectangular_prism_tensor(
+                              sources[0] - targets[0], tetrahedron, prisms[0]).xx));
+
+    // A point near-field model on either side falls back to the point
+    // formulation instead of the polyhedron pair.
+    const StaticP2POperator point_model = build_static_p2p_operator(
+        targets, sources, interactions, SourceGeometry::RectangularPrism,
+        prisms, std::span<const Tetrahedron>{}, TargetGeometry::Tetrahedron,
+        std::span<const RectangularPrism>{}, tetrahedra,
+        SourceModel::ExactGeometry, TargetModel::Point);
+    const PairTensor expected_point_model = rectangular_prism_point_tensor(
+        targets[0] - sources[0], prisms[0]);
+    REQUIRE(point_model.blocks[0].xx == Catch::Approx(expected_point_model.xx));
+}
+
+TEST_CASE("dense direct and static P2P agree for prism tetrahedron pairs")
+{
+    const Tetrahedron tetrahedron = centred_reference_tetrahedron();
+    const std::array<Tetrahedron, 1> tetrahedra{{tetrahedron}};
+    const std::array<RectangularPrism, 1> prisms{{{0.5, 0.35, 0.25}}};
+    const std::vector<Vec3> sources{{0.0, 0.0, 0.0}, {1.2, 0.1, -0.3}};
+    const std::vector<Vec3> targets{{0.7, -0.4, 0.3}, {-0.9, 0.6, 0.2}};
+    const std::vector<Vec3> moments{{0.3, -0.7, 0.5}, {-0.2, 0.4, 0.9}};
+    std::vector<std::array<int, 2>> interactions;
+    for (int target = 0; target < 2; ++target) {
+        for (int source = 0; source < 2; ++source) {
+            interactions.push_back({target, source});
+        }
+    }
+
+    const DenseDirectPlan direct(
+        sources, targets, SourceGeometry::RectangularPrism,
+        TargetGeometry::Tetrahedron, prisms, std::span<const CuboidSize>{}, {},
+        StaticPrecision::Float64, std::span<const Tetrahedron>{}, tetrahedra);
+    const std::vector<Vec3> expected =
+        direct.evaluate(moments, DenseDirectBackend::Portable);
+
+    const StaticP2POperator operator_map = build_static_p2p_operator(
+        targets, sources, interactions, SourceGeometry::RectangularPrism,
+        prisms, std::span<const Tetrahedron>{}, TargetGeometry::Tetrahedron,
+        std::span<const RectangularPrism>{}, tetrahedra);
+    std::vector<Vec3> actual(targets.size());
+    apply_static_p2p_operator(operator_map, moments, actual);
+    for (std::size_t target = 0; target < targets.size(); ++target) {
+        REQUIRE(actual[target].x == Catch::Approx(expected[target].x).margin(1e-12));
+        REQUIRE(actual[target].y == Catch::Approx(expected[target].y).margin(1e-12));
+        REQUIRE(actual[target].z == Catch::Approx(expected[target].z).margin(1e-12));
+    }
 }
 
 TEST_CASE("dense pair helper rejects tetrahedral geometry explicitly")

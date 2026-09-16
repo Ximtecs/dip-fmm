@@ -3,6 +3,7 @@
 
 #include <array>
 
+#include "cdfmm/geometry/primitives/rectangular_prism.hpp"
 #include "cdfmm/math/pair_tensor.hpp"
 #include "cdfmm/math/multi_index.hpp"
 #include "cdfmm/math/vec3.hpp"
@@ -75,6 +76,31 @@ struct Tetrahedron {
     const Vec3& target_minus_source_representative,
     const Tetrahedron& source,
     const Tetrahedron& target
+);
+
+/**
+ * @brief Exact rectangular-prism-to-tetrahedron pair tensor.
+ *
+ * The prism is centred on the source representative and the tetrahedron on
+ * the target representative.  Both bodies are closed polyhedra, so the
+ * volume-averaged field of one uniformly magnetised body over the other is
+ * the same double surface integral used by the tetrahedron pair:
+ * `K = -1/(4 pi V_s V_t) sum_{faces} n_t n_s^T integral integral 1/R`.  The
+ * prism contributes its twelve boundary triangles; no numerical quadrature is
+ * involved.  The result maps the total source moment to the target-averaged
+ * field.
+ */
+[[nodiscard]] PairTensor rectangular_prism_tetrahedron_tensor(
+    const Vec3& target_minus_source_representative,
+    const RectangularPrism& source,
+    const Tetrahedron& target
+);
+
+/** @brief Exact tetrahedron-to-rectangular-prism pair tensor (see above). */
+[[nodiscard]] PairTensor tetrahedron_rectangular_prism_tensor(
+    const Vec3& target_minus_source_representative,
+    const Tetrahedron& source,
+    const RectangularPrism& target
 );
 
 } // namespace cdfmm

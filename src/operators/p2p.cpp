@@ -96,15 +96,6 @@ StaticP2POperator build_static_p2p_operator_impl(
     const bool target_is_tetrahedron =
         effective_target_geometry == TargetGeometry::Tetrahedron;
 
-    if (source_is_prism && target_is_tetrahedron) {
-        throw std::invalid_argument(
-            "exact rectangular-prism to tetrahedron P2P is unsupported");
-    }
-    if (source_is_tetrahedron && target_is_prism) {
-        throw std::invalid_argument(
-            "exact tetrahedron to rectangular-prism P2P is unsupported");
-    }
-
     const auto validate_count = [](const std::size_t geometry_count,
                                    const std::size_t object_count,
                                    const char* message) {
@@ -197,6 +188,99 @@ StaticP2POperator build_static_p2p_operator_impl(
     }
 
     result.blocks.resize(sorted.size());
+
+    if ((source_is_prism && target_is_tetrahedron) ||
+        (source_is_tetrahedron && target_is_prism)) {
+        // Mixed prism/tetrahedron pairs use the exact polyhedron surface
+        // formulation shared with the tetrahedron pair.  Surfaces are prepared
+        // once per distinct record (common or per object) and the face-pair
+        // integrals run in parallel over the sorted interactions.
+        std::vector<detail::PolyhedronBody> source_bodies;
+        std::vector<detail::PolyhedronBody> target_bodies;
+        if (source_is_prism) {
+            source_bodies.reserve(source_prisms.size());
+            for (const RectangularPrism& prism : source_prisms) {
+                source_bodies.push_back(detail::prepare_polyhedron_body(prism));
+            }
+        } else {
+            source_bodies.reserve(source_tetrahedra.size());
+            for (const Tetrahedron& tetrahedron : source_tetrahedra) {
+                source_bodies.push_back(
+                    detail::prepare_polyhedron_body(tetrahedron));
+            }
+        }
+        if (target_is_prism) {
+            target_bodies.reserve(target_prisms.size());
+            for (const RectangularPrism& prism : target_prisms) {
+                target_bodies.push_back(detail::prepare_polyhedron_body(prism));
+            }
+        } else {
+            target_bodies.reserve(target_tetrahedra.size());
+            for (const Tetrahedron& tetrahedron : target_tetrahedra) {
+                target_bodies.push_back(
+                    detail::prepare_polyhedron_body(tetrahedron));
+            }
+        }
+        const auto& source_body_at =
+            [&](const int source) -> const detail::PolyhedronBody& {
+            return source_bodies[
+                source_bodies.size() == 1 ? 0 : static_cast<std::size_t>(source)];
+        };
+        const auto& target_body_at =
+            [&](const int target) -> const detail::PolyhedronBody& {
+            return target_bodies[
+                target_bodies.size() == 1 ? 0 : static_cast<std::size_t>(target)];
+        };
+
+        std::exception_ptr first_exception;
+        std::atomic<bool> failed{false};
+        const std::ptrdiff_t interaction_count =
+            static_cast<std::ptrdiff_t>(sorted.size());
+#pragma omp parallel for schedule(dynamic, 16) if (interaction_count >= 64)
+        for (std::ptrdiff_t raw_index = 0; raw_index < interaction_count;
+             ++raw_index) {
+            const std::size_t index = static_cast<std::size_t>(raw_index);
+            if (failed.load(std::memory_order_relaxed)) {
+                continue;
+            }
+            try {
+                const StaticP2PInteraction& interaction = sorted[index];
+                const int target = interaction.target;
+                const int source = interaction.source;
+                const Vec3 displacement =
+                    target_positions[static_cast<std::size_t>(target)] -
+                    (source_positions[static_cast<std::size_t>(source)] +
+                     interaction.source_shift);
+                const double radius_squared = dot(displacement, displacement);
+                const double potential_scale = radius_squared == 0.0
+                    ? 0.0
+                    : 1.0 / (4.0 * std::numbers::pi * radius_squared *
+                             std::sqrt(radius_squared));
+                const PairTensor tensor = detail::polyhedron_pair_tensor(
+                    displacement, source_body_at(source),
+                    target_body_at(target));
+                // Finite sources never carry the point identity marker: their
+                // coincident self field is physical.
+                result.blocks[index] = {
+                    target, source, potential_scale * displacement.x,
+                    potential_scale * displacement.y,
+                    potential_scale * displacement.z, tensor.xx, tensor.xy,
+                    tensor.xz, tensor.yy, tensor.yz, tensor.zz, 0};
+            } catch (...) {
+                failed.store(true, std::memory_order_relaxed);
+#pragma omp critical(cdfmm_polyhedron_setup_exception)
+                {
+                    if (!first_exception) {
+                        first_exception = std::current_exception();
+                    }
+                }
+            }
+        }
+        if (first_exception) {
+            std::rethrow_exception(first_exception);
+        }
+        return result;
+    }
 
     if (source_is_tetrahedron && target_is_tetrahedron) {
         const auto& prepared_source_at =

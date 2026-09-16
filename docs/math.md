@@ -157,10 +157,14 @@ precomputed tensors and performs no prism integration at runtime.
 For point/prism endpoint pairs, `DenseDirectPlan` and FMM `list1` construction
 share the canonical `cdfmm::operators::p2p::build_pair` implementation, whose
 flat compatibility spelling is `build_pair_tensor`. Tetrahedron endpoint
-pairs dispatch through tetrahedron-specific analytical operators; finite
-tetrahedron-to-prism interactions remain unsupported, while tetrahedron-to-
-tetrahedron pairs are evaluated exactly during DenseDirect or static P2P plan
-construction. Dense direct is exact all-to-all for its supported geometries,
+pairs dispatch through tetrahedron-specific analytical operators. Finite
+tetrahedron-to-tetrahedron, prism-to-tetrahedron, and tetrahedron-to-prism
+pairs are evaluated exactly during DenseDirect or static P2P plan construction
+from the same polyhedron surface formulation: applying the divergence theorem
+to both uniformly magnetised bodies gives
+$K=-\frac{1}{4\pi V_sV_t}\sum_{f_t}\sum_{f_s}\hat n_t\hat n_s^{T}
+\iint\frac{dS_t\,dS_s}{|x_t-x_s|}$, where the prism contributes its twelve
+boundary triangles and the tetrahedron its four. Dense direct is exact all-to-all for its supported geometries,
 while FMM combines the same exact near-field physics with a truncated
 multipole/local far field. MagTense stores its demagnetisation tensor
 and applies the physical minus sign during the matrix-vector operation;

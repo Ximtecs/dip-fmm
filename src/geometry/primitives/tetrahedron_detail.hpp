@@ -2,14 +2,102 @@
 #pragma once
 
 #include <array>
+#include <span>
+#include <variant>
+#include <vector>
 
+#include "cdfmm/geometry/primitives/rectangular_prism.hpp"
 #include "cdfmm/geometry/primitives/tetrahedron.hpp"
 #include "cdfmm/math/vec3.hpp"
 
 namespace cdfmm::detail {
 
+/**
+ * @brief Triangulated closed surface of a uniformly magnetised polyhedron.
+ *
+ * Every triangle is stored representative-relative together with its unit
+ * outward normal.  This is the geometry-neutral input of the exact
+ * polyhedron pair tensor: a tetrahedron contributes four triangles, an
+ * axis-aligned rectangular prism twelve.
+ */
+struct PolyhedronSurface {
+    double volume{0.0};
+    /// Largest vertex distance from the representative point.
+    double circumradius{0.0};
+    std::vector<std::array<Vec3, 3>> faces{};
+    std::vector<Vec3> outward_normals{};
+};
+
+/**
+ * @brief A finite body prepared for exact pair-tensor construction.
+ *
+ * The surface feeds the analytical double surface integral, while the
+ * geometric record supplies the body's exact point-field tensor for widely
+ * separated pairs (see `polyhedron_pair_tensor`).
+ */
+struct PolyhedronBody {
+    PolyhedronSurface surface{};
+    std::variant<RectangularPrism, Tetrahedron> record{};
+};
+
+[[nodiscard]] PolyhedronBody prepare_polyhedron_body(
+    const RectangularPrism& prism);
+[[nodiscard]] PolyhedronBody prepare_polyhedron_body(
+    const Tetrahedron& tetrahedron);
+
+/**
+ * @brief Separation, in units of the summed circumradii, from which the pair
+ * tensor is formed by averaging the exact source point tensor over the target
+ * instead of the analytical surface integrals.
+ *
+ * The analytical triangle-pair integrals cancel catastrophically when the
+ * separation greatly exceeds the face sizes (relative error about 1e-9 at
+ * twelve body sizes, 1e-5 at fifty, and no valid digits at one hundred).
+ * Beyond this factor the exact source field varies smoothly over the target,
+ * so the fixed Gauss rule below is converged to double precision.
+ */
+inline constexpr double polyhedron_far_separation_factor = 8.0;
+
+/**
+ * @brief Exact pair tensor of two prepared bodies, choosing the analytical
+ * surface integrals or the far-separation quadrature (see above).
+ */
+[[nodiscard]] PairTensor polyhedron_pair_tensor(
+    const Vec3& target_minus_source_representative,
+    const PolyhedronBody& source,
+    const PolyhedronBody& target);
+
+/** @brief Twelve oriented boundary triangles of a prism centred on its representative. */
+[[nodiscard]] PolyhedronSurface prepare_rectangular_prism_surface(
+    const RectangularPrism& prism);
+
+/** @brief The four boundary triangles of a tetrahedron in the surface form. */
+[[nodiscard]] PolyhedronSurface prepare_tetrahedron_surface(
+    const Tetrahedron& tetrahedron);
+
+/**
+ * @brief Exact mutual tensor of two uniformly magnetised polyhedra.
+ *
+ * Applies the divergence theorem twice: the target-averaged field of the
+ * source is `-1/(4 pi V_s V_t) sum_t sum_s n_t n_s^T I(f_t + d, f_s)` where
+ * `I` is the constant-density triangle pair Laplace integral and `d` the
+ * displacement between the representatives.  The face pairs may touch,
+ * share edges or coincide; only degenerate triangles are rejected.
+ */
+[[nodiscard]] PairTensor polyhedron_polyhedron_tensor(
+    const Vec3& target_minus_source_representative,
+    std::span<const std::array<Vec3, 3>> source_faces,
+    std::span<const Vec3> source_outward_normals,
+    double source_volume,
+    std::span<const std::array<Vec3, 3>> target_faces,
+    std::span<const Vec3> target_outward_normals,
+    double target_volume);
+
 struct PreparedTetrahedron {
     double volume{0.0};
+
+    // Largest vertex distance from the representative point.
+    double circumradius{0.0};
 
     // Representative-relative vertices.
     std::array<Vec3, 4> vertices{};
