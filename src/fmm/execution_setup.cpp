@@ -2,8 +2,10 @@
 
 #include "cdfmm/uniform_fmm.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 
@@ -677,6 +679,9 @@ FloatStaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan_float() const {
 }
 
 void UniformFmm::build_backend_packing() {
+  if (backend_ != ExecutionBackend::CudaFull) {
+    build_cpu_far_field_packing();
+  }
   const bool cuda_executes_m2l = backend_ == ExecutionBackend::CudaM2LP2P ||
       backend_ == ExecutionBackend::CudaFull;
   if (static_matrix_backend_ != StaticMatrixBackend::OneMkl ||
@@ -695,6 +700,96 @@ void UniformFmm::build_backend_packing() {
   static_plan_statistics_.m2l_interaction_bytes += storage.metadata_bytes;
   static_plan_statistics_.scratch_bytes += storage.scratch_bytes;
   static_plan_statistics_.backend_packing.add(elapsed_seconds(start));
+}
+
+void UniformFmm::build_cpu_far_field_packing() {
+  // The canonical sparse P2M/L2P maps are persisted and consumed by CUDA
+  // plan construction; the CPU hierarchy executes a dense, level-scaled
+  // packing derived from them once here.  Every backend except CudaFull runs
+  // P2M/M2M/L2L/L2P on the CPU, and after packing nothing else reads the
+  // per-source/per-target canonical maps, so they are released to keep the
+  // resident operator footprint at the packed size.
+  const auto start = Clock::now();
+  const int n = coefficient_count();
+  std::vector<int> degrees(static_cast<std::size_t>(n));
+  for (int coefficient = 0; coefficient < n; ++coefficient) {
+    degrees[static_cast<std::size_t>(coefficient)] =
+        coefficient_degree(coefficient);
+  }
+  const int level_count = topology_->maximum_level;
+  const std::size_t source_count = topology_->sorted_source_positions.size();
+  auto owner = std::make_unique<CpuFarFieldPackingOwner>();
+  std::size_t canonical_p2m_bytes = 0;
+  std::size_t canonical_l2p_bytes = 0;
+  std::size_t packed_p2m_bytes = 0;
+  std::size_t packed_l2p_bytes = 0;
+  std::size_t packed_translation_bytes = 0;
+  if (precision_ == StaticPrecision::Float32) {
+    auto &packing = owner->fp32;
+    packing.p2m = detail::cpu::pack_p2m(
+        std::span<const FloatP2MPlan>(p2m_plans_float_), source_count, n);
+    packing.m2m = detail::cpu::pack_translation_bank(
+        std::span<const FloatStaticCoefficientOperator>(m2m_operators_float_),
+        degrees, level_count);
+    packing.l2l = detail::cpu::pack_translation_bank(
+        std::span<const FloatStaticCoefficientOperator>(l2l_operators_float_),
+        degrees, level_count);
+    packing.l2p = detail::cpu::pack_l2p(
+        std::span<const FloatStaticL2PEvaluator>(l2p_evaluators_float_), n);
+    for (const FloatP2MPlan &plan : p2m_plans_float_) {
+      canonical_p2m_bytes +=
+          plan.operator_map.entries.size() * sizeof(FloatStaticOperatorEntry);
+    }
+    canonical_l2p_bytes = l2p_evaluators_float_.size() * 4 *
+                          static_cast<std::size_t>(n) * sizeof(float);
+    packed_p2m_bytes = packing.p2m.memory_bytes();
+    packed_l2p_bytes = packing.l2p.memory_bytes();
+    packed_translation_bytes =
+        packing.m2m.memory_bytes() + packing.l2l.memory_bytes();
+    p2m_plans_float_.clear();
+    p2m_plans_float_.shrink_to_fit();
+    l2p_evaluators_float_.clear();
+    l2p_evaluators_float_.shrink_to_fit();
+  } else {
+    auto &packing = owner->fp64;
+    packing.p2m = detail::cpu::pack_p2m(std::span<const P2MPlan>(p2m_plans_),
+                                        source_count, n);
+    packing.m2m = detail::cpu::pack_translation_bank(
+        std::span<const StaticCoefficientOperator>(m2m_operators_), degrees,
+        level_count);
+    packing.l2l = detail::cpu::pack_translation_bank(
+        std::span<const StaticCoefficientOperator>(l2l_operators_), degrees,
+        level_count);
+    packing.l2p = detail::cpu::pack_l2p(
+        std::span<const StaticL2PEvaluator>(l2p_evaluators_), n);
+    for (const P2MPlan &plan : p2m_plans_) {
+      canonical_p2m_bytes +=
+          plan.operator_map.entries.size() * sizeof(StaticOperatorEntry);
+    }
+    canonical_l2p_bytes = l2p_evaluators_.size() * 4 *
+                          static_cast<std::size_t>(n) * sizeof(double);
+    packed_p2m_bytes = packing.p2m.memory_bytes();
+    packed_l2p_bytes = packing.l2p.memory_bytes();
+    packed_translation_bytes =
+        packing.m2m.memory_bytes() + packing.l2l.memory_bytes();
+    p2m_plans_.clear();
+    p2m_plans_.shrink_to_fit();
+    l2p_evaluators_.clear();
+    l2p_evaluators_.shrink_to_fit();
+  }
+  cpu_far_field_ = std::move(owner);
+  // Report the resident packing instead of the released canonical maps; the
+  // eight shared translation operators stay resident and keep their bytes.
+  static_plan_statistics_.operator_bytes +=
+      packed_p2m_bytes + packed_l2p_bytes + packed_translation_bytes;
+  static_plan_statistics_.operator_bytes -=
+      std::min(static_plan_statistics_.operator_bytes,
+               canonical_p2m_bytes + canonical_l2p_bytes);
+  static_plan_statistics_.p2m_operator_bytes = packed_p2m_bytes;
+  static_plan_statistics_.l2p_operator_bytes = packed_l2p_bytes;
+  static_plan_statistics_.m2m_operator_bytes += packed_translation_bytes / 2;
+  static_plan_statistics_.l2l_operator_bytes += packed_translation_bytes / 2;
+  static_plan_statistics_.far_field_packing.add(elapsed_seconds(start));
 }
 
 void UniformFmm::build_cuda_full_plan() {

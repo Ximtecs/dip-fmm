@@ -414,6 +414,7 @@ public:
 private:
   struct NormalisedGeometry;
   class MklM2LPlanOwner;
+  class CpuFarFieldPackingOwner;
   class CudaM2LPlanOwner;
   class CudaP2PPlanOwner;
   class CudaFullPlanOwner;
@@ -429,6 +430,7 @@ private:
   void build_missing_universal_operators(bool universal_available,
                                          bool periodic_required);
   void build_backend_packing();
+  void build_cpu_far_field_packing();
   void quantise_static_plan_to_float();
   void initialise_source_geometry(const UniformFmmOptions &options);
   void initialise_target_geometry(const UniformFmmOptions &options);
@@ -547,6 +549,10 @@ private:
   std::unique_ptr<CudaP2PPlanOwner> cuda_p2p_plan_{};
   std::unique_ptr<CudaFullPlanOwner> cuda_full_plan_{};
   std::unique_ptr<MklM2LPlanOwner> mkl_m2l_plan_{};
+  // Derived CPU execution packing of P2M/M2M/L2L/L2P (see
+  // backend/cpu/far_field/packing.hpp); built for every backend that runs the
+  // hierarchy on the CPU.
+  std::unique_ptr<CpuFarFieldPackingOwner> cpu_far_field_{};
   std::vector<P2MPlan> p2m_plans_{};
   std::vector<FloatP2MPlan> p2m_plans_float_{};
   std::array<StaticCoefficientOperator, 8> m2m_operators_{};

@@ -99,6 +99,8 @@ struct StaticPlanStatistics {
     PhaseTiming geometry_cache_write{};
     /// @brief Time spent deriving backend-specific host packing.
     PhaseTiming backend_packing{};
+    /// @brief Time spent deriving the CPU far-field execution packing.
+    PhaseTiming far_field_packing{};
     /// @brief Time spent creating and uploading persistent CUDA state.
     PhaseTiming cuda_upload{};
     /// @brief Complete constructor setup time, including backend creation.

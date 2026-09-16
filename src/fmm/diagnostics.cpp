@@ -351,6 +351,8 @@ void UniformFmm::print_initialisation_summary(
          << static_plan_statistics_.p2p_tensor_plan.total_seconds << '\n';
   stream << "  setup.backend_packing_seconds: "
          << static_plan_statistics_.backend_packing.total_seconds << '\n';
+  stream << "  setup.far_field_packing_seconds: "
+         << static_plan_statistics_.far_field_packing.total_seconds << '\n';
   stream << "  setup.cuda_upload_seconds: "
          << static_plan_statistics_.cuda_upload.total_seconds << '\n';
   stream << "  setup.static_plan_seconds: "

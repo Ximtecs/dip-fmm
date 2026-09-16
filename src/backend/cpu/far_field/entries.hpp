@@ -9,31 +9,6 @@
 
 namespace cdfmm::detail::cpu {
 
-inline void apply_static_p2m_entries(
-    const StaticCoefficientOperator& operator_map,
-    const std::span<const Vec3> moments, const std::span<double> multipole) {
-  for (const StaticOperatorEntry& entry : operator_map.entries) {
-    const Vec3& moment = moments[static_cast<std::size_t>(entry.input / 3)];
-    const double component = entry.input % 3 == 0
-        ? moment.x : (entry.input % 3 == 1 ? moment.y : moment.z);
-    multipole[static_cast<std::size_t>(entry.output)] +=
-        entry.value * component;
-  }
-}
-
-inline void apply_static_p2m_entries(
-    const FloatStaticCoefficientOperator& operator_map,
-    const std::span<const FloatVec3> moments,
-    const std::span<float> multipole) {
-  for (const FloatStaticOperatorEntry& entry : operator_map.entries) {
-    const FloatVec3& moment = moments[static_cast<std::size_t>(entry.input / 3)];
-    const float component = entry.input % 3 == 0
-        ? moment.x : (entry.input % 3 == 1 ? moment.y : moment.z);
-    multipole[static_cast<std::size_t>(entry.output)] +=
-        entry.value * component;
-  }
-}
-
 inline void apply_static_operator(
     const StaticCoefficientOperator& operator_map,
     const std::span<const double> input, const std::span<double> output) {

@@ -38,8 +38,12 @@ src/
 |-- backend/cpu/p2p/{executor,dictionary,near_field}.cpp
 |                                          portable P2P and list-1 execution
 |-- backend/cpu/m2l/executor.cpp            portable prepared M2L execution
-|-- backend/cpu/far_field/{executor,entries,translation}.{cpp,hpp}
-|                                          portable far-field mechanics
+|-- backend/cpu/far_field/{executor,entries}.{cpp,hpp}
+|                                          public entry-map reference kernels
+|-- backend/cpu/far_field/packing.{hpp,cpp} derived CPU execution packing of
+|                                          P2M/M2M/L2L/L2P (dense rows,
+|                                          level-scaled column banks) built
+|                                          once at construction
 |-- backend/mkl/{m2l,direct/dense}.cpp      oneMKL execution
 |-- backend/cuda/execution_policy.{hpp,cpp} deterministic CUDA strategy choices
 |                                          (P2P packing/executor, M2L and

@@ -68,6 +68,7 @@ add_library(cdfmm_core
     src/backend/cpu/p2p/dictionary.cpp
     src/backend/cpu/m2l/executor.cpp
     src/backend/cpu/far_field/executor.cpp
+    src/backend/cpu/far_field/packing.cpp
     src/backend/mkl/m2l.cpp
     src/validation.cpp
     src/tree/common/node.cpp

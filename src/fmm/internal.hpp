@@ -7,6 +7,7 @@
 
 #include "backend/cuda/execution_policy.hpp"
 #include "backend/cuda/fmm/internal.hpp"
+#include "backend/cpu/far_field/packing.hpp"
 #include "backend/mkl/m2l.hpp"
 
 namespace cdfmm {
@@ -50,6 +51,13 @@ class UniformFmm::CudaFullPlanOwner {
 public:
   explicit CudaFullPlanOwner(std::unique_ptr<CudaFullPlan> value);
   std::unique_ptr<CudaFullPlan> plan;
+};
+
+/** @brief CPU far-field execution packing in the plan's precision. */
+class UniformFmm::CpuFarFieldPackingOwner {
+public:
+  detail::cpu::FarFieldPacking<double> fp64{};
+  detail::cpu::FarFieldPacking<float> fp32{};
 };
 
 /** @brief Resolved CUDA execution policy of one plan (see execution_policy.hpp). */

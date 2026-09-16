@@ -367,6 +367,8 @@ void bind_fmm(py::module_& module)
         result["l2p_construction_seconds"] = statistics.l2p_plan.total_seconds;
         result["p2p_construction_seconds"] = statistics.p2p_tensor_plan.total_seconds;
         result["backend_packing_seconds"] = statistics.backend_packing.total_seconds;
+        result["far_field_packing_seconds"] =
+            statistics.far_field_packing.total_seconds;
         result["cuda_upload_seconds"] = statistics.cuda_upload.total_seconds;
         result["total_setup_seconds"] = statistics.total_setup.total_seconds;
         result["universal_cache_hit"] = statistics.universal_cache_hit;

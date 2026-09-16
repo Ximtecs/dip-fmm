@@ -15,6 +15,7 @@
 #include "cdfmm/backend/cpu/m2l.hpp"
 #include "cdfmm/backend/cuda/m2l.hpp"
 #include "backend/cpu/far_field/internal.hpp"
+#include "backend/cpu/far_field/packing.hpp"
 #include "fmm/internal.hpp"
 #include "profile.hpp"
 
@@ -27,10 +28,12 @@ namespace cdfmm {
 //
 //   sources -> P2M -> M2M -> M2L -> L2L -> L2P -> far field
 //
-// Geometry-plan construction and list1 P2P do not belong here.  The routines
-// consume the canonical operators owned by UniformFmm; they neither rebuild
-// plans nor introduce executor-specific copies.  Near-field work may therefore
-// proceed independently while this branch consumes explicit topology schedules.
+// Geometry-plan construction and list1 P2P do not belong here.  The static
+// executors consume the CPU far-field packing derived once at construction
+// (backend/cpu/far_field/packing.hpp); the reference executors consume the
+// canonical operators directly.  Nothing here rebuilds plans.  Near-field work
+// may therefore proceed independently while this branch consumes explicit
+// topology schedules.
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -155,13 +158,12 @@ void UniformFmm::upward_pass_prepared_float() {
         occupied_leaves[static_cast<std::size_t>(occupied_index)].node;
     const StaticLeafRange &leaf_range =
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
-    const FloatStaticCoefficientOperator &operator_map =
-        p2m_plans_float_[static_cast<std::size_t>(occupied_index)].operator_map;
     const auto M = multipole_float_for_node(leaf_index);
-    detail::cpu::apply_static_p2m(
-        operator_map,
+    detail::cpu::apply_packed_p2m(
+        cpu_far_field_->fp32.p2m, leaf_range.begin,
         std::span<const FloatVec3>(sorted_dipole_moments_float_)
-            .subspan(leaf_range.begin, leaf_range.count), M);
+            .subspan(leaf_range.begin, leaf_range.count),
+        M.data());
   }
   last_timings_.p2m.add(elapsed_seconds(phase_start));
 
@@ -191,12 +193,9 @@ void UniformFmm::upward_pass_prepared_float() {
           if (child.source_count() == 0) {
             continue;
           }
-          detail::cpu::apply_static_translation(
-              m2m_operators_float_[edge.child_class],
-              multipole_float_for_node(child_index), parent_M, child.level,
-              detail::cpu::coefficient_degree_view(
-                  expansion_basis_ == ExpansionBasis::Spherical, basis_,
-                  spherical_basis_));
+          detail::cpu::apply_packed_translation(
+              cpu_far_field_->fp32.m2m, child.level, edge.child_class,
+              multipole_float_for_node(child_index).data(), parent_M.data());
         }
       }
     }
@@ -258,13 +257,12 @@ void UniformFmm::upward_pass_prepared() {
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
     const auto &leaf = nodes[static_cast<std::size_t>(leaf_index)];
     if (p2m_executor != StaticOperatorExecutor::Reference) {
-      const StaticCoefficientOperator &operator_map =
-          p2m_plans_[static_cast<std::size_t>(occupied_index)].operator_map;
       const auto M = multipole_for_node(leaf_index);
-      detail::cpu::apply_static_p2m(
-          operator_map,
+      detail::cpu::apply_packed_p2m(
+          cpu_far_field_->fp64.p2m, leaf_range.begin,
           std::span<const Vec3>(sorted_dipole_moments_)
-              .subspan(leaf_range.begin, leaf_range.count), M);
+              .subspan(leaf_range.begin, leaf_range.count),
+          M.data());
     } else {
       const CoeffVector M = operators::p2m::evaluate(basis_, leaf.centre,
                      std::span<const Vec3>(topology_->sorted_source_positions)
@@ -308,12 +306,9 @@ void UniformFmm::upward_pass_prepared() {
             continue;
           }
           if (m2m_executor != StaticOperatorExecutor::Reference) {
-            detail::cpu::apply_static_translation(
-                m2m_operators_[edge.child_class],
-                multipole_for_node(child_index), parent_M, child.level,
-                detail::cpu::coefficient_degree_view(
-                    expansion_basis_ == ExpansionBasis::Spherical, basis_,
-                    spherical_basis_));
+            detail::cpu::apply_packed_translation(
+                cpu_far_field_->fp64.m2m, child.level, edge.child_class,
+                multipole_for_node(child_index).data(), parent_M.data());
           } else {
             const Vec3 d = parent.centre - child.centre;
             operators::m2m::apply(basis_, d,
@@ -359,6 +354,7 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
     }
 
     const auto &nodes = topology_->nodes;
+    const StaticOperatorExecutor l2l_executor = execution_plan().l2l;
     for (int level = 1; level <= topology_->maximum_level; ++level) {
       // Parent locals must be inherited before this level's M2L is added.
       // Advancing levels in order makes the parent-child dependency explicit.
@@ -376,13 +372,11 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
         if (target.target_count() == 0) {
           continue;
         }
-        if (execution_plan().l2l != StaticOperatorExecutor::Reference) {
-          detail::cpu::apply_static_translation(
-              l2l_operators_[edge.child_class], local_for_node(edge.source_node),
-              local_for_node(target_index), target.level,
-              detail::cpu::coefficient_degree_view(
-                  expansion_basis_ == ExpansionBasis::Spherical, basis_,
-                  spherical_basis_));
+        if (l2l_executor != StaticOperatorExecutor::Reference) {
+          detail::cpu::apply_packed_translation(
+              cpu_far_field_->fp64.l2l, target.level, edge.child_class,
+              local_for_node(edge.source_node).data(),
+              local_for_node(target_index).data());
         } else {
           const Vec3 d = target.centre - nodes[static_cast<std::size_t>(edge.source_node)].centre;
           operators::l2l::apply(basis_, d, local_for_node(edge.source_node),
@@ -427,6 +421,9 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
     const auto &nodes = topology_->nodes;
     const auto targets = std::span<const Vec3>(topology_->sorted_target_positions);
     const auto &occupied_leaves = topology_->target_leaves;
+    const StaticOperatorExecutor l2p_executor = execution_plan().l2p;
+    const bool want_field = has_flag(output, OutputFlags::Field);
+    const bool want_potential = has_flag(output, OutputFlags::Potential);
     phase_start = Clock::now();
     detail::ProfileRange l2p_range{"cdfmm/far_field/l2p"};
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
@@ -437,11 +434,21 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
           occupied_leaves[static_cast<std::size_t>(occupied_index)];
       const int leaf_index = leaf_range.node;
       const auto &leaf = nodes[static_cast<std::size_t>(leaf_index)];
+      const double *L = local_for_node(leaf_index).data();
       for (std::size_t target_index = leaf_range.begin;
            target_index < leaf_range.begin + leaf_range.count; ++target_index) {
-        if (execution_plan().l2p != StaticOperatorExecutor::Reference) {
-          sorted_results_[target_index] = apply_static_l2p_evaluator(
-              l2p_evaluators_[target_index], local_for_node(leaf_index), output);
+        if (l2p_executor != StaticOperatorExecutor::Reference) {
+          PotentialField result;
+          if (want_field) {
+            detail::cpu::apply_packed_l2p_field(
+                cpu_far_field_->fp64.l2p, target_index, L, result.H.x,
+                result.H.y, result.H.z);
+          }
+          if (want_potential) {
+            result.phi = detail::cpu::apply_packed_l2p_potential(
+                cpu_far_field_->fp64.l2p, target_index, L);
+          }
+          sorted_results_[target_index] = result;
         } else {
           sorted_results_[target_index] =
               operators::l2p::evaluate(basis_, leaf.centre, targets[target_index],
@@ -494,13 +501,10 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
       if (target.target_count() == 0) {
         continue;
       }
-      detail::cpu::apply_static_translation(
-          l2l_operators_float_[edge.child_class],
-          local_float_for_node(edge.source_node),
-          local_float_for_node(target_index), target.level,
-          detail::cpu::coefficient_degree_view(
-              expansion_basis_ == ExpansionBasis::Spherical, basis_,
-              spherical_basis_));
+      detail::cpu::apply_packed_translation(
+          cpu_far_field_->fp32.l2l, target.level, edge.child_class,
+          local_float_for_node(edge.source_node).data(),
+          local_float_for_node(target_index).data());
     }
     last_timings_.l2l.add(elapsed_seconds(phase_start));
 
@@ -513,6 +517,8 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
 
   if (evaluate_l2p) {
     const auto &occupied_leaves = topology_->target_leaves;
+    const bool want_field = has_flag(output, OutputFlags::Field);
+    const bool want_potential = has_flag(output, OutputFlags::Potential);
     phase_start = Clock::now();
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
     for (std::ptrdiff_t occupied_index = 0;
@@ -521,11 +527,20 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
       const StaticLeafRange &leaf_range =
           occupied_leaves[static_cast<std::size_t>(occupied_index)];
       const int leaf_index = leaf_range.node;
+      const float *L = local_float_for_node(leaf_index).data();
       for (std::size_t target_index = leaf_range.begin;
            target_index < leaf_range.begin + leaf_range.count; ++target_index) {
-        sorted_results_float_[target_index] =
-            apply_static_l2p_evaluator(l2p_evaluators_float_[target_index],
-                                       local_float_for_node(leaf_index), output);
+        FloatPotentialField result;
+        if (want_field) {
+          detail::cpu::apply_packed_l2p_field(
+              cpu_far_field_->fp32.l2p, target_index, L, result.H.x,
+              result.H.y, result.H.z);
+        }
+        if (want_potential) {
+          result.phi = detail::cpu::apply_packed_l2p_potential(
+              cpu_far_field_->fp32.l2p, target_index, L);
+        }
+        sorted_results_float_[target_index] = result;
       }
     }
     last_timings_.l2p.add(elapsed_seconds(phase_start));
@@ -563,12 +578,10 @@ void UniformFmm::l2l_downward() {
       if (target.target_count() == 0) {
         continue;
       }
-      detail::cpu::apply_static_translation(
-          l2l_operators_[edge.child_class], local_for_node(edge.source_node),
-          local_for_node(target_index), target.level,
-          detail::cpu::coefficient_degree_view(
-              expansion_basis_ == ExpansionBasis::Spherical, basis_,
-              spherical_basis_));
+      detail::cpu::apply_packed_translation(
+          cpu_far_field_->fp64.l2l, target.level, edge.child_class,
+          local_for_node(edge.source_node).data(),
+          local_for_node(target_index).data());
     }
     last_timings_.l2l.add(elapsed_seconds(phase_start));
   }
