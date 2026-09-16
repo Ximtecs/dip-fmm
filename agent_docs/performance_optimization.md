@@ -1174,3 +1174,26 @@ numbers: S 189 / 301 us (188 / 302), M 767 / 2925 us (758 / 2909),
 - `git diff --check` clean.
 
 **Phase 3B CPU / oneMKL evaluation is complete.**
+
+### All backends at 8 threads, final state (evaluation medians [us])
+
+`cuda-full` did not change in 3B; its S and M values are the regression
+check above at the final HEAD, its H and L values are the Phase-3A final
+table (state `bf511ce`, identical CUDA code). The CPU and hybrid columns are
+the 3B final table; every case is 8 P-core threads, spherical basis, random
+points, field output, fixed identity map.
+
+| Case | Prec | portable | oneMKL | cuda-partial | cuda-full | portable / cuda-full |
+|---|---|---:|---:|---:|---:|---:|
+| S (10k, p4, d3) | FP32 | 1239 | 1186 | 211 | 189 | 6.6x |
+| S | FP64 | 1341 | 1376 | 368 | 301 | 4.5x |
+| M (50k, p6, d4) | FP32 | 12682 | 16631 | 1714 | 767 | 16.5x |
+| M | FP64 | 18010 | 32357 | 4906 | 2925 | 6.2x |
+| H (50k, p8, d4) | FP32 | 25508 | 27651 | 3008 | 1085 | 23.5x |
+| H | FP64 | 44165 | 53342 | 10226 | 6107 | 7.2x |
+| L (100k, p6, d4) | FP32 | 23930 | 26996 | 3249 | 1924 | 12.4x |
+| L | FP64 | 30620 | 43840 | 7595 | 4749 | 6.4x |
+
+For reference, `cuda-full` at the Phase-3A GPU baseline (`293144bf`) was
+S 485 / 760, M 2397 / 4275, H 4986 / 8694, L 4307 / 7146 us (FP32 / FP64),
+and the CPU paths at the 3B baseline (`e4f1c79`) are in the table above.
