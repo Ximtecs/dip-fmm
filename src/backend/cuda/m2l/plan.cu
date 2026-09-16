@@ -714,11 +714,14 @@ struct CudaM2LPlan::Implementation {
   bool fp32{false};
   int coefficient_count{0};
   int node_count{0};
-  std::vector<double> host_multipoles{};
-  std::vector<double> host_locals{};
+  std::size_t coefficient_values{0};
+  // Pinned staging keeps the per-evaluation coefficient round trip on the
+  // asynchronous copy engines instead of driver-staged pageable copies.
+  double *host_multipoles{nullptr};
+  double *host_locals{nullptr};
   cuda_m2l_detail::CudaM2LExecutionPlan<double, StaticM2LPlan> *executor{nullptr};
-  std::vector<float> host_multipoles_float{};
-  std::vector<float> host_locals_float{};
+  float *host_multipoles_float{nullptr};
+  float *host_locals_float{nullptr};
   cuda_m2l_detail::CudaM2LExecutionPlan<float, FloatStaticM2LPlan> *executor_float{nullptr};
   float *multipoles_float{nullptr};
   float *locals_float{nullptr};
@@ -747,8 +750,15 @@ CudaM2LPlan::CudaM2LPlan(const FloatStaticM2LPlan &data)
   plan.node_count = static_cast<int>(data.target_row_offsets.size()) - 1;
   const std::size_t coefficient_values =
       static_cast<std::size_t>(plan.node_count) * plan.coefficient_count;
-  plan.host_multipoles_float.resize(coefficient_values);
-  plan.host_locals_float.resize(coefficient_values);
+  plan.coefficient_values = coefficient_values;
+  check_cuda(cudaMallocHost(reinterpret_cast<void **>(&plan.host_multipoles_float),
+                            std::max(coefficient_values * sizeof(float),
+                                     std::size_t{1})),
+             "allocate pinned FP32 M2L multipoles");
+  check_cuda(cudaMallocHost(reinterpret_cast<void **>(&plan.host_locals_float),
+                            std::max(coefficient_values * sizeof(float),
+                                     std::size_t{1})),
+             "allocate pinned FP32 M2L locals");
   check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
              "create canonical FP32 M2L stream");
   check_cuda(cudaEventCreate(&plan.start), "create M2L event");
@@ -783,8 +793,15 @@ CudaM2LPlan::CudaM2LPlan(const StaticM2LPlan& data)
   plan.node_count = static_cast<int>(data.target_row_offsets.size()) - 1;
   const std::size_t coefficient_values =
       static_cast<std::size_t>(plan.node_count) * plan.coefficient_count;
-  plan.host_multipoles.resize(coefficient_values);
-  plan.host_locals.resize(coefficient_values);
+  plan.coefficient_values = coefficient_values;
+  check_cuda(cudaMallocHost(reinterpret_cast<void **>(&plan.host_multipoles),
+                            std::max(coefficient_values * sizeof(double),
+                                     std::size_t{1})),
+             "allocate pinned M2L multipoles");
+  check_cuda(cudaMallocHost(reinterpret_cast<void **>(&plan.host_locals),
+                            std::max(coefficient_values * sizeof(double),
+                                     std::size_t{1})),
+             "allocate pinned M2L locals");
   check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
              "create canonical M2L stream");
   check_cuda(cudaEventCreate(&plan.start), "create M2L event");
@@ -814,6 +831,10 @@ CudaM2LPlan::~CudaM2LPlan() {
   cudaFree(plan.multipoles); cudaFree(plan.locals);
   cudaFree(plan.multipoles_float);
   cudaFree(plan.locals_float);
+  cudaFreeHost(plan.host_multipoles);
+  cudaFreeHost(plan.host_locals);
+  cudaFreeHost(plan.host_multipoles_float);
+  cudaFreeHost(plan.host_locals_float);
   cudaEventDestroy(plan.start); cudaEventDestroy(plan.h2d);
   cudaEventDestroy(plan.scale);
   cudaEventDestroy(plan.kernel); cudaEventDestroy(plan.d2h);
@@ -823,40 +844,37 @@ CudaM2LPlan::~CudaM2LPlan() {
 void CudaM2LPlan::evaluate(const std::span<const float> multipoles,
                            const std::span<float> locals) {
   auto &plan = *implementation_;
-  if (!plan.fp32 || multipoles.size() != plan.host_multipoles_float.size() ||
-      locals.size() != plan.host_locals_float.size()) {
+  const std::size_t values = plan.coefficient_values;
+  if (!plan.fp32 || multipoles.size() != values || locals.size() != values) {
     throw std::invalid_argument("CUDA FP32 M2L coefficient dimensions differ");
   }
-  std::copy(multipoles.begin(), multipoles.end(),
-            plan.host_multipoles_float.begin());
+  std::copy(multipoles.begin(), multipoles.end(), plan.host_multipoles_float);
   check_cuda(cudaEventRecord(plan.start, plan.stream), "record M2L start");
-  if (!plan.host_multipoles_float.empty()) {
-    check_cuda(cudaMemcpyAsync(
-                   plan.multipoles_float, plan.host_multipoles_float.data(),
-                   plan.host_multipoles_float.size() * sizeof(float),
-                   cudaMemcpyHostToDevice, plan.stream),
+  if (values != 0) {
+    check_cuda(cudaMemcpyAsync(plan.multipoles_float,
+                               plan.host_multipoles_float,
+                               values * sizeof(float), cudaMemcpyHostToDevice,
+                               plan.stream),
                "upload FP32 M2L multipoles");
   }
   check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record M2L H2D");
-  if (!plan.host_locals_float.empty()) {
-    check_cuda(cudaMemsetAsync(
-                   plan.locals_float, 0,
-                   plan.host_locals_float.size() * sizeof(float), plan.stream),
+  if (values != 0) {
+    check_cuda(cudaMemsetAsync(plan.locals_float, 0, values * sizeof(float),
+                               plan.stream),
                "clear FP32 M2L locals");
   }
   plan.executor_float->enqueue(plan.multipoles_float, plan.locals_float,
                                plan.stream, plan.scale);
   check_cuda(cudaEventRecord(plan.kernel, plan.stream), "record M2L kernel");
-  if (!plan.host_locals_float.empty()) {
-    check_cuda(cudaMemcpyAsync(
-                   plan.host_locals_float.data(), plan.locals_float,
-                   plan.host_locals_float.size() * sizeof(float),
-                   cudaMemcpyDeviceToHost, plan.stream),
+  if (values != 0) {
+    check_cuda(cudaMemcpyAsync(plan.host_locals_float, plan.locals_float,
+                               values * sizeof(float), cudaMemcpyDeviceToHost,
+                               plan.stream),
                "download FP32 M2L locals");
   }
   check_cuda(cudaEventRecord(plan.d2h, plan.stream), "record M2L D2H");
   check_cuda(cudaEventSynchronize(plan.d2h), "wait for FP32 M2L");
-  std::copy(plan.host_locals_float.begin(), plan.host_locals_float.end(),
+  std::copy(plan.host_locals_float, plan.host_locals_float + values,
             locals.begin());
   const auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
     float milliseconds = 0.0F;
@@ -874,10 +892,8 @@ void CudaM2LPlan::evaluate(const std::span<const float> multipoles,
   plan.timings.d2h_seconds = elapsed(plan.kernel, plan.d2h);
   plan.timings.total_seconds = plan.timings.h2d_seconds +
       plan.timings.kernel_seconds + plan.timings.d2h_seconds;
-  plan.statistics.evaluation_h2d_bytes =
-      plan.host_multipoles_float.size() * sizeof(float);
-  plan.statistics.evaluation_d2h_bytes =
-      plan.host_locals_float.size() * sizeof(float);
+  plan.statistics.evaluation_h2d_bytes = values * sizeof(float);
+  plan.statistics.evaluation_d2h_bytes = values * sizeof(float);
   ++plan.statistics.evaluation_h2d_calls;
   ++plan.statistics.evaluation_d2h_calls;
 }
@@ -885,33 +901,35 @@ void CudaM2LPlan::evaluate(const std::span<const float> multipoles,
 void CudaM2LPlan::evaluate(const std::span<const double> multipoles,
                            const std::span<double> locals) {
   auto& plan = *implementation_;
-  if (multipoles.size() != plan.host_multipoles.size() ||
-      locals.size() != plan.host_locals.size()) {
+  const std::size_t values = plan.coefficient_values;
+  if (plan.fp32 || multipoles.size() != values || locals.size() != values) {
     throw std::invalid_argument("CUDA M2L coefficient dimensions differ");
   }
-  std::copy(multipoles.begin(), multipoles.end(), plan.host_multipoles.begin());
+  std::copy(multipoles.begin(), multipoles.end(), plan.host_multipoles);
   check_cuda(cudaEventRecord(plan.start, plan.stream), "record M2L start");
-  if (!plan.host_multipoles.empty()) {
-    check_cuda(cudaMemcpyAsync(plan.multipoles, plan.host_multipoles.data(),
-        plan.host_multipoles.size() * sizeof(double), cudaMemcpyHostToDevice,
-        plan.stream), "upload M2L multipoles");
+  if (values != 0) {
+    check_cuda(cudaMemcpyAsync(plan.multipoles, plan.host_multipoles,
+                               values * sizeof(double), cudaMemcpyHostToDevice,
+                               plan.stream),
+               "upload M2L multipoles");
   }
   check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record M2L H2D");
-  if (!plan.host_locals.empty()) {
-    check_cuda(cudaMemsetAsync(plan.locals, 0,
-        plan.host_locals.size() * sizeof(double), plan.stream),
-        "clear M2L locals");
+  if (values != 0) {
+    check_cuda(cudaMemsetAsync(plan.locals, 0, values * sizeof(double),
+                               plan.stream),
+               "clear M2L locals");
   }
   plan.executor->enqueue(plan.multipoles, plan.locals, plan.stream, plan.scale);
   check_cuda(cudaEventRecord(plan.kernel, plan.stream), "record M2L kernel");
-  if (!plan.host_locals.empty()) {
-    check_cuda(cudaMemcpyAsync(plan.host_locals.data(), plan.locals,
-        plan.host_locals.size() * sizeof(double), cudaMemcpyDeviceToHost,
-        plan.stream), "download M2L locals");
+  if (values != 0) {
+    check_cuda(cudaMemcpyAsync(plan.host_locals, plan.locals,
+                               values * sizeof(double), cudaMemcpyDeviceToHost,
+                               plan.stream),
+               "download M2L locals");
   }
   check_cuda(cudaEventRecord(plan.d2h, plan.stream), "record M2L D2H");
   check_cuda(cudaEventSynchronize(plan.d2h), "wait for M2L");
-  std::copy(plan.host_locals.begin(), plan.host_locals.end(), locals.begin());
+  std::copy(plan.host_locals, plan.host_locals + values, locals.begin());
   const auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
     float ms = 0.0F; check_cuda(cudaEventElapsedTime(&ms, first, second), "time M2L");
     return static_cast<double>(ms) * 1.0e-3;
@@ -927,10 +945,8 @@ void CudaM2LPlan::evaluate(const std::span<const double> multipoles,
   plan.timings.total_seconds =
       plan.timings.h2d_seconds + plan.timings.kernel_seconds +
       plan.timings.d2h_seconds;
-  plan.statistics.evaluation_h2d_bytes =
-      plan.host_multipoles.size() * sizeof(double);
-  plan.statistics.evaluation_d2h_bytes =
-      plan.host_locals.size() * sizeof(double);
+  plan.statistics.evaluation_h2d_bytes = values * sizeof(double);
+  plan.statistics.evaluation_d2h_bytes = values * sizeof(double);
   ++plan.statistics.evaluation_h2d_calls;
   ++plan.statistics.evaluation_d2h_calls;
 }
