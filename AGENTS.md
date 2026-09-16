@@ -42,12 +42,12 @@ cleanup) is also COMPLETE**: internal-implementation duplication, the
 tree/topology boundary, the cache/`UniformFmm` boundary, and the
 public/internal API, header ownership, and packaging boundary have each been
 audited and closed as their own explicit task; see "Phase 2 handoff" in
-`docs/architecture.md`. The next planned work is a dedicated
-performance-optimization phase covering construction/plan-preparation and
-evaluation/repeated execution across CPU, oneMKL, and CUDA, followed by
-repository pruning. Neither has started: do not begin performance profiling,
-kernel/allocation optimisation, benchmark redesign, or repository pruning as
-a side effect of another change.
+`docs/architecture.md`. Phase 3 (performance optimization) is
+in progress: 3A GPU evaluation and 3B CPU / oneMKL evaluation are COMPLETE
+(see `agent_docs/performance_optimization.md`); 3C construction /
+plan-preparation optimization is NEXT, 3D the final cross-backend review, and
+Phase 4 repository pruning follows. Do not begin construction optimisation,
+benchmark redesign, or repository pruning as a side effect of another change.
 
 The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor
 implementation. Architectural work occurs on `refactor/architecture-v0.2`.

@@ -1,5 +1,18 @@
 # Project progress
 
+## CPU / oneMKL evaluation optimization (Phase 3B): COMPLETE — 2026-09-16
+
+Against `CPU_PERF_BASELINE = e4f1c79`: portable CPU evaluation 3.5-10x faster
+at 8 threads (and 6.5-7.8x single-threaded), oneMKL 1.8-4.1x, `cuda-partial`
+1.4-5.7x, with unchanged accuracy. Changes: per-target portable M2L, dense
+level-scaled far-field packing, oneMKL parallel scatter and level ranges,
+class-sorted M2L block schedule, position-based point-source P2P
+(`P2PExecutionPacking::PointGeometry`, no resident pair tensors on CPU point
+plans). The portable executor now beats oneMKL M2L at every measured size
+(recorded for 3D; no automatic selection changed). Full record in
+`agent_docs/performance_optimization.md`. **Phase 3A and 3B are COMPLETE;
+3C construction / plan preparation is NEXT; 3D and Phase 4 remain unstarted.**
+
 ## Regular-grid dictionary policy at high occupancy (3A closure): COMPLETE — 2026-09-16
 
 The automatic `SpatialLayout::RegularGrid` dictionary executor is now a

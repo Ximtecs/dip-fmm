@@ -1,5 +1,26 @@
 # Latest session work
 
+## 2026-09-16 — CPU / oneMKL evaluation optimization (Phase 3B)
+
+`CPU_PERF_BASELINE = e4f1c79` (Task-A HEAD plus a link fix for the non-CUDA
+stub, which had left every portable build unable to link since Phase 3A).
+Scope: repeated CPU evaluation only. Accepted, each measured on identical
+builds and workloads: per-target unit-stride portable M2L (`82c4b35`), dense
+level-scaled P2M/M2M/L2L/L2P packing built once at construction
+(`a5d8d05`), oneMKL per-level column ranges with a deterministic parallel
+scatter and one thread-setting bracket per level (`ed67134`), a
+transfer-class-sorted portable M2L block schedule (`5b97793`), and
+position-based point-source P2P with the shared kernel in
+`operators/p2p_point_kernel.hpp` (`cad666d`, new
+`P2PExecutionPacking::PointGeometry`; `cdfmm_core` now compiles with
+`-fno-math-errno -fno-trapping-math`). Portable evaluation at 8 threads is
+3.5-10x faster (M 50k p6: 99.7 -> 12.7 ms FP32, 115 -> 18 ms FP64), oneMKL
+1.8-4.1x, `cuda-partial` 1.4-5.7x; the portable executor now beats oneMKL
+at every measured size. Full CTest (three builds) and Python suites pass; CUDA
+results unchanged. Findings, tables, rejected experiments, the RPATH test
+hazard and remaining bottlenecks: `agent_docs/performance_optimization.md`.
+Phase 3B is complete; 3C construction optimization is next.
+
 ## 2026-09-16 — Regular-grid dictionary policy at high occupancy (3A closure)
 
 Starting HEAD `a0a7003`. Calibrated the CUDA dictionary executor on regular

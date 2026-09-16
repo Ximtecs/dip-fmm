@@ -15,8 +15,11 @@ COMPLETE**. The validation matrix and its limitations are recorded under
 internal-implementation duplication, the tree/topology boundary, the
 cache/`UniformFmm` boundary, and the public/internal API, header ownership,
 and packaging boundary have all been audited and closed; see "Phase 2
-handoff" below. The next planned work is a dedicated performance-optimization
-phase, followed by repository pruning; neither has started.
+handoff" below. The performance-optimization phase is in progress: 3A GPU
+evaluation and 3B CPU / oneMKL evaluation are complete
+(`agent_docs/performance_optimization.md`), 3C construction / plan
+preparation is next, then the 3D cross-backend review; repository pruning
+follows.
 
 ## Design rules
 

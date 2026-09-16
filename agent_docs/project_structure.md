@@ -43,10 +43,14 @@ src/
   plan/direct/dense.cpp                                         dense-direct preparation/dispatch
   plan/                                                         precision conversion and P2P packing builders
   backend/cpu/direct/dense.cpp                                  portable dense-direct application
-  backend/cpu/p2p/{executor,dictionary,near_field}.{cpp,hpp}    portable P2P/list-1 application
-  backend/cpu/m2l/executor.cpp                                  portable prepared M2L application
+  backend/cpu/p2p/{executor,dictionary,near_field}.{cpp,hpp}    portable stored-tensor P2P/list-1 application
+  backend/cpu/p2p/geometry.{hpp,cpp}                            position-based point P2P executor
+  backend/cpu/m2l/executor.cpp                                  portable per-target M2L application
+  backend/cpu/m2l/schedule.{hpp,cpp}                            transfer-class-sorted M2L block schedule
   backend/cpu/far_field/{internal,executor}.{hpp,cpp}           far-field execution boundary
-  backend/cpu/far_field/{entries,translation}.hpp               shared P2M/L2P and M2M/L2L mechanics
+  backend/cpu/far_field/entries.hpp                             public entry-map reference kernels
+  backend/cpu/far_field/packing.{hpp,cpp}                       dense level-scaled P2M/M2M/L2L/L2P packing
+  operators/p2p_point_kernel.hpp                                the single point-dipole pair formula
   backend/mkl/direct/dense.cpp                                  oneMKL dense-direct application
   backend/mkl/m2l.{hpp,cpp}                                     opaque grouped M2L execution state
   backend/cuda/common/error.hpp                                 shared CUDA error helpers

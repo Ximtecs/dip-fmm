@@ -743,3 +743,434 @@ changed (the 8-32 per leaf results of the previous section stand).
   agreement assertions of the lattice test cover the automatic executors.
 
 **Phase 3A GPU evaluation is closed.**
+
+## CPU / oneMKL evaluation optimization (3B)
+
+### Environment
+
+- Same machine as 3A: `mihaa-workstation`, Linux 7.0.0-31, Intel
+  i9-14900KF (8 P-cores + 16 E-cores, no AVX-512; AVX2/FMA), 184 GB DDR5,
+  CPU governor `powersave`, clocks not locked.
+- OpenMP policy from the `cdfmm` conda environment: `OMP_NUM_THREADS=8`,
+  `OMP_PLACES={0},{2},{4},{6},{8},{10},{12},{14}` (one thread per P-core),
+  `OMP_PROC_BIND=close`. Thread-scaling runs use `--threads N` (which calls
+  `omp_set_num_threads`) with the same places list, so N <= 8 threads always
+  sit on P-cores; E-cores were not used.
+- Toolchain: conda `g++` 15.3.0 (`-O3 -march=native`, LTO on, OpenMP on, no
+  fast-math), CMake 4.4.3, Ninja 1.13.2; oneMKL 2026.1.0 (lp64, gnu_thread)
+  from the conda environment (`MKLROOT` is unset; `MKL_DIR` points at the
+  environment's cmake files). `icpx` 2026.1.1 exists but the portable
+  production builds (CI, `dev`, `release`) use g++, so g++ is the benchmark
+  compiler.
+- Profilers: `perf` is unusable (`perf_event_paranoid=4`, no sudo); VTune,
+  Advisor, llvm-mca and gperftools are not installed. Evidence therefore
+  comes from the repository phase timers (`EvaluationTimings`, per-phase
+  means in the benchmark CSV), wall-clock medians, thread-scaling runs,
+  byte-count arithmetic, and three read-only source audits.
+
+### Starting point
+
+`CPU_PERF_BASELINE = e4f1c795cd49d5a3e73e7236f573a63bc4b0cb63`
+(`fix(cuda-stub): define the pinned staging accessors in non-CUDA builds`).
+This is the Task-A HEAD (`c7f7dac`) plus one link fix: since the Phase-3A
+host-turnaround commit (`1d92a28`) every non-CUDA build that links the
+evaluation path (tests, benchmarks, Python module) failed with undefined
+`CudaFullPlan::pinned_*` symbols, so the portable baseline could not be
+built without it. The fix adds four stub accessors that are never executed
+and has no effect on CPU performance. Baseline binaries were built in a
+detached worktree at that SHA (`build-cpu`: oneMKL off; `build-mkl`: oneMKL
+on), candidates in `build-cpu-perf` / `build-mkl-perf` of the working tree
+with the identical configuration (`-DCMAKE_BUILD_TYPE=Release
+-DCMAKE_CXX_COMPILER=g++ -DCDFMM_ENABLE_LTO=ON -DCDFMM_ENABLE_NATIVE_ARCH=ON
+-DCDFMM_ENABLE_OPENMP=ON -DCDFMM_ENABLE_CUDA=OFF`, plus the MKL variables for
+the oneMKL trees).
+
+### Workloads
+
+`benchmark_uniform_fmm`, spherical basis, random points (seed 314159), fixed
+identity map, field output, `--no-direct --no-workload-comparison --warmups 3
+--evaluations 20 --samples 7 --accuracy-targets 128`; the S/M/H/L cases of
+Phase 3A (S 10k p4 d3; M 50k p6 d4; H 50k p8 d4; L 100k p6 d4), backends
+`cpu-static-matrix` (portable) and `cpu-static-matrix-mkl`, FP32 and FP64,
+8 threads; thread scaling on M at 1/2/4/8 threads. `cuda-partial` from the
+CUDA build (`build-gpu-perf`, same compiler and flags plus CUDA) is the
+secondary end-to-end metric.
+
+### Baseline (e4f1c79), 8 threads, evaluation median and per-phase means [us]
+
+| Case | Backend | Prec | eval | P2M | M2M | M2L (gather / multiply / scatter) | L2L | L2P | P2P | max rel err |
+|---|---|---|---:|---:|---:|---|---:|---:|---:|---:|
+| S | portable | FP32 | 4270 | 125 | 101 | 1797 | 82 | 91 | 2004 | 8.9e-03 |
+| S | portable | FP64 | 6478 | 188 | 137 | 1942 | 114 | 207 | 3856 | 8.9e-03 |
+| S | oneMKL | FP32 | 3070 | 124 | 118 | 453 (68 / 130 / 255) | 86 | 104 | 2150 | 8.9e-03 |
+| S | oneMKL | FP64 | 5600 | 176 | 100 | 722 (106 / 225 / 390) | 97 | 195 | 4233 | 8.9e-03 |
+| M | portable | FP32 | 99684 | 1822 | 2692 | 84578 | 2452 | 1203 | 8916 | 6.5e-03 |
+| M | portable | FP64 | 115401 | 2416 | 2802 | 92537 | 2509 | 2245 | 15784 | 6.5e-03 |
+| M | oneMKL | FP32 | 35657 | 1765 | 2440 | 18693 (4279 / 7057 / 7356) | 2203 | 1111 | 8800 | 6.5e-03 |
+| M | oneMKL | FP64 | 62849 | 2299 | 2726 | 36816 (7794 / 14570 / 14451) | 2305 | 2183 | 15577 | 6.5e-03 |
+| H | portable | FP32 | 263430 | 3076 | 6640 | 236388 | 6263 | 1799 | 8904 | 1.6e-03 |
+| H | portable | FP64 | 325641 | 4139 | 6714 | 290934 | 6669 | 3658 | 15602 | 1.6e-03 |
+| H | oneMKL | FP32 | 58170 | 3045 | 6297 | 31534 (6982 / 12352 / 12199) | 5849 | 1808 | 8908 | 1.6e-03 |
+| H | oneMKL | FP64 | 98036 | 3905 | 6390 | 61384 (11676 / 24811 / 24895) | 6151 | 3584 | 15548 | 1.6e-03 |
+| L | portable | FP32 | 127956 | 3532 | 2727 | 83774 | 2446 | 2178 | 34139 | 5.8e-03 |
+| L | portable | FP64 | 164951 | 4609 | 2999 | 90764 | 2481 | 4068 | 61424 | 5.8e-03 |
+| L | oneMKL | FP32 | 64911 | 3531 | 2618 | 18687 (4315 / 7090 / 7282) | 2251 | 2154 | 34341 | 5.8e-03 |
+| L | oneMKL | FP64 | 113283 | 4451 | 2964 | 36955 (7821 / 14611 / 14522) | 2342 | 4036 | 61143 | 5.8e-03 |
+
+Moment permutation, resets and result unpermutation are 0.2-0.5 ms in total
+at every size. Noise floor (same code, baseline versus candidate tree,
+8 threads): S/H/L agree within +-2 %, the two M cases within 5 %
+(99.7 -> 104.8 ms, 115.4 -> 120.1 ms), so 8-thread speedups below 1.05x are
+not claimed.
+
+Thread scaling, M case, evaluation median [ms] (M2L phase in parentheses):
+
+| Threads | portable FP32 | portable FP64 | oneMKL FP32 (gather/mult/scatter) | oneMKL FP64 |
+|---:|---:|---:|---:|---:|
+| 1 | 669.6 (599.8) | 748.0 (671.0) | 113.3 (8.8 / 28.1 / 7.0) | 164.3 (16.7 / 57.0 / 14.0) |
+| 2 | 345.6 (306.9) | 381.7 (332.3) | 67.8 (5.8 / 15.0 / 7.0) | 106.0 (10.9 / 30.6 / 14.0) |
+| 4 | 179.0 (155.3) | 200.0 (166.7) | 44.1 (4.6 / 8.7 / 7.2) | 74.3 (8.9 / 17.6 / 14.2) |
+| 8 | 99.7 (84.6) | 115.4 (92.5) | 35.7 (4.3 / 7.1 / 7.4) | 62.8 (7.8 / 14.6 / 14.5) |
+
+Other phases 1 -> 8 threads (M FP64): P2M 8.2 -> 2.4 ms (3.4x), M2M
+15.3 -> 2.8 (5.5x), L2L 14.4 -> 2.5 (5.7x), L2P 7.0 -> 2.2 (3.1x), P2P
+31.7 -> 15.8 (2.0x; FP32 29.1 -> 8.9, 3.3x).
+
+### Dominant bottlenecks (baseline)
+
+1. **Portable M2L** is 85 % of the standalone portable evaluation at M/L
+   and 90 % at H: one thread owns one `(target, beta)` output and re-walks
+   the target's whole interaction row per beta with stride-`C` matrix reads
+   (`matrix[matrix_id*C*C + alpha*C + beta]`), re-applying the source-level
+   scaling inside the innermost loop (3 flops per useful FMA, 4.6 GFLOP per
+   evaluation at M instead of 3.1). It is scalar and cache-line amplified
+   (one line fetched per useful matrix value); it scales well with threads
+   (7.1x) precisely because it is latency-bound, not bandwidth-bound.
+2. **oneMKL M2L**: the scatter is serial (7-14.5 ms, flat across thread
+   counts, 40 % of the phase at 8 threads); gather and scatter both scan
+   every column of every group and skip other levels (about 75 % wasted
+   iterations at depth 4); `mkl_set_num_threads_local` is called twice per
+   GEMM (about 1800 calls per evaluation); the gather/translated scratch is
+   sized for all levels (502 MB FP64 at M).
+3. **CPU P2P** streams 53 B (FP64) / 29 B (FP32) per pair from DRAM: 16.3M
+   pairs at M are 875 / 478 MB per evaluation, i.e. 0.34-0.62 flop/B, and the
+   phase scales 2-3.3x on 8 threads, consistent with the DRAM roof. The FP32
+   compact kernel also lacks the `omp simd` reduction of the FP64 kernel.
+4. **P2M / L2P** stream 16-byte COO entries (48C B per source: 118 MB at M,
+   p=6) and four separately allocated rows per target (32C B per target,
+   heap order): both are bandwidth/pointer-chasing bound at 0.125-0.25 flop/B.
+5. **M2M / L2L** call `std::ldexp` and two bounds-checked degree lookups per
+   sparse entry (about 1500 entries per translation at p=6), scalar scatter
+   accumulation; L2L also forks one parallel region per level.
+6. The remaining serial passes (identity gather per evaluation even with a
+   fixed map, near-field combine, resets) are 0.3-0.5 ms per evaluation.
+
+### Accepted changes
+
+Each change was measured on the same builds (identical configuration, g++
+15.3, LTO, `-march=native`), workloads and repeat counts as the baseline;
+numbers are per-evaluation means of the phase timers and evaluation medians
+at 8 threads. Correctness: the full portable and oneMKL CTest suites and the
+Python tests pass after every commit (see "Validation"), and a 20k-point
+FP64/FP32 field comparison against the baseline module quantifies each
+accumulation-order change.
+
+#### 1. Portable M2L per target with unit-stride matrix columns (`82c4b35`, `perf(cpu-m2l)`)
+
+- Evidence: 85 % of the portable evaluation (M), scalar stride-C matrix
+  reads, 3 flops per useful FMA (source scaling inside the innermost loop),
+  7.1x thread scaling (latency-bound, not bandwidth-bound).
+- Change: one target per iteration; each interaction scales its source once
+  and streams its `C x C` matrix exactly once as `C` unit-stride axpy updates
+  of a stack accumulator (vectorised, no scatter); local scaling once per
+  target; interaction order per target unchanged. Plans above 512
+  coefficients keep the per-output kernel.
+- M2L phase: M 84.6 -> 10.1 ms (FP32), 92.5 -> 22.9 (FP64); H 236 -> 33.0 /
+  291 -> 67.7; L 83.8 -> 10.5 / 90.8 -> 22.9; S 1.80 -> 0.31 / 1.94 -> 0.51.
+- Numerics: FP64 fields differ from the baseline by at most 1e-19 of the
+  field scale (product association only), FP32 by 1e-10; medians 0.
+
+#### 2. Dense level-scaled far-field packing (`a5d8d05`, `perf(cpu-far-field)`)
+
+- Evidence: P2M streamed 118 MB of 16-byte COO entries per evaluation at M
+  (1.8 ms, 82 GB/s, i.e. the DRAM roof); L2P streamed four heap-allocated rows
+  per target (78 MB, pointer chasing); M2M/L2L executed `std::ldexp` and two
+  bounds-checked degree lookups per sparse entry (about 1500 per translation at
+  p=6) with scalar scatter accumulation.
+- Change: `backend/cpu/far_field/packing.{hpp,cpp}` builds once at
+  construction, for every backend that runs the hierarchy on the CPU, dense
+  `[source][component][C]` P2M rows (24C B per source instead of 48C),
+  per-(child level, class) level-scaled translation column banks over each
+  input column's contiguous output range (no degree lookup, no `ldexp`,
+  unit-stride axpy), and flat `[target][3][C]` field rows plus separate
+  potential rows for L2P (field-only evaluations stream 24C B per target).
+  The canonical per-source/per-target maps are released after packing
+  (nothing reads them once the cache is written and no CUDA-full plan is
+  built); the eight canonical translation operators stay resident. New
+  `StaticPlanStatistics::far_field_packing` timing; P2M/L2P bytes now report
+  the packing. Cache format, keys and CUDA paths untouched.
+- Phases at M (FP32 / FP64): P2M 1.82 / 2.42 -> 0.51 / 1.14 ms; M2M
+  2.69 / 2.80 -> 0.32 / 0.78; L2L 2.45 / 2.51 -> 0.17 / 0.43; L2P
+  1.20 / 2.25 -> 0.63 / 1.16. Hierarchy total 8.2 / 10.0 -> 1.6 / 3.5 ms.
+- Numerics: identical products (the level factor is an exact power of two);
+  the Cartesian basis changes the input summation order of M2M/L2L only.
+
+#### 3. oneMKL M2L: level ranges, parallel deterministic scatter, hoisted thread setting (`ed67134`, `perf(mkl)`)
+
+- Evidence: serial scatter flat at 7.0 ms (FP32) / 14.0 ms (FP64) from 1 to 8
+  threads (40 % of the phase at 8 threads); gather and scatter scanned every
+  column of every group per level (75 % wasted iterations at depth 4);
+  `mkl_set_num_threads_local` twice per GEMM (about 1800 calls per
+  evaluation); scratch sized for all levels (502 MB FP64 at M).
+- Change: per-group per-level column ranges; gather/GEMM visit only the
+  level's columns; one thread-setting bracket per thread per level; scratch
+  for one level; scatter parallel over targets through a per-level schedule
+  that visits each target's (group, column) contributions in the former
+  serial order, so the accumulation is bit-identical.
+- oneMKL M2L at M: 18.7 -> 12.0 ms FP32 (gather 4.3 -> 2.8, multiply
+  7.1 -> 6.5, scatter 7.4 -> 2.7), 36.8 -> 25.8 ms FP64 (7.8 -> 6.4,
+  14.6 -> 14.1, 14.5 -> 5.3); H 31.5 -> 21.8 / 61.4 -> 43.8; L 18.7 -> 12.3 /
+  37.0 -> 25.9. Scratch 502 -> 219 MB (FP64, M).
+
+#### 4. Transfer-class-sorted M2L block schedule for the portable executor
+
+- Evidence: after change 1 the kernel streamed each `C x C` matrix from L3
+  once per interaction (316 x 19 KB = 6 MB of FP64 matrices at p=6 exceed the
+  2 MB L2): 10.1 / 22.9 ms at M for 3.07 GFLOP, i.e. 300 / 134 GFLOP/s.
+- Change: `backend/cpu/m2l/schedule.{hpp,cpp}` cuts each level's targets
+  into Morton blocks (accumulators of at most 4096 values, at least four
+  blocks per thread per level) and stably sorts a block's interactions by
+  transfer class, so one matrix stays in L1 across a run of interactions.
+  One thread owns a block; accumulation per target is deterministic but in
+  class order instead of row order. Measured kernel split: FP32 rows are
+  fastest as plain unit-stride axpy updates, FP64 gains from register-blocking
+  16/8/4 outputs across alpha (FP32 with the same chunks was 25 % slower:
+  M 8.6 -> 10.3 ms). The schedule is built only when the matrix set exceeds
+  1 MiB (below that the row kernel already runs from L2: S FP32 lost 20 % of
+  its 0.3 ms M2L with the schedule).
+- M2L phase (FP32 / FP64): M 10.1 / 22.9 -> 8.2 / 12.0 ms; H 33.0 / 67.7 ->
+  18.8 / 34.4; L 10.5 / 22.9 -> 8.2 / 12.0; S unchanged (row kernel).
+- Rejected variants on the way: 128-target blocks with a fixed count
+  (S regressed 25 %: four blocks per level); register chunks for FP32.
+
+#### 5. Position-based list-1 P2P for point sources and targets (`P2PExecutionPacking::PointGeometry`)
+
+- Evidence: after changes 1-4 the stored-tensor P2P was 40-70 % of the
+  portable evaluation (M 8.6 / 15.5 ms, L 34 / 61 ms FP32 / FP64) and sat
+  at the DRAM roof: 29 B (FP32) / 53 B (FP64) per pair, 478 / 875 MB per
+  evaluation at M, 55 GB/s, 0.34-0.62 flop/B, 2.0-3.3x thread scaling. Only
+  fewer bytes per pair can help; for point sources the pair tensor is a
+  closed formula of two resident positions.
+- Change: `backend/cpu/p2p/geometry.{hpp,cpp}` sweeps the canonical list-1
+  leaf records from the sorted positions: per target leaf the neighbourhood
+  (positions with image shift, moments, sorted index) is gathered once into a
+  per-thread SoA scratch sized at construction, then every target of the leaf
+  runs one contiguous vectorised sweep with the self pair excluded by index.
+  The pair formula lives once in `operators/p2p_point_kernel.hpp`, which
+  `operators::p2p::evaluate_pair` now also calls, so the backend defines no
+  second P2P. Selected automatically on `CpuStatic` for non-periodic plans
+  with point sources and point targets (geometry or near-field model) and no
+  explicit reduced-symmetry request; finite and periodic near fields keep the
+  particle-row SoA tensors, CUDA backends are unaffected. The canonical and
+  row P2P operators are released after the cache is written, so no pair
+  tensors stay resident (statistics report zero near-field operator bytes
+  and the scratch); construction still builds the canonical operator for the
+  cache (a 3C item). The FP32 plan computes in FP32 from the FP64 positions;
+  the FP32 potential path sweeps the same records.
+- P2P phase (FP32 / FP64): S 1.92 / 3.76 -> 1.50 / 1.59 ms; M 8.56 / 15.5 ->
+  5.61 / 5.87; H 8.84 / 15.5 -> 5.79 / 6.11; L 34.0 / 60.9 -> 21.5 / 22.7.
+  Resident P2P memory at M: 875 MB (FP64 compact) -> 0.5 MB of scratch.
+- Tests: the packing name asserted by the C++ and Python API tests changed
+  from `ParticleRowSoa` to `PointGeometry` for point plans; finite-geometry
+  tests keep `ParticleRowSoa`.
+
+#### 6. Vectorised position sweep (part of the P2P commit)
+
+- Evidence: the first version of the sweep ran at about 13 cycles per pair
+  per thread in both precisions (5.6 / 5.9 ms at M) and the linked binary
+  contained only scalar `vsqrtsd`/`vdivsd`: with `-fmath-errno` (GCC's
+  default) `std::sqrt` is a call with an errno branch, and the masked
+  self-pair select counts as trapping control flow, so GCC refused to
+  vectorise the loop ("unsupported control flow in loop").
+- Change: the sweep excludes the self pair without control flow (unit
+  displacement plus zero weight) and `cdfmm_core` is compiled and LTO-linked
+  with `-fno-math-errno -fno-trapping-math`. Both plan precisions evaluate
+  the pair in FP64 (measured to cost nothing over FP32 arithmetic) and round
+  once, which brings the FP32 field back to the accuracy of the former
+  FP64-computed tensors (max difference to the baseline 3.5e-7 of the field
+  scale instead of 5.1e-5 with FP32 pair arithmetic).
+- P2P phase at M: 5.6 / 5.9 -> 3.1 / 3.1 ms (FP32 / FP64); the branch-free
+  loop without the flags was slower (7.9 ms) because it stayed scalar with
+  extra selects. A per-source-file `COMPILE_OPTIONS` property was tried first
+  and had no effect on the LTO-linked code.
+
+### Rejected experiments
+
+- Register-blocked M2L accumulator chunks for FP32 (kept for FP64 only):
+  M 8.6 -> 10.3 ms, H 20.1 -> 26.0 ms; plain axpy rows win for FP32.
+- Fixed 128-target M2L blocks: only four blocks per level at S, 25 % slower
+  than the row kernel there; replaced by at least four blocks per thread per
+  level.
+- M2L block schedule for small matrix sets (S FP32, 0.8 MB of matrices):
+  0.31 -> 0.37 ms M2L; gated on 1 MiB.
+- FP32 pair arithmetic in the position-based P2P: no faster than FP64
+  (13 cycles per pair either way) and 500x larger FP32 differences; FP64
+  arithmetic kept.
+- Per-source `-fno-math-errno` compile option: ignored by the LTO link; the
+  target-level compile and link options are used instead.
+- The one-thread-per-output M2L kernel (the baseline) is retained only as the
+  fallback for more than 512 coefficients.
+
+### Out-of-scope findings (construction, task 3C)
+
+- Construction still builds the canonical P2P operator for every point plan
+  (about 5 s of the S case's setup at 10k points and the dominant part of the
+  L case's setup) although the CPU backends now release it immediately after
+  the cache is written; a CPU point plan with the cache disabled could skip
+  it entirely, and the cache payload could carry the topology instead of
+  16.3M tensors.
+- The far-field packing and the M2L block schedule are derived at
+  construction (about 0.04 ms at 24 particles, tens of milliseconds at M);
+  the packing could be written by the geometry-cache load directly instead of
+  building the sparse maps first.
+- `benchmark_uniform_fmm --regular-grid` still needs power-of-two-times-odd
+  counts.
+- The installed `libcdfmm_c.so` in the conda environment shadows the freshly
+  built one at test time (the conda `LDFLAGS` put `$PREFIX/lib` first in
+  the executables' `RPATH` with `--disable-new-dtags`), so the C-ABI test
+  process aborted with a heap corruption when the solver layout changed and
+  then hung inside the abort handler for 20 minutes. All CTest runs of this
+  task were made with `LD_PRELOAD=<build>/libcdfmm_c.so`; the build should
+  either strip that rpath for test executables or install after building.
+  Not fixed here (build-system change).
+
+### Remaining CPU bottlenecks (final HEAD)
+
+- Portable M2L is now the largest phase again: 8.2 / 12.0 ms at M (FP32 /
+  FP64) for 3.07 GFLOP, i.e. 370 / 250 GFLOP/s, about 30-40 % of the AVX2
+  FMA peak of eight P-cores. The kernel loads one matrix column per FMA
+  vector from L1; a true register-tiled micro-GEMM over several interactions
+  sharing a matrix (the schedule already provides the runs) is the next step.
+- The position-based P2P (3.1 ms at M, 16.3M pairs, about 5 cycles per pair
+  per thread) is bound by the packed sqrt/div throughput; an `rsqrt`
+  approximation with one Newton step would halve it but changes rounding and
+  was not tried.
+- oneMKL M2L (12.0 / 25.8 ms at M) is now slower than the portable executor
+  at every measured size; its gather/translated scratch traffic (about 1 GB
+  per evaluation at M) is the limit, and the `cblas_?gemm` calls are 55 % of
+  the phase. A blocked gather/GEMM/scatter over the same class-sorted
+  schedule would remove most of that traffic (not done: the portable path
+  already wins).
+- P2M/L2P/M2M/L2L together are 1.6 / 3.5 ms at M; P2M and L2P stream
+  24C bytes per particle and are at the DRAM roof again.
+- Serial passes (identity gather with a fixed map, near-field combine,
+  resets) remain 0.3-0.5 ms at M; not attacked.
+
+### Final results (final HEAD `cad666d` versus `CPU_PERF_BASELINE = e4f1c79`)
+
+Same builds (identical configuration), hardware, workloads and repeat counts
+as the baseline table; evaluation medians and per-phase means at 8 threads
+[us]; the sampled accuracy against the exact point reference is unchanged in
+every case.
+
+| Case | Backend | Prec | Baseline | Final | Speedup | P2M | M2M | M2L (gather / multiply / scatter) | L2L | L2P | P2P |
+|---|---|---|---:|---:|---:|---:|---:|---|---:|---:|---:|
+| S (10k, p4, d3) | portable | FP32 | 4270 | 1239 | 3.45x | 33 | 26 | 296 | 26 | 19 | 804 |
+| S | portable | FP64 | 6478 | 1341 | 4.83x | 34 | 30 | 408 | 26 | 22 | 777 |
+| S | oneMKL | FP32 | 3070 | 1186 | 2.59x | 33 | 29 | 248 (56 / 144 / 47) | 25 | 21 | 794 |
+| S | oneMKL | FP64 | 5600 | 1376 | 4.07x | 33 | 31 | 383 (83 / 227 / 73) | 26 | 47 | 777 |
+| M (50k, p6, d4) | portable | FP32 | 99684 | 12682 | 7.86x | 166 | 296 | 8789 | 125 | 499 | 3246 |
+| M | portable | FP64 | 115401 | 18010 | 6.41x | 206 | 730 | 12387 | 162 | 1047 | 3128 |
+| M | oneMKL | FP32 | 35657 | 16631 | 2.14x | 188 | 289 | 11952 (2798 / 6486 / 2668) | 115 | 623 | 3113 |
+| M | oneMKL | FP64 | 62849 | 32357 | 1.94x | 605 | 745 | 25754 (6343 / 14145 / 5264) | 287 | 1150 | 2914 |
+| H (50k, p8, d4) | portable | FP32 | 263430 | 25508 | 10.33x | 685 | 822 | 18777 | 348 | 959 | 3114 |
+| H | portable | FP64 | 325641 | 44165 | 7.37x | 1037 | 1702 | 35533 | 674 | 1953 | 3168 |
+| H | oneMKL | FP32 | 58170 | 27651 | 2.10x | 531 | 815 | 21557 (5059 / 12000 / 4497) | 291 | 955 | 3070 |
+| H | oneMKL | FP64 | 98036 | 53342 | 1.84x | 1068 | 1711 | 43922 (10624 / 24588 / 8708) | 529 | 1893 | 2979 |
+| L (100k, p6, d4) | portable | FP32 | 127956 | 23930 | 5.35x | 554 | 305 | 8951 | 254 | 1189 | 12047 |
+| L | portable | FP64 | 164951 | 30620 | 5.39x | 948 | 736 | 12181 | 523 | 2211 | 11268 |
+| L | oneMKL | FP32 | 64911 | 26996 | 2.40x | 544 | 298 | 12207 (2828 / 6608 / 2771) | 160 | 1156 | 11174 |
+| L | oneMKL | FP64 | 113283 | 43840 | 2.58x | 941 | 745 | 25784 (6342 / 14156 / 5285) | 312 | 2225 | 11050 |
+
+(The M2M column of the final rows is the per-evaluation mean; small phases
+fluctuate by tens of microseconds between runs.)
+
+Thread scaling, M case, final evaluation median [ms] (baseline in
+parentheses):
+
+| Threads | portable FP32 | portable FP64 | oneMKL FP32 | oneMKL FP64 |
+|---:|---:|---:|---:|---:|
+| 1 | 85.7 (669.6) | 115.0 (748.0) | 70.5 (113.3) | 117.2 (164.3) |
+| 2 | 44.4 (345.6) | 59.1 (381.7) | 41.5 (67.8) | 69.5 (106.0) |
+| 4 | 23.3 (179.0) | 31.4 (200.0) | 23.3 (44.1) | 41.0 (74.3) |
+| 8 | 12.7 (99.7) | 18.0 (115.4) | 16.6 (35.7) | 32.4 (62.8) |
+
+The portable path scales 6.8x (FP32) / 6.4x (FP64) from 1 to 8 threads;
+single-thread it is 7.8x / 6.5x faster than the baseline, so the gains are
+per-core, not a parallelisation artefact.
+
+**Portable versus oneMKL.** At the baseline oneMKL won every case above S
+(2.8x at M FP32). At the final HEAD the portable executor wins at every size
+and precision (M: 12.7 vs 16.6 ms FP32, 18.0 vs 32.4 ms FP64; H: 25.5 vs
+27.7 / 44.2 vs 53.3; L: 23.9 vs 27.0 / 30.6 vs 43.8; S within 5 %). The
+oneMKL M2L itself is 1.4x (FP32) to 2.1x (FP64) slower than the portable
+class-sorted kernel because its gather/translated scratch traffic dominates
+(about 1 GB per evaluation at M). `StaticMatrixBackend::Portable` is already
+the default, so no automatic selection changed; recorded for Phase 3D: there
+is no longer a size at which oneMKL should be preferred for M2L on this
+machine.
+
+**oneMKL call structure (final).** Per evaluation at M: 4 levels x up to 316
+`cblas_?gemm` calls (about 900 with non-empty groups), M = K = 49,
+N = 13-1766 columns; two `mkl_set_num_threads_local` calls per thread per
+level; the gather is 23 %, the multiply 54 % and the (now parallel) scatter
+22 % of the phase.
+
+**`cuda-partial` (secondary metric, CUDA build with the same compiler and
+flags plus CUDA, baseline built at `e4f1c79`).** Evaluation medians [us] with
+the CPU hierarchy phases:
+
+| Case | Prec | Baseline | Final | Speedup | P2M base -> final | M2M | L2L | L2P | CPU hierarchy base -> final |
+|---|---|---:|---:|---:|---|---|---|---|---|
+| S | FP32 | 380 | 211 | 1.80x | 62 -> 14 | 94 -> 47 | 79 -> 17 | 23 -> 14 | 258 -> 92 |
+| S | FP64 | 508 | 368 | 1.38x | 73 -> 19 | 94 -> 177 (contains the M2L round trip wait) | 80 -> 22 | 55 -> 192 | see note |
+| M | FP32 | 7114 | 1714 | 4.15x | 1469 -> 378 | 2034 -> 408 | 1922 -> 374 | 882 -> 78 | 6307 -> 1238 |
+| M | FP64 | 10549 | 4906 | 2.15x | 2056 -> 972 | 2056 -> 2197 (contains the M2L wait) | 1975 -> 872 | 1773 -> 690 | see note |
+| H | FP32 | 17276 | 3008 | 5.74x | 2792 -> 722 | 5839 -> 725 | 5832 -> 718 | 1451 -> 83 | 15914 -> 2248 |
+| H | FP64 | 25863 | 10226 | 2.53x | 3770 -> 1762 | 6342 -> 5431 (M2L wait) | 6364 -> 1632 | 3262 -> 692 | see note |
+| L | FP32 | 10117 | 3249 | 3.11x | 3167 -> 952 | 2054 -> 457 | 1966 -> 957 | 1836 -> 153 | 9023 -> 2519 |
+| L | FP64 | 16083 | 7595 | 2.12x | 4310 -> 2080 | 2342 -> 2208 (M2L wait) | 2134 -> 1993 | 3774 -> 2386 | see note |
+
+Note: in the hybrid FP64 rows the CPU hierarchy is now shorter than the
+device M2L (2.2 ms at M, 5.4 ms at H), so the M2M/L2P columns absorb the
+wait for the GPU; the FP64 hybrid is GPU-bound and its remaining time is the
+FP64 M2L kernel discussed in 3A. The FP32 hybrid is 1.2-1.5x slower than
+`cuda-full` (M 1.71 vs 0.77 ms) instead of 9x.
+
+### GPU regression check
+
+`cuda-full` at the final HEAD, same build tree, against the policy-commit
+numbers: S 189 / 301 us (188 / 302), M 767 / 2925 us (758 / 2909),
+32^3 lattice depth 3 with `--spatial-layout regular-grid` 532 / 1343 us
+(532 / 1345) with the dictionary packing still selected; all within the
++-1 % noise floor. No CUDA kernel, plan or policy changed in 3B.
+
+### Validation
+
+- CTest, full suites with the freshly built `libcdfmm_c.so` preloaded (see
+  the RPATH finding above): portable 202/202, oneMKL 202/202, CUDA
+  (CUDA + CPU side) 202/202 at the final HEAD; the statistics-based cases
+  (`oneMKL grouped executor retains canonical levels and scratch`, `cold and
+  warm binary caches preserve complete plan results`, `FMM initialisation
+  reports requested and resolved options`, the C++/Python packing
+  assertions) were updated to the new accounting and packing names.
+- Python: 138 passed / 8 skipped (portable module), 140 / 6 (oneMKL),
+  143 / 3 (CUDA); the notebook storage estimator models the new resident
+  containers exactly (`test_host_storage_estimate_matches_constructed_cpu_static_plan`).
+- Numerics against the baseline module on a 20k-point p=6 depth-3 plan:
+  FP64 field max difference 8e-16 of the field scale (median 4e-16), FP32
+  3.5e-7 (median 3.6e-7); potential 5e-18 / 8e-7. Benchmark accuracy columns
+  identical in every case.
+- `git diff --check` clean.
+
+**Phase 3B CPU / oneMKL evaluation is complete.**
