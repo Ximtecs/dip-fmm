@@ -6,6 +6,7 @@
 #include "backend/cuda/fmm/internal.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -54,6 +55,18 @@ struct Options {
     bool dictionary_target_owned{false};
     bool dictionary_power2_microtiles{false};
     std::string spatial_layout{"general"};
+    // Near-field geometry of the benchmark bodies: "point", "prism" or
+    // "tetrahedron" for sources and targets independently. Finite bodies are
+    // centred on the particle positions with extent `body_fill` times the
+    // nominal spacing; `irregular_bodies` gives every body its own record.
+    std::string source_geometry{"point"};
+    std::string target_geometry{"point"};
+    double body_fill{0.9};
+    bool irregular_bodies{false};
+    // Explicit list-1 packing (UniformFmmOptions::p2p_packing) or "auto".
+    std::string p2p_packing{"auto"};
+    // Fully periodic cubic cell equal to the root box.
+    bool periodic{false};
     std::string precision{"float32"};
     std::string backend{"cpu-static-matrix"};
     std::string expansion_basis{"spherical"};
@@ -122,6 +135,14 @@ Options parse_options(const int argc, char** argv)
             options.exact_cuboid_p2p = true;
             continue;
         }
+        if (key == "--irregular-bodies") {
+            options.irregular_bodies = true;
+            continue;
+        }
+        if (key == "--periodic") {
+            options.periodic = true;
+            continue;
+        }
         // Experimental reduced-symmetry (signed tensor dictionary) P2P and
         // its CUDA executor selectors; they mirror UniformFmmOptions.
         if (key == "--reduced-symmetry-p2p") {
@@ -157,6 +178,10 @@ Options parse_options(const int argc, char** argv)
         else if (key == "--expansion-basis") options.expansion_basis = value;
         else if (key == "--precision") options.precision = value;
         else if (key == "--spatial-layout") options.spatial_layout = value;
+        else if (key == "--source-geometry") options.source_geometry = value;
+        else if (key == "--target-geometry") options.target_geometry = value;
+        else if (key == "--body-fill") options.body_fill = std::stod(value);
+        else if (key == "--p2p-packing") options.p2p_packing = value;
         else if (key == "--output") options.output = value;
         else throw std::invalid_argument("Unknown option: " + key);
     }
@@ -183,7 +208,88 @@ Options parse_options(const int argc, char** argv)
         throw std::invalid_argument(
             "--spatial-layout must be general or regular-grid");
     }
+    for (const std::string* geometry :
+         {&options.source_geometry, &options.target_geometry}) {
+        if (*geometry != "point" && *geometry != "prism" &&
+            *geometry != "tetrahedron") {
+            throw std::invalid_argument(
+                "--source-geometry/--target-geometry must be point, prism or "
+                "tetrahedron");
+        }
+    }
+    if (options.exact_cuboid_p2p) {
+        // Legacy spelling of the regular exact-prism workload.
+        options.source_geometry = "prism";
+        options.target_geometry = "prism";
+    }
+    if (!(options.body_fill > 0.0) || options.body_fill >= 1.0) {
+        throw std::invalid_argument("--body-fill must be in (0, 1)");
+    }
     return options;
+}
+
+cdfmm::P2PExecutionPacking parse_p2p_packing(const std::string& name)
+{
+    if (name == "auto") return cdfmm::P2PExecutionPacking::Auto;
+    if (name == "canonical-aos") return cdfmm::P2PExecutionPacking::CanonicalAos;
+    if (name == "particle-row-soa") {
+        return cdfmm::P2PExecutionPacking::ParticleRowSoa;
+    }
+    if (name == "tensor-dictionary") {
+        return cdfmm::P2PExecutionPacking::TensorDictionary;
+    }
+    if (name == "leaf-block") return cdfmm::P2PExecutionPacking::LeafBlock;
+    if (name == "cuda-bsr3") return cdfmm::P2PExecutionPacking::CudaBsr3;
+    if (name == "point-geometry") {
+        return cdfmm::P2PExecutionPacking::PointGeometry;
+    }
+    throw std::invalid_argument(
+        "--p2p-packing must be auto, canonical-aos, particle-row-soa, "
+        "tensor-dictionary, leaf-block, cuda-bsr3 or point-geometry");
+}
+
+// Body records for the finite-geometry workloads.  A prism spans
+// `fill * spacing` per axis; a tetrahedron is the centred unit right simplex
+// scaled so that its farthest vertex stays inside the same extent.  Irregular
+// records vary the size per body and permute the tetrahedron axes.
+cdfmm::RectangularPrism benchmark_prism(const std::array<double, 3>& spacing,
+                                        const double fill,
+                                        const std::size_t index,
+                                        const bool irregular)
+{
+    const double factor = irregular
+        ? 0.6 + 0.4 * static_cast<double>((index * 7919U) % 101U) / 100.0
+        : 1.0;
+    return {fill * factor * spacing[0], fill * factor * spacing[1],
+            fill * factor * spacing[2]};
+}
+
+cdfmm::Tetrahedron benchmark_tetrahedron(const std::array<double, 3>& spacing,
+                                         const double fill,
+                                         const std::size_t index,
+                                         const bool irregular)
+{
+    const double minimum_spacing = std::min({spacing[0], spacing[1], spacing[2]});
+    const double factor = irregular
+        ? 0.6 + 0.4 * static_cast<double>((index * 7919U) % 101U) / 100.0
+        : 1.0;
+    // The centred unit simplex reaches 0.75 from its centroid along an axis.
+    const double size = fill * factor * minimum_spacing / 1.5;
+    const std::array<Vec3, 4> base{{{-0.25, -0.25, -0.25},
+                                    {0.75, -0.25, -0.25},
+                                    {-0.25, 0.75, -0.25},
+                                    {-0.25, -0.25, 0.75}}};
+    const int orientation = irregular ? static_cast<int>(index % 3) : 0;
+    cdfmm::Tetrahedron result;
+    for (std::size_t vertex = 0; vertex < 4; ++vertex) {
+        const Vec3 v = base[vertex] * size;
+        const std::array<double, 3> c{{v.x, v.y, v.z}};
+        result.vertices[vertex] = {
+            c[static_cast<std::size_t>(orientation % 3)],
+            c[static_cast<std::size_t>((orientation + 1) % 3)],
+            c[static_cast<std::size_t>((orientation + 2) % 3)]};
+    }
+    return result;
 }
 
 BenchmarkBackend benchmark_backend(const std::string& name)
@@ -505,6 +611,8 @@ std::string_view p2p_packing_name(const cdfmm::P2PExecutionPacking packing) {
     return "leaf-block";
   case cdfmm::P2PExecutionPacking::PointGeometry:
     return "point-geometry";
+  case cdfmm::P2PExecutionPacking::Auto:
+    return "auto";
   }
   throw std::logic_error("unrecognised P2P execution packing");
 }
@@ -638,7 +746,17 @@ int main(int argc, char** argv)
                   << " samples=" << options.samples << "\n";
 
         std::mt19937 generator(options.seed);
-        std::uniform_real_distribution<double> distribution(-0.95, 0.95);
+        // Finite bodies must stay inside the root box, so the random layout
+        // keeps their half extent away from the boundary.
+        const bool finite_bodies = options.source_geometry != "point" ||
+            options.target_geometry != "point";
+        const double random_spacing = 2.0 /
+            std::cbrt(static_cast<double>(std::max(options.sources, 1)));
+        const double random_range = finite_bodies
+            ? std::max(0.5, 0.98 - 0.5 * options.body_fill * random_spacing)
+            : 0.95;
+        std::uniform_real_distribution<double> distribution(-random_range,
+                                                            random_range);
         std::vector<Vec3> source_positions(
             static_cast<std::size_t>(options.sources)
         );
@@ -713,22 +831,57 @@ int main(int argc, char** argv)
         fmm_options.tree.max_level = options.depth;
         fmm_options.tree.root_centre = Vec3{0.0, 0.0, 0.0};
         fmm_options.tree.root_half_width = 1.0;
-        if (options.exact_cuboid_p2p) {
-            if (!options.regular_grid) {
-                throw std::invalid_argument(
-                    "--exact-cuboid-p2p requires --regular-grid");
+        if (finite_bodies) {
+            // Exact near-field bodies with point far-field models: every
+            // backend then shares the identical hierarchy and the comparison
+            // isolates the stored-tensor P2P.
+            const std::array<double, 3> spacing = options.regular_grid
+                ? std::array<double, 3>{2.0 / grid_dimensions[0],
+                                        2.0 / grid_dimensions[1],
+                                        2.0 / grid_dimensions[2]}
+                : std::array<double, 3>{random_spacing, random_spacing,
+                                        random_spacing};
+            const std::size_t record_count = options.irregular_bodies
+                ? source_positions.size() : 1;
+            if (options.source_geometry == "prism") {
+                fmm_options.source_geometry = SourceGeometry::RectangularPrism;
+                for (std::size_t index = 0; index < record_count; ++index) {
+                    fmm_options.source_sizes.push_back(benchmark_prism(
+                        spacing, options.body_fill, index,
+                        options.irregular_bodies));
+                }
+            } else if (options.source_geometry == "tetrahedron") {
+                fmm_options.source_geometry = SourceGeometry::Tetrahedron;
+                for (std::size_t index = 0; index < record_count; ++index) {
+                    fmm_options.source_tetrahedra.push_back(
+                        benchmark_tetrahedron(spacing, options.body_fill, index,
+                                              options.irregular_bodies));
+                }
             }
-            const CuboidSize size{
-                0.9 / grid_dimensions[0], 0.9 / grid_dimensions[1],
-                0.9 / grid_dimensions[2]};
-            fmm_options.source_geometry = SourceGeometry::RectangularPrism;
-            fmm_options.target_geometry =
-                TargetGeometry::RectangularPrism;
-            fmm_options.source_sizes = {size};
-            fmm_options.target_sizes = {size};
+            if (options.target_geometry == "prism") {
+                fmm_options.target_geometry = TargetGeometry::RectangularPrism;
+                for (std::size_t index = 0; index < record_count; ++index) {
+                    fmm_options.target_sizes.push_back(benchmark_prism(
+                        spacing, options.body_fill, index,
+                        options.irregular_bodies));
+                }
+            } else if (options.target_geometry == "tetrahedron") {
+                fmm_options.target_geometry = TargetGeometry::Tetrahedron;
+                for (std::size_t index = 0; index < record_count; ++index) {
+                    fmm_options.target_tetrahedra.push_back(
+                        benchmark_tetrahedron(spacing, options.body_fill, index,
+                                              options.irregular_bodies));
+                }
+            }
             fmm_options.far_field_source_model = SourceModel::PointDipole;
             fmm_options.far_field_target_model = TargetModel::Point;
         }
+        if (options.periodic) {
+            fmm_options.periodic.enabled = true;
+            fmm_options.periodic.centre = Vec3{0.0, 0.0, 0.0};
+            fmm_options.periodic.lengths = Vec3{2.0, 2.0, 2.0};
+        }
+        fmm_options.p2p_packing = parse_p2p_packing(options.p2p_packing);
 
         fmm_options.spatial_layout = options.spatial_layout == "regular-grid"
             ? cdfmm::SpatialLayout::RegularGrid
@@ -1201,7 +1354,12 @@ int main(int argc, char** argv)
                "cuda_p2p_row_metadata_bytes,cuda_p2p_leaf_metadata_bytes,"
                "cuda_p2p_identity_bytes,cuda_p2p_scratch_bytes,"
                "cuda_p2p_threads_per_block,"
-               "cuda_persistent_device_bytes\n";
+               "cuda_persistent_device_bytes,"
+               "source_geometry,target_geometry,irregular_bodies,body_fill,"
+               "periodic,p2p_packing_requested,"
+               "p2p_unique_tensors,p2p_dictionary_token_width_bytes,"
+               "p2p_dictionary_total_bytes,p2p_canonical_total_bytes,"
+               "near_field_operator_bytes\n";
         const char* build_type =
 #ifdef NDEBUG
             "Release";
@@ -1298,7 +1456,16 @@ int main(int argc, char** argv)
             << cuda_statistics.p2p_identity_bytes << ','
             << cuda_statistics.p2p_scratch_bytes << ','
             << cuda_statistics.p2p_threads_per_block << ','
-            << cuda_statistics.persistent_device_bytes << '\n';
+            << cuda_statistics.persistent_device_bytes << ','
+            << options.source_geometry << ',' << options.target_geometry << ','
+            << (options.irregular_bodies ? 1 : 0) << ',' << options.body_fill
+            << ',' << (options.periodic ? 1 : 0) << ','
+            << options.p2p_packing << ','
+            << static_plan.p2p_unique_tensors << ','
+            << static_plan.p2p_dictionary_token_width_bytes << ','
+            << static_plan.p2p_dictionary_total_bytes << ','
+            << static_plan.p2p_canonical_total_bytes << ','
+            << static_plan.near_field_operator_bytes << '\n';
 
         if (!options.output.empty()) {
             std::cout << "Wrote " << options.output << "\n";
