@@ -17,8 +17,8 @@ and P2P packing rather than leaving `Auto` ambiguous.
 | Public selection | P2M | M2M | M2L | L2L | L2P | P2P | Device residency |
 |---|---|---|---|---|---|---|---|
 | `CpuReference` | CPU reference | CPU reference | CPU reference | CPU reference | CPU reference | CPU direct `list1` | Host |
-| `CpuStatic` + `Portable` | CPU static | CPU static | CPU class-sorted blocks | CPU static | CPU static | CPU point geometry (point sources and targets) / SoA tensor | Host |
-| `CpuStatic` + `OneMkl` | CPU static | CPU static | oneMKL SGEMM/DGEMM | CPU static | CPU static | CPU point geometry (point sources and targets) / SoA tensor | Host |
+| `CpuStatic` + `Portable` | CPU static | CPU static | CPU class-sorted blocks | CPU static | CPU static | CPU point geometry (point sources and targets, free-space or periodic) / SoA tensor | Host |
+| `CpuStatic` + `OneMkl` | CPU static | CPU static | oneMKL SGEMM/DGEMM | CPU static | CPU static | CPU point geometry (point sources and targets, free-space or periodic) / SoA tensor | Host |
 | `CudaPartial` | CPU static | CPU static | CUDA target rows | CPU static | CPU static | CUDA static tensor | Static GPU data; expansion state crosses at the M2L boundary |
 | `CudaFull` | CUDA static | CUDA static | CUDA target rows | CUDA static | CUDA static | CUDA static tensor | Operators and coefficient state remain on device |
 | `DenseDirectPlan` | — | — | — | — | — | CPU dense exact | Host geometry tensors |
@@ -36,17 +36,32 @@ measured at run time, and the choice never changes the mathematical result.
 
 | Situation | List-1 P2P packing | Dictionary executor |
 |---|---|---|
+| explicit `p2p_packing` (valid for the plan) | the requested packing | `cuda_dictionary_target_owned` > `cuda_dictionary_power2_microtiles` > source-warp |
 | explicit `use_reduced_symmetry_p2p` (valid) | signed tensor dictionary | `cuda_dictionary_target_owned` > `cuda_dictionary_power2_microtiles` > source-warp |
-| `spatial_layout = RegularGrid`, non-periodic point sources with a fixed identity map | signed tensor dictionary | explicit executor option if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned from 48 to below 72, source-warp from 72 upwards |
-| `General`, non-periodic point sources | dense leaf blocks (one warp per leaf pair) | — |
-| finite sources, non-periodic, BSR estimate within `cuda_p2p_bsr_max_bytes` | cuSPARSE BSR(3) | — |
-| otherwise (periodic, over budget) | canonical target rows | — |
+| `spatial_layout = RegularGrid`, any geometry (point sources need a fixed identity map), built dictionary with one- or two-byte tokens | signed tensor dictionary | explicit executor option if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned from 48 to below 72, source-warp from 72 upwards |
+| `RegularGrid` whose built dictionary needs four-byte tokens (more than 65535 variants) | falls back to the `General` rule below | — |
+| `General`, any geometry | dense leaf blocks (one warp per leaf pair) | — |
 
-Explicit options therefore take precedence over the layout hint, and the
-hint only fills in what was left unspecified. `SpatialLayout::RegularGrid`
-is a performance hint for point lattices with repeated displacement tensors;
-on irregular coordinates the dictionary still evaluates exactly but stores one
-variant per pair and runs slower. CPU backends ignore the hint. The same
+Neither geometry nor periodicity enters the table: the leaf packing carries
+the canonical identity marker, so finite self tensors and point self
+exclusion execute through the same kernels, and periodic image records are
+ordinary dense leaf pairs (tagged with their image ordinal), merged BSR
+blocks or additional row entries. cuSPARSE BSR(3) and canonical target rows
+remain explicit packings; `cuda_p2p_bsr_max_bytes` is retained for source
+compatibility and no longer steers the automatic policy (leaf blocks were
+measured faster than BSR(3) on finite bodies as well as on points). A packing
+that cannot execute a plan (BSR or the dictionary for point sources without
+`fixed_target_source_indices`, CPU-only packings on CUDA) is rejected at
+construction with that reason when requested explicitly. Explicit options
+take precedence over the layout hint, and the hint only fills in what was
+left unspecified; a hint on geometry that does not compress costs
+construction time only. `SpatialLayout::RegularGrid`
+is a performance hint for lattices of identical bodies (points, prisms or
+tetrahedra) with repeated displacement tensors. On irregular coordinates the
+derived dictionary would need four-byte tokens, so the plan releases it and
+keeps the general default. CPU backends apply the same lattice rule: a
+`RegularGrid` point plan with a fixed identity map or a finite lattice runs
+the CPU signed dictionary instead of the position-based or SoA executors. The same
 module owns the grouped-M2L pairs-per-thread rule (16 for FP32 plans with at
 least 250k translations, otherwise 8) and the M2M/L2L lane-group rule (32
 lanes per output for levels with at most 65536 outputs, otherwise 4). The
@@ -60,15 +75,19 @@ persistent geometry cache; the cached canonical operator is shared.
 construction from the canonical operators (dense P2M rows, level-scaled M2M/L2L
 column banks, flat L2P rows). The portable M2L applies the canonical transfer
 matrices through a block schedule sorted by transfer class when the matrix set
-exceeds 1 MiB, and per target row otherwise. For non-periodic plans with point
-sources and point targets (geometry or near-field model) and no explicit
-reduced-symmetry request, list-1 P2P is `P2PExecutionPacking::PointGeometry`:
-pairs are recomputed from the sorted positions with the same point-dipole
-formula as the reference kernel, and no pair tensors are kept resident. Finite
-or periodic near fields keep the particle-row SoA tensors; the signed
-dictionary remains the explicit `use_reduced_symmetry_p2p` choice. None of
-these packings enters the persistent cache; the cached canonical operators are
-unchanged.
+exceeds 1 MiB, and per target row otherwise. For plans with point sources and
+point targets (geometry or near-field model), free-space or periodic, and no
+explicit reduced-symmetry request, list-1 P2P is
+`P2PExecutionPacking::PointGeometry`: pairs are recomputed from the sorted
+positions (with each periodic record's image shift) using the same
+point-dipole formula as the reference kernel, and no pair tensors are kept
+resident. Finite near fields keep the particle-row SoA tensors by default; the
+signed dictionary is the explicit `use_reduced_symmetry_p2p` choice, and
+`p2p_packing` can force `CanonicalAos`, `ParticleRowSoa`, `TensorDictionary`
+(any geometry) or `PointGeometry` (point pairs). None
+of these packings enters the persistent cache; the cached canonical operators
+are unchanged. See [static P2P](static-p2p.md) for the capability matrix and
+the execution invariant behind it.
 
 `Portable` and `OneMkl` in the table are values of `StaticMatrixBackend`.
 oneMKL accelerates M2L only: interactions sharing a normalised transfer matrix
@@ -93,7 +112,9 @@ instead of consuming the spherical static payload.
 
 `UniformFmm` supports point, rectangular-prism, and tetrahedron sources and
 point, rectangular-prism, and tetrahedron targets with either expansion basis
-on static plans.
+on static plans; all nine near-field pairs execute on `CpuStatic`,
+`CudaPartial`, and `CudaFull` in FP32 and FP64 through every stored-tensor
+packing (`tests/test_p2p_geometry_matrix.cpp`).
 Exact P2P follows the selected physical geometry, while the comparison flags
 can substitute point P2M or point L2P. `DenseDirectPlan` provides the matching
 exact geometries as an independent reference.
@@ -123,7 +144,11 @@ CPU: far field + near field -> target unsorting
 
 Static M2L matrices, interaction metadata, scaling tables, and the selected P2P
 packing are uploaded during plan construction. M2L and P2P may overlap; their
-phase timings therefore are not a sequential sum.
+phase timings therefore are not a sequential sum. The M2L stream is created at
+the device's greatest stream priority: when the two overlap the CPU is waiting
+for exactly the M2L result, so its short kernel is scheduled ahead of the
+SM-saturating P2P kernel instead of behind it (measured 4-11 % faster
+evaluations at 32-128 points per leaf).
 
 ## CUDA full data flow
 
@@ -138,7 +163,12 @@ Geometry-dependent operators, permutations, identity metadata, scaling tables,
 and persistent scratch are uploaded once. A repeated evaluation uploads only
 the changing moments and downloads only the final user-ordered field. The
 fixed target/source identity map is part of the plan; changing it requires a
-new evaluator.
+new evaluator. The far-field stream outranks the near-field stream when the
+execution policy estimates the far field at less than three times the P2P
+kernel (`cuda_policy.far_field_stream_priority` in the initialisation
+summary), so the many short far-field kernels are not stretched behind the
+P2P kernel; when a deep tree makes the far field dominate, both streams keep
+equal priority so the small P2P kernel can hide inside it.
 
 ## Compatibility names and availability
 

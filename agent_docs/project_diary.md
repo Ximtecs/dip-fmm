@@ -1,5 +1,35 @@
 # Project diary
 
+## 2026-09-16 — P2P unification: the invariant found real bugs, and the benchmark disagreed with the geometry names
+
+The brief asked for an architectural invariant — geometry builds tensors,
+executors apply tensors — and for a correctness matrix to enforce it. The
+matrix earned its keep before it ever passed: point->tetrahedron on a
+per-body scene disagreed with the dense reference by 40 % at one target. The
+FMM and the reference used the same kernel, but the plan's canonical-grid
+normalisation moved one point by a single ulp off the line through a
+tetrahedron edge, and the MagTense-adapted edge primitives lost every digit
+on that line. Neither implementation was "right"; both were sitting on a
+removable singularity. The fix (a cancellation-free atanh difference and the
+Van Oosterom solid angle for the normal term) is bitwise identical
+elsewhere, and the far-separation probe that came out of the same test
+exposed a second, older hazard for sparse grains. Lesson kept: when two
+paths differ by a suspicious amount, find a third independent value before
+deciding which one to trust.
+
+The other lesson was that the execution policy had been written in geometry
+nouns ("finite sources take BSR") because nobody had measured the
+alternatives for finite bodies — they could not be executed there at all
+until the leaf packing carried the identity marker. Once every packing could
+run every geometry, the benchmark said the same thing for prisms and
+tetrahedra as for points: leaf blocks over BSR, dictionary on lattices, and
+a dictionary that does not compress is slower on the GPU. So the policy now
+asks the built plan (token width) instead of the geometry type, exactly as
+the brief hoped. `cuda-partial` did not find its crossover except at the very
+edge (128-160 points per leaf, after fixing a stream-priority starvation the
+timelines made obvious); that negative result is recorded as carefully as
+the positive ones so Phase 3D does not have to rediscover it.
+
 ## 2026-09-16 — public/internal API cleanup: the honest answer was often "leave it"
 
 The brief for this task read like a long TODO list — relocate `timings.hpp`,

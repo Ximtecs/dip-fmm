@@ -1197,3 +1197,379 @@ points, field output, fixed identity map.
 For reference, `cuda-full` at the Phase-3A GPU baseline (`293144bf`) was
 S 485 / 760, M 2397 / 4275, H 4986 / 8694, L 4307 / 7146 us (FP32 / FP64),
 and the CPU paths at the 3B baseline (`e4f1c79`) are in the table above.
+
+## P2P execution unification, geometry/backend coverage, and CudaPartial crossover (Phase 3 follow-up)
+
+### Scope and starting point
+
+Starting HEAD `af50b69` (`docs(agent): add the all-backend 8-thread comparison
+including cuda-full`) on `refactor/architecture-v0.2`; work committed on the
+worktree branch `worktree-p2p-unification`. Same machine, toolchain and
+measurement rules as 3A/3B (RTX 5090, i9-14900KF with eight pinned P-core
+threads, conda `cdfmm` with g++ 15.3 and nvcc 13.3, Release, medians of five
+samples of twenty evaluations after three warm-ups, fixed geometry with
+changing moments, field output, fixed identity map for point sources). All
+numbers in this section come from one CUDA-enabled build tree
+(`build-cuda`, tests + Python + benchmarks) so CPU and CUDA rows are from the
+same binary. Construction time is reported separately and never enters the
+evaluation medians.
+
+Architectural outcome (details in `docs/static-p2p.md` and
+`docs/architecture.md`): every one of the nine point/prism/tetrahedron
+source-target pairs builds canonical tensors (prism/tetrahedron pairs via the
+tetrahedron pair's polyhedron surface formulation); the dense leaf packing
+carries the canonical identity marker so every stored-tensor executor (CPU
+SoA/leaf/dictionary, CUDA canonical/compact/leaf/BSR/dictionary) obeys the
+metadata instead of the geometry; periodic image records pack into leaf
+blocks (image ordinals), merged BSR blocks and dictionary tokens; and
+`UniformFmmOptions::p2p_packing` forces any packing a backend can execute.
+`P2PExecutionPacking::PointGeometry` is the one deliberate geometry-specific
+executor (point sources and point targets, CPU).
+
+### Periodic point-geometry P2P (CPU, 8 threads)
+
+Periodic point plans previously kept the SoA rows because the position-based
+executor was policy-disabled. Its implementation already folds each leaf
+record's image shift and identity marker into the gathered neighbourhood; the
+periodic geometry-matrix and a dedicated field/potential test (dynamic and
+fixed identity maps, both precisions) confirmed it against the SoA rows, so it
+was enabled explicitly and then, on this evidence, in the automatic policy.
+Fully periodic cubic cell equal to the root box, random points:
+
+| Case | Precision | SoA rows: eval / P2P [us] | PointGeometry: eval / P2P [us] | P2P speedup |
+|---|---|---:|---:|---:|
+| S (10k, p4, d3), 4.47M pairs | FP32 | 3399 / 2504 | 1725 / 930 | 2.7x |
+| S | FP64 | 5927 / 4826 | 1900 / 945 | 5.1x |
+| M (50k, p6, d4), 16.3M pairs | FP32 | 22320 / 8764 | 16257 / 3151 | 2.8x |
+| M | FP64 | 37462 / 16121 | 23569 / 3182 | 5.1x |
+
+The periodic near field has 2.7x more pairs than the free-space one at S
+(4.47M versus 1.62M) because every leaf sees 26 neighbours through the images,
+so the DRAM-bound SoA rows (29-53 bytes per pair) lose even more against the
+cache-resident positions than in free space. `selects_point_geometry_p2p()`
+no longer excludes periodic plans; the periodic potential path uses the
+executor's own record sweep.
+
+### Finite-geometry tensor dictionary on the CPU (8 threads)
+
+Exact prism->prism and tetrahedron->tetrahedron near fields, point far-field
+models (identical hierarchy for every row), order 6, `benchmark_uniform_fmm`
+via `benchmarks/run_p2p_packing_matrix.py --suite finite`. "regular" is a
+lattice of identical bodies (body extent 0.9 of the spacing); "irregular"
+gives every body its own record (size 0.6-1.0 of the regular one, permuted
+tetrahedron axes) on the same lattice for N = 4096 and on random positions
+for N = 32768. The dictionary column also gives the unique tensor count over
+the pair count and the resident bytes of the dictionary versus the SoA rows.
+
+| Case | Pairs | Prec | SoA rows: eval / P2P [us] | Dictionary: eval / P2P [us] | P2P speedup | Unique tensors | Dictionary / SoA bytes |
+|---|---:|---|---:|---:|---:|---:|---:|
+| prism regular 16^3, d3 | 681k | FP32 | 1058 / 139 | 965 / 66 | 2.1x | 248 | 0.95 MB / 28.0 MB |
+| prism regular 16^3, d3 | 681k | FP64 | 1778 / 251 | 1496 / 84 | 3.0x | 344 | 1.6 MB / 52.5 MB |
+| prism irregular 16^3, d3 | 681k | FP32 | 1083 / 161 | 1037 / 131 | 1.2x | 391775 (57 %) | 12.8 MB / 32.3 MB |
+| prism irregular 16^3, d3 | 681k | FP64 | 1858 / 370 | 1869 / 366 | 1.0x | 774080 (100 %) | 40.6 MB / 60.6 MB |
+| prism regular 32^3, d4 | 6.23M | FP32 | 12021 / 3014 | 9405 / 547 | 5.5x | 248 | 8.7 MB / 256 MB |
+| prism regular 32^3, d4 | 6.23M | FP64 | 19703 / 5714 | 14392 / 763 | 7.5x | 344 | 14.9 MB / 480 MB |
+| prism irregular random 32768, d4 | 6.98M | FP32 | 12403 / 3395 | 12019 / 2768 | 1.2x | 3.47M (50 %) | 114 MB / 286 MB |
+| prism irregular random 32768, d4 | 6.98M | FP64 | 19994 / 6367 | 20253 / 6325 | 1.0x | 6.88M (99 %) | 361 MB / 537 MB |
+| tetrahedron regular 16^3, d3 | 681k | FP32 | 1051 / 136 | 974 / 66 | 2.1x | 187 | 1.0 MB / 28.0 MB |
+| tetrahedron regular 16^3, d3 | 681k | FP64 | 1783 / 270 | 1496 / 85 | 3.2x | 281 | 1.6 MB / 52.5 MB |
+| tetrahedron irregular 16^3, d3 | 787k | FP32 | 1084 / 162 | 1035 / 133 | 1.2x | 391774 (50 %) | 12.8 MB / 32.3 MB |
+| tetrahedron irregular 16^3, d3 | 787k | FP64 | 1865 / 371 | 1657 / 195 | 1.9x | 391973 (50 %) | 22.2 MB / 60.6 MB |
+
+Observations: on a lattice of identical bodies the dictionary sees only the
+displacement classes (248 prism / 187 tetrahedron variants for 681k-6.2M
+pairs), the token stream (1 byte per pair) replaces 41-77 bytes of SoA row
+per pair, and the CPU signed-dictionary kernel is 2-7.5x faster than the SoA
+rows with 20-30x less resident memory. With one record per body the exact
+tensors are almost all distinct (50 % unique in FP32 where quantisation merges
+near-equal values, up to 100 % in FP64), yet the dictionary is never slower:
+its token-plus-dictionary bytes are still below the SoA rows and the executor
+is the same register-tiled kernel. The dictionary therefore behaves exactly as
+predicted by the invariant: it compresses the *tensors*, and whether they came
+from points, prisms or tetrahedra is irrelevant to its execution.
+
+| tetrahedron regular 32^3, d4 | 6.23M | FP32 | 12113 / 3058 | 9441 / 547 | 5.6x | 187 | 8.7 MB / 256 MB |
+| tetrahedron regular 32^3, d4 | 6.23M | FP64 | 19978 / 5734 | 14473 / 792 | 7.2x | 281 | 14.9 MB / 480 MB |
+| tetrahedron irregular random 32768, d4 | 6.98M | FP32 | 12457 / 3405 | 12041 / 2758 | 1.2x | 3.47M (50 %) | 114 MB / 286 MB |
+| tetrahedron irregular random 32768, d4 | 6.98M | FP64 | 20712 / 6430 | 19210 / 5184 | 1.2x | 3.47M (50 %) | 197 MB / 537 MB |
+| point regular 32^3, d4 (SoA / PointGeometry / dictionary) | 6.23M | FP32 | 12104 / 2985 | PointGeometry 10185 / 1267; dictionary 9476 / 550 | 2.4x / 5.4x | 172 | 8.7 MB / 256 MB |
+
+The 32^3 tetrahedron rows reproduce the prism rows exactly (same lattice, same
+displacement classes), and on the point lattice the dictionary is 2.3x faster
+than the position-based executor, so `SpatialLayout::RegularGrid` now selects
+the dictionary on the CPU as well (point lattices with a fixed identity map,
+finite lattices unconditionally), guarded by the built plan's token width
+(see the policy section below).
+
+Construction (recorded for Phase 3C, not optimised here): the 32^3 prism
+plans took 598-653 s to construct because the canonical builder's generic
+prism/point loop is serial, whereas the parallel tetrahedron pair loop built
+the 32^3 tetrahedron plans in 121-170 s (16^3: 15-22 s); deriving the
+dictionary itself costs 1-3.5 s at 6-7M pairs.
+
+### CUDA packings on finite bodies (N = 32768, depth 4, 8 bodies per leaf, FP32)
+
+Same lattices as above, every CUDA packing forced explicitly, both CUDA
+backends. "P2P" is the device kernel time; evaluation medians include the
+whole FMM (the `cuda-partial` total is dominated by its CPU hierarchy and is
+the same for every packing).
+
+| Bodies | Backend | canonical rows | leaf block | BSR(3) | dictionary source-warp | dictionary target-owned | dictionary microtiles | Unique tensors / token bytes |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| prism regular | cuda-full eval / P2P | 769 / 536 | 505 / 117 | 568 / 191 | 379 / 73 | 363 / 66 | 357 / 37 | 248 / 1 |
+| prism regular | cuda-partial eval / P2P | 1093 / 240 | 1096 / 102 | 1088 / 172 | 1075 / 58 | 1070 / 43 | 1076 / 31 | 248 / 1 |
+| prism irregular | cuda-full eval / P2P | 713 / 424 | 526 / 142 | 595 / 217 | 569 / 276 | 507 / 266 | 604 / 510 | 3.47M / 4 |
+| prism irregular | cuda-partial eval / P2P | 1149 / 251 | 1157 / 121 | 1117 / 197 | 1114 / 225 | 1148 / 216 | 1158 / 347 | 3.47M / 4 |
+| tetrahedron regular | cuda-full eval / P2P | 761 / 520 | 507 / 117 | 572 / 191 | 380 / 69 | 364 / 65 | 359 / 39 | 187 / 1 |
+| tetrahedron irregular | cuda-full eval / P2P | 721 / 430 | 525 / 142 | 599 / 217 | 569 / 278 | 506 / 266 | 603 / 509 | 3.47M / 4 |
+
+(The `cuda-partial` P2P kernel times are shorter than `cuda-full`'s because
+the hybrid's kernel does not share the GPU with a concurrent far field; the
+tetrahedron `cuda-partial` rows equal the prism rows within noise.)
+Persistent device bytes for the prism lattice: canonical 379 MB, leaf 232 MB,
+BSR 329 MB, dictionary 88 MB (`cuda-full`).
+
+Three conclusions, all geometry-independent as the invariant predicts:
+
+1. Leaf blocks beat BSR(3) on finite bodies (117 vs 191 us regular, 142 vs
+   217 us irregular) exactly as they do on points, and use 30 % less device
+   memory. The "finite sources take BSR(3)" default was therefore a
+   geometry-based rule without a measured basis; leaf blocks are now the
+   general default for every geometry and BSR(3) is an explicit packing.
+2. On a lattice of identical bodies the dictionary is 3x faster than leaf
+   blocks (37-39 us with the power-of-two microtile executor at 8 bodies per
+   leaf, the same executor the point calibration selects below 48 per leaf)
+   and needs 2.6x less device memory, so the `RegularGrid` hint now selects
+   it for finite bodies too. The dictionary executor calibration transfers
+   because execution sees only tokens.
+3. A dictionary that does not compress is slower than leaf blocks on CUDA
+   (3.47M variants, four-byte tokens: 266-510 us versus 142 us), unlike on
+   the CPU where it stayed neutral. The layout hint is therefore a prediction
+   that the built plan verifies: a hint-selected dictionary is kept only when
+   its token width is at most two bytes (at most 65535 variants, about 1.5 MB
+   of dictionary), otherwise the plan falls back to the general default. A
+   wrong hint now costs construction time only.
+
+### CudaPartial versus CudaFull crossover (FP32, order 6)
+
+`cuda-partial` = CPU P2M/M2M/L2L/L2P with GPU M2L and GPU P2P on separate
+streams; `cuda-full` = everything on the device. Random points with a fixed
+identity map, Auto policy (leaf blocks on both backends) and matched forced
+packings; the `p2m`/`m2m`/`m2l`/`l2l`/`l2p` columns are per-evaluation means
+of the host-side phases (for `cuda-partial` the M2L column includes the wait
+for the device M2L, for `cuda-full` the M2M column absorbs the concurrent P2P
+kernel).
+
+| Points per leaf (N, depth 3, 512 leaves) | Pairs | cuda-partial eval [us] (P2P kernel / M2L incl. wait / P2M / L2P) | cuda-full eval [us] (P2P kernel) | full / partial |
+|---|---:|---|---|---:|
+| 8 (4096) | 0.75M | 209 (14 / 64 / 12 / 13) | 121 (12) | 0.58 |
+| 16 (8192) | 3.0M | 236 (31 / 64 / 15 / 19) | 139 (25) | 0.59 |
+| 32 (16384) | 12.0M | 488 (285 / 241 / 27 / 33) | 407 (293) | 0.83 |
+| 48 (24576) | 26.9M | 860 (606 / 512 / 55 / 63) | 728 (616) | 0.85 |
+| 64 (32768) | 48.0M | 1476 (1058 / 892 / 117 / 124) | 1220 (1077) | 0.83 |
+| 96 (49152) | 108M | 2848 (2314 / 1750 / 350 / 303) | 2587 (2358) | 0.91 |
+| 128 (65536) | 192M | 4641 (3949 / 2980 / 612 / 494) | 4542 (4031) | 0.98 |
+
+Matched forced packings (leaf block on both, BSR(3) on both) change neither
+ordering nor gap: with BSR(3) both backends are 8-25 % slower than with leaf
+blocks and `cuda-partial` stays behind by the same margin (for example 64 per
+leaf: 1594 vs 1468 us with BSR, 1476 vs 1220 us with leaf blocks).
+
+| Other workloads | cuda-partial [us] | cuda-full [us] | full / partial |
+|---|---:|---:|---:|
+| regular lattice 32^3, d4, dictionary (both) | 1105 | 382 | 0.35 |
+| regular lattice 32^3, d4, leaf block (both) | 1109 | 510 | 0.46 |
+| regular lattice 64^3 (262144), d5, dictionary (both) | 12993 | 3346 | 0.26 |
+| regular lattice 64^3, d5, leaf block (both) | 13007 | 3750 | 0.29 |
+| random 100k, d4, Auto | 3237 | 1932 | 0.60 |
+| random 200k, d5, Auto | 11331 | 3163 | 0.28 |
+| exact prism 32^3, d4, leaf block (both) | 1100 | 506 | 0.46 |
+| exact prism 32^3, d4, BSR(3) (both) | 1086 | 575 | 0.53 |
+| exact tetrahedron 32^3, d4, leaf block (both) | 1092 | 505 | 0.46 |
+
+`cuda-partial` does not win any measured regime. It approaches parity only
+where the device P2P kernel dominates everything (96-128 points per leaf: the
+gap shrinks to 9 % and 2 %), because there both backends are limited by the
+same P2P kernel and the hybrid's CPU hierarchy (P2M 612 us, L2P 494 us,
+against 154 and 53 us on the device) hides behind it. Wherever the far field
+matters (deep trees, lattices, small occupancy) the hybrid is 1.7-4x slower.
+The matched-packing rows isolate far-field placement: the ordering is a
+property of where P2M/M2M/L2L/L2P run, not of the P2P packing.
+
+### CudaPartial and CudaFull timelines (Nsight Systems, FP32)
+
+Captures with `nsys profile --trace=cuda,nvtx,osrt` of `benchmark_uniform_fmm
+--profile` (ten consecutive evaluations) from an NVTX-enabled Release build
+(`build-profile`): M random (50k, p6, d4), 128 points per leaf (65536, d3),
+the 32^3 lattice with the dictionary, and the 32^3 prism lattice with leaf
+blocks, each on `cuda-partial` and on `cuda-full`. Per-evaluation device
+operations, from the GPU trace of the steady-state evaluations (offsets from
+the P2P upload that starts the evaluation):
+
+`cuda-partial`, M random (period 1.82 ms, benchmark median 1.83 ms):
+
+| Offset [us] | Stream | Operation | Duration [us] |
+|---:|---|---|---:|
+| 0 | P2P | H2D moments 600 KB | 40 |
+| 50 | P2P | `leaf_p2p_kernel` | 277 |
+| 330 | P2P | D2H near field 600 KB | 30 |
+| 600 | M2L | H2D multipoles 917 KB | 50 |
+| 660 | M2L | `apply_grouped_m2l_kernel` | 182 |
+| 850 | M2L | D2H locals 917 KB | 36 |
+| 1820 | P2P | next evaluation's H2D | |
+
+The GPU is busy for about 0.66 ms of the 1.82 ms period. The P2P kernel is
+finished 0.36 ms into the evaluation, long before the host needs it, so the
+final wait is zero; P2P and M2L never overlap on the device (the M2L upload
+starts 0.6 ms in, after the host P2M/M2M). The critical path is the host
+hierarchy: P2M + M2M (about 0.6 ms) -> M2L round trip with the host blocked
+(H2D + kernel + D2H + launch gaps, about 0.3 ms) -> L2L + L2P + near/far
+combination + the next evaluation's preparation (about 0.9 ms). PCIe traffic
+is 3 MB per evaluation (about 160 us of transfer time, all of it overlapped
+except the M2L round trip's share); no transfer is repeated or avoidable.
+
+`cuda-partial`, 128 points per leaf (period 4.6 ms, median 4.8 ms):
+
+| Offset [us] | Stream | Operation | Duration [us] |
+|---:|---|---|---:|
+| 0 | P2P | H2D moments 786 KB | 46 |
+| 50 | P2P | `leaf_p2p_kernel` | 3919 |
+| 650 | M2L | H2D multipoles 115 KB | 9 |
+| 2590 | M2L | memset (queued behind the P2P kernel) | 13 |
+| 3250 | M2L | `apply_grouped_m2l_kernel` (stretched from ~180) | 295 |
+| 3550 | M2L | D2H locals | 5 |
+| 3930 | P2P | D2H near field 786 KB | 42 |
+| 4570 | P2P | next evaluation's H2D | |
+
+Here the device is the bottleneck for both backends (P2P kernel 3.92 ms of
+a 4.6 ms period). The M2L work is *starved* behind the P2P kernel: its memset
+and kernel start about 2 ms after the host issued them and the kernel runs
+1.6x slower while sharing the SMs, so the host waits until +3.55 ms for the
+locals and only then runs L2L + L2P (about 0.6 ms) plus the combination,
+finishing at +4.57 ms even though the near field was ready at +3.97 ms. The
+`cuda-full` capture of the same case shows the same contention from the
+other side: its far-field kernels (`translate_targets`, `apply_grouped_m2l`)
+stretch 2-6x while the 3.96 ms P2P kernel runs, and the far field finishes
+just after the P2P, so both backends land at 4.3-4.6 ms per evaluation.
+
+`cuda-partial`, 32^3 lattice with the dictionary (period 1.17 ms): P2P kernel
+53 us, M2L kernel 173 us, transfers about 0.15 ms; the GPU is busy a quarter
+of the time and the host hierarchy (P2M 133, M2M 124, L2L 110, L2P 132 us plus
+the M2L round trip and preparation) is the whole critical path. The prism
+lattice with leaf blocks behaves the same with a 103 us P2P kernel.
+
+Answers to the timeline questions: GPU P2P overlaps the CPU upward work
+completely in every case (final P2P wait is 0 everywhere); GPU M2L overlaps
+P2P only when P2P is long enough to still be running, and then the two
+*contend* rather than cooperate (M2L is delayed and stretched); the CPU
+downward work starts as soon as the locals arrive; PCIe transfers are 1-3 MB
+per evaluation and never on the critical path; serial host preparation and
+combination are 0.2-0.4 ms per evaluation (about 15-20 % at M). The
+"GPU P2P + fully CPU far field" variant was not built: the M2L round trip
+costs 0.3 ms at M where the portable CPU M2L costs 8.8 ms, and at S the CPU
+M2L (0.3 ms) already exceeds the whole device round trip, so no regime exists
+in which it could win.
+
+### Policy changes made on this evidence
+
+All in `src/backend/cuda/execution_policy.cpp` / `src/fmm/execution_setup.cpp`;
+none touches a kernel, the cache format or a cache key.
+
+1. **Periodic point plans use `PointGeometry` on the CPU** (2.7-5.1x faster
+   near field than the SoA rows; see the periodic table).
+2. **Leaf blocks are the general CUDA default for every geometry.** The
+   "finite sources take BSR(3) within `cuda_p2p_bsr_max_bytes`" rule was a
+   geometry name standing in for a measurement; measured, leaf blocks beat
+   BSR(3) on finite bodies by the same margin as on points. BSR(3) and
+   canonical rows stay available through `p2p_packing`; the budget option is
+   retained for compatibility and no longer steers the policy.
+3. **`SpatialLayout::RegularGrid` selects the dictionary for any geometry on
+   every backend** (point sources still need a fixed identity map), and the
+   hint is verified on the built plan: a layout-selected dictionary is kept
+   only when its token width is at most two bytes (at most 65535 variants),
+   otherwise it is released and the general default applies. The CUDA
+   dictionary executor keeps the Phase-3A occupancy calibration, which the
+   finite-body rows reproduce (microtiles best at 8 per leaf).
+4. **Periodicity no longer restricts any packing** (image ordinals in the
+   leaf pairs, merged BSR blocks), so periodic point plans on CUDA moved from
+   canonical rows to leaf blocks / the dictionary.
+5. **Stream priority** (below).
+
+`ExecutionBackend::Auto` still resolves to `CpuStatic`; no backend
+auto-selection changed. Candidate future policy for Phase 3D, from the
+crossover table: `cuda-full` should be preferred over `cuda-partial` in every
+measured regime; the hybrid only reaches parity when the P2P kernel exceeds
+about 4 ms per evaluation (128 or more points per leaf), where it is 1-2 %
+ahead after the stream-priority change below.
+
+### Accepted CudaPartial / CudaFull change: far-field stream priority
+
+The timelines showed the hybrid's M2L stream starved behind the P2P kernel
+whenever the two overlap (the host then waits for the locals before it can
+run L2L/L2P), and the full backend's short far-field kernels stretched 2-6x
+behind the same kernel. `src/backend/cuda/common/stream.hpp` creates a stream
+at the device's greatest priority; the hybrid's M2L stream always uses it (a
+pure win: the host is waiting on exactly that stream), and the full backend's
+far-field stream uses it when the execution policy estimates the far field at
+less than three times the P2P kernel (`far_field_stream_priority`, 18 ps per
+pair versus 0.22 ps per M2L multiply-add), because a far field several times
+longer than P2P otherwise starves the small P2P kernel to the very end
+(+3 % at 200k points, depth 5). Same binary before/after, FP32, medians:
+
+| Case | cuda-partial before -> after [us] | cuda-full before -> after [us] |
+|---|---|---|
+| S random (10k, p4, d3) | 211 -> 211 | 189 -> 180 (-5 %) |
+| M random (50k, p6, d4) | 1714 -> 1684 (-2 %) | 767 -> 694 (-10 %) |
+| 32 per leaf (16384, d3) | 488 -> 444 (-9 %) | 407 -> 398 (-2 %) |
+| 64 per leaf (32768, d3) | 1476 -> 1312 (-11 %) | 1220 -> 1215 |
+| 96 per leaf (49152, d3) | 2848 -> 2684 (-6 %) | 2587 -> 2574 |
+| 128 per leaf (65536, d3) | 4641 -> 4442 (-4 %) | 4542 -> 4518 (-1 %) |
+| 160 per leaf (81920, d3), after only | 6960 | 7043 |
+| random 100k, d4 | 3237 -> 3244 | 1932 -> 1850 (-4 %) |
+| random 200k, d5 | 11331 -> 11316 | 3163 -> 3260 (+3 %) with unconditional priority; equal priority restored by the rule |
+| lattice 32^3, d4, dictionary | 1105 -> 1109 | 382 -> 361 (-5 %) with unconditional priority; equal priority under the rule (far field 3x the P2P estimate) |
+
+Confirmation run with the conditional rule compiled in (`build-cuda/bench/priority3/`,
+same settings, medians; the diagnostics print `cuda_policy.far_field_stream_priority`
+so each row's decision is known):
+
+| Case | Rule decision | cuda-full [us] | cuda-partial [us] |
+|---|---|---|---|
+| random 200k, d5 | equal priority | 3176 (baseline 3163, within noise; unconditional 3260) | - |
+| lattice 32^3, d4, dictionary | equal priority | 363 (so the earlier 382 -> 361 was run-to-run noise, not priority) | - |
+| S random (10k, p4, d3) | priority | 179 | - |
+| M random (50k, p6, d4) | priority | 695 | 1714 |
+| random 100k, d4 | priority | 1865 | - |
+| 128 per leaf (65536, d3) | priority | 4562 | 4451 |
+| M random FP64 (50k, p6, d4) | priority | 2833 | 4950 |
+
+The deep-far-field regression is gone and the `cuda-full` M / S / 100k gains
+are kept; the 128-per-leaf crossover (hybrid 2 % ahead, 4451 vs 4562)
+reproduces. The hybrid's -2 % at M did not reproduce (1714, equal to its
+baseline): the hybrid's reproducible gains are the 32-128 per leaf rows, where
+the M2L stream actually competes with a long P2P kernel. The FP64 rows are the
+first FP64 timing of the two CUDA backends in this study: `cuda-full` is
+1.75x faster than `cuda-partial` there too.
+
+The hybrid's M2L wait shrank from 892/1750/2980 us to 690/1372/2379 us at
+64/96/128 per leaf (it is still delayed: block priority only takes effect as
+P2P blocks retire). With the change, `cuda-partial` is 1-2 % ahead of
+`cuda-full` at 128 and 160 points per leaf (4442 vs 4518, 6960 vs 7043 us) and
+behind everywhere else; that is the only crossover found, it is within a few
+percent, and it appears only where the near field alone takes several
+milliseconds per evaluation.
+
+### Rejected / not pursued
+
+- *Pipelining the hybrid's M2L round trip level by level* so L2L on upper
+  levels overlaps M2L on lower levels: bounded by the 0.3 ms round trip at M
+  (17 % of the hybrid's 1.8 ms, still 2x behind `cuda-full`); a scheduler for
+  that gain is not warranted.
+- *GPU P2P with a fully CPU far field*: not built; the profile shows the M2L
+  round trip (0.3 ms at M) is far below the portable CPU M2L (8.8 ms), and at
+  S the CPU M2L alone already exceeds the device round trip.
+- *Unconditional far-field priority in `cuda-full`*: +3 % on the deep
+  far-field-dominated case; replaced by the conditional rule above.
+- *Dictionary for irregular bodies by default*: neutral on the CPU, 1.9-3.6x
+  slower than leaf blocks on CUDA; hence the token-width guard instead of a
+  geometry rule.

@@ -164,7 +164,16 @@ from the same polyhedron surface formulation: applying the divergence theorem
 to both uniformly magnetised bodies gives
 $K=-\frac{1}{4\pi V_sV_t}\sum_{f_t}\sum_{f_s}\hat n_t\hat n_s^{T}
 \iint\frac{dS_t\,dS_s}{|x_t-x_s|}$, where the prism contributes its twelve
-boundary triangles and the tetrahedron its four. Dense direct is exact all-to-all for its supported geometries,
+boundary triangles and the tetrahedron its four. Two numerical safeguards keep
+these analytical kernels well conditioned: the point-field edge primitives use
+the closed form of the atanh difference in which the logarithms of the
+perpendicular edge distance cancel, and the normal component is the signed
+solid angle of the face (Van Oosterom-Strackee), so evaluation points on the
+line through an edge outside the body are regular; and beyond eight summed
+circumradii of separation a body pair averages the exact source point tensor
+over the target with a six-point Gauss rule instead of cancelling large face
+integrals (the surface form loses about five digits at fifty body sizes and
+all of them at one hundred). Dense direct is exact all-to-all for its supported geometries,
 while FMM combines the same exact near-field physics with a truncated
 multipole/local far field. MagTense stores its demagnetisation tensor
 and applies the physical minus sign during the matrix-vector operation;

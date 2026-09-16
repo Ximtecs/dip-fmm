@@ -432,6 +432,42 @@ per-order/depth FMM particle sweeps provide less crowded detailed views. Direct
 runtime particle sweeps contain one point per configured particle count and do
 not carry an order or depth label.
 
+### Geometry, packing, and periodic controls
+
+`benchmark_uniform_fmm` benchmarks finite bodies and forced P2P packings on
+the same fixed-geometry, repeated-moment workload as the point cases:
+
+```console
+./build-cuda/benchmarks/benchmark_uniform_fmm --backend cuda-full \
+  --sources 32768 --targets 32768 --depth 4 --order 6 --regular-grid \
+  --source-geometry tetrahedron --target-geometry tetrahedron \
+  --p2p-packing tensor-dictionary --precision float32 \
+  --no-direct --no-workload-comparison --accuracy-targets 0
+```
+
+- `--source-geometry` / `--target-geometry` select `point`, `prism`, or
+  `tetrahedron`; finite bodies are centred on the particle positions with
+  extent `--body-fill` (default 0.9) of the nominal spacing, one common record
+  by default and one varying record per body with `--irregular-bodies`.
+  Finite bodies use point far-field models, so every backend shares the
+  identical hierarchy and the comparison isolates the stored-tensor P2P.
+  `--exact-cuboid-p2p` is the legacy spelling of the regular prism workload.
+- `--p2p-packing` forces `canonical-aos`, `particle-row-soa`,
+  `tensor-dictionary`, `leaf-block`, `cuda-bsr3`, or `point-geometry`
+  (`auto` keeps the backend policy); an impossible combination fails at
+  construction with its reason.
+- `--periodic` evaluates a fully periodic cubic cell equal to the root box.
+- The CSV gains `source_geometry`, `target_geometry`, `irregular_bodies`,
+  `body_fill`, `periodic`, `p2p_packing_requested`, the dictionary size and
+  token width, and the canonical/dictionary/near-field operator bytes.
+
+`benchmarks/run_p2p_packing_matrix.py --binary <benchmark_uniform_fmm>
+--output <csv> --suite {periodic,finite,cuda-finite,crossover,all}` runs the
+matrix used by the Phase-3 P2P unification study (periodic point geometry
+versus SoA rows, CPU rows versus dictionary on regular and irregular prism and
+tetrahedron grids, every CUDA packing on finite bodies, and the
+CudaPartial/CudaFull crossover cases) and collects one row per case.
+
 ## Setup and repeated evaluation
 
 `UniformFmm` construction is geometry setup: it determines the root, sorts

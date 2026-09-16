@@ -1,5 +1,33 @@
 # Project progress
 
+## P2P execution unification, full geometry/backend coverage, CudaPartial crossover: COMPLETE — 2026-09-16
+
+Starting HEAD `af50b69`. The near-field invariant "geometry builds tensors,
+executors apply tensors" is now enforced: all nine point/prism/tetrahedron
+source-target pairs build canonical tensors (prism/tetrahedron via the
+tetrahedron pair's polyhedron surface formulation, plus a far-separation
+Gauss safeguard and a conditioning fix of the tetrahedron point kernel on
+edge lines), the dense leaf packing carries the canonical identity marker so
+every stored-tensor executor obeys metadata instead of geometry, periodic
+image records pack into leaf blocks / merged BSR blocks / dictionary tokens,
+and `UniformFmmOptions::p2p_packing` forces any packing (Python `AUTO`,
+`requested_p2p_packing`). `tests/test_p2p_geometry_matrix.cpp` runs every
+pair through every packing of CpuStatic, CudaPartial and CudaFull in both
+precisions, free-space and periodic, against `DenseDirectPlan`.
+Policy, on measurements: periodic point plans use `PointGeometry` (2.7-5.1x
+faster near field), leaf blocks are the general CUDA default for every
+geometry (BSR(3) explicit only), the `RegularGrid` hint selects the
+dictionary for any geometry on every backend guarded by the built plan's
+token width (2-7.5x faster than SoA rows on finite lattices, 3x faster than
+leaf blocks on CUDA), and the hybrid's M2L stream / the full backend's far
+field (when P2P-dominated) run at high stream priority (`cuda-partial`
+-4..-11 %, `cuda-full` -2..-10 %). `cuda-partial` never beats `cuda-full`
+except by 1-2 % at 128-160 points per leaf; recorded as Phase-3D input.
+Construction findings recorded, not optimised (serial prism pair loop:
+600 s for 32^3 prisms). Full record in
+`agent_docs/performance_optimization.md`; capability table in
+`docs/static-p2p.md`. **Phase 3C construction / plan preparation is NEXT.**
+
 ## CPU / oneMKL evaluation optimization (Phase 3B): COMPLETE — 2026-09-16
 
 Against `CPU_PERF_BASELINE = e4f1c79`: portable CPU evaluation 3.5-10x faster

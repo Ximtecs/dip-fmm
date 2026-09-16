@@ -242,7 +242,13 @@ exposed by the installed header.
 Tests are currently one Catch2 executable assembled by `tests/CMakeLists.txt`.
 They cover foundational math, operators, trees/topology, geometries, static and
 periodic FMM, precision/output, caches, CUDA, parameter selection, the C ABI,
-and the optional Fortran smoke test. `python_tests/` checks bindings,
+and the optional Fortran smoke test. `tests/test_p2p_geometry_matrix.cpp` is
+the table-driven near-field matrix (nine geometry pairs x backends x
+precisions x P2P packings, free-space and periodic, against `DenseDirectPlan`)
+that enforces the "geometry builds tensors, executors apply tensors"
+invariant; `benchmarks/run_p2p_packing_matrix.py` drives
+`benchmark_uniform_fmm` over the matching performance matrix (finite bodies,
+forced packings, periodic cells, CudaPartial/CudaFull crossover). `python_tests/` checks bindings,
 end-to-end FMM behaviour, precision, geometry, caches, benchmark runners, and
 notebook contracts. `benchmarks/` measures setup separately from repeated
 evaluation and records accuracy/traffic/timing fields. `docs/` is authoritative

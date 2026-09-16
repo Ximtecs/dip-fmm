@@ -1,5 +1,31 @@
 # Latest session work
 
+## 2026-09-16 — P2P execution unification, geometry/backend coverage, CudaPartial crossover
+
+Starting HEAD `af50b69`, worktree branch `worktree-p2p-unification`. Commits,
+in order: exact prism/tetrahedron pair tensors via the polyhedron surface
+formulation with a far-separation Gauss safeguard (`2ab0edc`); identity
+metadata carried in the leaf packing and obeyed by every CPU/CUDA tensor
+executor (`e15ff80`); explicit `UniformFmmOptions::p2p_packing`
+(`8e1d110`); tetrahedron point-kernel conditioning on edge lines
+(`2d5ea1f`); the nine-pair geometry-matrix test (`3b1109e`); explicit
+periodic `PointGeometry` (`1bd8562`); periodic image records in the leaf,
+dictionary and BSR packings (`14701c8`); benchmark geometry/packing/periodic
+options (`1c8ca3b`) and the matrix driver (`3dc5b8b`); then the measured
+policy changes and the stream-priority optimisation (see the final commits
+of the branch). Measured: periodic point geometry 2.7-5.1x faster near
+field; finite lattices 2-7.5x faster with the dictionary on the CPU, 3x on
+CUDA; leaf blocks beat BSR(3) on finite bodies; irregular bodies do not
+compress (token-width guard); `cuda-partial` loses everywhere but 128-160
+points per leaf (1-2 % ahead after the stream-priority change). Nsight
+timelines: GPU P2P fully overlaps the CPU upward pass, M2L and P2P contend
+when they overlap, PCIe is never on the critical path, host preparation and
+combination are 15-20 % at M. Validation: full CTest on portable CPU, CUDA
+(and the oneMKL / CUDA+oneMKL builds, see the performance log), Python
+suites, compute-sanitizer on the changed kernels, the whitespace check.
+Not done: construction optimisation (recorded), backend auto-selection
+changes, cache format/key changes.
+
 ## 2026-09-16 — CPU / oneMKL evaluation optimization (Phase 3B)
 
 `CPU_PERF_BASELINE = e4f1c79` (Task-A HEAD plus a link fix for the non-CUDA

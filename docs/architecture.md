@@ -137,6 +137,42 @@ BSR forms are derived representations selected for execution. They must be
 validated against the canonical data and must not become competing operator
 definitions.
 
+### P2P execution invariant: geometry builds tensors, executors apply tensors
+
+Since the Phase-3 P2P unification the boundary above is enforced rather than
+merely intended:
+
+```text
+point / prism / tetrahedron geometry
+    -> geometry-specific pair-tensor construction    (operators/p2p.cpp,
+                                                     geometry/primitives/*)
+    -> canonical tensors + topology + identity marker (StaticP2POperator,
+                                                     StaticP2PLeafRecord)
+    -> geometry-independent packings                 (plan/p2p/*)
+    -> CPU / CUDA executors                          (backend/*/p2p)
+```
+
+- All nine source/target pairs build canonical tensors; prism/tetrahedron
+  pairs share the tetrahedron pair's polyhedron surface formulation.
+- Below the canonical operator no builder or executor reads a geometry
+  record. The packings see tensor components, indices, dense leaf ranges,
+  periodic image ordinals, and the per-pair `skip_for_identity` marker; that
+  marker, not the geometry, decides whether an identity match omits a pair
+  (point dipole) or applies a physical self tensor (finite body). The dense
+  leaf block carries the marker so every derived packing obeys it.
+- Periodic image records are ordinary stored tensors to every packing.
+- `P2PExecutionPacking::PointGeometry` is the single deliberate exception, a
+  fused point-geometry evaluation for point sources and point targets on the
+  CPU; it is named as such and rejected for finite geometry.
+- `UniformFmmOptions::p2p_packing` forces any packing a backend can execute,
+  with precedence over the automatic policy; impossible combinations fail
+  at construction with their representational reason.
+
+The capability matrix and its reasons live in `static-p2p.md`; the enforcing
+test is `tests/test_p2p_geometry_matrix.cpp` (every pair, every packing of
+every available backend, both precisions, free-space and periodic, against
+the FP64 `DenseDirectPlan` reference).
+
 ## Static-geometry invariant
 
 `dip-fmm` is designed for geometry that is prepared once while dipole moments
