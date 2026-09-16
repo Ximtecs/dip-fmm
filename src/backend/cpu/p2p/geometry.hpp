@@ -25,9 +25,11 @@ namespace cdfmm::detail::cpu {
  * thread in record order, so results are deterministic for a given binary.
  *
  * The scratch is sized once at construction for the widest leaf
- * neighbourhood and the OpenMP team size seen then; a thread outside that
- * capacity falls back to sweeping the records without gathering, so
- * evaluation never allocates.
+ * neighbourhood and the OpenMP team size seen then. If a later evaluation
+ * runs with a larger team, the scratch grows once before the parallel region
+ * so every thread keeps the gathered path; a thread still outside the
+ * capacity falls back to sweeping the records without gathering. Evaluations
+ * with an unchanged team never allocate.
  */
 template <typename Scalar>
 class PointGeometryP2P {
@@ -57,8 +59,12 @@ public:
     return values_.size() * sizeof(Scalar) + indices_.size() * sizeof(int);
   }
   [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
+  [[nodiscard]] int thread_capacity() const noexcept { return thread_capacity_; }
 
 private:
+  void reserve_threads(int thread_capacity);
+  void ensure_thread_capacity();
+
   /// Neighbour sources per thread: six SoA rows (x, y, z, mx, my, mz).
   std::vector<Scalar> values_{};
   std::vector<int> indices_{};

@@ -76,9 +76,29 @@ PointGeometryP2P<Scalar>::PointGeometryP2P(const StaticFmmTopology& topology,
   }
   // Round the per-thread stride to a whole number of cache lines.
   capacity_ = (capacity_ + 15) / 16 * 16;
+  reserve_threads(thread_capacity_);
+}
+
+template <typename Scalar>
+void PointGeometryP2P<Scalar>::reserve_threads(const int thread_capacity) {
+  thread_capacity_ = std::max(thread_capacity, 1);
   values_.assign(static_cast<std::size_t>(thread_capacity_) * 6 * capacity_,
                  Scalar{0});
   indices_.assign(static_cast<std::size_t>(thread_capacity_) * capacity_, 0);
+}
+
+template <typename Scalar>
+void PointGeometryP2P<Scalar>::ensure_thread_capacity() {
+#ifdef CDFMM_USE_OPENMP
+  // A team larger than the one seen at construction would push the extra
+  // threads onto the record-sweeping fallback; growing the scratch once here
+  // (outside the parallel region) keeps every thread on the gathered path.
+  // Repeated evaluations with an unchanged team allocate nothing.
+  const int threads = omp_get_max_threads();
+  if (threads > thread_capacity_) {
+    reserve_threads(threads);
+  }
+#endif
 }
 
 template <typename Scalar>
@@ -92,6 +112,7 @@ void PointGeometryP2P<Scalar>::apply(
   const std::span<const Vec3> sources = topology.sorted_source_positions;
   const std::span<const Vec3> targets = topology.sorted_target_positions;
   const int leaf_count = static_cast<int>(offsets.size()) - 1;
+  ensure_thread_capacity();
 
 #pragma omp parallel for schedule(dynamic, 4) if (leaf_count >= 8)
   for (int leaf = 0; leaf < leaf_count; ++leaf) {
