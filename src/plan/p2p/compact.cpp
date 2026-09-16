@@ -2,7 +2,11 @@
 
 #include "cdfmm/plan/p2p/compact.hpp"
 
+#include "plan/p2p/compact_row.hpp"
+
 namespace cdfmm {
+
+using cdfmm::plan_detail::assign_static_p2p_compact_row;
 
 StaticP2PCompactPlan
 build_static_p2p_compact_plan(const StaticP2POperator& operator_map)

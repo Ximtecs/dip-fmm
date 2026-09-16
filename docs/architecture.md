@@ -547,7 +547,8 @@ transitional layout:
   representations it persists; deeper encapsulation awaits an API/ABI step.
   `cache/format.cpp` still builds the derived compact P2P representation
   while decoding the canonical blocks in the same pass, but it now does so by
-  calling `assign_static_p2p_compact_row` (`plan/p2p/compact.hpp`), the same
+  calling `assign_static_p2p_compact_row` (`src/plan/p2p/compact_row.hpp`, an
+  internal implementation header, not an installed public path), the same
   row-packing primitive `plan/p2p/compact.cpp` uses; the canonical-to-compact
   rule itself is stated once. Only the fused-pass *choice* remains cache-local,
   as a performance decision, not a restatement of the mapping.
@@ -643,7 +644,12 @@ cache decode in `cache/format.cpp` and the plan builder in
 `plan/p2p/compact.cpp`. A follow-up internal-duplication cleanup, after Phase
 1 closure, resolved the duplicated *rule* without touching the plan/cache
 boundary: both call sites now share one row-packing primitive,
-`assign_static_p2p_compact_row` in `include/cdfmm/plan/p2p/compact.hpp`. The
+`assign_static_p2p_compact_row`. It was first added to the installed
+`include/cdfmm/plan/p2p/compact.hpp`, then relocated to the internal
+`src/plan/p2p/compact_row.hpp` once it became clear the helper had no
+downstream purpose beyond letting `plan/p2p/compact.cpp` and
+`cache/format.cpp` share packing mechanics; `compact.hpp` keeps the public
+`StaticP2PCompactPlan`/`FloatStaticP2PCompactPlan` types and builders. The
 cache decode still fuses canonical decode and compact construction into one
 pass deliberately for performance; that fused-pass structure, and the
 broader question of whether cache entry points should stop being `UniformFmm`

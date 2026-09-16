@@ -2,6 +2,8 @@
 
 #include "cache/internal.hpp"
 
+#include "plan/p2p/compact_row.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -256,10 +258,11 @@ void read_p2p_blocks(Reader& reader,
     block.zz = values[8];
     block.skip_for_identity = load_unaligned<int>(record + offset);
 
-    // Deliberately fused with the canonical decode above: plan/p2p/compact.hpp
-    // owns the canonical-to-compact row rule, this loop owns only reading the
-    // persisted bytes and choosing to build both representations in one pass.
-    assign_static_p2p_compact_row(compact_plan, slot, block);
+    // Deliberately fused with the canonical decode above:
+    // plan/p2p/compact_row.hpp owns the canonical-to-compact row rule, this
+    // loop owns only reading the persisted bytes and choosing to build both
+    // representations in one pass.
+    cdfmm::plan_detail::assign_static_p2p_compact_row(compact_plan, slot, block);
   }
 }
 
