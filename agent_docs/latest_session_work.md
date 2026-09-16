@@ -20,9 +20,12 @@ compress (token-width guard); `cuda-partial` loses everywhere but 128-160
 points per leaf (1-2 % ahead after the stream-priority change). Nsight
 timelines: GPU P2P fully overlaps the CPU upward pass, M2L and P2P contend
 when they overlap, PCIe is never on the critical path, host preparation and
-combination are 15-20 % at M. Validation: full CTest on portable CPU, CUDA
-(and the oneMKL / CUDA+oneMKL builds, see the performance log), Python
-suites, compute-sanitizer on the changed kernels, the whitespace check.
+combination are 15-20 % at M. Validation: fresh g++ trees for portable CPU,
+CUDA, oneMKL and CUDA+oneMKL all pass the full CTest (222/222) and the
+Python suites; compute-sanitizer memcheck (0 errors) and racecheck (0
+hazards) on the changed kernels; the whitespace check; cache format/keys,
+C ABI and Fortran interface untouched. Note: the conda env's default
+`icpx`/`-ccbin=icpx` must be overridden with g++ (see the performance log).
 Not done: construction optimisation (recorded), backend auto-selection
 changes, cache format/key changes.
 

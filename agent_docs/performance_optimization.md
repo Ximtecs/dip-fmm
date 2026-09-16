@@ -1573,3 +1573,31 @@ milliseconds per evaluation.
 - *Dictionary for irregular bodies by default*: neutral on the CPU, 1.9-3.6x
   slower than leaf blocks on CUDA; hence the token-width guard instead of a
   geometry rule.
+
+### Validation (final HEAD of `worktree-p2p-unification`)
+
+Four fresh trees, all with the conda `g++` 15.3 as C++ and CUDA host
+compiler (`-DCMAKE_CXX_COMPILER`, `-DCMAKE_CUDA_HOST_COMPILER`): portable CPU
+(`build-cpu`), CUDA (`build-cuda`), oneMKL (`build-mkl`), CUDA + oneMKL
+(`build-cuda-mkl`). Full CTest passes 222/222 on each (tests of a backend
+that is not compiled are skipped); `pytest python_tests` passes 140 / 145 /
+142 / 147 with the rest skipped. `compute-sanitizer --tool memcheck` over the
+`[identity]`, `[packing]` and `[geometry-matrix]` cases (every changed CUDA
+P2P kernel path): 0 errors in 12 test cases; `--tool racecheck` over
+`[identity]` and `[geometry-matrix]`: 0 hazards in 8 cases (no barrier
+changed; the identity skip sits inside a barrier-free source loop).
+The whitespace check is clean. `src/cache/` is untouched since `af50b69`:
+the serialised records are the canonical operator's (whose per-block identity
+flag already existed), the leaf/dictionary/BSR plans are derived after
+loading, so cache format and keys are unchanged; the C ABI and Fortran
+interface are untouched.
+
+Toolchain observation (not fixed, recorded): the conda environment exports
+`CXX=icpx`, `CC=icx` and `NVCC_PREPEND_FLAGS=-ccbin=icpx`. A oneMKL tree
+configured without pinning the compiler is built by `icpx` 2026.1.1 and then
+fails one test, `static triangular translations match M2M and L2L
+references` (bitwise `m2m_add` versus static-operator equality; a last-bit
+difference from icpx's default fast floating-point model), and nvcc 13.x
+rejects icpx/clang 22 as a host compiler, so the CUDA + oneMKL configure
+fails outright. Both trees pass fully once g++ is pinned, which is the
+documented toolchain.
