@@ -16,6 +16,7 @@
 #include "cdfmm/backend/cuda/m2l.hpp"
 #include "backend/cpu/far_field/internal.hpp"
 #include "backend/cpu/far_field/packing.hpp"
+#include "backend/cpu/m2l/schedule.hpp"
 #include "fmm/internal.hpp"
 #include "profile.hpp"
 
@@ -48,7 +49,12 @@ void UniformFmm::static_m2l(const int level) {
   detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
   if (static_matrix_backend_ == StaticMatrixBackend::Portable) {
     const auto phase_start = Clock::now();
-    apply_static_m2l_plan(m2l_plan_, level, multipoles_, locals_);
+    if (cpu_far_field_ && !cpu_far_field_->m2l_schedule.empty()) {
+      detail::cpu::apply_static_m2l_plan(m2l_plan_, cpu_far_field_->m2l_schedule,
+                                         level, multipoles_, locals_);
+    } else {
+      apply_static_m2l_plan(m2l_plan_, level, multipoles_, locals_);
+    }
     last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
     return;
   }
@@ -63,8 +69,14 @@ void UniformFmm::static_m2l_float(const int level) {
   detail::ProfileRange m2l_range{"cdfmm/far_field/m2l_fp32"};
   if (static_matrix_backend_ == StaticMatrixBackend::Portable) {
     const auto phase_start = Clock::now();
-    apply_static_m2l_plan(m2l_plan_float_, level, multipoles_float_,
-                          locals_float_);
+    if (cpu_far_field_ && !cpu_far_field_->m2l_schedule.empty()) {
+      detail::cpu::apply_static_m2l_plan(
+          m2l_plan_float_, cpu_far_field_->m2l_schedule, level,
+          multipoles_float_, locals_float_);
+    } else {
+      apply_static_m2l_plan(m2l_plan_float_, level, multipoles_float_,
+                            locals_float_);
+    }
     last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
     return;
   }

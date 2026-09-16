@@ -8,6 +8,7 @@
 #include "backend/cuda/execution_policy.hpp"
 #include "backend/cuda/fmm/internal.hpp"
 #include "backend/cpu/far_field/packing.hpp"
+#include "backend/cpu/m2l/schedule.hpp"
 #include "backend/mkl/m2l.hpp"
 
 namespace cdfmm {
@@ -58,6 +59,8 @@ class UniformFmm::CpuFarFieldPackingOwner {
 public:
   detail::cpu::FarFieldPacking<double> fp64{};
   detail::cpu::FarFieldPacking<float> fp32{};
+  /// Transfer-class-sorted M2L block schedule (portable M2L executor only).
+  detail::cpu::M2LBlockSchedule m2l_schedule{};
 };
 
 /** @brief Resolved CUDA execution policy of one plan (see execution_policy.hpp). */

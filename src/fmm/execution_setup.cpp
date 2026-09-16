@@ -777,6 +777,28 @@ void UniformFmm::build_cpu_far_field_packing() {
     l2p_evaluators_.clear();
     l2p_evaluators_.shrink_to_fit();
   }
+  // The portable M2L executor applies the canonical plan through a block
+  // schedule sorted by transfer class; oneMKL and CUDA M2L keep their own.
+  // The class-sorted schedule pays off when the transfer matrices do not fit
+  // the per-core L2 (2 MiB on the calibration machine): below about 1 MiB
+  // the per-target row kernel already streams them from L2 and the block
+  // staging only adds overhead (measured: S FP32, 316 x 25^2 floats).
+  const bool portable_m2l = backend_ == ExecutionBackend::CpuStatic &&
+      static_matrix_backend_ == StaticMatrixBackend::Portable &&
+      m2l_backend_ == M2LBackend::Static;
+  constexpr std::size_t schedule_matrix_bytes = std::size_t{1} << 20;
+  const std::size_t matrix_bytes = precision_ == StaticPrecision::Float32
+      ? m2l_plan_float_.matrices.size() * sizeof(float)
+      : m2l_plan_.matrices.size() * sizeof(double);
+  if (portable_m2l && matrix_bytes > schedule_matrix_bytes) {
+    owner->m2l_schedule = precision_ == StaticPrecision::Float32
+        ? detail::cpu::build_m2l_block_schedule(m2l_plan_float_)
+        : detail::cpu::build_m2l_block_schedule(m2l_plan_);
+    static_plan_statistics_.interaction_bytes +=
+        owner->m2l_schedule.memory_bytes();
+    static_plan_statistics_.m2l_interaction_bytes +=
+        owner->m2l_schedule.memory_bytes();
+  }
   cpu_far_field_ = std::move(owner);
   // Report the resident packing instead of the released canonical maps; the
   // eight shared translation operators stay resident and keep their bytes.
