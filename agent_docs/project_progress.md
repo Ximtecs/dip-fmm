@@ -1,5 +1,53 @@
 # Project progress
 
+## Public/internal API, header ownership, and packaging cleanup: COMPLETE — 2026-09-16
+
+The last recorded Phase-2 cleanup item. `parameter_selection.hpp` now depends
+only on `cdfmm/backend/execution.hpp` (new: `ExecutionBackend`, moved out of
+`uniform_fmm.hpp`) and `cdfmm/math/vec3.hpp`, instead of the complete
+`uniform_fmm.hpp`; `src/parameter_selection.cpp` gained an explicit include of
+the full header it actually needs. CUDA availability queries
+(`cuda_compiled`, `cuda_available`, `cuda_direct_available`,
+`cuda_m2l_p2p_available`, `cuda_m2l_available`, `cuda_full_available`,
+`cuda_device_description`) and `one_mkl_available` moved to new
+`include/cdfmm/backend/cuda/availability.hpp`/`backend/mkl/availability.hpp`
+headers; `uniform_fmm.hpp` includes both and re-exports every name, and
+`src/backend/cuda/fmm/internal.hpp` now includes the narrow header instead of
+the complete solver header, resolving the one reverse-dependency edge Phase 1
+closure had recorded. `tensor_dictionary.hpp`'s Tensor6 primitives moved to
+`include/cdfmm/plan/p2p/tensor_dictionary.hpp`, next to their only consumers.
+`timings.hpp`, `periodic.hpp`, and `validation.hpp` were each audited in full
+and kept flat: none has one clear subsystem owner (see
+`docs/architecture.md`). `P2MPlan`/`FloatP2MPlan`/`ExpansionBasis` were
+reviewed and kept at their cache-cleanup homes. A minimal downstream CMake
+package (`find_package(cdfmm CONFIG)`, `cdfmm::cdfmm_c`) was added with no
+`find_dependency` calls, since `cdfmm_c`'s exported interface has no
+CUDA/oneMKL/OpenMP dependency to discover (those are private to the
+never-installed static `cdfmm_core`); validated with an isolated-prefix
+install and a standalone out-of-tree consumer reproducing the analytic
+two-dipole field to `1.7e-16`. `docs/architecture.md`'s stale "Phase 1
+closure" statements that `src/cache/internal.hpp` and
+`src/backend/cuda/fmm/internal.hpp` still included `cdfmm/uniform_fmm.hpp`
+were corrected (the cache one had been stale since the earlier
+cache-boundary cleanup and was never fixed; the CUDA one is newly resolved by
+this task). See `agent_docs/latest_session_work.md` for the full audit,
+per-decision rationale, and validation evidence (portable CTest 197/198 with
+the same pre-existing unrelated failure; CUDA+oneMKL CTest 198/198 with zero
+skips; Python 137/7 portable, 143/1 CUDA+oneMKL; C ABI 14 symbols and Python
+63 top-level names unchanged).
+
+No solver algorithm, cache format, cache key, C ABI, Python API, or Fortran
+interface changed. This closes the Phase-2 cleanup list: internal-duplication,
+tree/topology, cache/`UniformFmm`, and now public/internal API/packaging are
+all resolved. The next planned work is a dedicated performance-optimization
+phase (construction and evaluation, CPU/oneMKL/CUDA), followed by repository
+pruning — neither started here.
+
+`Article1/` reappeared alongside `Article1_old/` during this session
+(unexplained, apparently touched again by something outside this session);
+left untouched and flagged, as in every prior session. The unrelated
+untracked notebook in `examples/simple_notebooks/` also remains preserved.
+
 ## Cache/plan-preparation boundary cleanup: COMPLETE — 2026-09-16
 
 Cache persistence (`initialise_cache_keys`, `load_universal_cache`,

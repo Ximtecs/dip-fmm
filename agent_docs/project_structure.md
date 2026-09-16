@@ -27,6 +27,10 @@ include/cdfmm/
   operators/                                                   P2M/M2M/M2L/L2L/L2P/M2P/P2P interfaces
   plan/                                                        immutable static data, direct plans,
                                                                and P2P packings
+  plan/p2p/tensor_dictionary.hpp                              Tensor6 canonicalisation/token packing
+  backend/execution.hpp                                       ExecutionBackend (backend-selection enum)
+  backend/cuda/availability.hpp,
+  backend/mkl/availability.hpp                                CUDA/oneMKL capability queries
   backend/cpu/{p2p,m2l,far_field}.hpp                         portable static-plan interfaces
   backend/cuda/{direct,dense_direct,p2p,m2l}.hpp               canonical CUDA direct/P2P/M2L interfaces
 src/
@@ -282,14 +286,17 @@ src/plan/direct/dense.cpp -> backend/{cpu,mkl}/direct/dense.hpp
     itself dispatches to an executor. Confined to this one unit; the public
     plan/direct/dense.hpp header depends on no backend.
 
-src/backend/cuda/fmm/internal.hpp -> cdfmm/uniform_fmm.hpp
-    The CUDA backend implements the public availability queries declared there
-    (cuda_m2l_p2p_available, cuda_m2l_available). A definition must see its
-    declaration. Not an inversion.
-
 canonical headers -> cdfmm/timings.hpp, cdfmm/periodic.hpp
-    Substantive public headers awaiting a subsystem home, not façades.
+    Substantive public headers, audited and kept flat deliberately (no single
+    subsystem owns either — see docs/architecture.md, "Public/internal API,
+    header ownership, and packaging cleanup"), not façades and not deferred.
 ```
+
+`src/backend/cuda/fmm/internal.hpp -> cdfmm/uniform_fmm.hpp` was resolved by
+the public-header/packaging cleanup and no longer exists: the CUDA/oneMKL
+availability queries the CUDA backend implements now have their own canonical
+`cdfmm/backend/cuda/availability.hpp`/`cdfmm/backend/mkl/availability.hpp`
+homes, which `internal.hpp` includes instead of the complete solver header.
 
 `include/cdfmm/tree/adaptive_tree.hpp` returning `StaticFmmTopology` is not
 a dependency-direction exception: both live in the `tree` layer, and a

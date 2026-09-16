@@ -37,9 +37,17 @@ tests. Do not infer support from names alone.
 dependency direction, public/ABI/cache compatibility, the supported build
 matrix, installation, and documentation were validated together; the evidence,
 the validation matrix, its limitations, and the Phase-2 handoff are recorded
-under "Phase 1 closure" in `docs/architecture.md`. Phase 2 has not started and
-requires its own explicit task: do not begin cleanup, deduplication, relocation,
-API modernisation, or repository pruning as a side effect of another change.
+under "Phase 1 closure" in `docs/architecture.md`. **Phase 2 (post-Phase-1
+cleanup) is also COMPLETE**: internal-implementation duplication, the
+tree/topology boundary, the cache/`UniformFmm` boundary, and the
+public/internal API, header ownership, and packaging boundary have each been
+audited and closed as their own explicit task; see "Phase 2 handoff" in
+`docs/architecture.md`. The next planned work is a dedicated
+performance-optimization phase covering construction/plan-preparation and
+evaluation/repeated execution across CPU, oneMKL, and CUDA, followed by
+repository pruning. Neither has started: do not begin performance profiling,
+kernel/allocation optimisation, benchmark redesign, or repository pruning as
+a side effect of another change.
 
 The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor
 implementation. Architectural work occurs on `refactor/architecture-v0.2`.
@@ -156,16 +164,51 @@ subsystems exist. Current support areas such as `python_tests/`, `python/`,
 binding adaptation units are listed above and below.
 
 The closure audit found no violation of the prohibited-dependency list. Besides
-`src/operators.cpp` and `python/internal.hpp`, the only reverse-direction edges
-are deliberate and are enumerated in `docs/architecture.md`: the
-`DenseDirectPlan::evaluate()` compatibility dispatch in
-`src/plan/direct/dense.cpp`, the CUDA backend implementing the public
-availability queries declared in `cdfmm/uniform_fmm.hpp`, and the canonical
-headers still including the substantive flat `cdfmm/timings.hpp` and
-`cdfmm/periodic.hpp`. A later cache/plan-preparation boundary cleanup removed
-the `src/cache/internal.hpp -> cdfmm/uniform_fmm.hpp` edge entirely: cache code
+`src/operators.cpp` and `python/internal.hpp`, the only reverse-direction edge
+still deliberate is the `DenseDirectPlan::evaluate()` compatibility dispatch in
+`src/plan/direct/dense.cpp`; it is enumerated in `docs/architecture.md`. The
+canonical headers still include the substantive flat `cdfmm/timings.hpp` and
+`cdfmm/periodic.hpp`, which is intentional (see "Public/internal API, header
+ownership, and packaging cleanup" below), not a reverse edge. A later
+cache/plan-preparation boundary cleanup removed the
+`src/cache/internal.hpp -> cdfmm/uniform_fmm.hpp` edge entirely: cache code
 now depends only on the specific solver/plan/tree/topology types it persists,
-never on `UniformFmm`. Do not add new reverse-direction edges.
+never on `UniformFmm`. A subsequent public-header/packaging cleanup removed the
+`src/backend/cuda/fmm/internal.hpp -> cdfmm/uniform_fmm.hpp` edge the same way:
+`cuda_compiled`, `cuda_available`, `cuda_direct_available`,
+`cuda_m2l_p2p_available`, `cuda_m2l_available`, `cuda_full_available`,
+`cuda_device_description`, and `one_mkl_available` are now declared by the
+canonical `cdfmm/backend/cuda/availability.hpp` and
+`cdfmm/backend/mkl/availability.hpp` headers, which the CUDA backend includes
+directly instead of the complete solver header; `cdfmm/uniform_fmm.hpp`
+includes both and continues to expose every name transitively for source
+compatibility. Do not add new reverse-direction edges.
+
+**Public/internal API, header ownership, and packaging cleanup (complete).**
+The remaining Phase-2 API/packaging item is done. `ExecutionBackend` moved
+from `uniform_fmm.hpp` to `cdfmm/backend/execution.hpp` so
+`cdfmm/parameter_selection.hpp` depends only on `Vec3` and `ExecutionBackend`
+(via `cdfmm/math/vec3.hpp` and `cdfmm/backend/execution.hpp`) instead of the
+complete `uniform_fmm.hpp`; `src/parameter_selection.cpp` now includes
+`cdfmm/uniform_fmm.hpp` explicitly, since it is the translation unit that
+actually constructs `UniformFmm`. `include/cdfmm/tensor_dictionary.hpp`'s
+Tensor6 canonicalisation/token primitives moved to the canonical
+`include/cdfmm/plan/p2p/tensor_dictionary.hpp`, alongside the other P2P
+packing headers that consume them; the flat path is now a forwarding façade.
+A minimal downstream CMake package (`find_package(cdfmm CONFIG)`,
+`cdfmm::cdfmm_c`) was added: `cdfmm_c` is the only installed target, its
+public interface has no CUDA/oneMKL/OpenMP link dependency (those are private
+to the internal static `cdfmm_core`), so the generated package config calls no
+`find_dependency`. `timings.hpp`, `periodic.hpp`, and `validation.hpp` were
+each audited and deliberately kept flat: none has one clear subsystem owner
+(`timings.hpp` aggregates fmm/plan/CUDA diagnostics used together;
+`periodic.hpp` is consumed symmetrically by the `tree` and `operators`
+siblings; `validation.hpp` is explicitly non-production test/diagnostic
+utility). `P2MPlan`/`FloatP2MPlan` and `ExpansionBasis` were reviewed and kept
+at their prior cache-cleanup homes. See "Public/internal API, header
+ownership, and packaging cleanup" in `docs/architecture.md` for the full
+audit, rationale, and validation evidence. No algorithm, cache format, cache
+key, C ABI, Python API, or Fortran interface changed.
 
 ## Architecture contract
 

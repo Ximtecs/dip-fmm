@@ -1,5 +1,80 @@
 # Project diary
 
+## 2026-09-16 — public/internal API cleanup: the honest answer was often "leave it"
+
+The brief for this task read like a long TODO list — relocate `timings.hpp`,
+relocate `periodic.hpp`, relocate `validation.hpp`, relocate every enum out
+of `uniform_fmm.hpp` — but it also explicitly warned against mechanically
+implementing every historical suggestion once the code shows one is
+unnecessary. Taking that warning seriously changed the shape of the task:
+about half of the candidate relocations turned out to have a genuinely good
+reason to stay put, and the interesting work was in telling those cases apart
+from the two that had a real, evidenced seam.
+
+`parameter_selection.hpp` was the clean case. Reading the header's own
+signatures (not the whole file it happened to include) showed it needed
+exactly two things, `Vec3` and `ExecutionBackend`; everything else came along
+for the ride because `#include "cdfmm/uniform_fmm.hpp"` was the path of least
+resistance when the file was written. Moving `ExecutionBackend` to a new
+`backend/execution.hpp` and swapping the include fixed the real problem
+without inventing a `types.hpp` dumping ground for the four sibling enums
+that had no consumer needing them narrowly — they stayed exactly where they
+were, because moving something nobody depends on independently doesn't
+narrow any dependency, it just adds an indirection.
+
+The CUDA availability queries were the same shape of fix but more
+satisfying, because the "why" was already written down: Phase 1 closure had
+recorded `src/backend/cuda/fmm/internal.hpp -> cdfmm/uniform_fmm.hpp` as a
+sanctioned exception, reasoning that a definition must see its declaration.
+True, but that only justifies depending on *wherever the declaration lives*
+— it doesn't justify the declaration living in the top-level solver header
+in the first place. Checking what else that file used from `uniform_fmm.hpp`
+(nothing — every other type it touched already arrived through headers it
+included directly) confirmed the whole edge existed for three one-line
+function declarations. Moving those three lines to a header that already had
+a sibling precedent (`backend/cuda/dense_direct.hpp` already declares
+`cuda_dense_direct_available()` next to the plan it describes) deleted a
+documented architectural exception outright rather than re-justifying it
+again.
+
+`timings.hpp`, `periodic.hpp`, and `validation.hpp` were the opposite
+lesson. Each had been carried in the "deferred, not overdue" bucket since
+Phase 1, which reads, if you don't check, like "nobody's gotten around to
+these yet." Reading each one in full instead said something more specific:
+`timings.hpp` is one header because three different layers' diagnostics are
+*read together* by one observability surface, and splitting it would scatter
+a single concept across three directories to satisfy a rule about flat
+files, not to help anyone. `periodic.hpp` is flat because its two real
+consumers, `tree` and `operators`, are siblings in the architecture's own
+layering diagram — giving it to either one manufactures exactly the
+sibling-to-sibling edge that diagram exists to prevent. `validation.hpp`
+already says in its own doc comment that it isn't production code. None of
+these needed a subsystem home invented for them; they needed someone to
+finish reading them once and write down why "flat" is the actual answer,
+not a placeholder for one.
+
+The CMake package work had its own small surprise: I expected to need
+`find_dependency(CUDAToolkit)`/`find_dependency(MKL)` behind some
+conditional, and went looking for where to put it — but `cdfmm_c`, the only
+installed target, links its CUDA/oneMKL-dependent static implementation
+library `PRIVATE` and exports no link libraries of its own. There was
+nothing to find-dependency, because the exported interface genuinely has no
+such dependency; adding one "to be safe" would have been describing a
+dependency that doesn't exist. Validating that against a real isolated
+install and a real out-of-tree `find_package` consumer (rather than trusting
+the CMake reasoning alone) was worth doing anyway — it surfaced an unrelated
+environment artifact (the IntelLLVM toolchain embeds `$CONDA_PREFIX/lib` in
+the consumer's `RPATH`, ahead of the fresh install, so the first run silently
+exercised a stale library from a previous session). `LD_PRELOAD` forced
+resolution to the actual freshly built library and its own diagnostics
+confirmed it. A second, unrelated red herring: the first CUDA+oneMKL build
+under unbounded `-j` hit `nvcc` front-end internal-compiler-errors on four
+different `.cu` files, none of which I had touched in three of the four
+cases. Recompiling one of them alone, with identical flags, succeeded — a
+parallelism/resource artifact of this environment's `nvcc`+GCC-15.3
+combination, not a defect, confirmed before spending any time suspecting the
+header change.
+
 ## 2026-09-16 — cache/plan-preparation boundary: narrow records, not a service class
 
 The brief for this task was explicit about what *not* to do: don't reach for

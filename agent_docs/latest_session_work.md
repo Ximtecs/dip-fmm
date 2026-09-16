@@ -1,5 +1,157 @@
 # Latest session work
 
+## 2026-09-16 — public/internal API, header ownership, and packaging cleanup
+
+Starting HEAD `9bab9ee6` (`refactor(cache): decouple persistence from
+UniformFmm`). Baseline check: "static triangular translations match M2M and
+L2L references" reproduces identically (same `REQUIRE`, same printed values)
+in a fresh portable `dev` build before any production change — confirmed
+unrelated to this task, matching every prior session's finding.
+
+Task: the last recorded Phase-2 cleanup item — public/internal C++ interface
+and packaging. Scope: canonical homes for remaining substantive flat public
+headers where warranted, the `parameter_selection.hpp -> uniform_fmm.hpp`
+seam, CUDA/oneMKL availability-query ownership, a downstream CMake package,
+and CUDA/oneMKL link-interface propagation. Audited first (header-by-header
+reading, a full `CMakeLists.txt` read, and a dependency trace of
+`parameter_selection.hpp`/`uniform_fmm.hpp`/the CUDA availability functions)
+rather than mechanically implementing every historical suggestion.
+
+**`parameter_selection.hpp` narrowed.** Its signatures need only `Vec3` and
+`ExecutionBackend`; the complete `UniformFmm` API is needed only by
+`src/parameter_selection.cpp`, which constructs `UniformFmm` objects.
+`ExecutionBackend` moved to a new `include/cdfmm/backend/execution.hpp`
+(backend-selection enum, naturally owned by `backend/`); the header now
+includes only that plus `cdfmm/math/vec3.hpp`. `src/parameter_selection.cpp`
+gained an explicit `#include "cdfmm/uniform_fmm.hpp"`, since it is the unit
+that actually needs the complete API. All four consumers of
+`parameter_selection.hpp` were checked individually; none broke (two already
+included `uniform_fmm.hpp` directly, one gained the explicit include, and the
+C++ test uses neither `Vec3` nor `UniformFmm`). The other backend/plan enums
+still in `uniform_fmm.hpp` (`SphericalM2LBackend`, `StaticMatrixBackend`,
+`StaticOperatorExecutor`, `P2PExecutionPacking`, `StaticExecutionPlan`) were
+left in place: nothing audited needs them independently of the complete
+solver API.
+
+**CUDA/oneMKL availability queries relocated.** All seven CUDA queries
+(`cuda_compiled`, `cuda_available`, `cuda_direct_available`,
+`cuda_m2l_p2p_available`, `cuda_m2l_available`, `cuda_full_available`,
+`cuda_device_description`) moved to a new
+`include/cdfmm/backend/cuda/availability.hpp`, matching the existing
+`backend/cuda/dense_direct.hpp`/`cuda_dense_direct_available()` pattern;
+`one_mkl_available` moved the same way to a new
+`include/cdfmm/backend/mkl/availability.hpp`. `uniform_fmm.hpp` includes both
+and keeps re-exporting every name. This resolved the one dependency-audit
+exception Phase 1 closure had recorded and repeated ever since:
+`src/backend/cuda/fmm/internal.hpp` included the complete `uniform_fmm.hpp`
+solely to see the declarations of the three availability functions
+`plan.cu`/`stub/fmm.cpp` define — every other type that pair uses already
+arrived through headers it already included directly
+(`plan/static_plan.hpp`, `timings.hpp`, `math/potential_field.hpp`). It now
+includes `cdfmm/backend/cuda/availability.hpp` instead, so the CUDA backend
+no longer depends on the top-level public API to declare functions it
+implements.
+
+**`tensor_dictionary.hpp` relocated** to `include/cdfmm/plan/p2p/tensor_dictionary.hpp`,
+alongside the P2P dictionary-packing headers that are its only consumers
+(dependency-free header, pure relocation). Its four internal consumers
+(`src/plan/precision.cpp`, `src/plan/p2p/dictionary_detail.hpp`,
+`src/plan/p2p/signed_dictionary.cpp`, `src/backend/cpu/p2p/dictionary.cpp`)
+now include the canonical path; `include/cdfmm/static_operators.hpp` keeps
+the flat path, since it is itself a compatibility umbrella (façade including
+façade is correct there).
+
+**`timings.hpp`, `periodic.hpp`, `validation.hpp` audited and kept flat** —
+each read in full and found to have no single clearer subsystem owner, not
+merely undecided: `timings.hpp` aggregates `fmm`/`plan`/CUDA-backend
+diagnostics read together through one observability surface; `periodic.hpp`
+is depended on symmetrically by the sibling `tree` and `operators` layers, so
+giving it to either creates the sibling-to-sibling edge the layering diagram
+avoids; `validation.hpp` is explicitly documented as non-production
+test/diagnostic utility. **`P2MPlan`/`FloatP2MPlan`/`ExpansionBasis`
+reviewed, kept at their cache-cleanup homes** — both are coherent, minimal,
+non-ABI-affecting placements; moving them again would add machinery without
+fixing a real problem.
+
+**CMake package added.** `cdfmm_c` (the only installed target; a stable C-ABI
+shared library) gained `add_library(cdfmm::cdfmm_c ALIAS cdfmm_c)`,
+`install(EXPORT cdfmm_c-targets ...)`, a generated `cmake/cdfmmConfig.cmake.in`
+config, and a version file (`project(... VERSION 0.1.0 ...)`, matching
+`pyproject.toml`; not a v0.2 marker), installed to
+`lib/cmake/cdfmm`. No `find_dependency` calls are needed or present: `cdfmm_c`
+links its private static `cdfmm_core` implementation library `PRIVATE` and
+declares no `PUBLIC`/`INTERFACE` link libraries of its own, so none of
+`cdfmm_core`'s CUDA/oneMKL/OpenMP dependencies appear in `cdfmm_c`'s exported
+interface (confirmed by inspecting the generated `cdfmm_c-targets.cmake`).
+`cdfmm_core` is never installed, so there is no static-linking downstream
+case to support. Validated with an isolated-prefix portable install (no
+source/build-tree paths leaked into installed headers or exported CMake
+files) and a standalone out-of-tree consumer
+(`find_package(cdfmm CONFIG REQUIRED)` + `target_link_libraries(consumer
+PRIVATE cdfmm::cdfmm_c)`) that built and ran against only that prefix,
+reproducing the analytic two-dipole field to `1.7e-16`. (The dynamic loader
+initially resolved a stale, previously conda-env-installed `libcdfmm_c.so`
+ahead of the fresh one, because IntelLLVM embeds `$CONDA_PREFIX/lib` in
+`DT_RPATH`; forcing resolution with `LD_PRELOAD` confirmed this was a
+pre-existing toolchain/environment artifact, not caused by the new package —
+the freshly built library's own build-configuration diagnostics matched its
+actual build options once forced.)
+
+**Fixed one incidentally-broken pinned test.** Adding `VERSION 0.1.0` to
+`project(...)` changed the exact `CMakeLists.txt` text
+`python_tests/test_profiling_setup.py::test_notebook_preset_supports_gnu_mkl_without_intel_header_leakage`
+pinned (it exists to catch a regression to CXX-only, not to pin the exact
+`project()` spelling); updated the asserted literal to match.
+
+**Corrected stale documentation.** `docs/architecture.md`'s "Phase 1 closure"
+> "Ownership and dependency audit" still described
+`src/cache/internal.hpp -> cdfmm/uniform_fmm.hpp` as a live sanctioned edge;
+it was removed by the earlier cache/plan-preparation boundary cleanup and the
+paragraph was never corrected afterward. Annotated both that bullet and the
+CUDA-availability bullet (now also resolved by this task) as historical
+Phase-1-closure findings, not current-tree statements, and fixed the
+"Deferred refactor inventory"/"Phase 2 handoff" bullets that repeated the
+stale `parameter_selection.hpp`/CUDA-availability/CMake-package items as
+still open. Added a new "Public/internal API, header ownership, and
+packaging cleanup" subsection recording the full audit, decisions, and
+validation evidence. Updated `AGENTS.md`, `include/cdfmm/AGENTS.md`,
+`include/cdfmm/plan/AGENTS.md`, `src/backend/mkl/AGENTS.md`, and
+`agent_docs/project_structure.md` to match.
+
+**Validation.** Portable `dev` (fresh header changes, incremental build):
+197/198 CTest passed (the one failure is the same pre-existing unrelated
+triangular-translation case), 4 expected skips; Python 137 passed/7 skipped.
+CUDA + oneMKL `notebooks` (fresh, RTX 5090 SM120, CUDA 13.3.73, oneMKL
+2026.1; built with `-j 2` after the default unbounded `-j` triggered
+unrelated nvcc front-end internal-compiler-errors under parallel load on four
+unrelated `.cu` files — confirmed environmental by recompiling one of the
+four in isolation successfully with identical flags before retrying at lower
+parallelism, not a defect in the header change): **198/198 CTest with zero
+skips** (including the triangular-translation case, matching this project's
+established zero-skip CUDA+oneMKL pattern), Python 143 passed/1 skipped
+against `build-notebooks` (after the pinned-test fix above). C ABI: same 14
+`cdfmm_*` symbols. Python surface: 63 top-level names (34 classes, 29
+functions), matching the documented baseline. Standalone-compile and
+mixed/reverse-include-order probes covered every header moved or added in
+this task (`backend/execution.hpp`, `backend/cuda/availability.hpp`,
+`backend/mkl/availability.hpp`, `plan/p2p/tensor_dictionary.hpp`, the
+`tensor_dictionary.hpp` façade, and the narrowed `parameter_selection.hpp`).
+`git diff --check` clean.
+
+No solver algorithm, cache format, cache key, C ABI, Python API, or Fortran
+interface changed. `Article1/` (now present again, alongside the previously
+renamed `Article1_old/` — unexplained, apparently touched by something
+outside this session again) and the unrelated untracked
+`examples/simple_notebooks/tetrahedron_target_average_fair_sampling.ipynb`
+remain preserved outside this task.
+
+This closes the Phase-2 cleanup list recorded in `docs/architecture.md`'s
+"Phase 2 handoff": internal-implementation duplication, the tree/topology
+boundary, the cache/`UniformFmm` boundary, and now the public/internal
+API/header/packaging boundary are all resolved. The next planned work is a
+dedicated performance-optimization phase (construction and evaluation, CPU/
+oneMKL/CUDA), followed by repository pruning; neither started here.
+
 ## 2026-09-16 — cache/plan-preparation boundary cleanup
 
 Starting HEAD `03be4671` (`refactor(tree): clarify topology ownership`).

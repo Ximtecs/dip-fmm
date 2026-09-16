@@ -17,8 +17,15 @@ plan/
     |-- leaf.hpp                 dense leaf-pair packing
     |-- dictionary.hpp           magnitude/sign dictionary packing
     |-- signed_dictionary.hpp    signed reduced dictionary packing
-    `-- bsr.hpp                  backend-neutral BSR(3) packing
+    |-- bsr.hpp                  backend-neutral BSR(3) packing
+    `-- tensor_dictionary.hpp    Tensor6 canonicalisation and token packing
 ```
+
+`p2p/tensor_dictionary.hpp` is dependency-free (no other `cdfmm` include) and
+is consumed only by dictionary/signed-dictionary plan construction and their
+CPU/CUDA execution. It moved here from the flat `cdfmm/tensor_dictionary.hpp`,
+which is now a forwarding compatibility façade; the token encoding itself did
+not change.
 
 The canonical P2P rows are the sole mathematical truth. Every compact, leaf,
 dictionary, signed-dictionary, and BSR object is a deterministic derivative of
