@@ -1,5 +1,16 @@
 # Project progress
 
+## Regular-grid dictionary policy at high occupancy (3A closure): COMPLETE — 2026-09-16
+
+The automatic `SpatialLayout::RegularGrid` dictionary executor is now a
+three-regime rule calibrated on lattices from 48 to 192 targets per leaf:
+power-of-two microtiles below 48, target-owned from 48 to below 72,
+source-warp from 72 upwards (source-warp is 1.1-2.1x faster than target-owned
+at 80-192 per leaf in both precisions). Kernels, cache identity, `General`
+defaults and explicit options are unchanged. **Phase 3A GPU evaluation is
+CLOSED.** Phase 3B (CPU / oneMKL evaluation) is next; 3C, 3D and 4 remain
+unstarted.
+
 ## CUDA execution policy and regular-grid hint (3A follow-up): COMPLETE — 2026-09-16
 
 `src/backend/cuda/execution_policy.{hpp,cpp}` centralises the CUDA strategy

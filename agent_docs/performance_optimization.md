@@ -624,3 +624,122 @@ where P2P is under 6 % of the evaluation.
   dictionary plan when the explicit flag was set, so the layout-selected
   FP32 dictionary silently fell back to leaf blocks; fixed in the same
   commit and covered by the FP32 assertion of the new test.
+
+## Regular-grid dictionary policy at high occupancy (3A closure)
+
+Starting HEAD `a0a7003`. The two-regime rule above (power-of-two microtiles
+below 48 targets per leaf, target-owned otherwise) was known to be wrong at
+128 per leaf, where the source-warp kernel is 1.4-1.7x faster. This task
+calibrates the upper crossover and adds the third regime. No kernel changed.
+
+### Method
+
+`benchmark_uniform_fmm --backend cuda-full --regular-grid --order 6`, FP32
+and FP64, explicit `--reduced-symmetry-p2p` with the source-warp default,
+`--dictionary-target-owned`, and `--dictionary-power2-microtiles`; medians of
+5 samples x 20 evaluations after 3 warm-ups, same `build-gpu-perf` binary and
+environment as the Phase-3A tables (RTX 5090, driver 595.84, CUDA 13.2,
+g++ 15.3, `-march=native`, LTO). The lattice generator now accepts counts of
+the form `odd * 2^k` (the odd factor stretches the shortest axis) so that
+non-power-of-two occupancies are exact and uniform; the printed grid shape is
+recorded below. Every depth-3 case has 512 occupied leaves, so
+occupancy = N / 512.
+
+| Case | N | Grid | Targets per leaf |
+|---|---:|---|---:|
+| occ48d3 | 24,576 | 48 x 16 x 32 | 48 |
+| occ64d3 | 32,768 | 32 x 32 x 32 | 64 |
+| occ80d3 | 40,960 | 80 x 16 x 32 | 80 |
+| occ96d3 | 49,152 | 48 x 32 x 32 | 96 |
+| occ128d3 | 65,536 | 32 x 32 x 64 | 128 |
+| occ160d3 | 81,920 | 80 x 32 x 32 | 160 |
+| occ192d3 | 98,304 | 96 x 32 x 32 | 192 |
+| occ48d4 | 196,608 | 96 x 32 x 64 | 48 (4096 leaves) |
+
+### Results
+
+P2P device phase [us], evaluation median in parentheses:
+
+| Occupancy | Precision | source-warp | target-owned | power-of-two | best | owned / best | warp / best |
+|---:|---|---:|---:|---:|---|---:|---:|
+| 48 | FP32 | 463 (553) | **330 (418)** | 789 (901) | owned | 1.00 | 1.40 |
+| 64 | FP32 | 521 (611) | **440 (535)** | 724 (823) | owned | 1.00 | 1.18 |
+| 80 | FP32 | **490 (601)** | 616 (727) | 1534 (1707) | warp | 1.26 | 1.00 |
+| 96 | FP32 | **600 (748)** | 745 (916) | 1244 (1447) | warp | 1.24 | 1.00 |
+| 128 | FP32 | **974 (1243)** | 1348 (1624) | 1668 (1938) | warp | 1.38 | 1.00 |
+| 160 | FP32 | **1514 (1814)** | 2217 (2549) | 2443 (2773) | warp | 1.46 | 1.00 |
+| 192 | FP32 | **2844 (3207)** | 2926 (3315) | 3016 (3387) | warp | 1.03 | 1.00 |
+| 48 | FP64 | 1815 (2072) | **899 (1058)** | 1441 (1629) | owned | 1.00 | 2.02 |
+| 64 | FP64 | 2341 (2616) | **1148 (1342)** | 2436 (2697) | owned | 1.00 | 2.04 |
+| 80 | FP64 | **2079 (2343)** | 2245 (2642) | 4119 (4579) | warp | 1.08 | 1.00 |
+| 96 | FP64 | **2567 (2991)** | 4772 (5330) | 5032 (5575) | warp | 1.86 | 1.00 |
+| 128 | FP64 | **4612 (5145)** | 7701 (8345) | 6950 (7534) | warp | 1.67 | 1.00 |
+| 160 | FP64 | **4787 (5377)** | 9825 (10480) | 9194 (9968) | warp | 2.05 | 1.00 |
+| 192 | FP64 | **6217 (6918)** | 12194 (13139) | 11320 (12097) | warp | 1.96 | 1.00 |
+| 48 (depth 4, 196k) | FP32 | 1438 (2037) | **816 (1617)** | 1633 (2228) | owned | 1.00 | 1.76 |
+| 48 (depth 4, 196k) | FP64 | 5089 (7652) | **4517 (6461)** | 6039 (7079) | owned | 1.00 | 1.13 |
+
+The crossover lies between 64 and 80 targets per leaf in both precisions and
+is monotone on either side: target-owned is best at 48 and 64 (by 1.18-2.04x
+over source-warp), source-warp is best at every point from 80 to 192 (by
+1.08-2.05x over target-owned; the 192/FP32 point is a 3 % margin). The
+power-of-two microtile kernel is never best above 32 per leaf and collapses
+at non-power-of-two occupancies (80: 2.5-3.1x slower than the best). The
+128-thread target-owned tile also explains its loss at 80 and 96 (37 % and
+25 % of the lanes of the last tile idle), and above 128 its per-target
+serial source loop simply falls behind the warp-cooperative kernel.
+
+### Decision
+
+Three regimes, thresholds on the mean targets per occupied target leaf:
+
+```text
+occupancy <  48  -> power-of-two microtiles
+48 <= occ  < 72  -> target-owned
+occupancy >= 72  -> source-warp
+```
+
+72 is the midpoint of the measured 64/80 crossover. The lower regime and the
+very-low-occupancy behaviour (4 per leaf, 0.6 % end to end) are unchanged.
+Explicit `cuda_dictionary_target_owned` / `cuda_dictionary_power2_microtiles`
+still override the automatic choice, `use_reduced_symmetry_p2p` keeps its
+source-warp default, `SpatialLayout::General` is untouched, and nothing in
+the cache identity or format changes (the executor is chosen after the
+canonical operator is loaded).
+
+### Automatic policy versus best explicit executor (policy commit)
+
+`--spatial-layout regular-grid` with no explicit dictionary options, same
+lattices, evaluation median [us] (P2P device phase in parentheses), against
+the fastest explicit executor of the calibration table:
+
+| Occupancy | Precision | Automatic (chosen) | Best explicit | auto / best |
+|---:|---|---:|---:|---:|
+| 48 | FP32 | 417 (328) target-owned | 418 (330) owned | 1.00 |
+| 48 | FP64 | 1057 (900) target-owned | 1058 (899) owned | 1.00 |
+| 64 | FP32 | 533 (440) target-owned | 535 (440) owned | 1.00 |
+| 64 | FP64 | 1365 (1150) target-owned | 1342 (1148) owned | 1.02 |
+| 80 | FP32 | 601 (489) source-warp | 601 (490) warp | 1.00 |
+| 80 | FP64 | 2331 (2072) source-warp | 2343 (2079) warp | 0.99 |
+| 96 | FP32 | 748 (600) source-warp | 748 (600) warp | 1.00 |
+| 96 | FP64 | 3024 (2566) source-warp | 2991 (2567) warp | 1.01 |
+| 128 | FP32 | 1199 (971) source-warp | 1243 (974) warp | 0.96 |
+| 128 | FP64 | 5122 (4604) source-warp | 5145 (4612) warp | 1.00 |
+| 192 | FP32 | 3203 (2843) source-warp | 3207 (2844) warp | 1.00 |
+| 192 | FP64 | 6921 (6225) source-warp | 6918 (6217) warp | 1.00 |
+
+The automatic choice is within +-2 % (run-to-run noise) of the best explicit
+executor at every point; at 128 per leaf it is now 1.34x (FP32) and 1.63x
+(FP64) faster than the previous two-regime rule. Below 48 per leaf nothing
+changed (the 8-32 per leaf results of the previous section stand).
+
+### Validation
+
+- `ctest` on `build-gpu-perf`: 30/30 policy/regular-grid/dictionary/CUDA
+  cases and 65/65 precision/P2P/M2L/FMM/layout cases pass; the policy unit
+  test now asserts all three regimes and both boundary values, and the
+  lattice integration test asserts the exact automatic executor per depth.
+- No kernel changed, so no new sanitizer campaign was run; the FP32 and FP64
+  agreement assertions of the lattice test cover the automatic executors.
+
+**Phase 3A GPU evaluation is closed.**

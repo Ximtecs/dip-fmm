@@ -1,5 +1,20 @@
 # Latest session work
 
+## 2026-09-16 — Regular-grid dictionary policy at high occupancy (3A closure)
+
+Starting HEAD `a0a7003`. Calibrated the CUDA dictionary executor on regular
+lattices at 48, 64, 80, 96, 128, 160 and 192 targets per leaf (depth 3) plus
+48 per leaf at depth 4, FP32 and FP64, source-warp versus target-owned versus
+power-of-two microtiles. The crossover from target-owned to source-warp lies
+between 64 and 80 in both precisions, so the automatic `RegularGrid` policy
+in `src/backend/cuda/execution_policy.cpp` now has three regimes: microtiles
+below 48, target-owned from 48 to below 72, source-warp from 72. No kernel,
+cache key/format, `General` behaviour or explicit-option semantics changed.
+`benchmark_uniform_fmm --regular-grid` accepts `odd * 2^k` counts (the odd
+factor stretches the shortest axis) so non-power-of-two occupancies are
+exact. Calibration table, rationale and automatic-versus-best results are in
+`agent_docs/performance_optimization.md`. Phase 3A GPU evaluation is closed.
+
 ## 2026-09-16 — CUDA execution policy and regular-grid hint (3A follow-up)
 
 Starting HEAD `a187c76`. Added `src/backend/cuda/execution_policy.{hpp,cpp}`,
