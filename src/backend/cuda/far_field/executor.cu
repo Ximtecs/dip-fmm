@@ -8,8 +8,11 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 namespace cdfmm::cuda_far_field_detail {
 
@@ -17,34 +20,70 @@ namespace {
 
 using cuda_detail::check_cuda;
 
+// Lane groups per CSR row / translated output; see the kernel comments.
+inline constexpr int entry_row_lanes = 8;
+inline constexpr int translation_lanes = 4;
+
 } // namespace
+
+// Sparse coefficient map stored as CSR by output on the device.
+template <typename Scalar> struct DeviceCsrOperator {
+  int *row_offsets{nullptr};
+  int *inputs{nullptr};
+  Scalar *values{nullptr};
+  int row_count{0};
+  std::size_t entry_count{0};
+
+  void release() noexcept {
+    cudaFree(row_offsets);
+    cudaFree(inputs);
+    cudaFree(values);
+  }
+};
+
+// One translation direction (M2M or L2L): level-scaled child-class matrices
+// and the per-level target grouping consumed by translate_targets_kernel.
+template <typename Scalar> struct DeviceTranslation {
+  // Per level block of 8 CSR matrices: `8 * (n + 1)` row offsets, relative to
+  // the level's entry base of `8 * entries_per_matrix`.
+  int *matrix_row_offsets{nullptr};
+  int *matrix_inputs{nullptr};
+  Scalar *matrix_values{nullptr};
+  int *targets{nullptr};
+  int *target_interaction_offsets{nullptr};
+  int *sources{nullptr};
+  int *classes{nullptr};
+  // Host bookkeeping: target range of every level within `targets`.
+  std::vector<int> level_target_begin{};
+  std::vector<int> level_target_count{};
+  int entries_per_matrix{0};
+
+  void release() noexcept {
+    cudaFree(matrix_row_offsets);
+    cudaFree(matrix_inputs);
+    cudaFree(matrix_values);
+    cudaFree(targets);
+    cudaFree(target_interaction_offsets);
+    cudaFree(sources);
+    cudaFree(classes);
+  }
+};
 
 template <typename Scalar, typename Entry>
 struct CudaFarFieldExecutionPlan<Scalar, Entry>::Implementation {
-  Entry *entries{nullptr};
-  Entry *m2m_matrices{nullptr};
-  Entry *l2l_matrices{nullptr};
-  CudaTranslationInteraction *m2m_interactions{nullptr};
-  CudaTranslationInteraction *l2l_interactions{nullptr};
-  int *coefficient_degrees{nullptr};
-
-  std::vector<std::size_t> offsets{};
-  std::vector<std::size_t> counts{};
+  DeviceCsrOperator<Scalar> p2m{};
+  DeviceCsrOperator<Scalar> l2p{};
+  DeviceTranslation<Scalar> m2m{};
+  DeviceTranslation<Scalar> l2l{};
   int coefficient_count{0};
   int maximum_level{0};
-  int m2m_entries_per_matrix{0};
-  int l2l_entries_per_matrix{0};
-  std::size_t m2m_interaction_count{0};
-  std::size_t l2l_interaction_count{0};
   CudaPlanStatistics statistics{};
 
   ~Implementation() {
-    cudaFree(entries);
-    cudaFree(m2m_matrices);
-    cudaFree(l2l_matrices);
-    cudaFree(m2m_interactions);
-    cudaFree(l2l_interactions);
-    cudaFree(coefficient_degrees);
+    p2m.release();
+    l2p.release();
+    m2m.release();
+    l2l.release();
   }
 };
 
@@ -65,6 +104,259 @@ void upload(T *destination, std::span<const T> values, cudaStream_t stream,
                                cudaMemcpyHostToDevice, stream),
                description);
   }
+}
+
+// Host-side CSR-by-output image of a flat entry list.
+template <typename Scalar> struct HostCsrOperator {
+  std::vector<int> row_offsets{};
+  std::vector<int> inputs{};
+  std::vector<Scalar> values{};
+
+  [[nodiscard]] std::size_t bytes() const noexcept {
+    return row_offsets.size() * sizeof(int) + inputs.size() * sizeof(int) +
+           values.size() * sizeof(Scalar);
+  }
+};
+
+// Counting sort of entries by output row. `scale(entry)` supplies the stored
+// value so translation matrices can fold their level scaling in here.
+template <typename Scalar, typename Entry, typename Scale>
+HostCsrOperator<Scalar> build_csr_by_output(std::span<const Entry> entries,
+                                            const int row_count,
+                                            const Scale &scale) {
+  HostCsrOperator<Scalar> csr;
+  csr.row_offsets.assign(static_cast<std::size_t>(row_count) + 1, 0);
+  for (const Entry &entry : entries) {
+    ++csr.row_offsets[static_cast<std::size_t>(entry.output) + 1];
+  }
+  for (int row = 0; row < row_count; ++row) {
+    csr.row_offsets[static_cast<std::size_t>(row) + 1] +=
+        csr.row_offsets[static_cast<std::size_t>(row)];
+  }
+  csr.inputs.resize(entries.size());
+  csr.values.resize(entries.size());
+  std::vector<int> cursor(csr.row_offsets.begin(), csr.row_offsets.end() - 1);
+  for (const Entry &entry : entries) {
+    const std::size_t slot = static_cast<std::size_t>(
+        cursor[static_cast<std::size_t>(entry.output)]++);
+    csr.inputs[slot] = entry.input;
+    csr.values[slot] = scale(entry);
+  }
+  return csr;
+}
+
+template <typename Scalar, typename Entry>
+int output_row_count(std::span<const Entry> entries) {
+  int rows = 0;
+  for (const Entry &entry : entries) {
+    if (entry.output < 0 || entry.input < 0) {
+      throw std::invalid_argument("CUDA far-field entry index is negative");
+    }
+    rows = std::max(rows, entry.output + 1);
+  }
+  return rows;
+}
+
+template <typename Scalar>
+std::size_t upload_csr(DeviceCsrOperator<Scalar> &device,
+                       const HostCsrOperator<Scalar> &host,
+                       cudaStream_t stream, const char *description) {
+  device.row_count = static_cast<int>(host.row_offsets.size()) - 1;
+  device.entry_count = host.inputs.size();
+  allocate(&device.row_offsets, host.row_offsets.size() * sizeof(int),
+           description);
+  allocate(&device.inputs, host.inputs.size() * sizeof(int), description);
+  allocate(&device.values, host.values.size() * sizeof(Scalar), description);
+  upload(device.row_offsets, std::span<const int>(host.row_offsets), stream,
+         description);
+  upload(device.inputs, std::span<const int>(host.inputs), stream,
+         description);
+  upload(device.values, std::span<const Scalar>(host.values), stream,
+         description);
+  return host.bytes();
+}
+
+// Builds one translation direction: eight level-scaled CSR matrices per level
+// and interactions grouped by (level, target node) so one launch per level
+// owns disjoint target rows.
+template <typename Scalar, typename Entry>
+std::size_t build_translation(
+    DeviceTranslation<Scalar> &device, std::span<const Entry> matrices,
+    std::span<const CudaTranslationInteraction> interactions,
+    const int entries_per_matrix, const int coefficient_count,
+    const int maximum_level, std::span<const int> coefficient_degrees,
+    cudaStream_t stream, const char *description) {
+  device.entries_per_matrix = entries_per_matrix;
+  device.level_target_begin.assign(static_cast<std::size_t>(maximum_level) + 1,
+                                   0);
+  device.level_target_count.assign(static_cast<std::size_t>(maximum_level) + 1,
+                                   0);
+  if (entries_per_matrix == 0 || interactions.empty() || maximum_level < 1) {
+    return 0;
+  }
+  const int matrix_count =
+      static_cast<int>(matrices.size()) / entries_per_matrix;
+  for (const CudaTranslationInteraction &interaction : interactions) {
+    if (interaction.level < 1 || interaction.level > maximum_level ||
+        interaction.matrix_id < 0 || interaction.matrix_id >= matrix_count ||
+        interaction.source_node < 0 || interaction.target_node < 0) {
+      throw std::invalid_argument("CUDA far-field translation is invalid");
+    }
+  }
+
+  // Level-scaled matrices: ldexp by a power of two is exact, so folding the
+  // scaling in at construction reproduces the CPU reference arithmetic.
+  std::vector<int> matrix_row_offsets;
+  std::vector<int> matrix_inputs;
+  std::vector<Scalar> matrix_values;
+  matrix_row_offsets.reserve(static_cast<std::size_t>(maximum_level) *
+                             matrix_count * (coefficient_count + 1));
+  matrix_inputs.reserve(static_cast<std::size_t>(maximum_level) *
+                        matrices.size());
+  matrix_values.reserve(static_cast<std::size_t>(maximum_level) *
+                        matrices.size());
+  for (int level = 1; level <= maximum_level; ++level) {
+    int level_base = 0;
+    for (int matrix = 0; matrix < matrix_count; ++matrix) {
+      const std::span<const Entry> entries = matrices.subspan(
+          static_cast<std::size_t>(matrix) * entries_per_matrix,
+          static_cast<std::size_t>(entries_per_matrix));
+      for (const Entry &entry : entries) {
+        if (entry.output < 0 || entry.output >= coefficient_count ||
+            entry.input < 0 || entry.input >= coefficient_count) {
+          throw std::invalid_argument(
+              "CUDA far-field translation matrix entry is invalid");
+        }
+      }
+      const HostCsrOperator<Scalar> csr = build_csr_by_output<Scalar, Entry>(
+          entries, coefficient_count, [&](const Entry &entry) {
+            const int degree_difference =
+                coefficient_degrees[static_cast<std::size_t>(entry.output)] -
+                coefficient_degrees[static_cast<std::size_t>(entry.input)];
+            const int power = std::abs(degree_difference);
+            return std::ldexp(static_cast<Scalar>(entry.value),
+                              -(level - 1) * power);
+          });
+      for (const int offset : csr.row_offsets) {
+        matrix_row_offsets.push_back(level_base + offset);
+      }
+      matrix_inputs.insert(matrix_inputs.end(), csr.inputs.begin(),
+                           csr.inputs.end());
+      matrix_values.insert(matrix_values.end(), csr.values.begin(),
+                           csr.values.end());
+      level_base += entries_per_matrix;
+    }
+  }
+
+  // Interactions grouped by (level, target): stable counting sort by level,
+  // then by target within a level, preserving the plan's interaction order
+  // among a target's children.
+  std::vector<std::size_t> order(interactions.size());
+  for (std::size_t index = 0; index < order.size(); ++index) {
+    order[index] = index;
+  }
+  std::stable_sort(order.begin(), order.end(),
+                   [&](const std::size_t left, const std::size_t right) {
+                     const auto &a = interactions[left];
+                     const auto &b = interactions[right];
+                     return a.level != b.level ? a.level < b.level
+                                               : a.target_node < b.target_node;
+                   });
+  std::vector<int> targets;
+  std::vector<int> target_interaction_offsets;
+  std::vector<int> sources(interactions.size());
+  std::vector<int> classes(interactions.size());
+  targets.reserve(interactions.size());
+  target_interaction_offsets.reserve(interactions.size() + 1);
+  int previous_level = 0;
+  int previous_target = -1;
+  for (std::size_t position = 0; position < order.size(); ++position) {
+    const CudaTranslationInteraction &interaction = interactions[order[position]];
+    if (interaction.level != previous_level ||
+        interaction.target_node != previous_target) {
+      if (interaction.level != previous_level) {
+        for (int level = previous_level + 1; level <= interaction.level;
+             ++level) {
+          device.level_target_begin[static_cast<std::size_t>(level)] =
+              static_cast<int>(targets.size());
+        }
+        previous_level = interaction.level;
+      }
+      targets.push_back(interaction.target_node);
+      target_interaction_offsets.push_back(static_cast<int>(position));
+      ++device.level_target_count[static_cast<std::size_t>(interaction.level)];
+      previous_target = interaction.target_node;
+    }
+    sources[position] = interaction.source_node;
+    classes[position] = interaction.matrix_id;
+  }
+  target_interaction_offsets.push_back(static_cast<int>(order.size()));
+  for (int level = previous_level + 1; level <= maximum_level; ++level) {
+    device.level_target_begin[static_cast<std::size_t>(level)] =
+        static_cast<int>(targets.size());
+  }
+
+  allocate(&device.matrix_row_offsets, matrix_row_offsets.size() * sizeof(int),
+           description);
+  allocate(&device.matrix_inputs, matrix_inputs.size() * sizeof(int),
+           description);
+  allocate(&device.matrix_values, matrix_values.size() * sizeof(Scalar),
+           description);
+  allocate(&device.targets, targets.size() * sizeof(int), description);
+  allocate(&device.target_interaction_offsets,
+           target_interaction_offsets.size() * sizeof(int), description);
+  allocate(&device.sources, sources.size() * sizeof(int), description);
+  allocate(&device.classes, classes.size() * sizeof(int), description);
+  upload(device.matrix_row_offsets, std::span<const int>(matrix_row_offsets),
+         stream, description);
+  upload(device.matrix_inputs, std::span<const int>(matrix_inputs), stream,
+         description);
+  upload(device.matrix_values, std::span<const Scalar>(matrix_values), stream,
+         description);
+  upload(device.targets, std::span<const int>(targets), stream, description);
+  upload(device.target_interaction_offsets,
+         std::span<const int>(target_interaction_offsets), stream, description);
+  upload(device.sources, std::span<const int>(sources), stream, description);
+  upload(device.classes, std::span<const int>(classes), stream, description);
+  return (matrix_row_offsets.size() + matrix_inputs.size() + targets.size() +
+          target_interaction_offsets.size() + sources.size() +
+          classes.size()) *
+             sizeof(int) +
+         matrix_values.size() * sizeof(Scalar);
+}
+
+template <typename Scalar>
+void enqueue_translation_level(const DeviceTranslation<Scalar> &translation,
+                               const int level, const int coefficient_count,
+                               const Scalar *input, Scalar *output,
+                               cudaStream_t stream, const char *description) {
+  const int target_count =
+      translation.level_target_count[static_cast<std::size_t>(level)];
+  if (target_count == 0) {
+    return;
+  }
+  const int target_begin =
+      translation.level_target_begin[static_cast<std::size_t>(level)];
+  const std::size_t level_matrix_rows =
+      static_cast<std::size_t>(8) * (coefficient_count + 1);
+  const std::size_t level_matrix_entries =
+      static_cast<std::size_t>(8) * translation.entries_per_matrix;
+  const std::size_t items = static_cast<std::size_t>(target_count) *
+                            coefficient_count * translation_lanes;
+  translate_targets_kernel<Scalar, translation_lanes>
+      <<<(items + far_field_threads - 1) / far_field_threads,
+         far_field_threads, 0, stream>>>(
+      translation.targets + target_begin,
+      translation.target_interaction_offsets + target_begin,
+      translation.sources, translation.classes,
+      translation.matrix_row_offsets +
+          static_cast<std::size_t>(level - 1) * level_matrix_rows,
+      translation.matrix_inputs +
+          static_cast<std::size_t>(level - 1) * level_matrix_entries,
+      translation.matrix_values +
+          static_cast<std::size_t>(level - 1) * level_matrix_entries,
+      target_count, coefficient_count, input, output);
+  check_cuda(cudaGetLastError(), description);
 }
 
 } // namespace
@@ -104,66 +396,49 @@ CudaFarFieldExecutionPlan<Scalar, Entry>::CudaFarFieldExecutionPlan(
       throw std::invalid_argument(
           "CUDA far-field L2L interactions are invalid");
     }
+    // The child-class matrices are addressed as eight per level.
+    if ((data.m2m_entries_per_matrix != 0 &&
+         data.m2m_matrices.size() !=
+             static_cast<std::size_t>(8) * data.m2m_entries_per_matrix) ||
+        (data.l2l_entries_per_matrix != 0 &&
+         data.l2l_matrices.size() !=
+             static_cast<std::size_t>(8) * data.l2l_entries_per_matrix)) {
+      throw std::invalid_argument(
+          "CUDA far-field translation requires eight child-class matrices");
+    }
 
     plan.coefficient_count = data.coefficient_count;
     plan.maximum_level = data.maximum_level;
-    plan.m2m_entries_per_matrix = data.m2m_entries_per_matrix;
-    plan.l2l_entries_per_matrix = data.l2l_entries_per_matrix;
-    plan.m2m_interaction_count = data.m2m_interactions.size();
-    plan.l2l_interaction_count = data.l2l_interactions.size();
 
-    plan.offsets.reserve(2);
-    plan.counts.reserve(2);
-    plan.offsets.push_back(0);
-    plan.counts.push_back(data.p2m.size());
-    plan.offsets.push_back(data.p2m.size());
-    plan.counts.push_back(data.l2p.size());
-    std::vector<Entry> entries;
-    entries.reserve(data.p2m.size() + data.l2p.size());
-    entries.insert(entries.end(), data.p2m.begin(), data.p2m.end());
-    entries.insert(entries.end(), data.l2p.begin(), data.l2p.end());
-
-    allocate(&plan.entries, entries.size() * sizeof(Entry),
-             "allocate CUDA far-field entries");
-    allocate(&plan.coefficient_degrees,
-             data.coefficient_degrees.size() * sizeof(int),
-             "allocate CUDA far-field coefficient degrees");
-    allocate(&plan.m2m_matrices, data.m2m_matrices.size() * sizeof(Entry),
-             "allocate CUDA far-field M2M matrices");
-    allocate(&plan.m2m_interactions,
-             data.m2m_interactions.size() * sizeof(CudaTranslationInteraction),
-             "allocate CUDA far-field M2M interactions");
-    allocate(&plan.l2l_matrices, data.l2l_matrices.size() * sizeof(Entry),
-             "allocate CUDA far-field L2L matrices");
-    allocate(&plan.l2l_interactions,
-             data.l2l_interactions.size() * sizeof(CudaTranslationInteraction),
-             "allocate CUDA far-field L2L interactions");
-
-    upload(plan.entries, std::span<const Entry>(entries), stream,
-           "upload CUDA far-field entries");
-    upload(plan.coefficient_degrees, data.coefficient_degrees, stream,
-           "upload CUDA far-field coefficient degrees");
-    upload(plan.m2m_matrices, data.m2m_matrices, stream,
-           "upload CUDA far-field M2M matrices");
-    upload(plan.m2m_interactions, data.m2m_interactions, stream,
-           "upload CUDA far-field M2M interactions");
-    upload(plan.l2l_matrices, data.l2l_matrices, stream,
-           "upload CUDA far-field L2L matrices");
-    upload(plan.l2l_interactions, data.l2l_interactions, stream,
-           "upload CUDA far-field L2L interactions");
+    const auto identity = [](const Entry &entry) {
+      return static_cast<Scalar>(entry.value);
+    };
+    const HostCsrOperator<Scalar> p2m = build_csr_by_output<Scalar, Entry>(
+        data.p2m, output_row_count<Scalar, Entry>(data.p2m), identity);
+    const HostCsrOperator<Scalar> l2p = build_csr_by_output<Scalar, Entry>(
+        data.l2p, output_row_count<Scalar, Entry>(data.l2p), identity);
+    std::size_t uploaded_bytes = 0;
+    uploaded_bytes += upload_csr(plan.p2m, p2m, stream,
+                                 "upload CUDA far-field P2M entries");
+    uploaded_bytes += upload_csr(plan.l2p, l2p, stream,
+                                 "upload CUDA far-field L2P entries");
+    const std::size_t m2m_bytes = build_translation<Scalar, Entry>(
+        plan.m2m, data.m2m_matrices, data.m2m_interactions,
+        data.m2m_entries_per_matrix, data.coefficient_count,
+        data.maximum_level, data.coefficient_degrees, stream,
+        "upload CUDA far-field M2M translation");
+    const std::size_t l2l_bytes = build_translation<Scalar, Entry>(
+        plan.l2l, data.l2l_matrices, data.l2l_interactions,
+        data.l2l_entries_per_matrix, data.coefficient_count,
+        data.maximum_level, data.coefficient_degrees, stream,
+        "upload CUDA far-field L2L translation");
 
     plan.statistics.scalar_bytes = sizeof(Scalar);
     plan.statistics.m2m_unique_matrix_count = data.m2m_matrix_count;
-    plan.statistics.m2m_matrix_bytes = data.m2m_matrices.size() * sizeof(Entry);
+    plan.statistics.m2m_matrix_bytes = m2m_bytes;
     plan.statistics.l2l_unique_matrix_count = data.l2l_matrix_count;
-    plan.statistics.l2l_matrix_bytes = data.l2l_matrices.size() * sizeof(Entry);
-    plan.statistics.setup_h2d_bytes =
-        entries.size() * sizeof(Entry) +
-        data.coefficient_degrees.size() * sizeof(int) +
-        data.m2m_matrices.size() * sizeof(Entry) +
-        data.m2m_interactions.size() * sizeof(CudaTranslationInteraction) +
-        data.l2l_matrices.size() * sizeof(Entry) +
-        data.l2l_interactions.size() * sizeof(CudaTranslationInteraction);
+    plan.statistics.l2l_matrix_bytes = l2l_bytes;
+    plan.statistics.setup_h2d_bytes = uploaded_bytes + m2m_bytes + l2l_bytes;
     plan.statistics.persistent_device_bytes = plan.statistics.setup_h2d_bytes;
   } catch (...) {
     delete implementation_;
@@ -184,11 +459,14 @@ template <typename Scalar, typename Entry>
 void CudaFarFieldExecutionPlan<Scalar, Entry>::enqueue_p2m(
     const Scalar *input, Scalar *output, cudaStream_t stream) const {
   const auto &plan = *implementation_;
-  const std::size_t count = plan.counts[0];
-  if (count != 0) {
-    apply_entries_kernel<<<(count + far_field_threads - 1) / far_field_threads,
-                           far_field_threads, 0, stream>>>(
-        plan.entries + plan.offsets[0], count, input, output);
+  if (plan.p2m.entry_count != 0) {
+    const std::size_t items =
+        static_cast<std::size_t>(plan.p2m.row_count) * entry_row_lanes;
+    apply_csr_rows_kernel<Scalar, entry_row_lanes>
+        <<<(items + far_field_threads - 1) / far_field_threads,
+           far_field_threads, 0, stream>>>(
+        plan.p2m.row_offsets, plan.p2m.inputs, plan.p2m.values,
+        plan.p2m.row_count, input, output);
     check_cuda(cudaGetLastError(), "launch CUDA far-field P2M kernel");
   }
 }
@@ -197,19 +475,11 @@ template <typename Scalar, typename Entry>
 void CudaFarFieldExecutionPlan<Scalar, Entry>::enqueue_m2m(
     const Scalar *input, Scalar *output, cudaStream_t stream) const {
   const auto &plan = *implementation_;
-  const std::size_t items =
-      plan.m2m_interaction_count * plan.m2m_entries_per_matrix;
-  if (items == 0) {
-    return;
-  }
+  // Deep to shallow: every parent level consumes completed child multipoles.
   for (int level = plan.maximum_level; level >= 1; --level) {
-    apply_shared_translation_kernel<<<(items + far_field_threads - 1) /
-                                          far_field_threads,
-                                      far_field_threads, 0, stream>>>(
-        plan.m2m_matrices, plan.m2m_interactions, plan.m2m_interaction_count,
-        plan.m2m_entries_per_matrix, plan.coefficient_count,
-        plan.coefficient_degrees, level, input, output);
-    check_cuda(cudaGetLastError(), "launch CUDA far-field M2M kernel");
+    enqueue_translation_level(plan.m2m, level, plan.coefficient_count, input,
+                              output, stream,
+                              "launch CUDA far-field M2M kernel");
   }
 }
 
@@ -217,19 +487,11 @@ template <typename Scalar, typename Entry>
 void CudaFarFieldExecutionPlan<Scalar, Entry>::enqueue_l2l(
     const Scalar *input, Scalar *output, cudaStream_t stream) const {
   const auto &plan = *implementation_;
-  const std::size_t items =
-      plan.l2l_interaction_count * plan.l2l_entries_per_matrix;
-  if (items == 0) {
-    return;
-  }
+  // Shallow to deep: every child level consumes completed parent locals.
   for (int level = 1; level <= plan.maximum_level; ++level) {
-    apply_shared_translation_kernel<<<(items + far_field_threads - 1) /
-                                          far_field_threads,
-                                      far_field_threads, 0, stream>>>(
-        plan.l2l_matrices, plan.l2l_interactions, plan.l2l_interaction_count,
-        plan.l2l_entries_per_matrix, plan.coefficient_count,
-        plan.coefficient_degrees, level, input, output);
-    check_cuda(cudaGetLastError(), "launch CUDA far-field L2L kernel");
+    enqueue_translation_level(plan.l2l, level, plan.coefficient_count, input,
+                              output, stream,
+                              "launch CUDA far-field L2L kernel");
   }
 }
 
@@ -237,11 +499,14 @@ template <typename Scalar, typename Entry>
 void CudaFarFieldExecutionPlan<Scalar, Entry>::enqueue_l2p(
     const Scalar *input, Scalar *output, cudaStream_t stream) const {
   const auto &plan = *implementation_;
-  const std::size_t count = plan.counts[1];
-  if (count != 0) {
-    apply_entries_kernel<<<(count + far_field_threads - 1) / far_field_threads,
-                           far_field_threads, 0, stream>>>(
-        plan.entries + plan.offsets[1], count, input, output);
+  if (plan.l2p.entry_count != 0) {
+    const std::size_t items =
+        static_cast<std::size_t>(plan.l2p.row_count) * entry_row_lanes;
+    apply_csr_rows_kernel<Scalar, entry_row_lanes>
+        <<<(items + far_field_threads - 1) / far_field_threads,
+           far_field_threads, 0, stream>>>(
+        plan.l2p.row_offsets, plan.l2p.inputs, plan.l2p.values,
+        plan.l2p.row_count, input, output);
     check_cuda(cudaGetLastError(), "launch CUDA far-field L2P kernel");
   }
 }

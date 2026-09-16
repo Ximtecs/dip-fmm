@@ -5,42 +5,56 @@ namespace cdfmm::cuda_far_field_detail {
 
 namespace {
 
-template <typename Entry, typename Scalar>
-__global__ void apply_shared_translation_kernel(
-    const Entry *matrices, const CudaTranslationInteraction *interactions,
-    const std::size_t interaction_count, const int entries_per_matrix,
-    const int coefficient_count, const int *coefficient_degrees,
-    const int level, const Scalar *input, Scalar *output) {
-  const std::size_t item =
-      static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  const std::size_t item_count = interaction_count * entries_per_matrix;
-  if (item >= item_count) {
-    return;
+// One level of M2M or L2L. A group of `lanes_per_output` lanes owns one
+// (target node, output coefficient) pair and reduces over every translation
+// into that node, so a level needs no atomics: within one launch sources and
+// targets are distinct tree levels and the in-place coefficient buffer is
+// safe. The eight child-class matrices are stored as CSR by output with the
+// level scaling already folded in, and the matrix pointers supplied by the
+// host already point at this level's block. All lanes join the shuffles.
+template <typename Scalar, int lanes_per_output>
+__global__ void translate_targets_kernel(
+    const int *__restrict__ targets,
+    const int *__restrict__ target_interaction_offsets,
+    const int *__restrict__ sources, const int *__restrict__ classes,
+    const int *__restrict__ matrix_row_offsets,
+    const int *__restrict__ matrix_inputs,
+    const Scalar *__restrict__ matrix_values, const int target_count,
+    const int coefficient_count, const Scalar *__restrict__ input,
+    Scalar *__restrict__ output) {
+  static_assert(lanes_per_output > 0 && lanes_per_output <= 32 &&
+                    (lanes_per_output & (lanes_per_output - 1)) == 0,
+                "lane groups must be powers of two within a warp");
+  const int item = blockIdx.x * blockDim.x + threadIdx.x;
+  const int output_index = item / lanes_per_output;
+  const int lane = item - output_index * lanes_per_output;
+  const bool valid = output_index < target_count * coefficient_count;
+  const int target_index = valid ? output_index / coefficient_count : 0;
+  const int beta = output_index - target_index * coefficient_count;
+  Scalar sum = Scalar{0};
+  if (valid) {
+    for (int interaction = target_interaction_offsets[target_index];
+         interaction < target_interaction_offsets[target_index + 1];
+         ++interaction) {
+      const Scalar *source_coefficients =
+          input + static_cast<std::size_t>(sources[interaction]) *
+                      coefficient_count;
+      const int row = classes[interaction] * (coefficient_count + 1) + beta;
+      const int end = matrix_row_offsets[row + 1];
+      for (int entry = matrix_row_offsets[row] + lane; entry < end;
+           entry += lanes_per_output) {
+        sum += matrix_values[entry] * source_coefficients[matrix_inputs[entry]];
+      }
+    }
   }
-  const std::size_t interaction_index = item / entries_per_matrix;
-  const CudaTranslationInteraction interaction =
-      interactions[interaction_index];
-  if (interaction.level != level) {
-    return;
+#pragma unroll
+  for (int offset = lanes_per_output / 2; offset > 0; offset >>= 1) {
+    sum += __shfl_xor_sync(0xffffffffU, sum, offset);
   }
-  const int matrix_entry = static_cast<int>(item % entries_per_matrix);
-  const Entry entry = matrices[static_cast<std::size_t>(interaction.matrix_id) *
-                                   entries_per_matrix +
-                               matrix_entry];
-  const int degree_difference =
-      coefficient_degrees[entry.output] - coefficient_degrees[entry.input];
-  const int power =
-      degree_difference < 0 ? -degree_difference : degree_difference;
-  const Scalar scaled_value =
-      ldexp(static_cast<Scalar>(entry.value), -(level - 1) * power);
-  atomicAdd(output +
-                static_cast<std::size_t>(interaction.target_node) *
-                    coefficient_count +
-                entry.output,
-            scaled_value *
-                input[static_cast<std::size_t>(interaction.source_node) *
-                          coefficient_count +
-                      entry.input]);
+  if (valid && lane == 0) {
+    output[static_cast<std::size_t>(targets[target_index]) * coefficient_count +
+           beta] += sum;
+  }
 }
 
 } // namespace
