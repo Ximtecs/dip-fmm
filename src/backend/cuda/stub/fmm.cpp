@@ -54,4 +54,18 @@ void CudaFullPlan::copy_far_fields(std::span<Vec3>) const {
   throw std::runtime_error("CUDA backend is unavailable");
 }
 
+// A stub plan cannot be constructed, so these are never reached; they exist
+// so that the shared evaluation code links in non-CUDA builds.
+std::span<Vec3> CudaFullPlan::pinned_moments() noexcept { return {}; }
+
+std::span<FloatVec3> CudaFullPlan::pinned_moments_float() noexcept {
+  return {};
+}
+
+std::span<Vec3> CudaFullPlan::pinned_fields() noexcept { return {}; }
+
+std::span<FloatVec3> CudaFullPlan::pinned_fields_float() noexcept {
+  return {};
+}
+
 } // namespace cdfmm
