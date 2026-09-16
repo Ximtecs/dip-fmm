@@ -1,5 +1,139 @@
 # Latest session work
 
+## 2026-09-16 — tree/topology/FMM-plan boundary cleanup
+
+Starting HEAD `76d6c9ab` (`refactor(p2p): unify canonical-to-compact packing
+semantics`). Two parts, committed separately.
+
+**P2P visibility correction (carry-over from the previous task).** The
+previous internal-duplication cleanup had added
+`assign_static_p2p_compact_row` to the installed
+`include/cdfmm/plan/p2p/compact.hpp`, but the helper existed only so
+`src/plan/p2p/compact.cpp` and `src/cache/format.cpp` could share packing
+mechanics — not as a supported downstream API. Moved both FP64/FP32
+overloads to a new internal `src/plan/p2p/compact_row.hpp` (namespace
+`cdfmm::plan_detail`, matching the existing `plan_detail` convention used by
+`src/plan/p2p/dictionary_detail.hpp`); `compact.hpp` keeps only the public
+`StaticP2PCompactPlan`/`FloatStaticP2PCompactPlan` types and
+`build_static_p2p_compact_plan` builders. `compact.cpp` pulls the helper in
+with a `using` declaration (ADL can't find it: the primitive lives in
+`cdfmm::plan_detail`, its arguments in `cdfmm`); `format.cpp`'s one call site
+(inside `cdfmm::detail::cache`) qualifies it explicitly. No cache format,
+key, or numerical behaviour changed — this is a pure visibility/location
+fix. Updated `src/cache/AGENTS.md` and `docs/architecture.md` to point at
+the new internal path instead of the installed header.
+
+Validation: fresh portable `dev` configure/build clean; full CTest 198
+total, 193 passed, 4 expected skips, and one **pre-existing** failure —
+"static triangular translations match M2M and L2L references" — confirmed
+identical (same REQUIRE, same printed values) on a `git stash`-restored
+`76d6c9ab` tree, so unrelated to this change (an M2M/L2L floating-point
+comparison in an unrelated test, not touched by this task). Focused
+`ctest -R 'cache|p2p|foundational'` (excluding tetrahedron cases): 12 total,
+10 passed, 2 expected CUDA/oneMKL skips. Python 137 passed/7 skipped against
+the just-built `build/` module
+(`cdfmm.__file__` checked). `git diff --check` clean. Committed as `5af3782`
+("refactor(p2p): keep compact row packing internal").
+
+**Tree/topology/FMM-plan boundary audit (main task).** The task brief
+described `StaticFmmTopology` and `AdaptiveTree` returning it as a
+"transitional tree-to-plan coupling" per `adaptive_tree.hpp`'s `@warning`
+and several `docs/architecture.md` passages, and asked for an audit before
+assuming that framing was correct. Two read-only Explore workers ran in
+parallel:
+
+- **Ownership audit** (`StaticFmmTopology`, `UniformTree`, `AdaptiveTree`,
+  `build_uniform_fmm_topology`): classified every field/method. Every one is
+  a raw spatial-tree fact (nodes, permutations, sorted positions, leaves,
+  coordinate origin/scale), an interaction-topology fact (M2L
+  admissibility/pairing via `m2l_interactions`, near-field leaf pairing via
+  `p2p_leaf_records` — confirmed backend-neutral: no packing choice, no
+  operator coefficients, three independent downstream consumers each derive
+  their *own* packing from the same records), or CSR-style schedule indexing
+  over those facts (M2M/L2L level/parent offsets, M2L row offsets). `validate()`
+  checks only structural invariants — no operator, packing, or backend
+  concept anywhere in `tree/`. `build_uniform_fmm_topology` is pure topology
+  extraction/reformatting from `UniformTree`, no plan construction. The one
+  minor finding: `StaticFmmTopology::occupied_source_leaves()`/
+  `occupied_target_leaves()` appear dead (every real call site reads
+  `.source_leaves`/`.target_leaves` directly, or calls the differently-typed
+  same-named method on `UniformTree` instead) — left alone as an unused but
+  harmless public-API leftover; removing a public method is out of this
+  task's scope (deferred to the later public-header/API cleanup task).
+- **Consumer/API audit** (`StaticFmmTopology`, `AdaptiveTree::topology()`/
+  `shared_topology()`, `build_uniform_fmm_topology` across `fmm/`, `cache/`,
+  `plan/`, `python/`, tests, benchmarks): confirmed `StaticFmmTopology` was a
+  genuine `v0.1.0` public type (not invented in v0.2); traced the one real
+  uniform/adaptive divergence (`fmm/plan_preparation.cpp`'s
+  `supplied_topology_` branch keys M2L transfer class off the integer
+  `transfer_class` field for uniform-built topologies but the continuous
+  `displacement` field for supplied/adaptive ones — a plan-layer concern,
+  correctly downstream of topology, untouched here); confirmed
+  `plan/p2p/*` never references `StaticFmmTopology` at all, only the
+  narrower record types; confirmed the cache subsystem never persists
+  `StaticFmmTopology` and disables caching entirely whenever a topology is
+  supplied externally (`cache/keys.cpp`'s `supplied_topology_` check), so
+  `AdaptiveTree` output never touches the persistent cache format; and
+  catalogued exactly which fields Python (`python/tree.cpp`) and the C++
+  tests (`test_static_topology.cpp`, `test_uniform_fmm.cpp`,
+  `python_tests/test_adaptive_tree.py`) pin versus which are free internal
+  detail.
+
+Independent confirmation the lead found directly: `python_tests/test_adaptive_tree.py`
+asserts `plan.topology is topology` — Python object identity through the
+`shared_ptr<const StaticFmmTopology>` boundary — meaning the FMM/plan layer
+treats topology as a borrowed reference, never rebuilding or taking
+ownership away from the tree that produced it. That is the plan-does-not-
+own-topology property the task asked to verify, demonstrated by an existing
+test rather than by inspection alone.
+
+`AdaptiveTree`'s ~200-line constructor was checked for whether spatial
+subdivision and interaction-topology assembly are genuinely separable. They
+already are: the octant-partition-plus-M2M/L2L-edge pass and the dual-tree
+near/far `visit` pass are sequential and non-interleaved, and the
+constructor already times them separately (`tree_seconds_` ends and
+`interaction_seconds_` begins exactly at that boundary, `adaptive_tree.cpp:149`).
+Introducing a separate adaptive-only spatial-tree type (mirroring
+`UniformTree`) was considered and rejected: unlike `UniformTree`'s `TreeNode`
+(which has genuinely distinct content — level-wise dense Morton arrays,
+`list1`/`list2` candidate lists never stored in `StaticFmmTopology`), an
+adaptive-only node type would duplicate essentially every `StaticFmmTopology`
+field, which the task explicitly warned against manufacturing "to make the
+layering diagram prettier." Comparing against `UniformTree::build` (also one
+monolithic, internally phase-timed ~340-line function, never split into
+multiple top-level functions) confirmed that splitting `AdaptiveTree` alone
+into named functions would be inconsistent with the codebase's own
+established convention for tree builders, not an improvement.
+
+**Outcome: no production code changed.** The "transitional tree-to-plan
+coupling" framing was a documentation defect predating this audit, not a
+live architectural problem. Corrected: `include/cdfmm/tree/adaptive_tree.hpp`'s
+misleading `@warning`; `docs/architecture.md`'s "Deferred refactor
+inventory" (two bullets), "Foundational layout" bullet, the "remaining
+transitional seam" paragraph, one dependency-audit-exceptions bullet, and
+the "Phase 2 handoff" "Transitional seams" entry (replaced with a new
+"Tree/topology boundary cleanup" subsection recording the full audit);
+`src/tree/AGENTS.md`'s closing sentence; and two passages in
+`agent_docs/project_structure.md`. `docs/architecture.md`'s
+`sphinx-build -W --keep-going -b html docs docs/_build/html` was not
+re-run in this session (no non-code-comment content changed there beyond
+prose); C++/Python test suites were not expected to and did not need to
+change, since no field, signature, ordering, or numerical behaviour moved.
+No new tests were required or added; existing coverage
+(`test_static_topology.cpp`, `test_uniform_fmm.cpp`,
+`python_tests/test_adaptive_tree.py`) already pins everything this audit
+touched, and it continues to pass unchanged (same portable CTest/Python
+results reported above, since both parts of this task's validation ran
+against the same build).
+
+`Article1/` and the unrelated untracked
+`examples/simple_notebooks/tetrahedron_target_average_fair_sampling.ipynb`
+remain preserved outside this task. Not started, and explicitly out of
+scope: deeper cache/`UniformFmm` encapsulation, the flat-header/packaging
+relocation candidates (including `parameter_selection.hpp` including the
+complete `uniform_fmm.hpp`), and repository pruning — each its own future
+task, as recorded in `docs/architecture.md`'s Phase 2 handoff.
+
 ## 2026-09-15 — internal-duplication cleanup after Phase-1 closure
 
 Starting HEAD `47bbe5e2` (`refactor: close phase 1 architecture`). Task:

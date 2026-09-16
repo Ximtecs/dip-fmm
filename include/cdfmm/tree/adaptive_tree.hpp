@@ -24,9 +24,13 @@ struct AdaptiveTreeOptions {
  * Coordinates are physical. A static evaluator shares this immutable topology.
  * Empty octants are omitted; coincident points terminate at the depth cap.
  *
- * @warning The current public result remains `StaticFmmTopology` for source
- * compatibility. This is a transitional tree-to-plan coupling; a future
- * plan-independent adaptive tree representation will remove it.
+ * The public result is `StaticFmmTopology`, the same tree-owned
+ * interaction-topology type `build_uniform_fmm_topology` produces from a
+ * `UniformTree`. It holds only spatial-tree and interaction-topology facts
+ * (nodes, permutations, M2M/L2L edges, M2L interactions, P2P leaf records);
+ * it owns no operator coefficients, execution packing, or backend state, so
+ * returning it here is not a tree-to-plan coupling. `fmm` and `plan` consume
+ * it by reference through `shared_topology()` and never rebuild it.
  */
 class AdaptiveTree {
 public:

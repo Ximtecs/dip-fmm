@@ -520,11 +520,14 @@ The initial audit found these concrete boundary violations in the remaining
 transitional layout:
 
 - `tree/static_topology.hpp` is the canonical topology-only interface;
-  `tree/uniform_topology.hpp` keeps the UniformTree adapter as a separate
-  transitional seam between tree facts and static plans. The flat
+  `tree/uniform_topology.hpp` declares its UniformTree producer
+  (`build_uniform_fmm_topology`) and `adaptive_tree.hpp` returns the same
+  `StaticFmmTopology` from `AdaptiveTree`'s own construction. A later
+  tree/topology-boundary audit (see "Tree/topology boundary cleanup" below)
+  found this is ordinary intra-`tree`-layer usage, not a tree-to-plan seam:
+  `StaticFmmTopology` holds only spatial-tree and interaction-topology facts,
+  no operator coefficients, execution packing, or backend state. The flat
   `static_topology.hpp` remains a compatibility forwarding header.
-- `adaptive_tree.hpp` returns `StaticFmmTopology` directly, coupling adaptive
-  construction to the current static-plan representation.
 - `cuboid.hpp` is a compatibility façade that declares nothing of its own.
   `DenseDirectPlan` is declared by `plan/direct/dense.hpp`, the prism record,
   `CuboidSize`, and the averaged monomial by
@@ -577,8 +580,12 @@ they do not require mechanical splitting.
   and AdaptiveTree in `src/tree/common/root_box.{hpp,cpp}`. Shared resolution
   retains zero for coincident roots; AdaptiveTree applies its existing fallback
   half-width `1` at its call site. The helper is not part of the public API.
-- `StaticFmmTopology`, dense-direct pair dispatch, and adaptive plan adaptation
-  remain transitional seams for the operator/plan/backend phases.
+- Dense-direct pair dispatch remains a transitional seam for the
+  operator/plan/backend phases (the isolated `plan/direct/dense.cpp`
+  compatibility edge recorded under "Ownership and dependency audit" below).
+  `StaticFmmTopology` and adaptive tree construction were audited in the
+  tree/topology boundary cleanup and found to be legitimate tree-owned
+  topology, not a plan-layer seam; see "Tree/topology boundary cleanup".
 
 ### Implemented: operators, static plans, and CPU/oneMKL FMM boundaries
 
@@ -617,11 +624,17 @@ they do not require mechanical splitting.
   plus internal backend wiring, while static execution lives in
   `backend/cuda/far_field`.
 
-The remaining transitional seam is `StaticFmmTopology`: it adapts tree
-interaction topology to topology-native records consumed by FMM orchestration
-and the P2P plan boundary. Tree ownership remains spatial
-hierarchy/topology, while derived schedule assembly stays behind the plan
-boundary without making the tree depend on a particular P2P packing.
+`StaticFmmTopology` is tree-owned interaction topology, not a plan artefact:
+the tree/topology boundary cleanup (see "Tree/topology boundary cleanup")
+confirmed every field is a spatial-tree fact, an interaction-topology fact,
+or schedule indexing over those facts, with no operator coefficients,
+execution packing, or backend state. Both `build_uniform_fmm_topology` (from
+a built `UniformTree`) and `AdaptiveTree`'s own construction populate it
+directly; `fmm` and `plan` consume the result through
+`shared_ptr<const StaticFmmTopology>` and never rebuild it. Tree ownership
+remains spatial hierarchy/topology, while derived schedule assembly stays
+behind the plan boundary without making the tree depend on a particular P2P
+packing.
 
 ### Stable backend boundaries
 
@@ -663,6 +676,76 @@ restated the loop already implemented by `MultiIndexSet::factorial`
 (`include/cdfmm/math/multi_index.hpp`). The prism code now calls the `math`
 implementation directly, matching the `geometry -> math` dependency direction;
 no new file or shared `utils`/`helpers` header was introduced.
+
+Before that, the P2P row-packing helper itself moved once more: a narrow
+follow-up correction relocated `assign_static_p2p_compact_row` from the
+installed `include/cdfmm/plan/p2p/compact.hpp` to the internal
+`src/plan/p2p/compact_row.hpp`, because the helper existed solely so
+`plan/p2p/compact.cpp` and `cache/format.cpp` could share packing mechanics,
+not as a supported downstream API. `compact.hpp` keeps the public
+`StaticP2PCompactPlan`/`FloatStaticP2PCompactPlan` types and builders; the
+canonical-to-compact mapping and the fused cache-decode pass are unchanged.
+
+### Tree/topology boundary cleanup
+
+A separate follow-up task, after the internal-duplication cleanup, audited
+the `StaticFmmTopology`/tree-to-plan boundary that Phase 1 left recorded as a
+transitional seam (see the former wording in "Deferred refactor inventory"
+and "Phase 2 handoff"). The audit read `StaticFmmTopology` field by field —
+`Node`, permutations, sorted positions, occupied leaves, `m2m_edges`/
+`l2l_edges`, `m2l_interactions`, `p2p_leaf_records`, row/level offsets, and
+the coordinate-normalisation fields — against every producer
+(`build_uniform_fmm_topology`, `AdaptiveTree`'s own construction) and every
+consumer (`fmm/construction.cpp`, `plan_preparation.cpp`,
+`execution_setup.cpp`, `far_field.cpp`, `cache/geometry.cpp`,
+`backend/cpu/p2p/near_field.cpp`, `python/tree.cpp`, and the C++/Python test
+suites). The finding: every field is a spatial-tree fact, an
+interaction-topology fact (near/far admissibility, M2M/L2L translation
+structure, P2P leaf pairing), or CSR-style schedule indexing over those
+facts. None is an operator coefficient, a derived P2P execution packing, or
+backend state — `plan/p2p/*` and `src/fmm/plan_preparation.cpp` build the
+canonical operator data and derived packings strictly downstream, from
+`StaticP2PLeafRecord`/`StaticM2LInteraction` fields, never the other way
+round. `fmm` consumes the result through
+`shared_ptr<const StaticFmmTopology>` by reference and never rebuilds it;
+the cache subsystem never persists `StaticFmmTopology` directly and disables
+caching entirely whenever a topology is supplied externally
+(`cache/keys.cpp`'s `supplied_topology_` check), so `AdaptiveTree`'s topology
+never touches the persistent cache format at all.
+
+The `AdaptiveTree` constructor was also checked for whether it interleaves
+spatial-octree construction with far/near interaction-topology assembly in a
+way that would justify splitting them into two internal representations.
+It does not: the constructor already runs the octant partition and M2M/L2L
+edge derivation as one pass, then the dual-tree near/far `visit` as a
+strictly later pass over the completed tree, with `tree_seconds_` and
+`interaction_seconds_` already timing exactly that boundary. Introducing a
+separate adaptive-only spatial-tree type to mirror `UniformTree` would
+duplicate nearly every field `StaticFmmTopology` already has (adaptive
+nodes carry no Morton indices or other data that would make a distinct
+representation non-redundant, unlike `UniformTree`'s own `TreeNode`, which
+has genuinely different content: level-wise dense Morton arrays and
+`list1`/`list2` candidate lists that are never stored in `StaticFmmTopology`
+at all). Manufacturing that duplicate type purely to make the layering
+diagram prettier was rejected; `UniformTree::build` itself remains one
+monolithic, internally phase-timed function for the same reason, so a forced
+split in `AdaptiveTree` alone would also be inconsistent with its own
+sibling's established construction style.
+
+The conclusion is that `StaticFmmTopology` was already correctly tree-owned
+topology, and the previously recorded "transitional tree-to-plan coupling"
+in `adaptive_tree.hpp`'s `@warning` and in `docs/architecture.md` was a
+documentation defect, not a live architectural problem: the seam appears to
+have been named while `StaticFmmTopology`'s ownership was still unsettled,
+and the language was never revisited once the type's contents were fully
+audited. No production code changed; the misleading comment and the doc
+passages that repeated it were corrected, and the two resolved items were
+removed from the "Deferred refactor inventory" and "Phase 2 handoff" lists
+below. Everything else about this boundary — field layout, ordering,
+`validate()`'s invariants, the `supplied_topology_` M2L transfer-class branch
+in `plan_preparation.cpp` that treats uniform- and adaptive-built topologies
+differently, and all public `AdaptiveTree`/`StaticFmmTopology`/
+`build_uniform_fmm_topology` signatures — is unchanged.
 
 ## Refactor validation contract
 
@@ -723,8 +806,13 @@ those. The audited exceptions are each deliberate and are recorded here in full:
 - `src/cache/internal.hpp` includes `cdfmm/uniform_fmm.hpp`: the sanctioned
   `cache -> already-defined solver data` edge. Cache code performs no operator
   mathematics, tree construction, plan policy, or backend selection.
-- `tree/adaptive_tree.hpp` returning `StaticFmmTopology` remains the documented
-  transitional seam recorded in the deferred inventory.
+
+`tree/adaptive_tree.hpp` returning `StaticFmmTopology` is not a
+dependency-direction exception: both types live in the `tree` layer, and the
+tree/topology boundary cleanup confirmed `StaticFmmTopology` carries no
+plan/backend data, so this is ordinary intra-layer usage. It was listed here
+as a deferred exception through Phase 1; see "Tree/topology boundary
+cleanup".
 
 Every `.cpp`/`.cu` file under `src/` is referenced by `CMakeLists.txt`; no
 stale or transitional source remains compiled, and no build file references a
@@ -858,10 +946,12 @@ Recorded, not started. Phase 2 requires its own explicit task.
   `validation.hpp`, `parameter_selection.hpp`, and `tensor_dictionary.hpp`
   subsystem homes behind their retained public façades. Do these where they
   clarify ownership, not for symmetry.
-- **Transitional seams.** `StaticFmmTopology` as the tree/plan adapter;
-  `tree/uniform_topology.hpp`; `adaptive_tree.hpp` returning
-  `StaticFmmTopology`; `parameter_selection.hpp` including the complete
-  `uniform_fmm.hpp`.
+- **Remaining public-header seam.** `parameter_selection.hpp` including the
+  complete `uniform_fmm.hpp`. (The `StaticFmmTopology`/tree-to-plan seam
+  recorded here through Phase 1 — `tree/uniform_topology.hpp` and
+  `adaptive_tree.hpp` returning `StaticFmmTopology` — was audited and
+  resolved by the tree/topology boundary cleanup: see "Tree/topology
+  boundary cleanup".)
 - **Plan/cache duplication and encapsulation.** Cache entry points remain
   `UniformFmm` members, so cache code retains intimate knowledge of the
   representations it persists. Deeper encapsulation needs an API/ABI step.

@@ -152,8 +152,11 @@ records: occupied source/target ranges, leaf IDs, source shifts, periodic
 image identities, and self-identity flags. It no longer includes or embeds
 `StaticP2PLeafPair`. The FMM plan-building boundary converts these records
 into the derived P2P leaf-packing representation. The canonical topology
-boundary is separate from the UniformTree adapter, which remains a
-transitional tree-to-topology construction seam.
+type is separate from its two producers, the UniformTree adapter
+(`build_uniform_fmm_topology`) and `AdaptiveTree`'s own construction; a
+tree/topology-boundary audit confirmed both populate the same tree-owned
+topology directly and neither is a tree-to-plan seam (`docs/architecture.md`,
+"Tree/topology boundary cleanup").
 
 The grouped oneMKL M2L executor is built once from the canonical plan. Its
 stable transfer-class metadata and reusable gathered/translated buffers remain
@@ -281,10 +284,13 @@ src/cache/internal.hpp -> cdfmm/uniform_fmm.hpp
 
 canonical headers -> cdfmm/timings.hpp, cdfmm/periodic.hpp
     Substantive public headers awaiting a subsystem home, not façades.
-
-include/cdfmm/tree/adaptive_tree.hpp -> StaticFmmTopology
-    The documented transitional tree/plan seam.
 ```
+
+`include/cdfmm/tree/adaptive_tree.hpp` returning `StaticFmmTopology` is not
+a dependency-direction exception: both live in the `tree` layer, and a
+tree/topology-boundary audit confirmed `StaticFmmTopology` carries no
+plan/backend data (`docs/architecture.md`, "Tree/topology boundary
+cleanup"). It was listed above as a deferred exception through Phase 1.
 
 No prohibited edge exists: no geometry/tree depending on a backend or CUDA, no
 math depending on FMM, no operators depending on orchestration or vendor

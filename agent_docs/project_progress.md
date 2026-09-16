@@ -1,5 +1,55 @@
 # Project progress
 
+## Tree/topology/FMM-plan boundary cleanup: COMPLETE — 2026-09-16
+
+Two parts. First, a narrow carry-over correction: `assign_static_p2p_compact_row`
+(added to the installed `include/cdfmm/plan/p2p/compact.hpp` by the prior
+internal-duplication cleanup) was relocated to the internal
+`src/plan/p2p/compact_row.hpp`, since it existed only so
+`plan/p2p/compact.cpp` and `cache/format.cpp` could share packing mechanics,
+not as a supported downstream API. `compact.hpp` keeps the public
+`StaticP2PCompactPlan`/`FloatStaticP2PCompactPlan` types and builders; no
+cache format, key, or numerical behaviour changed. Committed separately as
+`refactor(p2p): keep compact row packing internal`.
+
+Second, the main task: an audit of the `StaticFmmTopology`/tree-to-plan
+boundary that Phase 1 had recorded as a transitional seam (the "still open"
+item at the top of the previous entry below). Two read-only workers
+classified every `StaticFmmTopology` field/function and traced every
+producer and consumer. Finding: `StaticFmmTopology` was already legitimate
+tree-owned topology — every field is a spatial-tree fact, an
+interaction-topology fact, or CSR-style schedule indexing over those facts;
+no operator coefficients, execution packing, or backend state anywhere in
+`tree/`. `fmm`/`plan` consume it by `shared_ptr<const StaticFmmTopology>`
+reference and never rebuild it; the cache subsystem never persists it
+directly and disables caching entirely whenever a topology is supplied
+externally. `AdaptiveTree`'s constructor already separates spatial-octree
+construction from near/far interaction-topology assembly into two
+sequential, non-interleaved passes (with `tree_seconds_`/`interaction_seconds_`
+already timing exactly that boundary); introducing a separate adaptive-only
+spatial-tree type would duplicate nearly every `StaticFmmTopology` field, so
+none was added. **No production code changed.** The "transitional tree-to-plan
+coupling" language in `adaptive_tree.hpp`'s `@warning` and in several
+`docs/architecture.md` passages was a documentation defect, not a live
+architectural problem, and was corrected; see "Tree/topology boundary
+cleanup" in `docs/architecture.md` for the full audit record. Full CPU CTest
+198 total: 193 passed, 4 expected skips, and one pre-existing unrelated
+failure (below); Python 137 passed/7 skipped; the P2P correction's own
+focused/cross-version validation all pass. See
+`agent_docs/latest_session_work.md`.
+
+One pre-existing, unrelated failure was found and left alone (out of scope):
+"static triangular translations match M2M and L2L references" fails
+identically on this HEAD and on the unmodified `76d6c9ab` baseline (an
+M2M/L2L floating-point comparison issue, not a P2P/cache/tree regression).
+
+Still open, each its own future task: deeper cache/`UniformFmm` encapsulation
+(cache entry points are still `UniformFmm` members); the flat-header/packaging
+relocation candidates (`periodic.cpp`, `parameter_selection.cpp`,
+`validation.cpp`, and the headers awaiting a canonical subsystem home,
+including `parameter_selection.hpp` including the complete `uniform_fmm.hpp`);
+and repository pruning.
+
 ## Internal-duplication cleanup after Phase 1: COMPLETE — 2026-09-15
 
 The canonical-to-compact P2P packing rule (independently stated by

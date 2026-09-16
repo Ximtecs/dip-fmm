@@ -1,5 +1,58 @@
 # Project diary
 
+## 2026-09-16 — tree/topology boundary cleanup: the seam wasn't there
+
+The brief for this task assumed a coupling problem existed: `AdaptiveTree`
+returns `StaticFmmTopology` directly, its header calls this "a transitional
+tree-to-plan coupling," and `docs/architecture.md` had repeated that framing
+in half a dozen places since Phase 1. The instructions were explicit that
+this might be a false alarm — "do not assume `StaticFmmTopology` is wrongly
+owned merely because its name contains `Fmm`" — and that turned out to be
+exactly what happened.
+
+Two read-only workers did the legwork: one classified every field of
+`StaticFmmTopology` (nodes, permutations, M2M/L2L edges, M2L interactions,
+P2P leaf records, coordinate normalisation) against the tree/topology/plan
+taxonomy, the other traced every producer and consumer across `fmm/`,
+`cache/`, `plan/`, `python/`, and the test suites. Neither found anything
+resembling plan or backend data inside the type. The clinching piece of
+evidence wasn't even something I asked for: the Python test suite already
+asserts `plan.topology is plan.topology` — object identity through
+`shared_ptr` — which only makes sense if the FMM layer treats topology as
+something it borrows, not something it owns or rebuilds. That single
+assertion says more about the actual boundary than any amount of comment
+archaeology.
+
+The one place I expected to find real coupling — `AdaptiveTree`'s
+200-line constructor building nodes, edges, and interactions all in one
+function — turned out to already be two clean passes with no shared state
+beyond the topology object itself, and the code already times them
+separately (`tree_seconds_` vs `interaction_seconds_`, split at exactly the
+boundary a refactor would have introduced). I drafted a plan to extract that
+into two named functions before checking `UniformTree::build` for
+comparison, and found it's the same shape: one big function, internally
+phased, timed per phase, never split into multiple top-level functions.
+Splitting `AdaptiveTree` alone would have made it inconsistent with its own
+sibling, for a boundary that was already explicit via timers. I dropped that
+idea.
+
+So the actual output of this task is almost entirely documentation:
+`adaptive_tree.hpp`'s misleading `@warning`, and every place in
+`docs/architecture.md`, `src/tree/AGENTS.md`, and `agent_docs/project_structure.md`
+that called this a tree-to-plan seam or a dependency-audit exception. None of
+it was. Zero production code changed. The lesson worth keeping: a
+"transitional" label in a comment is a claim about the past, not a live
+fact about the code, and it should have been re-verified the first time
+someone actually read what `StaticFmmTopology` contained rather than
+re-quoted at each subsequent Phase-1 status update.
+
+The one substantive code change in this session was the small carry-over
+correction from the previous task: `assign_static_p2p_compact_row` had
+landed in the installed `include/cdfmm/plan/p2p/compact.hpp` when it was
+really only needed to let two `.cpp` files share packing mechanics. Moved to
+`src/plan/p2p/compact_row.hpp`, no behaviour change, committed separately
+before the audit began.
+
 ## 2026-09-15 — internal-duplication cleanup: unify without unfusing
 
 Phase 1 had left one item explicitly deferred rather than closed: the
