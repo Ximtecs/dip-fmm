@@ -6,8 +6,13 @@ It consumes canonical plans and must not reconstruct operator mathematics or
 own high-level FMM pass sequencing.
 
 For grouped M2L, preserve source/local scaling, explicit source and target
-levels, stable matrix-column order, dynamic OpenMP group scheduling, serial
-scatter, SGEMM/DGEMM arguments, and evaluation-time buffer reuse. Keep
+levels, stable matrix-column order, dynamic OpenMP group scheduling for the
+gather and GEMM loops, the canonical per-target scatter order (the scatter is
+parallel over targets, each visiting its (group, column) contributions in
+group-ascending, column-ascending order, which reproduces the former serial
+accumulation exactly), SGEMM/DGEMM arguments, one `mkl_set_num_threads_local`
+bracket per thread per level, and evaluation-time buffer reuse (the gather
+and translated scratch hold one level at a time). Keep
 `<mkl.h>`, `MKL_INT`, `cblas_*`, and `mkl_set_num_threads_local` out of the
 FMM orchestration layer.
 

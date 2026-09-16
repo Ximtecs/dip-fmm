@@ -643,8 +643,13 @@ TEST_CASE("oneMKL grouped executor retains canonical levels and scratch") {
 
   detail::mkl::M2LExecutor executor(plan);
   const detail::mkl::M2LStorageStatistics storage = executor.statistics();
-  REQUIRE(storage.metadata_bytes == 8 * sizeof(int));
-  REQUIRE(storage.scratch_bytes == 4 * sizeof(double));
+  // One group with two columns: sources/targets/source_levels/levels (8 ints)
+  // plus the three level_first offsets; two level schedules with one target
+  // each (target + two offsets) and one (group, column) entry each.
+  REQUIRE(storage.metadata_bytes ==
+          11 * sizeof(int) + 2 * (3 * sizeof(int) + 2 * sizeof(int)));
+  // Scratch holds one level at a time: the widest level has one column.
+  REQUIRE(storage.scratch_bytes == 2 * sizeof(double));
 
   if (!one_mkl_available()) {
     SUCCEED("This build does not include oneMKL");

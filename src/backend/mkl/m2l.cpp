@@ -36,12 +36,34 @@ double elapsed_seconds(const Clock::time_point start) {
 template <typename Scalar>
 struct M2LGroup {
   int matrix_id{0};
+  // Columns are sorted by target level; `level_first[l] .. level_first[l+1]`
+  // is the column range of level l, so no per-level scan is needed.
   std::vector<int> sources{};
   std::vector<int> targets{};
   std::vector<int> source_levels{};
   std::vector<int> levels{};
+  std::vector<int> level_first{};
+  // Scratch for one level at a time, indexed by the level-local column.
   std::vector<Scalar> gathered{};
   std::vector<Scalar> translated{};
+};
+
+/// One (group, level-local column) contribution to a target's local expansion.
+struct ScatterEntry {
+  int group{0};
+  int column{0};
+};
+
+/**
+ * Per-level scatter schedule: for every target with interactions at the
+ * level, its contributions in the canonical order (group ascending, column
+ * ascending).  Each target is owned by one thread, so the parallel scatter
+ * reproduces the serial accumulation order exactly.
+ */
+struct LevelScatter {
+  std::vector<int> targets{};
+  std::vector<int> offsets{};
+  std::vector<ScatterEntry> entries{};
 };
 
 template <typename Plan, typename Scalar>
@@ -78,6 +100,7 @@ std::vector<M2LGroup<Scalar>> prepare_groups(
     }
   }
 
+  int level_count = 0;
   for (auto& group : groups) {
     // oneMKL consumes contiguous columns for one target level. Stable sorting
     // preserves canonical interaction order within each level.
@@ -101,22 +124,101 @@ std::vector<M2LGroup<Scalar>> prepare_groups(
       reorder(group.source_levels);
       reorder(group.levels);
     }
+    if (!group.levels.empty()) {
+      level_count = std::max(level_count, group.levels.back() + 1);
+    }
+  }
 
+  for (auto& group : groups) {
+    group.level_first.assign(static_cast<std::size_t>(level_count) + 1, 0);
+    for (int level = 0; level < level_count; ++level) {
+      group.level_first[static_cast<std::size_t>(level)] = static_cast<int>(
+          std::lower_bound(group.levels.begin(), group.levels.end(), level) -
+          group.levels.begin());
+    }
+    group.level_first[static_cast<std::size_t>(level_count)] =
+        static_cast<int>(group.levels.size());
+    std::size_t widest_level = 0;
+    for (int level = 0; level < level_count; ++level) {
+      const auto slot = static_cast<std::size_t>(level);
+      widest_level = std::max(
+          widest_level, static_cast<std::size_t>(group.level_first[slot + 1] -
+                                                 group.level_first[slot]));
+    }
     const std::size_t values =
-        static_cast<std::size_t>(plan.coefficient_count) * group.sources.size();
+        static_cast<std::size_t>(plan.coefficient_count) * widest_level;
     group.gathered.resize(values);
     group.translated.resize(values);
     statistics.metadata_bytes +=
         (group.sources.size() + group.targets.size() +
-         group.source_levels.size() + group.levels.size()) * sizeof(int);
+         group.source_levels.size() + group.levels.size() +
+         group.level_first.size()) * sizeof(int);
     statistics.scratch_bytes += 2 * values * sizeof(Scalar);
   }
   return groups;
 }
 
+template <typename Scalar>
+std::vector<LevelScatter> prepare_scatter(
+    const std::vector<M2LGroup<Scalar>>& groups, const std::size_t node_count,
+    M2LStorageStatistics& statistics) {
+  const int level_count =
+      groups.empty() ? 0 : static_cast<int>(groups.front().level_first.size()) - 1;
+  std::vector<LevelScatter> schedule(static_cast<std::size_t>(level_count));
+  std::vector<int> counts(node_count);
+  std::vector<int> slots(node_count);
+  for (int level = 0; level < level_count; ++level) {
+    LevelScatter& scatter = schedule[static_cast<std::size_t>(level)];
+    const auto level_slot = static_cast<std::size_t>(level);
+    std::fill(counts.begin(), counts.end(), 0);
+    std::size_t entry_count = 0;
+    for (const auto& group : groups) {
+      for (int column = group.level_first[level_slot];
+           column < group.level_first[level_slot + 1]; ++column) {
+        ++counts[static_cast<std::size_t>(
+            group.targets[static_cast<std::size_t>(column)])];
+        ++entry_count;
+      }
+    }
+    for (std::size_t node = 0; node < node_count; ++node) {
+      if (counts[node] > 0) {
+        slots[node] = static_cast<int>(scatter.targets.size());
+        scatter.targets.push_back(static_cast<int>(node));
+        scatter.offsets.push_back(static_cast<int>(scatter.entries.size()));
+        scatter.entries.resize(scatter.entries.size() +
+                               static_cast<std::size_t>(counts[node]));
+        counts[node] = 0;
+      }
+    }
+    scatter.offsets.push_back(static_cast<int>(scatter.entries.size()));
+    // Fill in canonical order: groups ascending, columns ascending, which is
+    // exactly the order the serial scatter used.
+    for (std::size_t group_index = 0; group_index < groups.size();
+         ++group_index) {
+      const auto& group = groups[group_index];
+      for (int column = group.level_first[level_slot];
+           column < group.level_first[level_slot + 1]; ++column) {
+        const auto node = static_cast<std::size_t>(
+            group.targets[static_cast<std::size_t>(column)]);
+        const auto slot = static_cast<std::size_t>(slots[node]);
+        scatter.entries[static_cast<std::size_t>(scatter.offsets[slot]) +
+                        static_cast<std::size_t>(counts[node])] = {
+            static_cast<int>(group_index),
+            column - group.level_first[level_slot]};
+        ++counts[node];
+      }
+    }
+    statistics.metadata_bytes +=
+        (scatter.targets.size() + scatter.offsets.size()) * sizeof(int) +
+        entry_count * sizeof(ScatterEntry);
+  }
+  return schedule;
+}
+
 template <typename Plan, typename Scalar>
 M2LApplyTimings apply_groups(
-    const Plan& plan, std::vector<M2LGroup<Scalar>>& groups, const int level,
+    const Plan& plan, std::vector<M2LGroup<Scalar>>& groups,
+    const std::vector<LevelScatter>& schedule, const int level,
     const std::span<const Scalar> multipoles,
     const std::span<Scalar> locals) {
   M2LApplyTimings timings;
@@ -125,28 +227,33 @@ M2LApplyTimings apply_groups(
       static_cast<std::ptrdiff_t>(groups.size());
   const Scalar* local_scale = plan.local_scaling.data() +
       static_cast<std::size_t>(level) * n;
+  const auto level_slot = static_cast<std::size_t>(level);
+  // Levels beyond the deepest interacting level have no columns to move.
+  if (level_slot >= schedule.size()) {
+    return timings;
+  }
 
   auto phase_start = Clock::now();
   // Gather applies source-level multipole scaling while retaining the
-  // canonical matrix-column order.
+  // canonical matrix-column order; only this level's columns are visited.
 #pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
   for (std::ptrdiff_t group_index = 0; group_index < group_count;
        ++group_index) {
     M2LGroup<Scalar>& group =
         groups[static_cast<std::size_t>(group_index)];
-    for (std::size_t column = 0; column < group.sources.size(); ++column) {
-      if (group.levels[column] != level) {
-        continue;
-      }
+    const int first = group.level_first[level_slot];
+    const int last = group.level_first[level_slot + 1];
+    for (int column = first; column < last; ++column) {
+      const auto column_slot = static_cast<std::size_t>(column);
       const Scalar* M = multipoles.data() +
-          static_cast<std::size_t>(group.sources[column]) * n;
+          static_cast<std::size_t>(group.sources[column_slot]) * n;
       const Scalar* source_scale = plan.multipole_scaling.data() +
-          static_cast<std::size_t>(group.source_levels.empty()
-                                       ? level
-                                       : group.source_levels[column]) * n;
+          static_cast<std::size_t>(group.source_levels[column_slot]) * n;
+      Scalar* gathered = group.gathered.data() +
+          static_cast<std::size_t>(column - first) * n;
+#pragma omp simd
       for (int alpha = 0; alpha < n; ++alpha) {
-        group.gathered[static_cast<std::size_t>(alpha) + column * n] =
-            source_scale[alpha] * M[static_cast<std::size_t>(alpha)];
+        gathered[alpha] = source_scale[alpha] * M[alpha];
       }
     }
   }
@@ -154,41 +261,38 @@ M2LApplyTimings apply_groups(
 
   phase_start = Clock::now();
 #ifdef CDFMM_USE_MKL
-#pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
-  for (std::ptrdiff_t group_index = 0; group_index < group_count;
-       ++group_index) {
-    M2LGroup<Scalar>& group =
-        groups[static_cast<std::size_t>(group_index)];
-    const auto first =
-        std::lower_bound(group.levels.begin(), group.levels.end(), level);
-    const auto last = std::upper_bound(first, group.levels.end(), level);
-    const int columns = static_cast<int>(last - first);
-    if (columns == 0) {
-      continue;
-    }
-    const std::size_t column_offset =
-        static_cast<std::size_t>(first - group.levels.begin());
-    const Scalar* matrix = plan.matrices.data() +
-        static_cast<std::size_t>(group.matrix_id) * n * n;
+#pragma omp parallel if (group_count >= 8)
+  {
+    // Each group runs a single-threaded GEMM inside the OpenMP team; the
+    // thread-local setting is made once per thread, not once per call.
     const int previous_mkl_threads = mkl_set_num_threads_local(1);
-    if constexpr (std::is_same_v<Scalar, float>) {
-      cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                  static_cast<MKL_INT>(n), static_cast<MKL_INT>(columns),
-                  static_cast<MKL_INT>(n), 1.0F, matrix,
-                  static_cast<MKL_INT>(n),
-                  group.gathered.data() + column_offset * n,
-                  static_cast<MKL_INT>(n), 0.0F,
-                  group.translated.data() + column_offset * n,
-                  static_cast<MKL_INT>(n));
-    } else {
-      cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                  static_cast<MKL_INT>(n), static_cast<MKL_INT>(columns),
-                  static_cast<MKL_INT>(n), 1.0, matrix,
-                  static_cast<MKL_INT>(n),
-                  group.gathered.data() + column_offset * n,
-                  static_cast<MKL_INT>(n), 0.0,
-                  group.translated.data() + column_offset * n,
-                  static_cast<MKL_INT>(n));
+#pragma omp for schedule(dynamic, 1)
+    for (std::ptrdiff_t group_index = 0; group_index < group_count;
+         ++group_index) {
+      M2LGroup<Scalar>& group =
+          groups[static_cast<std::size_t>(group_index)];
+      const int columns = group.level_first[level_slot + 1] -
+                          group.level_first[level_slot];
+      if (columns == 0) {
+        continue;
+      }
+      const Scalar* matrix = plan.matrices.data() +
+          static_cast<std::size_t>(group.matrix_id) * n * n;
+      if constexpr (std::is_same_v<Scalar, float>) {
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    static_cast<MKL_INT>(n), static_cast<MKL_INT>(columns),
+                    static_cast<MKL_INT>(n), 1.0F, matrix,
+                    static_cast<MKL_INT>(n), group.gathered.data(),
+                    static_cast<MKL_INT>(n), 0.0F, group.translated.data(),
+                    static_cast<MKL_INT>(n));
+      } else {
+        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    static_cast<MKL_INT>(n), static_cast<MKL_INT>(columns),
+                    static_cast<MKL_INT>(n), 1.0, matrix,
+                    static_cast<MKL_INT>(n), group.gathered.data(),
+                    static_cast<MKL_INT>(n), 0.0, group.translated.data(),
+                    static_cast<MKL_INT>(n));
+      }
     }
     mkl_set_num_threads_local(previous_mkl_threads);
   }
@@ -203,19 +307,28 @@ M2LApplyTimings apply_groups(
   timings.multiply_seconds = elapsed_seconds(phase_start);
 
   phase_start = Clock::now();
-  // Scatter remains serial: transfer classes may address the same local and
-  // changing that order would require atomics or private reductions.
-  for (M2LGroup<Scalar>& group : groups) {
-    for (std::size_t column = 0; column < group.targets.size(); ++column) {
-      if (group.levels[column] != level) {
-        continue;
-      }
-      Scalar* L = locals.data() +
-          static_cast<std::size_t>(group.targets[column]) * n;
+  // Parallel over targets: each target's contributions are visited in the
+  // canonical (group, column) order, so the accumulation matches the serial
+  // scatter exactly and no two threads touch the same local.
+  const LevelScatter& scatter = schedule[level_slot];
+  const std::ptrdiff_t target_count =
+      static_cast<std::ptrdiff_t>(scatter.targets.size());
+#pragma omp parallel for schedule(static) if (target_count >= 64)
+  for (std::ptrdiff_t slot = 0; slot < target_count; ++slot) {
+    const auto slot_index = static_cast<std::size_t>(slot);
+    Scalar* L = locals.data() +
+        static_cast<std::size_t>(scatter.targets[slot_index]) * n;
+    for (int entry = scatter.offsets[slot_index];
+         entry < scatter.offsets[slot_index + 1]; ++entry) {
+      const ScatterEntry& contribution =
+          scatter.entries[static_cast<std::size_t>(entry)];
+      const Scalar* translated =
+          groups[static_cast<std::size_t>(contribution.group)]
+              .translated.data() +
+          static_cast<std::size_t>(contribution.column) * n;
+#pragma omp simd
       for (int beta = 0; beta < n; ++beta) {
-        L[static_cast<std::size_t>(beta)] +=
-            local_scale[beta] *
-            group.translated[static_cast<std::size_t>(beta) + column * n];
+        L[beta] += local_scale[beta] * translated[beta];
       }
     }
   }
@@ -228,6 +341,7 @@ M2LApplyTimings apply_groups(
 struct M2LExecutor::Impl {
   std::vector<M2LGroup<double>> groups{};
   std::vector<M2LGroup<float>> float_groups{};
+  std::vector<LevelScatter> scatter{};
   M2LStorageStatistics statistics{};
 };
 
@@ -235,12 +349,17 @@ M2LExecutor::M2LExecutor(const StaticM2LPlan& plan)
     : impl_(std::make_unique<Impl>()) {
   impl_->groups = prepare_groups<StaticM2LPlan, double>(
       plan, impl_->statistics);
+  impl_->scatter = prepare_scatter(
+      impl_->groups, plan.target_row_offsets.size() - 1, impl_->statistics);
 }
 
 M2LExecutor::M2LExecutor(const FloatStaticM2LPlan& plan)
     : impl_(std::make_unique<Impl>()) {
   impl_->float_groups = prepare_groups<FloatStaticM2LPlan, float>(
       plan, impl_->statistics);
+  impl_->scatter = prepare_scatter(
+      impl_->float_groups, plan.target_row_offsets.size() - 1,
+      impl_->statistics);
 }
 
 M2LExecutor::~M2LExecutor() = default;
@@ -251,14 +370,16 @@ M2LApplyTimings M2LExecutor::apply(
     const StaticM2LPlan& plan, const int level,
     const std::span<const double> multipoles,
     const std::span<double> locals) {
-  return apply_groups(plan, impl_->groups, level, multipoles, locals);
+  return apply_groups(plan, impl_->groups, impl_->scatter, level, multipoles,
+                      locals);
 }
 
 M2LApplyTimings M2LExecutor::apply(
     const FloatStaticM2LPlan& plan, const int level,
     const std::span<const float> multipoles,
     const std::span<float> locals) {
-  return apply_groups(plan, impl_->float_groups, level, multipoles, locals);
+  return apply_groups(plan, impl_->float_groups, impl_->scatter, level,
+                      multipoles, locals);
 }
 
 M2LStorageStatistics M2LExecutor::statistics() const noexcept {
