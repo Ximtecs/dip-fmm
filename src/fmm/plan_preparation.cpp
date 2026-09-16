@@ -897,7 +897,7 @@ void UniformFmm::quantise_static_plan_to_float() {
       p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     }
   }
-  if (!periodic_.enabled && bsr_identity_compatible &&
+  if (bsr_identity_compatible &&
       estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
           cuda_p2p_bsr_max_bytes_) {
     const std::span<const int> bsr_identities =

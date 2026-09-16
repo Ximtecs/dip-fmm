@@ -35,7 +35,9 @@ StaticP2PLeafPlan build_static_p2p_leaf_plan(
         if (pair.target_begin < 0 || pair.target_count <= 0 ||
             pair.target_begin + pair.target_count > operator_map.target_count ||
             pair.source_begin < 0 || pair.source_count <= 0 ||
-            pair.source_begin + pair.source_count > operator_map.source_count) {
+            pair.source_begin + pair.source_count > operator_map.source_count ||
+            pair.image_count <= 0 || pair.image_ordinal < 0 ||
+            pair.image_ordinal >= pair.image_count) {
             throw std::invalid_argument("static P2P leaf range is invalid");
         }
         if (pair.target_begin != previous_target_begin) {
@@ -66,7 +68,10 @@ StaticP2PLeafPlan build_static_p2p_leaf_plan(
 
         for (int target = pair.target_begin;
              target < pair.target_begin + pair.target_count; ++target) {
+            // Within one row the images of a source are adjacent and sorted
+            // by shift; this pair takes the entry at its ordinal of each run.
             int expected_source = pair.source_begin;
+            int image_position = 0;
             for (int entry = operator_map.row_offsets[
                      static_cast<std::size_t>(target)];
                  entry < operator_map.row_offsets[
@@ -77,27 +82,37 @@ StaticP2PLeafPlan build_static_p2p_leaf_plan(
                     block.source >= pair.source_begin + pair.source_count) {
                     continue;
                 }
-                if (block.source != expected_source || covered[entry] != 0) {
+                if (block.source != expected_source) {
                     throw std::invalid_argument(
                         "static P2P leaf pairs are not dense and unique");
                 }
-                const int skip = block.skip_for_identity != 0 ? 1 : 0;
-                if (block_skip_for_identity < 0) {
-                    block_skip_for_identity = skip;
-                } else if (block_skip_for_identity != skip) {
-                    throw std::invalid_argument(
-                        "static P2P leaf pair mixes identity policies");
+                if (image_position == pair.image_ordinal) {
+                    if (covered[entry] != 0) {
+                        throw std::invalid_argument(
+                            "static P2P leaf pairs are not dense and unique");
+                    }
+                    const int skip = block.skip_for_identity != 0 ? 1 : 0;
+                    if (block_skip_for_identity < 0) {
+                        block_skip_for_identity = skip;
+                    } else if (block_skip_for_identity != skip) {
+                        throw std::invalid_argument(
+                            "static P2P leaf pair mixes identity policies");
+                    }
+                    covered[entry] = 1;
+                    result.tensors[0].push_back(block.xx);
+                    result.tensors[1].push_back(block.xy);
+                    result.tensors[2].push_back(block.xz);
+                    result.tensors[3].push_back(block.yy);
+                    result.tensors[4].push_back(block.yz);
+                    result.tensors[5].push_back(block.zz);
                 }
-                covered[entry] = 1;
-                ++expected_source;
-                result.tensors[0].push_back(block.xx);
-                result.tensors[1].push_back(block.xy);
-                result.tensors[2].push_back(block.xz);
-                result.tensors[3].push_back(block.yy);
-                result.tensors[4].push_back(block.yz);
-                result.tensors[5].push_back(block.zz);
+                if (++image_position == pair.image_count) {
+                    image_position = 0;
+                    ++expected_source;
+                }
             }
-            if (expected_source != pair.source_begin + pair.source_count) {
+            if (expected_source != pair.source_begin + pair.source_count ||
+                image_position != 0) {
                 throw std::invalid_argument(
                     "static P2P leaf pair omits canonical interactions");
             }

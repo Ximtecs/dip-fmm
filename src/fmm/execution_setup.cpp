@@ -35,15 +35,53 @@ double elapsed_seconds(const Clock::time_point start) {
 }
 
 // Dense leaf rectangles of the canonical list-1 topology, in canonical order.
+// A periodic topology lists one record per image of a (target leaf, source
+// leaf) pair; the canonical rows order the images of a source by their shift,
+// so each record is tagged with its ordinal in that order.
 std::vector<StaticP2PLeafPair> leaf_pairs_from_topology(
     const StaticFmmTopology &topology) {
-  std::vector<StaticP2PLeafPair> leaf_pairs;
-  leaf_pairs.reserve(topology.p2p_leaf_records.size());
-  for (const StaticP2PLeafRecord &record : topology.p2p_leaf_records) {
-    leaf_pairs.push_back({static_cast<int>(record.target_begin),
-                          static_cast<int>(record.target_count),
-                          static_cast<int>(record.source_begin),
-                          static_cast<int>(record.source_count)});
+  const auto &records = topology.p2p_leaf_records;
+  std::vector<StaticP2PLeafPair> leaf_pairs(records.size());
+  for (std::size_t row = 0; row < records.size(); ++row) {
+    const StaticP2PLeafRecord &record = records[row];
+    leaf_pairs[row] = {static_cast<int>(record.target_begin),
+                       static_cast<int>(record.target_count),
+                       static_cast<int>(record.source_begin),
+                       static_cast<int>(record.source_count), 0, 1};
+  }
+  const auto &offsets = topology.p2p_target_leaf_offsets;
+  std::vector<std::size_t> group;
+  for (std::size_t leaf = 0; leaf + 1 < offsets.size(); ++leaf) {
+    const int begin = offsets[leaf];
+    const int end = offsets[leaf + 1];
+    for (int first = begin; first < end; ++first) {
+      const StaticP2PLeafRecord &lead = records[static_cast<std::size_t>(first)];
+      group.clear();
+      for (int row = begin; row < end; ++row) {
+        const StaticP2PLeafRecord &other =
+            records[static_cast<std::size_t>(row)];
+        if (other.source_begin == lead.source_begin &&
+            other.source_count == lead.source_count) {
+          group.push_back(static_cast<std::size_t>(row));
+        }
+      }
+      if (group.size() <= 1 ||
+          group.front() != static_cast<std::size_t>(first)) {
+        continue;
+      }
+      // Same comparison as the canonical builder's interaction sort.
+      std::sort(group.begin(), group.end(),
+                [&](const std::size_t left, const std::size_t right) {
+                  const Vec3 &a = records[left].source_shift;
+                  const Vec3 &b = records[right].source_shift;
+                  return std::tie(a.x, a.y, a.z) < std::tie(b.x, b.y, b.z);
+                });
+      for (std::size_t ordinal = 0; ordinal < group.size(); ++ordinal) {
+        leaf_pairs[group[ordinal]].image_ordinal = static_cast<int>(ordinal);
+        leaf_pairs[group[ordinal]].image_count =
+            static_cast<int>(group.size());
+      }
+    }
   }
   return leaf_pairs;
 }
@@ -548,7 +586,7 @@ void UniformFmm::build_reduced_symmetry_p2p_packing() {
   const bool dictionary_selected =
       cuda_policy_ && cuda_policy_->policy.p2p_packing ==
                           cuda_policy::CudaP2PPacking::SignedDictionary;
-  if (!dictionary_selected || periodic_.enabled) {
+  if (!dictionary_selected) {
     return;
   }
   // The branch-free point-dipole executor encodes fixed self pairs as the
@@ -561,14 +599,8 @@ void UniformFmm::build_reduced_symmetry_p2p_packing() {
     return;
   }
 
-  std::vector<StaticP2PLeafPair> leaf_pairs;
-  leaf_pairs.reserve(topology_->p2p_leaf_records.size());
-  for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
-    leaf_pairs.push_back({static_cast<int>(record.target_begin),
-                          static_cast<int>(record.target_count),
-                          static_cast<int>(record.source_begin),
-                          static_cast<int>(record.source_count)});
-  }
+  const std::vector<StaticP2PLeafPair> leaf_pairs =
+      leaf_pairs_from_topology(*topology_);
 
   if (geometry_cache_loaded_direct_float_) {
     StaticP2POperator promoted;

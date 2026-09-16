@@ -543,10 +543,14 @@ TEST_CASE("CpuReference is audited separately from the canonical near field",
 TEST_CASE("periodic plans agree across the packings that represent image records",
           "[p2p][geometry-matrix][periodic]")
 {
-    // Periodic image records are representable by the per-pair packings
-    // (canonical rows, SoA rows) and by the position-based point executor;
-    // the FMM totals of every backend that offers them must agree, for point
-    // and finite pairs alike.
+    // Periodic image records are ordinary stored tensors: the per-pair
+    // packings keep one row entry per image, the dense leaf packings one
+    // block per image (tagged with its ordinal), BSR merges the images of a
+    // (target, source) pair into one block, and the position-based point
+    // executor folds the shifts in. Every backend and packing must agree
+    // with the SoA rows for point and finite pairs alike. Depth one wraps
+    // several images of the same leaf pair into one neighbourhood; depth two
+    // has distinct image leaves.
     ScopedCacheDirectory cache;
     const std::vector<ExecutionBackend> backends = available_backends();
     Scene scene = make_scene(Layout::Irregular);
@@ -556,10 +560,11 @@ TEST_CASE("periodic plans agree across the packings that represent image records
             vertex = vertex * 0.5;
         }
     }
+    for (const int depth : {1, 2}) {
     for (const GeometryPair& pair : geometry_pairs) {
         UniformFmmOptions reference_options = plan_options(
             pair, scene, ExecutionBackend::CpuStatic, StaticPrecision::Float64,
-            P2PExecutionPacking::ParticleRowSoa, 2);
+            P2PExecutionPacking::ParticleRowSoa, depth);
         reference_options.periodic.enabled = true;
         reference_options.periodic.centre = Vec3{};
         reference_options.periodic.lengths = Vec3{2.0, 2.0, 2.0};
@@ -577,19 +582,17 @@ TEST_CASE("periodic plans agree across the packings that represent image records
         for (const ExecutionBackend backend : backends) {
             for (const StaticPrecision precision :
                  {StaticPrecision::Float64, StaticPrecision::Float32}) {
-                std::vector<P2PExecutionPacking> packings{
-                    P2PExecutionPacking::CanonicalAos};
-                if (backend == ExecutionBackend::CpuStatic) {
+                std::vector<P2PExecutionPacking> packings =
+                    packings_for(backend, pair);
+                if (backend == ExecutionBackend::CpuStatic &&
+                    std::find(packings.begin(), packings.end(),
+                              P2PExecutionPacking::ParticleRowSoa) ==
+                        packings.end()) {
                     packings.push_back(P2PExecutionPacking::ParticleRowSoa);
-                    if (point_pair(pair)) {
-                        // The position-based executor folds every image
-                        // shift and identity marker of the leaf records in.
-                        packings.push_back(P2PExecutionPacking::PointGeometry);
-                    }
                 }
                 for (const P2PExecutionPacking packing : packings) {
-                    INFO(pair.name << " periodic " << name(backend) << " "
-                         << name(packing));
+                    INFO(pair.name << " periodic depth " << depth << " "
+                         << name(backend) << " " << name(packing));
                     UniformFmmOptions options = reference_options;
                     options.backend = backend;
                     options.precision = precision;
@@ -603,5 +606,6 @@ TEST_CASE("periodic plans agree across the packings that represent image records
                 }
             }
         }
+    }
     }
 }

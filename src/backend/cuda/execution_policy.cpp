@@ -58,24 +58,16 @@ double dictionary_source_warp_occupancy_limit() {
 const char *
 explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
                            const CudaP2PPacking packing) noexcept {
+  // Periodic image records are ordinary dense leaf pairs (tagged with their
+  // image ordinal) or merged sparse blocks, so no packing depends on
+  // periodicity; only identity handling baked in at construction matters.
   const bool identity_baked_in =
       inputs.effective_point_source && !inputs.fixed_identity_available;
   switch (packing) {
   case CudaP2PPacking::CanonicalRows:
-    return nullptr;
   case CudaP2PPacking::LeafBlock:
-    if (inputs.periodic) {
-      return "LeafBlock packs one dense block per (target leaf, source leaf) "
-             "pair of the canonical rows and cannot represent periodic image "
-             "records; periodic plans use CanonicalAos";
-    }
     return nullptr;
   case CudaP2PPacking::Bsr3:
-    if (inputs.periodic) {
-      return "CudaBsr3 stores one sparse block per (target, source) pair and "
-             "cannot represent periodic image records; periodic plans use "
-             "CanonicalAos";
-    }
     if (identity_baked_in) {
       return "CudaBsr3 bakes the point-source self exclusion into its values "
              "at construction; supply fixed_target_source_indices or select "
@@ -83,11 +75,6 @@ explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
     }
     return nullptr;
   case CudaP2PPacking::SignedDictionary:
-    if (inputs.periodic) {
-      return "TensorDictionary packs dense leaf pairs of the canonical rows "
-             "and cannot represent periodic image records; periodic plans use "
-             "CanonicalAos";
-    }
     if (identity_baked_in) {
       return "TensorDictionary encodes point-source self pairs as its zero "
              "variant at construction; supply fixed_target_source_indices or "
@@ -122,12 +109,12 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
   }
 
   // The signed dictionary encodes fixed point-source self pairs as the zero
-  // variant and has no periodic image support, so it needs a point source
-  // with a fixed identity map on a non-periodic plan. Finite sources may use
-  // it through the explicit option only (their self fields are physical).
+  // variant, so it needs a point source with a fixed identity map. Finite
+  // sources may use it through the explicit option only (their self fields
+  // are physical). Periodic image records are dense leaf pairs like any
+  // other, so periodicity does not restrict any stored-tensor packing.
   const bool dictionary_valid =
-      !inputs.periodic &&
-      (!inputs.effective_point_source || inputs.fixed_identity_available);
+      !inputs.effective_point_source || inputs.fixed_identity_available;
   const bool layout_dictionary =
       inputs.cuda_backend && inputs.spatial_layout == SpatialLayout::RegularGrid &&
       inputs.effective_point_source && dictionary_valid;
@@ -166,17 +153,14 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
     return policy;
   }
 
-  // General defaults (Phase 3A): dense leaf blocks for non-periodic point
-  // sources; BSR(3) within its budget for finite sources or fixed-identity
-  // point sources, otherwise canonical rows.
-  if (inputs.effective_point_source && !inputs.periodic) {
+  // General defaults (Phase 3A): dense leaf blocks for point sources; BSR(3)
+  // within its budget for finite sources, otherwise canonical rows. Periodic
+  // plans follow the same rules since their image records pack identically.
+  if (inputs.effective_point_source) {
     policy.p2p_packing = CudaP2PPacking::LeafBlock;
     return policy;
   }
-  const bool bsr_identity_compatible =
-      !inputs.effective_point_source || inputs.fixed_identity_available;
-  if (!inputs.periodic && bsr_identity_compatible &&
-      inputs.bsr_estimate_bytes <= inputs.bsr_budget_bytes) {
+  if (inputs.bsr_estimate_bytes <= inputs.bsr_budget_bytes) {
     policy.p2p_packing = CudaP2PPacking::Bsr3;
     return policy;
   }

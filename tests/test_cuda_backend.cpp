@@ -878,19 +878,42 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
     REQUIRE(cdfmm::cuda_policy::dictionary_microtile_occupancy_limit() <
             cdfmm::cuda_policy::dictionary_source_warp_occupancy_limit());
   }
-  SECTION("RegularGrid without identity, periodic, or on a CPU backend keeps the defaults") {
+  SECTION("RegularGrid without identity or on a CPU backend keeps the defaults") {
     inputs.spatial_layout = SpatialLayout::RegularGrid;
     inputs.fixed_identity_available = false;
     REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
             CudaP2PPacking::LeafBlock);
     inputs.fixed_identity_available = true;
-    inputs.periodic = true;
-    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
-            CudaP2PPacking::CanonicalRows);
-    inputs.periodic = false;
     inputs.cuda_backend = false;
     REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing !=
             CudaP2PPacking::SignedDictionary);
+  }
+  SECTION("periodicity does not restrict any stored-tensor packing") {
+    // Image records are ordinary dense leaf pairs or merged sparse blocks,
+    // so periodic plans follow the free-space rules.
+    inputs.periodic = true;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::LeafBlock);
+    inputs.spatial_layout = SpatialLayout::RegularGrid;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::SignedDictionary);
+    inputs.spatial_layout = SpatialLayout::General;
+    inputs.effective_point_source = false;
+    inputs.bsr_estimate_bytes = 1024;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::Bsr3);
+    for (const CudaP2PPacking packing :
+         {CudaP2PPacking::CanonicalRows, CudaP2PPacking::LeafBlock,
+          CudaP2PPacking::Bsr3, CudaP2PPacking::SignedDictionary}) {
+      REQUIRE(cdfmm::cuda_policy::explicit_packing_rejection(inputs, packing) ==
+              nullptr);
+    }
+    inputs.effective_point_source = true;
+    inputs.fixed_identity_available = false;
+    REQUIRE(cdfmm::cuda_policy::explicit_packing_rejection(
+                inputs, CudaP2PPacking::Bsr3) != nullptr);
+    REQUIRE(cdfmm::cuda_policy::explicit_packing_rejection(
+                inputs, CudaP2PPacking::LeafBlock) == nullptr);
   }
   SECTION("RegularGrid finite sources keep the BSR policy") {
     inputs.spatial_layout = SpatialLayout::RegularGrid;
@@ -1068,7 +1091,10 @@ TEST_CASE("regular-grid layout hint keeps finite and periodic CUDA policies",
   UniformFmm finite_plan(positions, positions, finite);
   REQUIRE(finite_plan.p2p_execution_packing() == P2PExecutionPacking::CudaBsr3);
 
-  // Periodic point sources keep the canonical rows the periodic path uses.
+  // Periodic point sources follow the free-space rules: leaf blocks on the
+  // general layout, the dictionary on a regular lattice with a fixed identity
+  // map. Image records are dense leaf pairs like any other, so both must
+  // agree with the CPU rows.
   UniformFmmOptions periodic =
       lattice_cuda_options(ExecutionBackend::CudaPartial, 2, identities);
   periodic.periodic.enabled = true;
@@ -1078,10 +1104,31 @@ TEST_CASE("regular-grid layout hint keeps finite and periodic CUDA policies",
   periodic.spatial_layout = SpatialLayout::RegularGrid;
   UniformFmm periodic_regular(positions, positions, periodic);
   UniformFmm periodic_plain(positions, positions, periodic_general);
+  REQUIRE(periodic_plain.p2p_execution_packing() ==
+          P2PExecutionPacking::LeafBlock);
   REQUIRE(periodic_regular.p2p_execution_packing() ==
-          periodic_plain.p2p_execution_packing());
-  REQUIRE(periodic_regular.p2p_execution_packing() !=
           P2PExecutionPacking::TensorDictionary);
+  UniformFmmOptions periodic_cpu = periodic_general;
+  periodic_cpu.backend = ExecutionBackend::CpuStatic;
+  UniformFmm periodic_rows(positions, positions, periodic_cpu);
+  std::vector<Vec3> moments(positions.size());
+  for (std::size_t index = 0; index < moments.size(); ++index) {
+    const double value = static_cast<double>(index);
+    moments[index] = {std::sin(value), std::cos(value), std::sin(0.3 * value)};
+  }
+  const auto expected = periodic_rows.evaluate(moments, OutputFlags::Field,
+                                               identities);
+  for (UniformFmm *plan : {&periodic_regular, &periodic_plain}) {
+    const auto actual = plan->evaluate(moments, OutputFlags::Field, identities);
+    for (std::size_t target = 0; target < actual.size(); ++target) {
+      REQUIRE(actual[target].H.x ==
+              Catch::Approx(expected[target].H.x).margin(1.0e-9));
+      REQUIRE(actual[target].H.y ==
+              Catch::Approx(expected[target].H.y).margin(1.0e-9));
+      REQUIRE(actual[target].H.z ==
+              Catch::Approx(expected[target].H.z).margin(1.0e-9));
+    }
+  }
 }
 
 TEST_CASE("CUDA tensor packings retain finite self fields under an identity map",
@@ -1252,12 +1299,6 @@ TEST_CASE("explicit P2P packing requests are honoured by both CUDA backends",
   require_rejection(options, "fixed_target_source_indices");
   options.p2p_packing = P2PExecutionPacking::TensorDictionary;
   require_rejection(options, "fixed_target_source_indices");
-  options.backend = ExecutionBackend::CudaFull;
-  options.p2p_packing = P2PExecutionPacking::LeafBlock;
-  options.periodic.enabled = true;
-  options.periodic.centre = Vec3{};
-  options.periodic.lengths = Vec3{2.0, 2.0, 2.0};
-  require_rejection(options, "periodic image records");
 }
 
 TEST_CASE("CUDA BSR memory budget selects the canonical fallback",

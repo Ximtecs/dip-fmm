@@ -11,12 +11,21 @@
 
 namespace cdfmm {
 
-/** @brief Particle ranges defining one dense target/source leaf pair. */
+/**
+ * @brief Particle ranges defining one dense target/source leaf pair.
+ *
+ * A periodic plan lists the same (target leaf, source leaf) ranges once per
+ * image. The canonical rows keep the images of one source adjacent, ordered
+ * by their shift, so a pair identifies its image by `image_ordinal` among the
+ * `image_count` records sharing its ranges; free-space pairs use 0 and 1.
+ */
 struct StaticP2PLeafPair {
     int target_begin{0};
     int target_count{0};
     int source_begin{0};
     int source_count{0};
+    int image_ordinal{0};
+    int image_count{1};
 };
 
 /**
@@ -75,7 +84,9 @@ struct FloatStaticP2PLeafPlan {
  * @brief Deterministically packs dense leaf rectangles from canonical rows.
  *
  * The supplied rectangles must cover every canonical block exactly once and
- * must preserve the canonical interaction order.
+ * must preserve the canonical interaction order. Periodic image records are
+ * ordinary rectangles carrying their image ordinal; the packing itself does
+ * not distinguish a primary-cell block from an image block.
  */
 [[nodiscard]] StaticP2PLeafPlan build_static_p2p_leaf_plan(
     const StaticP2POperator& operator_map,
