@@ -37,7 +37,7 @@ measured at run time, and the choice never changes the mathematical result.
 | Situation | List-1 P2P packing | Dictionary executor |
 |---|---|---|
 | explicit `use_reduced_symmetry_p2p` (valid) | signed tensor dictionary | `cuda_dictionary_target_owned` > `cuda_dictionary_power2_microtiles` > source-warp |
-| `spatial_layout = RegularGrid`, non-periodic point sources with a fixed identity map | signed tensor dictionary | explicit executor option if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned above |
+| `spatial_layout = RegularGrid`, non-periodic point sources with a fixed identity map | signed tensor dictionary | explicit executor option if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned from 48 to below 72, source-warp from 72 upwards |
 | `General`, non-periodic point sources | dense leaf blocks (one warp per leaf pair) | — |
 | finite sources, non-periodic, BSR estimate within `cuda_p2p_bsr_max_bytes` | cuSPARSE BSR(3) | — |
 | otherwise (periodic, over budget) | canonical target rows | — |

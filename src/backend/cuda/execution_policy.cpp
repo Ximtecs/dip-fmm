@@ -22,12 +22,15 @@ constexpr std::size_t translation_wide_outputs = 65536;
 constexpr int translation_wide_lanes = 32;
 constexpr int translation_narrow_lanes = 4;
 
-// Regular-grid dictionary executor. Below 48 targets per leaf a warp tile
-// leaves lanes idle and the power-of-two microtile kernel wins (best or tied
-// at 8-32 per leaf); at 64 per leaf the target-owned kernel is the most
-// consistent. Calibrated on lattices of 32k-262k points; see
+// Regular-grid dictionary executor, three occupancy regimes. Below 48
+// targets per leaf a warp tile leaves lanes idle and the power-of-two
+// microtile kernel wins (best or tied at 8-32 per leaf); from 48 to 64 per
+// leaf the target-owned kernel is best; from 80 per leaf upwards the
+// source-warp kernel wins in both precisions (1.1-2.1x over target-owned at
+// 80-192 per leaf). Calibrated on lattices of 24k-262k points; see
 // agent_docs/performance_optimization.md.
 constexpr double dictionary_microtile_occupancy = 48.0;
+constexpr double dictionary_source_warp_occupancy = 72.0;
 
 } // namespace
 
@@ -46,6 +49,10 @@ int translation_lanes_for_outputs(const std::size_t outputs) {
 
 double dictionary_microtile_occupancy_limit() {
   return dictionary_microtile_occupancy;
+}
+
+double dictionary_source_warp_occupancy_limit() {
+  return dictionary_source_warp_occupancy;
 }
 
 CudaExecutionPolicy
@@ -89,10 +96,15 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
     } else if (inputs.explicit_dictionary_power2_microtiles) {
       policy.dictionary_executor = CudaDictionaryExecutor::PowerOfTwoMicrotiles;
     } else {
-      policy.dictionary_executor =
-          inputs.mean_leaf_occupancy < dictionary_microtile_occupancy
-              ? CudaDictionaryExecutor::PowerOfTwoMicrotiles
-              : CudaDictionaryExecutor::TargetOwned;
+      if (inputs.mean_leaf_occupancy < dictionary_microtile_occupancy) {
+        policy.dictionary_executor =
+            CudaDictionaryExecutor::PowerOfTwoMicrotiles;
+      } else if (inputs.mean_leaf_occupancy <
+                 dictionary_source_warp_occupancy) {
+        policy.dictionary_executor = CudaDictionaryExecutor::TargetOwned;
+      } else {
+        policy.dictionary_executor = CudaDictionaryExecutor::SourceWarp;
+      }
     }
     return policy;
   }

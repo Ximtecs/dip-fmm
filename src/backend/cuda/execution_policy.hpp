@@ -79,6 +79,9 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs);
 /** @brief Leaf occupancy below which the power-of-two microtile executor is chosen. */
 [[nodiscard]] double dictionary_microtile_occupancy_limit();
 
+/** @brief Leaf occupancy from which the source-warp executor is chosen. */
+[[nodiscard]] double dictionary_source_warp_occupancy_limit();
+
 [[nodiscard]] const char *name(CudaP2PPacking packing) noexcept;
 [[nodiscard]] const char *name(CudaDictionaryExecutor executor) noexcept;
 [[nodiscard]] const char *name(SpatialLayout layout) noexcept;

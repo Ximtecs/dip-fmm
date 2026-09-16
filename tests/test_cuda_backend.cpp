@@ -855,13 +855,28 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
     const auto low = resolve_cuda_execution_policy(inputs);
     REQUIRE(low.p2p_packing == CudaP2PPacking::SignedDictionary);
     REQUIRE(low.dictionary_from_layout);
+    REQUIRE(low.dictionary_executor ==
+            CudaDictionaryExecutor::PowerOfTwoMicrotiles);
     inputs.mean_leaf_occupancy = 64.0;
+    const auto medium = resolve_cuda_execution_policy(inputs);
+    REQUIRE(medium.p2p_packing == CudaP2PPacking::SignedDictionary);
+    REQUIRE(medium.dictionary_executor == CudaDictionaryExecutor::TargetOwned);
+    inputs.mean_leaf_occupancy = 128.0;
     const auto high = resolve_cuda_execution_policy(inputs);
     REQUIRE(high.p2p_packing == CudaP2PPacking::SignedDictionary);
-    REQUIRE(high.dictionary_executor == CudaDictionaryExecutor::TargetOwned);
-    REQUIRE((low.dictionary_executor == CudaDictionaryExecutor::TargetOwned ||
-             low.dictionary_executor ==
-                 CudaDictionaryExecutor::PowerOfTwoMicrotiles));
+    REQUIRE(high.dictionary_from_layout);
+    REQUIRE(high.dictionary_executor == CudaDictionaryExecutor::SourceWarp);
+    // The regime boundaries are the calibrated occupancy limits.
+    inputs.mean_leaf_occupancy =
+        cdfmm::cuda_policy::dictionary_microtile_occupancy_limit();
+    REQUIRE(resolve_cuda_execution_policy(inputs).dictionary_executor ==
+            CudaDictionaryExecutor::TargetOwned);
+    inputs.mean_leaf_occupancy =
+        cdfmm::cuda_policy::dictionary_source_warp_occupancy_limit();
+    REQUIRE(resolve_cuda_execution_policy(inputs).dictionary_executor ==
+            CudaDictionaryExecutor::SourceWarp);
+    REQUIRE(cdfmm::cuda_policy::dictionary_microtile_occupancy_limit() <
+            cdfmm::cuda_policy::dictionary_source_warp_occupancy_limit());
   }
   SECTION("RegularGrid without identity, periodic, or on a CPU backend keeps the defaults") {
     inputs.spatial_layout = SpatialLayout::RegularGrid;
@@ -889,7 +904,7 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
   }
   SECTION("explicit options win over the layout hint and keep their meaning") {
     inputs.spatial_layout = SpatialLayout::RegularGrid;
-    inputs.mean_leaf_occupancy = 64.0;
+    inputs.mean_leaf_occupancy = 128.0;
     inputs.explicit_dictionary_power2_microtiles = true;
     REQUIRE(resolve_cuda_execution_policy(inputs).dictionary_executor ==
             CudaDictionaryExecutor::PowerOfTwoMicrotiles);
@@ -957,11 +972,12 @@ TEST_CASE("regular-grid layout hint selects the dictionary on CUDA plans",
       REQUIRE(regular.spatial_layout() == SpatialLayout::RegularGrid);
       REQUIRE(regular.p2p_execution_packing() ==
               P2PExecutionPacking::TensorDictionary);
-      // Automatic executors: whole-warp kernels report 256 (target-owned) or
-      // 128 (power-of-two microtiles) threads per block.
+      // Automatic executors: 64 targets per leaf at depth 1 select the
+      // target-owned kernel (256 threads per block), 8 per leaf at depth 2
+      // the power-of-two microtiles (128 threads per block).
       const std::size_t automatic_threads =
           regular.cuda_plan_statistics().p2p_threads_per_block;
-      REQUIRE((automatic_threads == 256 || automatic_threads == 128));
+      REQUIRE(automatic_threads == (depth == 1 ? 256U : 128U));
       require_fields_match(
           regular.evaluate(moments, OutputFlags::Field, identities), expected,
           3.0e-11);
