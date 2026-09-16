@@ -1,5 +1,31 @@
 # Latest session work
 
+## 2026-09-16 — GPU evaluation optimization (Phase 3A)
+
+Starting HEAD `293144bf` (Phase 2 closure) is the fixed performance
+baseline (`GPU_PERF_BASELINE`), built in a detached worktree with the
+identical CUDA configuration. Scope: repeated `CudaFull`/`CudaPartial`
+evaluation only; construction, CPU/oneMKL, APIs and pruning untouched.
+Evidence, methodology, Nsight Systems findings, accepted/rejected
+experiments, the dictionary-versus-leaf study and remaining bottlenecks are
+in `agent_docs/performance_optimization.md`.
+
+Accepted commits: grouped M2L with shared-memory matrix staging
+(`721fe93`), host-turnaround removal around the device-resident evaluation
+(`1d92a28`), atomic-free lane-group far-field kernels with per-level
+launches (`8312083`), pinned staging in the standalone M2L plan
+(`e508382`), warp-per-block leaf P2P as the point-source default with the
+new `P2PExecutionPacking::LeafBlock` (`9ac2c58`), workload-sized tuning and
+dictionary benchmark flags (`86f82d9`), and a fix plus regression test for
+FP32 leaf plans built without a geometry cache (`d4061d1`).
+
+RTX 5090, `cuda-full`, baseline -> final: FP32 2.2x-4.9x (50k/p6/d4
+2397 -> 755 us; 200k/p6/d5 15.5 -> 3.2 ms), FP64 1.3x-2.5x;
+`cuda-partial` 1.07x-1.9x (CPU hierarchy dominates it, deferred to 3B).
+Nsight Compute counters are unavailable on this machine
+(`ERR_NVGPUCTRPERM`); analysis used Nsight Systems, CUDA events,
+arithmetic-intensity estimates and controlled experiments.
+
 ## 2026-09-16 — public/internal API, header ownership, and packaging cleanup
 
 Starting HEAD `9bab9ee6` (`refactor(cache): decouple persistence from

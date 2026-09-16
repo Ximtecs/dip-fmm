@@ -1,5 +1,17 @@
 # Project progress
 
+## GPU evaluation optimization (Phase 3A): COMPLETE — 2026-09-16
+
+Repeated CUDA evaluation was profiled and optimised against the fixed
+baseline `293144bf` on an RTX 5090: `cuda-full` FP32 2.2x-4.9x and FP64
+1.3x-2.5x faster end to end, `cuda-partial` 1.07x-1.9x. Changes: grouped
+shared-memory M2L, pinned-direct host staging, atomic-free far-field
+kernels with per-level launches, pinned hybrid M2L staging, and a
+warp-per-block leaf P2P packing that replaces cuSPARSE BSR(3) as the
+point-source default (new `P2PExecutionPacking::LeafBlock`); finite sources
+keep BSR(3). Full record in `agent_docs/performance_optimization.md`.
+Phases 3B (CPU/oneMKL), 3C (construction), 3D and 4 remain unstarted.
+
 ## Public/internal API, header ownership, and packaging cleanup: COMPLETE — 2026-09-16
 
 The last recorded Phase-2 cleanup item. `parameter_selection.hpp` now depends
