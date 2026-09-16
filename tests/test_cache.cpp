@@ -155,7 +155,7 @@ TEST_CASE("warm FP32 caches preserve the canonical plan exactly", "[cache]") {
   const auto warm_result = warm.evaluate_float32(moments, OutputFlags::Both);
   REQUIRE(warm.static_plan_statistics().universal_cache_hit);
   REQUIRE(warm.static_plan_statistics().geometry_cache_hit);
-  REQUIRE(warm.p2p_execution_packing() == P2PExecutionPacking::ParticleRowSoa);
+  REQUIRE(warm.p2p_execution_packing() == P2PExecutionPacking::PointGeometry);
   require_identical_fields(cold_result, warm_result);
 }
 

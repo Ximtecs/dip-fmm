@@ -13,7 +13,9 @@ construction as `cdfmm::operators::p2p::build_pair`. The flat
 `cdfmm::build_pair_tensor` is defined in the same translation unit as a thin
 delegation and is the only compatibility spelling of that mathematics; the
 former `src/cuboid.cpp` home is removed. Tetrahedral pairs stay with the
-tetrahedron operator path.
+tetrahedron operator path. `p2p_point_kernel.hpp` holds the inline
+point-dipole pair formula that `evaluate_pair` and the CPU position-based
+P2P executor both call; change the formula there and nowhere else.
 
 Current tree:
 

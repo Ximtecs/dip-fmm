@@ -49,8 +49,8 @@ void UniformFmm::static_m2l(const int level) {
   detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
   if (static_matrix_backend_ == StaticMatrixBackend::Portable) {
     const auto phase_start = Clock::now();
-    if (cpu_far_field_ && !cpu_far_field_->m2l_schedule.empty()) {
-      detail::cpu::apply_static_m2l_plan(m2l_plan_, cpu_far_field_->m2l_schedule,
+    if (cpu_packing_ && !cpu_packing_->m2l_schedule.empty()) {
+      detail::cpu::apply_static_m2l_plan(m2l_plan_, cpu_packing_->m2l_schedule,
                                          level, multipoles_, locals_);
     } else {
       apply_static_m2l_plan(m2l_plan_, level, multipoles_, locals_);
@@ -69,9 +69,9 @@ void UniformFmm::static_m2l_float(const int level) {
   detail::ProfileRange m2l_range{"cdfmm/far_field/m2l_fp32"};
   if (static_matrix_backend_ == StaticMatrixBackend::Portable) {
     const auto phase_start = Clock::now();
-    if (cpu_far_field_ && !cpu_far_field_->m2l_schedule.empty()) {
+    if (cpu_packing_ && !cpu_packing_->m2l_schedule.empty()) {
       detail::cpu::apply_static_m2l_plan(
-          m2l_plan_float_, cpu_far_field_->m2l_schedule, level,
+          m2l_plan_float_, cpu_packing_->m2l_schedule, level,
           multipoles_float_, locals_float_);
     } else {
       apply_static_m2l_plan(m2l_plan_float_, level, multipoles_float_,
@@ -172,7 +172,7 @@ void UniformFmm::upward_pass_prepared_float() {
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
     const auto M = multipole_float_for_node(leaf_index);
     detail::cpu::apply_packed_p2m(
-        cpu_far_field_->fp32.p2m, leaf_range.begin,
+        cpu_packing_->fp32.p2m, leaf_range.begin,
         std::span<const FloatVec3>(sorted_dipole_moments_float_)
             .subspan(leaf_range.begin, leaf_range.count),
         M.data());
@@ -206,7 +206,7 @@ void UniformFmm::upward_pass_prepared_float() {
             continue;
           }
           detail::cpu::apply_packed_translation(
-              cpu_far_field_->fp32.m2m, child.level, edge.child_class,
+              cpu_packing_->fp32.m2m, child.level, edge.child_class,
               multipole_float_for_node(child_index).data(), parent_M.data());
         }
       }
@@ -271,7 +271,7 @@ void UniformFmm::upward_pass_prepared() {
     if (p2m_executor != StaticOperatorExecutor::Reference) {
       const auto M = multipole_for_node(leaf_index);
       detail::cpu::apply_packed_p2m(
-          cpu_far_field_->fp64.p2m, leaf_range.begin,
+          cpu_packing_->fp64.p2m, leaf_range.begin,
           std::span<const Vec3>(sorted_dipole_moments_)
               .subspan(leaf_range.begin, leaf_range.count),
           M.data());
@@ -319,7 +319,7 @@ void UniformFmm::upward_pass_prepared() {
           }
           if (m2m_executor != StaticOperatorExecutor::Reference) {
             detail::cpu::apply_packed_translation(
-                cpu_far_field_->fp64.m2m, child.level, edge.child_class,
+                cpu_packing_->fp64.m2m, child.level, edge.child_class,
                 multipole_for_node(child_index).data(), parent_M.data());
           } else {
             const Vec3 d = parent.centre - child.centre;
@@ -386,7 +386,7 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
         }
         if (l2l_executor != StaticOperatorExecutor::Reference) {
           detail::cpu::apply_packed_translation(
-              cpu_far_field_->fp64.l2l, target.level, edge.child_class,
+              cpu_packing_->fp64.l2l, target.level, edge.child_class,
               local_for_node(edge.source_node).data(),
               local_for_node(target_index).data());
         } else {
@@ -453,12 +453,12 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
           PotentialField result;
           if (want_field) {
             detail::cpu::apply_packed_l2p_field(
-                cpu_far_field_->fp64.l2p, target_index, L, result.H.x,
+                cpu_packing_->fp64.l2p, target_index, L, result.H.x,
                 result.H.y, result.H.z);
           }
           if (want_potential) {
             result.phi = detail::cpu::apply_packed_l2p_potential(
-                cpu_far_field_->fp64.l2p, target_index, L);
+                cpu_packing_->fp64.l2p, target_index, L);
           }
           sorted_results_[target_index] = result;
         } else {
@@ -514,7 +514,7 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
         continue;
       }
       detail::cpu::apply_packed_translation(
-          cpu_far_field_->fp32.l2l, target.level, edge.child_class,
+          cpu_packing_->fp32.l2l, target.level, edge.child_class,
           local_float_for_node(edge.source_node).data(),
           local_float_for_node(target_index).data());
     }
@@ -545,12 +545,12 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
         FloatPotentialField result;
         if (want_field) {
           detail::cpu::apply_packed_l2p_field(
-              cpu_far_field_->fp32.l2p, target_index, L, result.H.x,
+              cpu_packing_->fp32.l2p, target_index, L, result.H.x,
               result.H.y, result.H.z);
         }
         if (want_potential) {
           result.phi = detail::cpu::apply_packed_l2p_potential(
-              cpu_far_field_->fp32.l2p, target_index, L);
+              cpu_packing_->fp32.l2p, target_index, L);
         }
         sorted_results_float_[target_index] = result;
       }
@@ -591,7 +591,7 @@ void UniformFmm::l2l_downward() {
         continue;
       }
       detail::cpu::apply_packed_translation(
-          cpu_far_field_->fp64.l2l, target.level, edge.child_class,
+          cpu_packing_->fp64.l2l, target.level, edge.child_class,
           local_for_node(edge.source_node).data(),
           local_for_node(target_index).data());
     }

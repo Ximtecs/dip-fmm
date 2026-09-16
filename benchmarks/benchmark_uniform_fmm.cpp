@@ -503,6 +503,8 @@ std::string_view p2p_packing_name(const cdfmm::P2PExecutionPacking packing) {
     return "cuda-bsr3";
   case cdfmm::P2PExecutionPacking::LeafBlock:
     return "leaf-block";
+  case cdfmm::P2PExecutionPacking::PointGeometry:
+    return "point-geometry";
   }
   throw std::logic_error("unrecognised P2P execution packing");
 }

@@ -427,7 +427,7 @@ TEST_CASE("FMM initialisation reports requested and resolved options")
             std::string::npos);
     REQUIRE(output.str().find("backend.resolved: cpu_static") !=
             std::string::npos);
-    REQUIRE(output.str().find("p2p_packing: particle_row_soa") !=
+    REQUIRE(output.str().find("p2p_packing: point_geometry") !=
             std::string::npos);
 }
 
@@ -437,7 +437,7 @@ TEST_CASE("automatic FMM execution resolves to a truthful CPU backend")
     UniformFmm fmm(positions);
     REQUIRE(fmm.backend() == ExecutionBackend::CpuStatic);
     REQUIRE(fmm.precision() == StaticPrecision::Float32);
-    REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::ParticleRowSoa);
+    REQUIRE(fmm.p2p_execution_packing() == P2PExecutionPacking::PointGeometry);
 }
 
 TEST_CASE("cuboid FMM includes finite centre self field", "[uniform_fmm][cuboid]")

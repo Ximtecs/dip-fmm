@@ -16,6 +16,10 @@
 #include "cdfmm/plan/precision.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 
+#ifdef CDFMM_USE_OPENMP
+#include <omp.h>
+#endif
+
 #include "backend/cuda/fmm/internal.hpp"
 #include "cache/internal.hpp"
 #include "fmm/internal.hpp"
@@ -702,6 +706,20 @@ void UniformFmm::build_backend_packing() {
   static_plan_statistics_.backend_packing.add(elapsed_seconds(start));
 }
 
+bool UniformFmm::selects_point_geometry_p2p() const noexcept {
+  // Point sources and point targets, no periodic images and no explicit
+  // dictionary request: every list-1 pair is the point-dipole formula of two
+  // resident positions, so recomputing it is cheaper than streaming tensors.
+  const bool effective_point_source =
+      source_geometry_ == SourceGeometry::PointDipole ||
+      near_field_source_model_ == SourceModel::PointDipole;
+  const bool effective_point_target =
+      target_geometry_ == TargetGeometry::Point ||
+      near_field_target_model_ == TargetModel::Point;
+  return effective_point_source && effective_point_target &&
+         !periodic_.enabled && !use_reduced_symmetry_p2p_;
+}
+
 void UniformFmm::build_cpu_far_field_packing() {
   // The canonical sparse P2M/L2P maps are persisted and consumed by CUDA
   // plan construction; the CPU hierarchy executes a dense, level-scaled
@@ -718,7 +736,7 @@ void UniformFmm::build_cpu_far_field_packing() {
   }
   const int level_count = topology_->maximum_level;
   const std::size_t source_count = topology_->sorted_source_positions.size();
-  auto owner = std::make_unique<CpuFarFieldPackingOwner>();
+  auto owner = std::make_unique<CpuPackingOwner>();
   std::size_t canonical_p2m_bytes = 0;
   std::size_t canonical_l2p_bytes = 0;
   std::size_t packed_p2m_bytes = 0;
@@ -779,13 +797,13 @@ void UniformFmm::build_cpu_far_field_packing() {
   }
   // The portable M2L executor applies the canonical plan through a block
   // schedule sorted by transfer class; oneMKL and CUDA M2L keep their own.
+  const bool portable_m2l = backend_ == ExecutionBackend::CpuStatic &&
+      static_matrix_backend_ == StaticMatrixBackend::Portable &&
+      m2l_backend_ == M2LBackend::Static;
   // The class-sorted schedule pays off when the transfer matrices do not fit
   // the per-core L2 (2 MiB on the calibration machine): below about 1 MiB
   // the per-target row kernel already streams them from L2 and the block
   // staging only adds overhead (measured: S FP32, 316 x 25^2 floats).
-  const bool portable_m2l = backend_ == ExecutionBackend::CpuStatic &&
-      static_matrix_backend_ == StaticMatrixBackend::Portable &&
-      m2l_backend_ == M2LBackend::Static;
   constexpr std::size_t schedule_matrix_bytes = std::size_t{1} << 20;
   const std::size_t matrix_bytes = precision_ == StaticPrecision::Float32
       ? m2l_plan_float_.matrices.size() * sizeof(float)
@@ -799,7 +817,32 @@ void UniformFmm::build_cpu_far_field_packing() {
     static_plan_statistics_.m2l_interaction_bytes +=
         owner->m2l_schedule.memory_bytes();
   }
-  cpu_far_field_ = std::move(owner);
+  if (p2p_execution_packing_ == P2PExecutionPacking::PointGeometry) {
+    // Positions replace the stored pair tensors; release the canonical and
+    // row operators (the cache is already written) and account the scratch.
+    // The statistics attributed exactly `near_field_operator_bytes` of the
+    // operator total to those containers on every construction path.
+    const std::size_t released = static_plan_statistics_.near_field_operator_bytes;
+    int thread_capacity = 1;
+#ifdef CDFMM_USE_OPENMP
+    thread_capacity = omp_get_max_threads();
+#endif
+    owner->p2p =
+        detail::cpu::PointGeometryP2P<double>(*topology_, thread_capacity);
+    p2p_operator_ = {};
+    p2p_compact_plan_ = {};
+    p2p_operator_float_ = {};
+    p2p_compact_plan_float_ = {};
+    const std::size_t scratch = owner->p2p.memory_bytes();
+    static_plan_statistics_.operator_bytes -=
+        std::min(static_plan_statistics_.operator_bytes, released);
+    static_plan_statistics_.near_field_operator_bytes = 0;
+    static_plan_statistics_.p2p_value_bytes = 0;
+    static_plan_statistics_.p2p_index_bytes = 0;
+    static_plan_statistics_.p2p_canonical_total_bytes = 0;
+    static_plan_statistics_.scratch_bytes += scratch;
+  }
+  cpu_packing_ = std::move(owner);
   // Report the resident packing instead of the released canonical maps; the
   // eight shared translation operators stay resident and keep their bytes.
   static_plan_statistics_.operator_bytes +=

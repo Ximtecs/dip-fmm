@@ -38,7 +38,8 @@ void bind_operators(py::module_& module)
       .value("PARTICLE_ROW_SOA", P2PExecutionPacking::ParticleRowSoa)
       .value("TENSOR_DICTIONARY", P2PExecutionPacking::TensorDictionary)
       .value("CUDA_BSR3", P2PExecutionPacking::CudaBsr3)
-      .value("LEAF_BLOCK", P2PExecutionPacking::LeafBlock);
+      .value("LEAF_BLOCK", P2PExecutionPacking::LeafBlock)
+      .value("POINT_GEOMETRY", P2PExecutionPacking::PointGeometry);
   py::enum_<StaticOperatorExecutor>(module, "StaticOperatorExecutor")
       .value("REFERENCE", StaticOperatorExecutor::Reference)
       .value("PORTABLE", StaticOperatorExecutor::Portable)

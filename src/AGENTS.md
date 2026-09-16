@@ -21,6 +21,9 @@ src/
 |-- operators.cpp                           flat compatibility wrappers only
 |-- operators/                              authoritative operator construction
 |                                          and dynamic application
+|-- operators/p2p_point_kernel.hpp          the single point-dipole pair formula
+|                                          shared by evaluate_pair and the CPU
+|                                          position-based executor
 |-- plan/precision.cpp                       FP64-to-FP32 static conversion
 |-- plan/direct/dense.cpp                   dense-direct plan preparation
 |-- plan/p2p/                               canonical and derived P2P packings
@@ -36,7 +39,9 @@ src/
 |-- fmm/internal.hpp                        opaque backend owner declarations
 |-- backend/cpu/direct/dense.cpp            portable dense-direct execution
 |-- backend/cpu/p2p/{executor,dictionary,near_field}.cpp
-|                                          portable P2P and list-1 execution
+|                                          portable stored-tensor P2P and list-1 execution
+|-- backend/cpu/p2p/geometry.{hpp,cpp}     position-based point P2P executor
+|-- backend/cpu/m2l/schedule.{hpp,cpp}     transfer-class-sorted M2L block schedule
 |-- backend/cpu/m2l/executor.cpp            portable prepared M2L execution
 |-- backend/cpu/far_field/{executor,entries}.{cpp,hpp}
 |                                          public entry-map reference kernels

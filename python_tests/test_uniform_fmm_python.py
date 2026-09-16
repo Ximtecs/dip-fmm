@@ -27,7 +27,7 @@ def test_static_backend_is_default_and_reference_is_selectable():
     assert static_fmm.m2l_backend == cdfmm.M2LBackend.Static
     assert (
         static_fmm.p2p_execution_packing
-        == cdfmm.P2PExecutionPacking.PARTICLE_ROW_SOA
+        == cdfmm.P2PExecutionPacking.POINT_GEOMETRY
     )
 
     options.m2l_backend = cdfmm.M2LBackend.Reference
@@ -233,7 +233,7 @@ def test_spatial_layout_option_round_trips():
     # CPU backends record the hint but keep their own packing policy.
     fmm = cdfmm.UniformFmm(sources, sources, options)
     assert fmm.spatial_layout == cdfmm.SpatialLayout.REGULAR_GRID
-    assert fmm.p2p_execution_packing == cdfmm.P2PExecutionPacking.PARTICLE_ROW_SOA
+    assert fmm.p2p_execution_packing == cdfmm.P2PExecutionPacking.POINT_GEOMETRY
 
 
 def test_regular_grid_hint_selects_cuda_dictionary():

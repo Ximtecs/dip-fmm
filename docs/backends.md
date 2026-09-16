@@ -17,8 +17,8 @@ and P2P packing rather than leaving `Auto` ambiguous.
 | Public selection | P2M | M2M | M2L | L2L | L2P | P2P | Device residency |
 |---|---|---|---|---|---|---|---|
 | `CpuReference` | CPU reference | CPU reference | CPU reference | CPU reference | CPU reference | CPU direct `list1` | Host |
-| `CpuStatic` + `Portable` | CPU static | CPU static | CPU loops | CPU static | CPU static | CPU SoA tensor | Host |
-| `CpuStatic` + `OneMkl` | CPU static | CPU static | oneMKL SGEMM/DGEMM | CPU static | CPU static | CPU SoA tensor | Host |
+| `CpuStatic` + `Portable` | CPU static | CPU static | CPU class-sorted blocks | CPU static | CPU static | CPU point geometry (point sources and targets) / SoA tensor | Host |
+| `CpuStatic` + `OneMkl` | CPU static | CPU static | oneMKL SGEMM/DGEMM | CPU static | CPU static | CPU point geometry (point sources and targets) / SoA tensor | Host |
 | `CudaPartial` | CPU static | CPU static | CUDA target rows | CPU static | CPU static | CUDA static tensor | Static GPU data; expansion state crosses at the M2L boundary |
 | `CudaFull` | CUDA static | CUDA static | CUDA target rows | CUDA static | CUDA static | CUDA static tensor | Operators and coefficient state remain on device |
 | `DenseDirectPlan` | — | — | — | — | — | CPU dense exact | Host geometry tensors |
@@ -53,6 +53,22 @@ lanes per output for levels with at most 65536 outputs, otherwise 4). The
 resolved choices appear in the initialisation summary as `spatial_layout`
 and `cuda_policy.*`. Neither the hint nor the derived packing enters the
 persistent geometry cache; the cached canonical operator is shared.
+
+### CPU execution packing
+
+`CpuStatic` executes the far-field hierarchy from a packing derived once at
+construction from the canonical operators (dense P2M rows, level-scaled M2M/L2L
+column banks, flat L2P rows). The portable M2L applies the canonical transfer
+matrices through a block schedule sorted by transfer class when the matrix set
+exceeds 1 MiB, and per target row otherwise. For non-periodic plans with point
+sources and point targets (geometry or near-field model) and no explicit
+reduced-symmetry request, list-1 P2P is `P2PExecutionPacking::PointGeometry`:
+pairs are recomputed from the sorted positions with the same point-dipole
+formula as the reference kernel, and no pair tensors are kept resident. Finite
+or periodic near fields keep the particle-row SoA tensors; the signed
+dictionary remains the explicit `use_reduced_symmetry_p2p` choice. None of
+these packings enters the persistent cache; the cached canonical operators are
+unchanged.
 
 `Portable` and `OneMkl` in the table are values of `StaticMatrixBackend`.
 oneMKL accelerates M2L only: interactions sharing a normalised transfer matrix

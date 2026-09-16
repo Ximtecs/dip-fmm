@@ -299,9 +299,13 @@ void UniformFmm::build_static_plan() {
       }
     }
     if (backend_ == ExecutionBackend::CpuStatic) {
+      // A cache hit derives the row packing as well; the CPU packing step
+      // releases it again when positions replace the stored tensors.
       p2p_execution_packing_ = p2p_tensor_dictionary_plan_.has_value()
           ? P2PExecutionPacking::TensorDictionary
-          : P2PExecutionPacking::ParticleRowSoa;
+          : (selects_point_geometry_p2p()
+                 ? P2PExecutionPacking::PointGeometry
+                 : P2PExecutionPacking::ParticleRowSoa);
     }
     if (precision_ == StaticPrecision::Float32) {
       quantise_static_plan_to_float();
@@ -777,7 +781,11 @@ void UniformFmm::build_static_plan() {
         target_geometry_, target_sizes, sorted_target_tetrahedra_,
         near_field_source_model_, near_field_target_model_);
   }
-  p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
+  const bool point_geometry_p2p =
+      backend_ == ExecutionBackend::CpuStatic && selects_point_geometry_p2p();
+  if (!point_geometry_p2p) {
+    p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
+  }
   try {
     build_reduced_symmetry_p2p_packing();
   } catch (const std::invalid_argument &error) {
@@ -788,7 +796,8 @@ void UniformFmm::build_static_plan() {
   if (backend_ == ExecutionBackend::CpuStatic) {
     p2p_execution_packing_ = p2p_tensor_dictionary_plan_
         ? P2PExecutionPacking::TensorDictionary
-        : P2PExecutionPacking::ParticleRowSoa;
+        : (point_geometry_p2p ? P2PExecutionPacking::PointGeometry
+                              : P2PExecutionPacking::ParticleRowSoa);
   }
   static_plan_statistics_.p2p_interactions = p2p_operator_.blocks.size();
   static_plan_statistics_.p2p_value_bytes =
@@ -884,8 +893,10 @@ void UniformFmm::quantise_static_plan_to_float() {
               *p2p_tensor_dictionary_plan_);
     }
   } else {
-    p2p_compact_plan_float_ =
-        build_static_p2p_compact_plan(p2p_operator_float_);
+    if (p2p_execution_packing_ != P2PExecutionPacking::PointGeometry) {
+      p2p_compact_plan_float_ =
+          build_static_p2p_compact_plan(p2p_operator_float_);
+    }
     if (p2p_tensor_dictionary_plan_.has_value()) {
       auto dictionary = quantise_static_p2p_signed_tensor_dictionary_plan(
           *p2p_tensor_dictionary_plan_);

@@ -9,6 +9,7 @@
 #include "backend/cuda/fmm/internal.hpp"
 #include "backend/cpu/far_field/packing.hpp"
 #include "backend/cpu/m2l/schedule.hpp"
+#include "backend/cpu/p2p/geometry.hpp"
 #include "backend/mkl/m2l.hpp"
 
 namespace cdfmm {
@@ -54,13 +55,16 @@ public:
   std::unique_ptr<CudaFullPlan> plan;
 };
 
-/** @brief CPU far-field execution packing in the plan's precision. */
-class UniformFmm::CpuFarFieldPackingOwner {
+/** @brief CPU execution packing in the plan's precision. */
+class UniformFmm::CpuPackingOwner {
 public:
   detail::cpu::FarFieldPacking<double> fp64{};
   detail::cpu::FarFieldPacking<float> fp32{};
   /// Transfer-class-sorted M2L block schedule (portable M2L executor only).
   detail::cpu::M2LBlockSchedule m2l_schedule{};
+  /// Position-based P2P workspace (P2PExecutionPacking::PointGeometry only);
+  /// FP64 arithmetic serves both plan precisions.
+  detail::cpu::PointGeometryP2P<double> p2p{};
 };
 
 /** @brief Resolved CUDA execution policy of one plan (see execution_policy.hpp). */

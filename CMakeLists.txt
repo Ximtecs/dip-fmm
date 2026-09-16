@@ -70,6 +70,7 @@ add_library(cdfmm_core
     src/backend/cpu/far_field/executor.cpp
     src/backend/cpu/far_field/packing.cpp
     src/backend/cpu/m2l/schedule.cpp
+    src/backend/cpu/p2p/geometry.cpp
     src/backend/mkl/m2l.cpp
     src/validation.cpp
     src/tree/common/node.cpp
@@ -132,6 +133,16 @@ else()
 endif()
 target_include_directories(cdfmm_core PUBLIC include)
 target_include_directories(cdfmm_core PRIVATE src)
+# sqrt/div reductions (the position-based P2P sweep in particular) only
+# vectorise when sqrt carries no errno side channel and masked lanes may be
+# evaluated speculatively. Nothing in the library reads errno or traps FP
+# exceptions, and results for finite inputs are unchanged. With LTO the
+# code is generated at link time, so the flags are also passed to the link.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|IntelLLVM")
+  target_compile_options(cdfmm_core PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:-fno-math-errno;-fno-trapping-math>)
+  target_link_options(cdfmm_core INTERFACE -fno-math-errno -fno-trapping-math)
+endif()
 target_compile_definitions(cdfmm_core PRIVATE
   CDFMM_DEFAULT_CACHE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/caches")
 set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)

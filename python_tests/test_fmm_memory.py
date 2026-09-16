@@ -41,7 +41,7 @@ def test_combinatorial_operator_counts():
 
 def test_single_particle_storage_has_manual_counts():
     estimate = estimate_source_point_storage(
-        np.array([[0.25, -0.25, 0.25]]), order=0, depth=1
+        np.array([[0.25, -0.25, 0.25]]), order=0, depth=1, threads=1
     )
 
     assert estimate.nodes == 9
@@ -50,7 +50,11 @@ def test_single_particle_storage_has_manual_counts():
     assert estimate.transfer_classes == 0
     assert estimate.m2l_interactions == 0
     assert estimate.p2p_pairs == 1
-    assert estimate.host_static_bytes == 869
+    # One thread's P2P position scratch (16 rounded sources x 52 B) 832,
+    # packed P2M rows 24, shared M2M/L2L maps 256, level-scaled banks 656,
+    # M2L level scalings 32, M2L indices 140, L2P rows 32, multipole and local
+    # state 144, moments/results/near fields/identities 84.
+    assert estimate.host_static_bytes == 2200
     assert estimate.cuda_partial_bytes == 360
     assert estimate.cuda_full_bytes == 728
 

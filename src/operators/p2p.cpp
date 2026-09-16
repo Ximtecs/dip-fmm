@@ -2,6 +2,8 @@
 
 #include "cdfmm/operators/p2p.hpp"
 
+#include "operators/p2p_point_kernel.hpp"
+
 #include "../geometry/primitives/tetrahedron_detail.hpp"
 
 #include <algorithm>
@@ -581,20 +583,17 @@ PotentialField evaluate_pair(
 {
     PotentialField result;
     const Vec3 r = target - source;
-    const double r2 = dot(r, r);
-    const double rinv = 1.0 / std::sqrt(r2);
-    const double rinv3 = rinv * rinv * rinv;
-    const double c = 1.0 / (4.0 * std::numbers::pi);
-    const double m_dot_r = dot(moment, r);
 
     if (has_flag(output, OutputFlags::Potential)) {
-        result.phi = c * m_dot_r * rinv3;
+        result.phi = point_dipole_potential(r.x, r.y, r.z, moment.x, moment.y,
+                                            moment.z);
     }
 
     if (has_flag(output, OutputFlags::Field)) {
-        const double rinv5 = rinv3 * rinv * rinv;
         // H_ij = 1/(4*pi) * [3*r*(m.r)/|r|^5 - m/|r|^3]
-        result.H = (r * (3.0 * m_dot_r * rinv5) - moment * rinv3) * c;
+        accumulate_point_dipole_field(r.x, r.y, r.z, moment.x, moment.y,
+                                      moment.z, result.H.x, result.H.y,
+                                      result.H.z);
     }
 
     return result;

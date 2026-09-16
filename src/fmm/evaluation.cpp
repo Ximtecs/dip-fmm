@@ -270,6 +270,11 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
         apply_static_p2p_signed_tensor_dictionary_plan(
             *p2p_tensor_dictionary_plan_, sorted_dipole_moments_,
             near_fields_);
+      } else if (p2p_execution_packing_ == P2PExecutionPacking::PointGeometry) {
+        cpu_packing_->p2p.apply(
+            *topology_, std::span<const Vec3>(sorted_dipole_moments_),
+            std::span<Vec3>(near_fields_),
+            std::span<const int>(sorted_self_indices_));
       } else {
         detail::evaluate_static_near_field(p2p_compact_plan_,
                                            sorted_dipole_moments_, near_fields_,
@@ -587,6 +592,11 @@ void UniformFmm::evaluate_into_float32_impl(
         apply_static_p2p_signed_tensor_dictionary_plan(
             *p2p_tensor_dictionary_plan_float_, sorted_dipole_moments_float_,
             near_fields_float_);
+      } else if (p2p_execution_packing_ == P2PExecutionPacking::PointGeometry) {
+        cpu_packing_->p2p.apply(
+            *topology_, std::span<const FloatVec3>(sorted_dipole_moments_float_),
+            std::span<FloatVec3>(near_fields_float_),
+            std::span<const int>(sorted_self_indices_));
       } else {
         apply_static_p2p_compact_plan(p2p_compact_plan_float_,
                                       sorted_dipole_moments_float_,
@@ -606,7 +616,13 @@ void UniformFmm::evaluate_into_float32_impl(
     last_timings_.p2p.add(elapsed_seconds(phase_start));
   }
 
-  if (has_flag(output, OutputFlags::Potential)) {
+  if (has_flag(output, OutputFlags::Potential) &&
+      p2p_execution_packing_ == P2PExecutionPacking::PointGeometry) {
+    cpu_packing_->p2p.apply_potential(
+        *topology_, std::span<const FloatVec3>(sorted_dipole_moments_float_),
+        std::span<FloatPotentialField>(sorted_results_float_),
+        std::span<const int>(sorted_self_indices_));
+  } else if (has_flag(output, OutputFlags::Potential)) {
     const bool has_compact_plan =
         !p2p_compact_plan_float_.row_offsets.empty();
 #pragma omp parallel for schedule(static) if (target_count >= 64)

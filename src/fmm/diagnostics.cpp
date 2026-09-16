@@ -96,6 +96,8 @@ std::string_view name(const P2PExecutionPacking value) {
     return "cuda_bsr3";
   case P2PExecutionPacking::LeafBlock:
     return "leaf_block";
+  case P2PExecutionPacking::PointGeometry:
+    return "point_geometry";
   }
   return "unknown";
 }

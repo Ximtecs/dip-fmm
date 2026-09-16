@@ -43,7 +43,14 @@ the CUDA leaf-block/BSR/canonical selection policy is unchanged.
 The latest complete sweep covered 19 runnable `(particle count, depth)` cases
 from 2^12 through 2^17 particles and depths two through five. CPU SoA won
 12 cases, was within 10% of the winner in 15, and had a 1.154 geometric-mean
-speedup over canonical AoS. It is therefore the new portable CPU default.
+speedup over canonical AoS. It became the portable CPU default for stored
+tensors. Since the Phase-3B CPU evaluation work, non-periodic point-source /
+point-target plans on `CpuStatic` recompute their list-1 pairs from the sorted
+positions instead (`P2PExecutionPacking::PointGeometry`): the stored-tensor
+kernels are DRAM-bound at 29-53 bytes per pair, while the positions of a
+target leaf's neighbourhood stay cache resident. The SoA tensors remain the
+default for finite and periodic near fields (see `docs/backends.md` and
+`agent_docs/performance_optimization.md`).
 
 CUDA BSR(3) won 12 cases, was within 10% of the winner in 17, and had a 1.757
 geometric-mean kernel speedup over canonical CUDA. Its full blocks use about
