@@ -248,7 +248,12 @@ precisions x P2P packings, free-space and periodic, against `DenseDirectPlan`)
 that enforces the "geometry builds tensors, executors apply tensors"
 invariant; `benchmarks/run_p2p_packing_matrix.py` drives
 `benchmark_uniform_fmm` over the matching performance matrix (finite bodies,
-forced packings, periodic cells, CudaPartial/CudaFull crossover). `python_tests/` checks bindings,
+forced packings, periodic cells, CudaPartial/CudaFull crossover).
+`benchmarks/benchmark_operator_representation.cpp`, its CUDA procedural prism
+kernel, `run_operator_representation.py` and
+`analyse_operator_representation.py` compare precomputed against procedural
+execution of one operator family, separating construction from repeated
+application (Phase 3B.5b). `python_tests/` checks bindings,
 end-to-end FMM behaviour, precision, geometry, caches, benchmark runners, and
 notebook contracts. `benchmarks/` measures setup separately from repeated
 evaluation and records accuracy/traffic/timing fields. `docs/` is authoritative

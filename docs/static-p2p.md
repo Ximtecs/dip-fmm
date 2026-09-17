@@ -38,8 +38,9 @@ Phase 3B.5, on the CUDA backends (one warp per canonical list-1 record, with
 the same lane layout as the leaf-block kernel); both call the single formula
 in `src/operators/p2p_point_kernel.hpp`. It is not a tensor executor and is
 rejected for finite near-field geometry; finite bodies keep precomputed
-tensors because evaluating analytical prism or tetrahedron tensors on every
-evaluation would cost far more than streaming them.
+tensors because reconstructing an analytical prism or tetrahedron tensor on
+every evaluation was measured at 300 to 1,300,000 times the cost of streaming
+the stored one (Phase 3B.5b, below).
 
 ### Precomputed and procedural representations
 
@@ -57,14 +58,13 @@ physical operator
                                       positions during every evaluation
 ```
 
-Precomputation is an execution choice, not a mathematical requirement. For
-finite tiles it remains the production strategy: the exact prism and
-tetrahedron operators are expensive to construct and cheap to stream. For
-point sources and point targets the operator is a closed formula (P2P) or a
-short recurrence (the regular solid harmonics of P2M and L2P) of positions
-that stay cache resident, so recomputing it can beat streaming its stored
-form. Three point operators have a procedural representation, each selected
-by a measured policy with an explicit override (`docs/backends.md`):
+Precomputation is an execution choice, not a mathematical requirement, and
+which choice wins is a measured question for each operator. For point sources
+and point targets the operator is a closed formula (P2P) or a short recurrence
+(the regular solid harmonics of P2M and L2P) of positions that stay cache
+resident, so recomputing it can beat streaming its stored form. Three point
+operators have a procedural representation, each selected by a measured policy
+with an explicit override (`docs/backends.md`):
 
 | Operator | Precomputed form | Procedural form | Default |
 |---|---|---|---|
@@ -75,6 +75,45 @@ by a measured policy with an explicit override (`docs/backends.md`):
 The procedural point P2M/L2P executors (`UniformFmmOptions::
 point_expansion_execution`) exist for the spherical basis at orders 1 to 10;
 the Cartesian basis and finite far-field models keep their precomputed rows.
+
+For finite tiles precomputation is the production strategy on every backend,
+and Phase 3B.5b measured why rather than assuming it. Every exact finite
+operator was benchmarked in both representations with
+`benchmark_operator_representation` (`docs/benchmarks.md`); the full tables,
+including the construction cost, the retained bytes and the amortisation, are
+in `agent_docs/performance_optimization.md`, "Exact finite-geometry procedural
+vs precomputed operators (Phase 3B.5b)". The steady-state ratios, procedural
+over the best stored packing on one complete field update, are:
+
+| Operator | Procedural / stored, per update | Stored form it must beat |
+|---|---|---|
+| point <-> prism P2P | 420-3,900x | 24-48 B per pair, or a 1-4 byte dictionary token |
+| point <-> tetrahedron P2P | 300-3,100x | same |
+| prism -> prism P2P | 61,000-133,000x | same |
+| tetrahedron -> tetrahedron P2P | 266,000-405,000x | same |
+| prism <-> tetrahedron P2P | 673,000-1,285,000x | same |
+| prism P2M / L2P, p 4-10 | 150-8,700x | `3 C` / `4 C` dense rows |
+| tetrahedron P2M / L2P, p 4-8 | 2,100-1,250,000x | same |
+
+The gap narrows but does not close when the stored operator leaves the cache:
+on a 32768-body lattice whose irregular tensors occupy 176 MB, four times the
+last-level cache, a stored apply slows from 0.11 to 0.43 ns per pair while the
+procedural cost is unchanged, leaving about 840x. Construction is one pass of
+the same arithmetic, so precomputation amortises within one to ten complete
+field updates for every finite pair on the CPU.
+
+The prism point tensor is the one finite family that is practical on the
+device, and the only one where the contest is close. Its formulas live in the
+precision-generic `src/geometry/primitives/rectangular_prism_point_kernel.hpp`,
+which production evaluates in `long double`; a CUDA kernel evaluating the same
+header in FP32 arithmetic reconstructs the near field at 2.5x to 5.7x the cost
+of the fastest stored device packing while retaining no operator at all, saves
+8.8 to 152 MB of device memory, and needs 30,000 to 38,000 field updates in
+one run to repay the host-side construction it avoids. It is nine times less
+accurate than the stored FP32 tensors, 68x to 196x slower in FP64 arithmetic,
+and the persistent geometry cache already pays that construction once per
+geometry. Finite operators therefore stay precomputed on every backend, and
+`PointExpansionExecution` keeps its point-only semantics.
 
 ### Capability matrix
 

@@ -1,5 +1,38 @@
 # Project diary
 
+## 2026-09-17 — the expected answer, and the one place it was close
+
+Phase 3B.5b was asked to confirm something everyone believed: that exact
+prism and tetrahedron operators are worth precomputing. Confirming a belief is
+the kind of task where it is easy to measure loosely and call it done, so the
+benchmark was built to be able to disprove it: the procedural side calls the
+same production builders, keeps the per-body invariants the builders already
+hoist, and every row carries its own error against the canonical operator. The
+answer came back at three to six orders of magnitude, which is not a close
+call.
+
+Two things were worth the trouble anyway. The first is that the interesting
+number was never the ratio but the break-even, and it is tiny on the CPU
+precisely because construction *is* one procedural pass: a serially built
+operator costs about eight parallel updates, a parallel one about one. That
+reframes the result from "precomputation is faster" to "precomputation is
+free after the first update", which is a much stronger statement for the
+paper.
+
+The second is the GPU. Porting the prism point tensor cost one
+precision-generic header, and on the device the gap collapsed from 3000x to
+between 2.5x and 5.7x, with the entire tensor array gone. For a moment it
+looked like an exception worth integrating, until the amortisation was written
+out: 30,000 updates per run to repay a construction the persistent cache
+already pays once per geometry. The honest write-up is the one that gives
+those numbers and the threshold they were judged against, so a later reader
+with a memory-bound problem can disagree.
+
+The bug of the day was mine and the benchmark caught it: the first device
+kernel applied the point source's singular self pair instead of excluding it.
+It produced beautifully plausible timings and an order-unity error, which is
+exactly why every row carries a correctness column.
+
 ## 2026-09-16 — P2P unification: the invariant found real bugs, and the benchmark disagreed with the geometry names
 
 The brief asked for an architectural invariant — geometry builds tensors,

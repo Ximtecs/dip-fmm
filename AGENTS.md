@@ -58,7 +58,15 @@ runs on the CUDA backends too and is the FP32 default for point pairs, and
 the point-source P2M / point-target L2P have a procedural representation
 (`UniformFmmOptions::point_expansion_execution`, spherical basis, orders 1-10)
 that is the default on the CPU hierarchy and for FP32 `CudaFull`; finite
-tiles keep their exact precomputed operators. 3C construction /
+tiles keep their exact precomputed operators. **Phase 3B.5b is also
+COMPLETE**: the finite half of that sentence is now measured rather than
+assumed. Every exact finite P2P, P2M and L2P operator was benchmarked in both
+representations (`benchmark_operator_representation`), reconstruction lost by
+150x to 1,300,000x per field update and precomputation amortised within one to
+ten updates, so finite operators stay precomputed on every backend and no
+production policy changed; the one accepted production change is the
+precision-generic prism point-tensor kernel that production and the device
+benchmark now share. 3C construction /
 plan-preparation optimization is NEXT, 3D the final cross-backend review, and
 Phase 4 repository pruning follows. Do not begin construction optimisation,
 benchmark redesign, or repository pruning as a side effect of another change.

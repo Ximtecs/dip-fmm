@@ -190,9 +190,12 @@ physical operator
 ```
 
 Precomputation is an execution choice, not a mathematical requirement. For
-finite tiles (rectangular prisms, tetrahedra, future grains) it remains the
-expected production strategy: an expensive exact geometry-specific
-calculation once, then a compact reusable operator applied cheaply. For point
+finite tiles (rectangular prisms, tetrahedra, future grains) it is the
+production strategy on measured evidence, not by assumption: Phase 3B.5b
+benchmarked every exact finite P2P, P2M and L2P operator in both
+representations and reconstruction lost by 150x to 1,300,000x per field
+update, amortising its construction within one to ten updates on the CPU
+(`docs/static-p2p.md`, `agent_docs/performance_optimization.md`). For point
 sources and point targets the operator is a closed formula or a short
 recurrence of resident positions, and the executor may reconstruct it when
 that was measured faster or when it removes substantial persistent memory at

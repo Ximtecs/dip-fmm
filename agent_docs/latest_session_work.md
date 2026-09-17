@@ -1,5 +1,50 @@
 # Latest session work
 
+## 2026-09-17 — Exact finite-geometry procedural vs precomputed operators (Phase 3B.5b)
+
+Starting HEAD `551c790` on `worktree-p2p-unification`, a clean fast-forward of
+`refactor/architecture-v0.2` (`38f1b98`), which stayed checked out in the main
+working copy, so the work continued on the worktree branch and
+`refactor/architecture-v0.2` was fast-forwarded at the end. Question answered
+with measurements: is precomputation actually faster for the exact operators
+of uniformly magnetised prisms and tetrahedra? Yes, by 150x to 1,300,000x per
+field update, amortising within one to ten updates on the CPU.
+
+Added `benchmarks/benchmark_operator_representation.cpp` with its CUDA
+procedural prism kernel, `run_operator_representation.py` (resumable matrix
+driver) and `analyse_operator_representation.py` (ratios, retained bytes and
+the break-even). The benchmark measures construction, precomputed application
+through the production packings, and procedural reconstruction through the
+production builders, in a hot single-threaded mode and a streaming
+eight-thread mode over a complete list-1 neighbourhood, with changing moments,
+checksums and a per-row error against the FP64 canonical operator. 1003 CPU
+and 178 CUDA rows.
+
+One production change: `src/geometry/primitives/rectangular_prism_point_kernel.hpp`
+makes the MagTense prism point tensor precision-generic so production
+(`long double`) and the device benchmark (`float`/`double`) share one
+definition instead of two copies. Verified bit-identical over 20,680 tensors
+covering every branch, and locked by a new case in
+`tests/test_rectangular_prism_magtense.cpp`. No policy, option, executor or
+cache change; `PointExpansionExecution` keeps its point-only semantics.
+
+A defect found and fixed during the study: the first CUDA procedural kernel
+applied a point source's coincident self pair instead of excluding it, which
+the benchmark's own correctness column caught as an order-unity error; the
+affected rows were discarded and re-measured. compute-sanitizer memcheck,
+racecheck, initcheck and synccheck are clean on the final kernel in both pair
+directions.
+
+Documentation: a new "Exact finite-geometry procedural vs precomputed
+operators (Phase 3B.5b)" section in `agent_docs/performance_optimization.md`,
+the measured statement in `docs/static-p2p.md` and `docs/architecture.md`
+replacing the previous assumption, and the benchmark contract in
+`docs/benchmarks.md`. Recorded for Phase 3C and not acted on: the point/prism
+pair loops and the P2M/L2P plan construction are serial while the polyhedron
+loops are parallel; the prism tensor's `long double` arithmetic costs 2.7x its
+`double` equivalent for 4.5e-15 of agreement; and
+`tetrahedron_averaged_monomial` heap-allocates per (mode, term, axis).
+
 ## 2026-09-17 — Procedural vs precomputed point operators (Phase 3B.5)
 
 Starting HEAD `38f1b98` on `worktree-p2p-unification` (the user

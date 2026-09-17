@@ -1,5 +1,34 @@
 # Project progress
 
+## Exact finite-geometry procedural vs precomputed operators (Phase 3B.5b): COMPLETE — 2026-09-17
+
+Starting HEAD `551c790`. The finite counterpart of Phase 3B.5, and the answer
+is the expected one, now measured: precomputation wins for every exact finite
+operator. All eight finite-containing P2P pairs, plus finite P2M and L2P for
+prisms and tetrahedra at orders 4-10, were benchmarked in both
+representations, hot and streaming, FP32 and FP64, on the CPU and (for the one
+device-practical family) on CUDA. Reconstruction costs 150x to 1,300,000x a
+stored apply per field update, and because construction is one pass of the
+same arithmetic, precomputation amortises within one to ten complete updates
+on the CPU. The gap narrows but does not close when the stored operator
+leaves the cache: with 176 MB of tensors, four times the LLC, it is still
+840x. On CUDA the prism point tensor closes to 2.5-5.7x in FP32 arithmetic
+while retaining no operator, but it is nine times less accurate, 68-196x
+slower in FP64, and needs 30,000-38,000 updates in one run to repay a
+construction the persistent cache already pays once. Finite operators
+therefore stay precomputed on every backend, no production policy or executor
+was added, and `PointExpansionExecution` keeps its point-only semantics. The
+one accepted production change is
+`src/geometry/primitives/rectangular_prism_point_kernel.hpp`, the
+precision-generic MagTense prism point tensor that production instantiates in
+`long double` (bit-identical over 20,680 tensors) and that the benchmark
+instantiates in `double`, `float` and on the device, so the mathematics is not
+duplicated. Left behind for Article1: `benchmark_operator_representation`,
+its CUDA kernel, `run_operator_representation.py` and
+`analyse_operator_representation.py`, which reproduce every table from the
+final refactor code. Full record in `agent_docs/performance_optimization.md`.
+**Phase 3C construction / plan preparation is NEXT.**
+
 ## Procedural vs precomputed point operators (Phase 3B.5): COMPLETE — 2026-09-17
 
 Starting HEAD `38f1b98`. Precomputation is now an explicit execution choice

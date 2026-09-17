@@ -2000,3 +2000,674 @@ the M2L phase is FMA-bound (Phase 3B). No procedural M2L experiment was run.
   cache format and keys, the C ABI and the Fortran interface are unchanged;
   `CudaPlanStatistics`, `StaticExecutionPlan` consumers and
   `UniformFmmOptions` gained fields without changing existing members.
+
+## Exact finite-geometry procedural vs precomputed operators (Phase 3B.5b)
+
+### Question, starting point and method
+
+Question: the previous stage showed that the analytically cheap *point*
+operators are often faster reconstructed during every evaluation than streamed
+from precomputed rows. Is precomputation actually faster for the exact
+operators of uniformly magnetised prisms and tetrahedra, which are the primary
+scientific use case? Starting HEAD `551c790` (`docs(agent): record the
+Phase-3B.5 correctness, sanitizer and four-tree validation`) on
+`worktree-p2p-unification`, a clean fast-forward of
+`refactor/architecture-v0.2` (`38f1b98`); that branch was checked out in the
+main working copy, so the work continued on `worktree-p2p-unification` and
+`refactor/architecture-v0.2` was fast-forwarded at the end. Same machine and
+rules as the earlier Phase-3 stages: i9-14900KF with eight pinned P-core
+threads (`OMP_NUM_THREADS=8`, `OMP_PLACES={0},{2},...,{14}`,
+`OMP_PROC_BIND=close`), RTX 5090 (driver 595.84, 32 GB, 96 MB L2), conda `g++`
+15.3.0 as C++ and CUDA host compiler (the environment's `icx`/`icpx` and
+`NVCC_PREPEND_FLAGS` overridden per tree), nvcc 13.3, Release, LTO,
+`-march=native`. Fresh pinned trees `build-3b5b-cpu` (portable) and
+`build-3b5b-cuda` (CUDA); the machine was otherwise idle.
+
+Two representations of every exact finite operator were measured with the new
+`benchmark_operator_representation` (`docs/benchmarks.md`, "Operator
+representation: precomputed versus procedural"):
+
+- *precomputed*: the production builders construct the operator once
+  (`build_static_p2p_operator`; `operators::p2m::build_cuboid` /
+  `build_tetrahedron`; `operators::l2p::build_cuboid` / `build_tetrahedron`),
+  the production packings derive their execution form (particle-row SoA, dense
+  leaf blocks, the signed tensor dictionary, the dense `PackedP2M` /
+  `PackedL2P` rows, and on CUDA the leaf-block and dictionary plans) and the
+  production apply functions stream it on every update;
+- *procedural*: only the sorted positions, the body records, the list-1
+  topology and the per-body invariants a builder already hoists
+  (`PreparedTetrahedron`, `PolyhedronBody` surfaces) are retained, and the
+  *same* per-pair or per-body builder the canonical construction calls
+  reconstructs the operator during every update and applies it at once.
+  Nothing per pair or per body is stored.
+
+Both are compared against the FP64 canonical operator on the final moments of
+every run (`max_relative_error`); the moments (or local coefficients) change
+on every update and every result is checksummed, so no work can be elided.
+Construction is timed separately and never enters an update time. Medians of
+five samples of twenty updates; a procedural run that would exceed a 60 s
+budget per precision first reduces its evaluations per sample and only then
+truncates the leaf traversal, recording the measured fraction (the procedural
+paths are compute-bound, so the truncation does not change the per-pair cost).
+
+Two modes bracket the memory behaviour. *Hot* repeats one small set (512 pairs
+or 64 bodies) single-threaded, so the stored operator stays in L1/L2 and the
+number is the intrinsic arithmetic cost. *Streaming* traverses the complete
+list-1 neighbourhood of a lattice with all eight threads, as the FMM near
+field does: depth 3 with 2^3 bodies per leaf (4096 bodies, 512 leaves, 681k
+pairs) and, for the pairs whose construction allows it, depth 4 (32768 bodies,
+6.2M pairs), whose stored tensors reach 176 MB and so exceed both the 36 MB
+LLC and the 96 MB GPU L2. The hot P2P sets cover the numerical branches of the
+exact kernels: the finite self interaction (the physical demagnetisation
+tensor at zero displacement), face-adjacent bodies, random list-1 lattice
+offsets in a regular and a jittered layout, quarter-size bodies at list-1
+offsets, and the far-separation safeguard at ten summed circumradii, beyond
+the `polyhedron_far_separation_factor = 8` switch to the 216-point Gauss
+average of the source point tensor. A point source has no self pair: it is the
+singular one the identity map excludes, exactly as in production.
+
+### Part A: what the exact finite operators cost to build and to hold
+
+| Operator | Builder | Formulation | Transcendentals / pair | Stored form | Device-callable as written? |
+|---|---|---|---|---|---|
+| point <-> prism P2P | `rectangular_prism_point_tensor` (both directions by reciprocity) | MagTense f/g/h corner sums and F/F log ratios, `long double` | about 24 atan + 24 log + hypot | 6 scalars: 24 B FP32 / 48 B FP64 per pair | now yes, through the shared precision-generic kernel |
+| prism -> prism P2P | `rectangular_prism_rectangular_prism_tensor` | averaged F1/F2 antiderivatives, 8 x 8 corner alternating sums, `long double` | a few hundred atan/log | same 6 scalars | mechanically, but ruled out by cost |
+| tetrahedron <-> point P2P | `tetrahedron_point_tensor` / `point_tetrahedron_tensor` | four oriented face contributions: frames, cancellation-free atanh edge terms, Van Oosterom solid angle | about 16 log/atanh + 4 atan2 + 12 acos | same 6 scalars | no: `std::sort` frames, exceptions |
+| tetrahedron -> tetrahedron P2P | `tetrahedron_tetrahedron_tensor_prepared` | analytical Galerkin triangle-pair Laplace integral over 16 face pairs, 10 when coincident; 6^3 Gauss average of the source point tensor beyond eight summed circumradii | hundreds | same 6 scalars | no: recursion, `std::sort`, exceptions |
+| prism <-> tetrahedron P2P | `polyhedron_pair_tensor` | the same double surface integral over 12 x 4 = 48 face pairs | several hundred | same 6 scalars | no: `std::variant`, heap surfaces, recursion |
+| prism P2M / L2P | `build_cuboid` | exact prism-averaged monomials `J_beta(d,h)` contracted with the Cartesian polynomial table of `R_lm` and its gradient | none; `terms x 3` monomial averages, `O(p)` each (172 terms at p 6, 470 at p 10) | dense `3 C` / `4 C` rows | logic yes, heap and exceptions no |
+| tetrahedron P2M / L2P | `build_tetrahedron` | exact simplex Dirichlet moments through a barycentric expansion of every monomial | none; hundreds of `O(n^4)` expansions per body, each heap-allocating | dense `3 C` / `4 C` rows | no: heap allocation per call, exceptions |
+
+Retained precomputed bytes per body for P2M / L2P are `12 C` / `16 C` (FP32)
+and `24 C` / `32 C` (FP64) with `C = (p+1)^2`: 300 / 400 B at p 4, 588 / 784 B
+at p 6, 972 / 1296 B at p 8 and 1452 / 1936 B at p 10 in FP32. They do not
+depend on the geometry, only their values do, so a finite source costs exactly
+what a point source costs to hold.
+
+Two construction properties matter for the amortisation below and are
+recorded, not changed (they are Phase-3C material). First, only two of the
+canonical pair loops are parallel: the mixed prism/tetrahedron path
+(`src/operators/p2p.cpp:239`) and the tetrahedron pair path (`:388`). The
+generic loop that serves every point/prism combination and both
+point/tetrahedron directions is serial, as is the per-leaf P2M and per-target
+L2P plan construction, which matches `src/fmm/plan_preparation.cpp`. A
+construction time below is therefore serial for the point/prism families and
+eight-threaded for the polyhedron families. Second, the production prism
+tensor evaluates its MagTense formulas in `long double`: reconstructing the
+identical operator through the shared kernel in `double` is 2.7x faster and
+still agrees with the `long double` result to 4.5e-15 of the field scale, and
+in `float` 6.2x faster at 3.5e-6 (hot prism -> point, FP64 row: 2.83 us,
+1.03 us and 0.45 us per pair respectively).
+
+### Part B and C: exact finite P2P, hot and streaming
+
+Hot, one cache-resident operator set, single thread, FP64; the stored column
+is the range over the separation classes of the fastest stored packing:
+
+| Pair | stored apply | self | adjacent | list1 | small-far | far-safeguard |
+|---|---|---|---|---|---|---|
+| point->point | 2.35-7.71 ns | n/a | 19.8 ns | 31 ns | 14.8 ns | 11.4 ns |
+| point->prism | 2.02-2.36 ns | n/a | 1.66 us | 2.53 us | 2.46 us | 2.77 us |
+| prism->point | 1.96-2.29 ns | 1.64 us | 1.66 us | 2.53 us | 2.46 us | 2.76 us |
+| prism->prism | 1.96-2.57 ns | 92.4 us | 93.9 us | 99.4 us | 95.8 us | 93.9 us |
+| point->tetrahedron | 2.09-2.36 ns | n/a | 2.17 us | 2.02 us | 2.12 us | 2.02 us |
+| tetrahedron->point | 1.97-2.53 ns | 2.51 us | 2.17 us | 2.03 us | 2.12 us | 2.03 us |
+| prism->tetrahedron | 2.26-2.30 ns | 691 us | 807 us | 952 us | 675 us | 580 us |
+| tetrahedron->prism | 2.18-2.27 ns | 690 us | 802 us | 949 us | 571 us | 434 us |
+| tetrahedron->tetrahedron | 1.96-2.27 ns | 30.2 us | 139 us | 277 us | 427 us | 434 us |
+
+Point -> point is the control, and it is not the production procedural point
+path: it runs the same generic per-pair reconstruction loop as the finite
+pairs, so it measures what that loop costs when the operator itself is nearly
+free. At 3x to 8x it separates the cost of the loop structure from the cost of
+the exact geometry, and the finite pairs add another two to five orders of
+magnitude on top of it. (The production point procedural executor is the fused
+`PointGeometry` sweep of Phase 3B.5a, a different implementation that beats
+the stored tensors; it is not what this row measures.) Every finite pair is
+between 670x and 540,000x slower reconstructed, and the ordering follows the
+mathematics of Part A: one
+analytical prism or tetrahedron point tensor costs about 2 us, a
+target-averaged prism pair about 95 us, a tetrahedron pair 30 us coincident to
+434 us through the far-separation quadrature, and a prism/tetrahedron pair,
+whose 48 face pairs each run the recursive Galerkin integral, up to 1.03 ms.
+The far-separation safeguard is not a cheap path: at ten summed circumradii
+the 216-point Gauss average of the source point tensor costs 434-580 us for a
+mixed pair, more than the analytical integral it replaces for a tetrahedron
+pair at contact (30 us).
+
+Streaming, complete list-1 neighbourhood, eight threads. `K_break_even` is
+`(T_build - T_procedural_setup) / (T_procedural - T_apply)` in complete field
+updates; the procedural setup is zero because the procedural path retains
+nothing:
+
+FP32:
+
+| Pair | layout | pairs | T_build | best stored | apply/pair | procedural/pair | ratio | stored bytes | K_break_even |
+|---|---|---|---|---|---|---|---|---|---|
+| point->point | regular | 677,376 | 82.1 ms | tensor-dictionary-1B | 0.0933 ns | 1.37 ns | 14.7x | 951 kB | 95 |
+| point->point | irregular | 677,376 | 126 ms | tensor-dictionary-4B | 0.113 ns | 1.38 ns | 12.2x | 11.1 MB | 1.5e+02 |
+| point->prism | regular | 677,376 | 1.75 s | tensor-dictionary-1B | 0.0937 ns | 309 ns | 3.29e3x | 952 kB | 8.4 |
+| point->prism | regular | 6,196,736 | 16.2 s | tensor-dictionary-1B | 0.0802 ns | 308 ns | 3.83e3x | 8.65 MB | 8.5 |
+| point->prism | irregular | 6,196,736 | 20.5 s | tensor-dictionary-4B | 0.42 ns | 355 ns | 844x | 176 MB | 9.3 |
+| prism->point | regular | 681,472 | 1.75 s | tensor-dictionary-1B | 0.0926 ns | 308 ns | 3.32e3x | 952 kB | 8.4 |
+| prism->point | regular | 6,229,504 | 16.2 s | tensor-dictionary-1B | 0.0794 ns | 307 ns | 3.86e3x | 8.65 MB | 8.5 |
+| prism->point | irregular | 681,472 | 2.15 s | tensor-dictionary-4B | 0.113 ns | 357 ns | 3.17e3x | 19.2 MB | 8.8 |
+| prism->point | irregular | 6,229,504 | 20.4 s | tensor-dictionary-4B | 0.426 ns | 354 ns | 830x | 176 MB | 9.3 |
+| prism->prism | regular | 681,472 | 66.9 s | tensor-dictionary-2B | 0.0929 ns | 12.3 us | 1.33e5x | 953 kB | 8 |
+| prism->prism | irregular | 681,472 | 64.5 s | tensor-dictionary-4B | 0.113 ns | 11.8 us | 1.05e5x | 11.1 MB | 8 |
+| point->tetrahedron | regular | 677,376 | 1.46 s | tensor-dictionary-2B | 0.0946 ns | 254 ns | 2.68e3x | 1.64 MB | 8.5 |
+| point->tetrahedron | regular | 6,196,736 | 13.5 s | tensor-dictionary-2B | 0.0817 ns | 252 ns | 3.08e3x | 14.9 MB | 8.6 |
+| point->tetrahedron | irregular | 677,376 | 1.6 s | tensor-dictionary-4B | 0.119 ns | 257 ns | 2.16e3x | 19.2 MB | 9.2 |
+| point->tetrahedron | irregular | 6,196,736 | 15.6 s | tensor-dictionary-4B | 0.44 ns | 255 ns | 579x | 176 MB | 9.9 |
+| tetrahedron->point | regular | 681,472 | 1.46 s | tensor-dictionary-2B | 0.0948 ns | 254 ns | 2.68e3x | 1.64 MB | 8.4 |
+| tetrahedron->point | regular | 6,229,504 | 13.4 s | tensor-dictionary-2B | 0.0821 ns | 252 ns | 3.07e3x | 14.9 MB | 8.6 |
+| tetrahedron->point | irregular | 681,472 | 1.6 s | tensor-dictionary-4B | 0.101 ns | 258 ns | 2.56e3x | 19.3 MB | 9.1 |
+| tetrahedron->point | irregular | 6,229,504 | 15.6 s | tensor-dictionary-4B | 0.43 ns | 256 ns | 596x | 176 MB | 9.8 |
+| prism->tetrahedron | regular | 681,472 | 80.7 s | tensor-dictionary-2B | 0.0959 ns | 120 us (0.50) | 1.26e6x | 1.64 MB | 0.98 |
+| prism->tetrahedron | irregular | 681,472 | 88.9 s | tensor-dictionary-4B | 0.109 ns | 133 us (0.45) | 1.21e6x | 19.3 MB | 0.98 |
+| tetrahedron->prism | regular | 681,472 | 80.7 s | tensor-dictionary-2B | 0.0959 ns | 121 us (0.51) | 1.26e6x | 1.64 MB | 0.98 |
+| tetrahedron->prism | irregular | 681,472 | 88.9 s | tensor-dictionary-4B | 0.103 ns | 133 us (0.45) | 1.28e6x | 19.3 MB | 0.98 |
+| tetrahedron->tetrahedron | regular | 681,472 | 14.3 s | tensor-dictionary-2B | 0.0931 ns | 33.4 us | 3.59e5x | 952 kB | 0.63 |
+| tetrahedron->tetrahedron | irregular | 681,472 | 18.3 s | tensor-dictionary-4B | 0.107 ns | 43.1 us | 4.05e5x | 11.1 MB | 0.62 |
+
+FP64:
+
+| Pair | layout | pairs | T_build | best stored | apply/pair | procedural/pair | ratio | stored bytes | K_break_even |
+|---|---|---|---|---|---|---|---|---|---|
+| point->point | regular | 677,376 | 82.1 ms | tensor-dictionary-1B | 0.124 ns | 1.12 ns | 9.06x | 956 kB | 1.2e+02 |
+| point->point | irregular | 677,376 | 126 ms | tensor-dictionary-4B | 0.155 ns | 1.12 ns | 7.26x | 19.2 MB | 1.9e+02 |
+| point->prism | regular | 677,376 | 1.75 s | tensor-dictionary-1B | 0.124 ns | 308 ns | 2.48e3x | 958 kB | 8.4 |
+| point->prism | regular | 6,196,736 | 16.2 s | tensor-dictionary-1B | 0.111 ns | 307 ns | 2.78e3x | 8.66 MB | 8.5 |
+| point->prism | irregular | 6,196,736 | 18.5 s | leaf-block | 0.852 ns | 354 ns | 416x | 301 MB | 8.4 |
+| prism->point | regular | 681,472 | 1.75 s | tensor-dictionary-1B | 0.124 ns | 308 ns | 2.49e3x | 958 kB | 8.4 |
+| prism->point | regular | 6,229,504 | 16.2 s | tensor-dictionary-1B | 0.109 ns | 307 ns | 2.81e3x | 8.66 MB | 8.5 |
+| prism->point | irregular | 681,472 | 2.15 s | tensor-dictionary-4B | 0.198 ns | 357 ns | 1.80e3x | 35.5 MB | 8.8 |
+| prism->point | irregular | 6,229,504 | 20.4 s | tensor-dictionary-4B | 0.851 ns | 354 ns | 416x | 325 MB | 9.3 |
+| prism->prism | regular | 681,472 | 66.9 s | tensor-dictionary-2B | 0.125 ns | 12.3 us | 9.87e4x | 1.65 MB | 8 |
+| prism->prism | irregular | 681,472 | 64.5 s | tensor-dictionary-4B | 0.195 ns | 11.8 us | 6.07e4x | 35.2 MB | 8 |
+| point->tetrahedron | regular | 677,376 | 1.46 s | tensor-dictionary-2B | 0.125 ns | 254 ns | 2.02e3x | 1.65 MB | 8.5 |
+| point->tetrahedron | regular | 6,196,736 | 13.5 s | tensor-dictionary-2B | 0.113 ns | 252 ns | 2.23e3x | 14.9 MB | 8.6 |
+| point->tetrahedron | irregular | 677,376 | 1.6 s | tensor-dictionary-4B | 0.202 ns | 257 ns | 1.27e3x | 35.5 MB | 9.2 |
+| point->tetrahedron | irregular | 6,196,736 | 13.5 s | leaf-block | 0.859 ns | 255 ns | 297x | 301 MB | 8.6 |
+| tetrahedron->point | regular | 681,472 | 1.46 s | tensor-dictionary-2B | 0.127 ns | 254 ns | 2.00e3x | 1.65 MB | 8.4 |
+| tetrahedron->point | regular | 6,229,504 | 13.4 s | tensor-dictionary-2B | 0.112 ns | 252 ns | 2.25e3x | 14.9 MB | 8.6 |
+| tetrahedron->point | irregular | 681,472 | 1.6 s | tensor-dictionary-4B | 0.204 ns | 258 ns | 1.26e3x | 35.5 MB | 9.1 |
+| tetrahedron->point | irregular | 6,229,504 | 15.6 s | tensor-dictionary-4B | 0.845 ns | 256 ns | 303x | 325 MB | 9.8 |
+| prism->tetrahedron | regular | 681,472 | 80.7 s | tensor-dictionary-2B | 0.126 ns | 120 us (0.50) | 9.54e5x | 1.65 MB | 0.98 |
+| prism->tetrahedron | irregular | 681,472 | 88.9 s | tensor-dictionary-4B | 0.196 ns | 133 us (0.45) | 6.78e5x | 35.5 MB | 0.98 |
+| tetrahedron->prism | regular | 681,472 | 80.7 s | tensor-dictionary-2B | 0.127 ns | 121 us (0.51) | 9.52e5x | 1.65 MB | 0.98 |
+| tetrahedron->prism | irregular | 681,472 | 88.9 s | tensor-dictionary-4B | 0.197 ns | 133 us (0.45) | 6.73e5x | 35.5 MB | 0.98 |
+| tetrahedron->tetrahedron | regular | 681,472 | 14.3 s | tensor-dictionary-2B | 0.126 ns | 33.4 us | 2.66e5x | 1.64 MB | 0.63 |
+| tetrahedron->tetrahedron | irregular | 681,472 | 18.3 s | tensor-dictionary-4B | 0.16 ns | 43.1 us | 2.70e5x | 19.3 MB | 0.62 |
+
+Three things follow. The stored representations are at the memory roof and the
+procedural ones are compute-bound, so the depth-4 lattice is the fair test:
+with a 176 MB irregular operator, four times the LLC, the stored apply slows
+from 0.11 to 0.43 ns per pair while the procedural cost does not move, and the
+gap narrows only from about 3200x to about 840x. The regular lattice
+compresses to one- or two-byte dictionary tokens (8.7-14.9 MB for 6.2M pairs)
+and stays cache resident at 0.08 ns per pair. And the break-even is one to ten
+complete field updates for every finite pair: a serial construction costs
+about eight parallel procedural updates (the thread count), a parallel
+construction costs about one, because construction *is* one pass of the same
+arithmetic. Even a single-shot calculation that evaluates the field ten times
+is already better off precomputing.
+
+### Part D: CUDA finite P2P
+
+Classification of the three distinct mathematical families, from the Part A
+audit and the CPU costs above:
+
+| Family | Device-callable with modest work? | What it would take |
+|---|---|---|
+| prism analytical point tensor (point <-> prism) | yes | the formulas are fixed-size arithmetic with `atan`/`log`/`hypot` and one `std::optional` branch; made precision-generic in `src/geometry/primitives/rectangular_prism_point_kernel.hpp` and instantiated on the device |
+| prism pair (target-averaged F1/F2) | yes, mechanically | same shape, 64-corner sums; not ported because the CPU cost (95 us per pair) already rules it out by five orders of magnitude |
+| tetrahedron point tensor | no | `std::sort` face frames, `std::domain_error` singularity detection |
+| tetrahedron pair and mixed polyhedron | no | recursive `triangle_i3 -> i2s/i2t -> i1 -> i0` dimensional reduction, `std::variant` bodies, heap-backed prism surfaces, exceptions |
+
+The prism family was ported, because it is exactly the "small shared-math
+refactor" that makes a real measurement possible: the MagTense f/g/h corner
+sums and F/F log ratios now live once in a precision-generic header that
+production instantiates in `long double` (bit-identical to the previous
+implementation, verified over 20k tensors covering the face, edge, vertex and
+symmetry-plane branches) and that the benchmark instantiates in `double` and
+`float`, on the host and inside a CUDA kernel
+(`benchmarks/benchmark_operator_representation_cuda.cu`, one thread per
+(target, source range) work item, no stored tensors).
+
+The fastest stored packing of every case and every procedural row; the
+complete 178-row set, including the slower stored packings, is in the
+CSV.
+
+| Pair | layout | pairs | prec | representation | kind | update/pair | kernel | device bytes | error |
+|---|---|---|---|---|---|---|---|---|---|
+| point->point | irregular | 677,376 | fp32 | leaf-block | precomputed | 0.0521 ns | 10 us | 16.7 MB | 1.8e-07 |
+| point->point | irregular | 677,376 | fp64 | leaf-block | precomputed | 0.0858 ns | 24 us | 33 MB | 8.8e-16 |
+| point->point | regular | 677,376 | fp32 | leaf-block | precomputed | 0.0522 ns | 10 us | 16.7 MB | 3.2e-07 |
+| point->point | regular | 677,376 | fp64 | leaf-block | precomputed | 0.086 ns | 24 us | 33 MB | 1.1e-15 |
+| point->prism | irregular | 677,376 | fp32 | leaf-block | precomputed | 0.0523 ns | 9 us | 16.7 MB | 2.3e-07 |
+| point->prism | irregular | 677,376 | fp32 | procedural-cuda-fp64-math | procedural | 3.64 ns | 2.44 ms | 0 B | 2.0e-07 |
+| point->prism | irregular | 677,376 | fp32 | procedural-cuda-fp32-math | procedural | 0.135 ns | 72 us | 0 B | 5.3e-06 |
+| point->prism | irregular | 677,376 | fp64 | leaf-block | precomputed | 0.0845 ns | 26 us | 33 MB | 9.4e-16 |
+| point->prism | irregular | 677,376 | fp64 | procedural-cuda | procedural | 3.64 ns | 2.44 ms | 0 B | 1.3e-14 |
+| point->prism | irregular | 6,196,736 | fp32 | leaf-block | precomputed | 0.0292 ns | 98 us | 152 MB | 2.8e-07 |
+| point->prism | irregular | 6,196,736 | fp32 | procedural-cuda-fp64-math | procedural | 3.57 ns | 22 ms | 0 B | 2.3e-07 |
+| point->prism | irregular | 6,196,736 | fp32 | procedural-cuda-fp32-math | procedural | 0.103 ns | 557 us | 0 B | 9.7e-06 |
+| point->prism | irregular | 6,196,736 | fp64 | leaf-block | precomputed | 0.0616 ns | 193 us | 302 MB | 1.2e-15 |
+| point->prism | irregular | 6,196,736 | fp64 | procedural-cuda | procedural | 3.57 ns | 22 ms | 0 B | 2.0e-14 |
+| point->prism | regular | 677,376 | fp32 | leaf-block | precomputed | 0.0528 ns | 10 us | 16.7 MB | 1.6e-07 |
+| point->prism | regular | 677,376 | fp32 | procedural-cuda-fp64-math | procedural | 3.64 ns | 2.44 ms | 0 B | 2.3e-07 |
+| point->prism | regular | 677,376 | fp32 | procedural-cuda-fp32-math | procedural | 0.137 ns | 72 us | 0 B | 2.2e-06 |
+| point->prism | regular | 677,376 | fp64 | leaf-block | precomputed | 0.0859 ns | 24 us | 33 MB | 1.2e-15 |
+| point->prism | regular | 677,376 | fp64 | procedural-cuda | procedural | 3.64 ns | 2.44 ms | 0 B | 3.7e-15 |
+| point->prism | regular | 6,196,736 | fp32 | tensor-dictionary-1B-target-owned | precomputed | 0.0187 ns | 45 us | 8.82 MB | 7.9e-07 |
+| point->prism | regular | 6,196,736 | fp32 | procedural-cuda-fp64-math | procedural | 3.57 ns | 22 ms | 0 B | 2.8e-07 |
+| point->prism | regular | 6,196,736 | fp32 | procedural-cuda-fp32-math | procedural | 0.105 ns | 555 us | 0 B | 2.6e-06 |
+| point->prism | regular | 6,196,736 | fp64 | tensor-dictionary-1B-target-owned | precomputed | 0.0515 ns | 134 us | 8.82 MB | 0.0e+00 |
+| point->prism | regular | 6,196,736 | fp64 | procedural-cuda | procedural | 3.57 ns | 22 ms | 0 B | 4.0e-15 |
+| point->tetrahedron | irregular | 677,376 | fp32 | leaf-block | precomputed | 0.0502 ns | 9 us | 16.7 MB | 1.7e-07 |
+| point->tetrahedron | irregular | 677,376 | fp64 | leaf-block | precomputed | 0.0859 ns | 25 us | 33 MB | 9.2e-16 |
+| point->tetrahedron | regular | 677,376 | fp32 | leaf-block | precomputed | 0.0542 ns | 9 us | 16.7 MB | 2.6e-07 |
+| point->tetrahedron | regular | 677,376 | fp64 | leaf-block | precomputed | 0.0842 ns | 24 us | 33 MB | 1.4e-15 |
+| prism->point | irregular | 681,472 | fp32 | leaf-block | precomputed | 0.0527 ns | 9 us | 16.7 MB | 2.8e-07 |
+| prism->point | irregular | 681,472 | fp32 | procedural-cuda-fp64-math | procedural | 3.62 ns | 2.45 ms | 0 B | 2.5e-07 |
+| prism->point | irregular | 681,472 | fp32 | procedural-cuda-fp32-math | procedural | 0.138 ns | 74 us | 0 B | 1.9e-06 |
+| prism->point | irregular | 681,472 | fp64 | leaf-block | precomputed | 0.0851 ns | 24 us | 33 MB | 1.1e-15 |
+| prism->point | irregular | 681,472 | fp64 | procedural-cuda | procedural | 3.62 ns | 2.44 ms | 0 B | 3.7e-15 |
+| prism->point | irregular | 6,229,504 | fp32 | leaf-block | precomputed | 0.0288 ns | 100 us | 152 MB | 3.0e-07 |
+| prism->point | irregular | 6,229,504 | fp32 | procedural-cuda-fp64-math | procedural | 3.55 ns | 22 ms | 0 B | 2.7e-07 |
+| prism->point | irregular | 6,229,504 | fp32 | procedural-cuda-fp32-math | procedural | 0.105 ns | 565 us | 0 B | 2.8e-06 |
+| prism->point | irregular | 6,229,504 | fp64 | leaf-block | precomputed | 0.0605 ns | 192 us | 302 MB | 1.4e-15 |
+| prism->point | irregular | 6,229,504 | fp64 | procedural-cuda | procedural | 3.55 ns | 22 ms | 0 B | 4.9e-15 |
+| prism->point | regular | 681,472 | fp32 | leaf-block | precomputed | 0.0528 ns | 9 us | 16.7 MB | 2.5e-07 |
+| prism->point | regular | 681,472 | fp32 | procedural-cuda-fp64-math | procedural | 3.61 ns | 2.44 ms | 0 B | 2.5e-07 |
+| prism->point | regular | 681,472 | fp32 | procedural-cuda-fp32-math | procedural | 0.134 ns | 72 us | 0 B | 1.8e-06 |
+| prism->point | regular | 681,472 | fp64 | leaf-block | precomputed | 0.0854 ns | 24 us | 33 MB | 1.2e-15 |
+| prism->point | regular | 681,472 | fp64 | procedural-cuda | procedural | 3.62 ns | 2.44 ms | 0 B | 3.0e-15 |
+| prism->point | regular | 6,229,504 | fp32 | tensor-dictionary-1B-target-owned | precomputed | 0.0184 ns | 48 us | 8.82 MB | 8.2e-07 |
+| prism->point | regular | 6,229,504 | fp32 | procedural-cuda-fp64-math | procedural | 3.53 ns | 21.9 ms | 0 B | 2.6e-07 |
+| prism->point | regular | 6,229,504 | fp32 | procedural-cuda-fp32-math | procedural | 0.104 ns | 559 us | 0 B | 1.8e-06 |
+| prism->point | regular | 6,229,504 | fp64 | tensor-dictionary-1B-target-owned | precomputed | 0.0508 ns | 141 us | 8.82 MB | 0.0e+00 |
+| prism->point | regular | 6,229,504 | fp64 | procedural-cuda | procedural | 3.56 ns | 22 ms | 0 B | 2.7e-15 |
+| prism->prism | irregular | 681,472 | fp32 | leaf-block | precomputed | 0.0513 ns | 9 us | 16.7 MB | 2.8e-07 |
+| prism->prism | irregular | 681,472 | fp64 | leaf-block | precomputed | 0.0851 ns | 24 us | 33 MB | 1.2e-15 |
+| prism->prism | regular | 681,472 | fp32 | leaf-block | precomputed | 0.0519 ns | 9 us | 16.7 MB | 2.0e-07 |
+| prism->prism | regular | 681,472 | fp64 | leaf-block | precomputed | 0.0853 ns | 24 us | 33 MB | 1.3e-15 |
+| prism->tetrahedron | irregular | 681,472 | fp32 | leaf-block | precomputed | 0.0537 ns | 17 us | 16.7 MB | 3.8e-07 |
+| prism->tetrahedron | irregular | 681,472 | fp64 | leaf-block | precomputed | 0.0855 ns | 24 us | 33 MB | 1.5e-15 |
+| prism->tetrahedron | regular | 681,472 | fp32 | leaf-block | precomputed | 0.0549 ns | 17 us | 16.7 MB | 2.1e-07 |
+| prism->tetrahedron | regular | 681,472 | fp64 | leaf-block | precomputed | 0.0852 ns | 24 us | 33 MB | 1.1e-15 |
+| tetrahedron->point | irregular | 681,472 | fp32 | leaf-block | precomputed | 0.0542 ns | 9 us | 16.7 MB | 2.3e-07 |
+| tetrahedron->point | irregular | 681,472 | fp64 | leaf-block | precomputed | 0.0845 ns | 24 us | 33 MB | 1.8e-15 |
+| tetrahedron->point | regular | 681,472 | fp32 | leaf-block | precomputed | 0.0516 ns | 9 us | 16.7 MB | 4.5e-07 |
+| tetrahedron->point | regular | 681,472 | fp64 | leaf-block | precomputed | 0.0844 ns | 24 us | 33 MB | 1.7e-15 |
+| tetrahedron->prism | irregular | 681,472 | fp32 | leaf-block | precomputed | 0.0522 ns | 9 us | 16.7 MB | 2.3e-07 |
+| tetrahedron->prism | irregular | 681,472 | fp64 | leaf-block | precomputed | 0.0847 ns | 24 us | 33 MB | 1.2e-15 |
+| tetrahedron->prism | regular | 681,472 | fp32 | leaf-block | precomputed | 0.0543 ns | 17 us | 16.7 MB | 2.2e-07 |
+| tetrahedron->prism | regular | 681,472 | fp64 | leaf-block | precomputed | 0.0854 ns | 24 us | 33 MB | 1.8e-15 |
+| tetrahedron->tetrahedron | irregular | 681,472 | fp32 | leaf-block | precomputed | 0.0506 ns | 9 us | 16.7 MB | 2.9e-07 |
+| tetrahedron->tetrahedron | irregular | 681,472 | fp64 | leaf-block | precomputed | 0.0849 ns | 24 us | 33 MB | 1.3e-15 |
+| tetrahedron->tetrahedron | regular | 681,472 | fp32 | leaf-block | precomputed | 0.0516 ns | 9 us | 16.7 MB | 3.7e-07 |
+| tetrahedron->tetrahedron | regular | 681,472 | fp64 | leaf-block | precomputed | 0.0848 ns | 24 us | 33 MB | 1.4e-15 |
+
+The device narrows the gap by two and a half orders of magnitude and still
+loses. Reconstructing the prism point tensor in FP32 arithmetic costs 0.10 to
+0.14 ns per pair against 0.018 to 0.053 ns for the best stored packing, a
+factor of 2.5 to 5.7, and it retains no operator at all against 8.8 MB (a
+one-byte dictionary on the 32768-body lattice) to 152 MB (leaf blocks on the
+irregular one). Reconstructing in FP64 arithmetic, which is what an FP64 plan
+would need, costs 3.5 ns per pair: 68x to 196x the stored apply, because the
+consumer GPU's FP64 transcendental rate is a small fraction of its FP32 one.
+Against the same reconstruction on eight pinned CPU cores the device is 376x
+to 559x faster in float arithmetic, 31x to 41x faster in double, and 2300x to
+3400x faster than the production `long double` host path, which is the
+measurement the feasibility question needed.
+
+Accuracy is not equivalent either. The FP32-math reconstruction sits at
+1.8e-6 to 2.8e-6 of the field scale against 2.5e-7 to 8.2e-7 for the stored
+FP32 tensors, and the same FP32 reconstruction degrades to 4.5e-4 in the
+far-separation hot class, where the corner sums of the analytical formula
+cancel. The FP64-math reconstruction matches the stored FP32 tensors (2.5e-7)
+and the FP64 ones to 3.0e-15.
+
+The amortisation is the one place where this family is genuinely interesting,
+and it is worth stating precisely because it is the closest any finite
+operator came. Because the stored apply is so fast on the device and the
+construction is a serial host loop, the break-even is not one to ten updates
+as on the CPU but 30,000 to 38,000:
+
+| Case | T_build | stored apply | procedural | ratio | bytes saved | K_break_even |
+|---|---|---|---|---|---|---|
+| 681k pairs, regular | 1.7 s | 0.036 ms | 0.091 ms | 2.5x | 16.7 MB | 31,200 |
+| 681k pairs, irregular | 2.0 s | 0.036 ms | 0.094 ms | 2.6x | 16.7 MB | 34,300 |
+| 6.2M pairs, regular | 15.9 s | 0.115 ms | 0.649 ms | 5.7x | 8.8 MB | 29,700 |
+| 6.2M pairs, irregular | 18.2 s | 0.180 ms | 0.657 ms | 3.7x | 152 MB | 38,200 |
+
+A single run shorter than about thirty thousand field updates would therefore
+finish sooner with a procedural prism near field on the GPU. That is not a
+reason to change production, for three reasons that the table does not show.
+The persistent geometry cache already pays the construction once per geometry,
+so from the second run onwards the stored path wins from the first update.
+The break-even compares against a construction that is serial host code, which
+Phase 3C may change, and every second removed there moves the break-even
+further out of reach. And the procedural path exists for one of the nine
+geometry pairs, in FP32 arithmetic only, at nine times the error of the stored
+FP32 tensors. No procedural finite path was therefore integrated into
+`UniformFmm`, and no complete FMM measurement was run; the numbers above are
+recorded so the threshold can be re-examined if device memory rather than time
+ever becomes the binding constraint.
+
+The three families that were not ported are recorded instead, as the brief
+allows. Their procedural cost on eight CPU cores is 12.3 us (prism pair),
+33.4 us (tetrahedron pair) and 120 us (mixed pair) per pair, against 0.05 to
+0.09 ns for a stored apply on the device, so a device implementation would
+have to be between 2x10^5 and 2x10^6 times faster than the eight-thread CPU to
+reach parity. The measured prism port achieves 376x to 559x in float
+arithmetic and 31x to 41x in double. The parallelism is ample (one pair per
+thread) but
+the arithmetic is not: the tetrahedron pair integral is recursive with
+data-dependent branches per face pair, which is why no such subsystem was
+built for this experiment.
+
+### Parts E and F: exact finite P2M and L2P
+
+P2M (streaming, eight threads):
+
+| geometry | layout | p | prec | bodies | T_build/source | row bytes | stored apply | procedural | ratio | K_break_even |
+|---|---|---|---|---|---|---|---|---|---|---|
+| prism | irregular | 4 | fp32 | 4,096 | 5.7 us | 300 B | 3.23 ns | 686 ns | 213x | 8.3 |
+| prism | irregular | 4 | fp64 | 4,096 | 5.65 us | 600 B | 4.46 ns | 685 ns | 153x | 8.3 |
+| prism | irregular | 6 | fp32 | 4,096 | 28.3 us | 588 B | 3.99 ns | 3.6 us | 902x | 7.9 |
+| prism | irregular | 6 | fp64 | 4,096 | 28.1 us | 1176 B | 5.87 ns | 3.57 us | 608x | 7.9 |
+| prism | irregular | 8 | fp32 | 4,096 | 89.6 us | 972 B | 5.19 ns | 11.4 us | 2.20e3x | 7.8 |
+| prism | irregular | 8 | fp64 | 4,096 | 89.2 us | 1944 B | 8.01 ns | 11.4 us | 1.42e3x | 7.8 |
+| prism | irregular | 10 | fp32 | 4,096 | 224 us | 1452 B | 6.34 ns | 31.4 us | 4.96e3x | 7.1 |
+| prism | irregular | 10 | fp64 | 4,096 | 224 us | 2904 B | 9.37 ns | 28.6 us | 3.06e3x | 7.8 |
+| prism | regular | 4 | fp32 | 4,096 | 5.8 us | 300 B | 2.57 ns | 688 ns | 268x | 8.5 |
+| prism | regular | 4 | fp64 | 4,096 | 5.71 us | 600 B | 4.52 ns | 680 ns | 151x | 8.4 |
+| prism | regular | 6 | fp32 | 4,096 | 28.4 us | 588 B | 3.84 ns | 3.56 us | 926x | 8 |
+| prism | regular | 6 | fp64 | 4,096 | 28.2 us | 1176 B | 6.13 ns | 3.55 us | 578x | 8 |
+| prism | regular | 8 | fp32 | 4,096 | 89.6 us | 972 B | 5.04 ns | 11.4 us | 2.25e3x | 7.9 |
+| prism | regular | 8 | fp64 | 4,096 | 89.1 us | 1944 B | 8.31 ns | 11.3 us | 1.36e3x | 7.9 |
+| prism | regular | 10 | fp32 | 4,096 | 224 us | 1452 B | 6.33 ns | 28.8 us | 4.54e3x | 7.8 |
+| prism | regular | 10 | fp64 | 4,096 | 223 us | 2904 B | 10.1 ns | 31.1 us | 3.08e3x | 7.2 |
+| tetrahedron | irregular | 4 | fp32 | 4,096 | 74.6 us | 300 B | 3.21 ns | 9.67 us | 3.01e3x | 7.7 |
+| tetrahedron | irregular | 4 | fp64 | 4,096 | 74.5 us | 600 B | 4.49 ns | 9.61 us | 2.14e3x | 7.8 |
+| tetrahedron | irregular | 6 | fp32 | 4,096 | 1.21 ms | 588 B | 4.03 ns | 165 us | 4.08e4x | 7.4 |
+| tetrahedron | irregular | 6 | fp64 | 4,096 | 1.21 ms | 1176 B | 5.9 ns | 163 us | 2.76e4x | 7.5 |
+| tetrahedron | irregular | 8 | fp32 | 4,096 | 16.8 ms | 972 B | 5.14 ns | 2.26 ms (1.00) | 4.40e5x | 7.4 |
+| tetrahedron | irregular | 8 | fp64 | 4,096 | 16.8 ms | 1944 B | 7.61 ns | 2.27 ms (1.00) | 2.98e5x | 7.4 |
+| tetrahedron | regular | 4 | fp32 | 4,096 | 73.1 us | 300 B | 3.13 ns | 9.47 us | 3.03e3x | 7.7 |
+| tetrahedron | regular | 4 | fp64 | 4,096 | 73 us | 600 B | 4.48 ns | 9.45 us | 2.11e3x | 7.7 |
+| tetrahedron | regular | 6 | fp32 | 4,096 | 1.23 ms | 588 B | 4.01 ns | 166 us | 4.14e4x | 7.4 |
+| tetrahedron | regular | 6 | fp64 | 4,096 | 1.23 ms | 1176 B | 6.07 ns | 165 us | 2.72e4x | 7.4 |
+| tetrahedron | regular | 8 | fp32 | 4,096 | 16.9 ms | 972 B | 4.98 ns | 2.28 ms (0.99) | 4.58e5x | 7.4 |
+| tetrahedron | regular | 8 | fp64 | 4,096 | 16.9 ms | 1944 B | 8.35 ns | 2.27 ms (0.99) | 2.72e5x | 7.4 |
+
+L2P (streaming, eight threads):
+
+| geometry | layout | p | prec | bodies | T_build/target | row bytes | stored apply | procedural | ratio | K_break_even |
+|---|---|---|---|---|---|---|---|---|---|---|
+| prism | irregular | 4 | fp32 | 4,096 | 9.53 us | 400 B | 2.7 ns | 1.17 us | 432x | 8.2 |
+| prism | irregular | 4 | fp64 | 4,096 | 9.47 us | 800 B | 3.26 ns | 1.16 us | 356x | 8.2 |
+| prism | irregular | 6 | fp32 | 4,096 | 42.5 us | 784 B | 3.23 ns | 5.53 us | 1.71e3x | 7.7 |
+| prism | irregular | 6 | fp64 | 4,096 | 42.4 us | 1568 B | 4.44 ns | 5.45 us | 1.23e3x | 7.8 |
+| prism | irregular | 8 | fp32 | 4,096 | 130 us | 1296 B | 3.89 ns | 17.4 us | 4.48e3x | 7.5 |
+| prism | irregular | 8 | fp64 | 4,096 | 130 us | 2592 B | 5.93 ns | 16.8 us | 2.83e3x | 7.7 |
+| prism | irregular | 10 | fp32 | 4,096 | 322 us | 1936 B | 5 ns | 43.1 us | 8.62e3x | 7.5 |
+| prism | irregular | 10 | fp64 | 4,096 | 322 us | 3872 B | 7 ns | 44.1 us | 6.31e3x | 7.3 |
+| prism | regular | 4 | fp32 | 4,096 | 9.55 us | 400 B | 2.73 ns | 1.16 us | 424x | 8.3 |
+| prism | regular | 4 | fp64 | 4,096 | 9.46 us | 800 B | 3.24 ns | 1.16 us | 358x | 8.2 |
+| prism | regular | 6 | fp32 | 4,096 | 42.5 us | 784 B | 3.23 ns | 5.45 us | 1.69e3x | 7.8 |
+| prism | regular | 6 | fp64 | 4,096 | 42.4 us | 1568 B | 4.48 ns | 5.38 us | 1.20e3x | 7.9 |
+| prism | regular | 8 | fp32 | 4,096 | 130 us | 1296 B | 3.88 ns | 16.7 us | 4.31e3x | 7.8 |
+| prism | regular | 8 | fp64 | 4,096 | 130 us | 2592 B | 6.01 ns | 17.3 us | 2.89e3x | 7.5 |
+| prism | regular | 10 | fp32 | 4,096 | 322 us | 1936 B | 5.05 ns | 44.2 us | 8.74e3x | 7.3 |
+| prism | regular | 10 | fp64 | 4,096 | 322 us | 3872 B | 6.85 ns | 43.4 us | 6.34e3x | 7.4 |
+| tetrahedron | irregular | 4 | fp32 | 4,096 | 171 us | 400 B | 2.66 ns | 22.3 us | 8.37e3x | 7.7 |
+| tetrahedron | irregular | 4 | fp64 | 4,096 | 171 us | 800 B | 3.34 ns | 21.7 us | 6.51e3x | 7.9 |
+| tetrahedron | irregular | 6 | fp32 | 4,096 | 2.72 ms | 784 B | 3.23 ns | 367 us | 1.14e5x | 7.4 |
+| tetrahedron | irregular | 6 | fp64 | 4,096 | 2.72 ms | 1568 B | 4.42 ns | 365 us | 8.26e4x | 7.5 |
+| tetrahedron | irregular | 8 | fp32 | 4,096 | 35.6 ms | 1296 B | 3.89 ns | 4.87 ms (0.47) | 1.25e6x | 7.3 |
+| tetrahedron | irregular | 8 | fp64 | 4,096 | 35.6 ms | 2592 B | 5.97 ns | 4.86 ms (0.47) | 8.14e5x | 7.3 |
+| tetrahedron | regular | 4 | fp32 | 4,096 | 168 us | 400 B | 2.71 ns | 22 us | 8.12e3x | 7.7 |
+| tetrahedron | regular | 4 | fp64 | 4,096 | 168 us | 800 B | 3.28 ns | 22.5 us | 6.86e3x | 7.5 |
+| tetrahedron | regular | 6 | fp32 | 4,096 | 2.74 ms | 784 B | 3.25 ns | 369 us | 1.14e5x | 7.4 |
+| tetrahedron | regular | 6 | fp64 | 4,096 | 2.74 ms | 1568 B | 4.39 ns | 368 us | 8.38e4x | 7.4 |
+| tetrahedron | regular | 8 | fp32 | 4,096 | 35.5 ms | 1296 B | 3.89 ns | 4.86 ms (0.47) | 1.25e6x | 7.3 |
+| tetrahedron | regular | 8 | fp64 | 4,096 | 35.5 ms | 2592 B | 5.96 ns | 4.84 ms (0.47) | 8.12e5x | 7.3 |
+
+P2M (hot, one thread, 64 bodies):
+
+| geometry | layout | p | prec | bodies | T_build/source | row bytes | stored apply | procedural | ratio | K_break_even |
+|---|---|---|---|---|---|---|---|---|---|---|
+| prism | irregular | 4 | fp32 | 64 | 9.9 us | 300 B | 6.59 ns | 5.37 us | 814x | 1.8 |
+| prism | irregular | 4 | fp64 | 64 | 14.7 us | 600 B | 8.81 ns | 5.37 us | 610x | 2.7 |
+| prism | irregular | 6 | fp32 | 64 | 33.4 us | 588 B | 9.11 ns | 27.6 us | 3.04e3x | 1.2 |
+| prism | irregular | 6 | fp64 | 64 | 44 us | 1176 B | 14.9 ns | 27.7 us | 1.85e3x | 1.6 |
+| prism | irregular | 8 | fp32 | 64 | 96.1 us | 972 B | 13.6 ns | 88.2 us | 6.48e3x | 1.1 |
+| prism | irregular | 8 | fp64 | 64 | 117 us | 1944 B | 24.9 ns | 88.1 us | 3.54e3x | 1.3 |
+| prism | irregular | 10 | fp32 | 64 | 235 us | 1452 B | 22.6 ns | 223 us | 9.86e3x | 1.1 |
+| prism | irregular | 10 | fp64 | 64 | 265 us | 2904 B | 35.3 ns | 223 us | 6.30e3x | 1.2 |
+| prism | regular | 4 | fp32 | 64 | 9.59 us | 300 B | 6.63 ns | 5.35 us | 807x | 1.8 |
+| prism | regular | 4 | fp64 | 64 | 14.4 us | 600 B | 8.75 ns | 5.35 us | 612x | 2.7 |
+| prism | regular | 6 | fp32 | 64 | 32.1 us | 588 B | 9.92 ns | 27.5 us | 2.78e3x | 1.2 |
+| prism | regular | 6 | fp64 | 64 | 44.3 us | 1176 B | 14.8 ns | 27.6 us | 1.86e3x | 1.6 |
+| prism | regular | 8 | fp32 | 64 | 96.2 us | 972 B | 15.7 ns | 88.1 us | 5.60e3x | 1.1 |
+| prism | regular | 8 | fp64 | 64 | 117 us | 1944 B | 22.9 ns | 88.1 us | 3.85e3x | 1.3 |
+| prism | regular | 10 | fp32 | 64 | 234 us | 1452 B | 19.4 ns | 222 us | 1.14e4x | 1.1 |
+| prism | regular | 10 | fp64 | 64 | 266 us | 2904 B | 35.5 ns | 222 us | 6.26e3x | 1.2 |
+| tetrahedron | irregular | 4 | fp32 | 64 | 80.7 us | 300 B | 6.58 ns | 74.4 us | 1.13e4x | 1.1 |
+| tetrahedron | irregular | 4 | fp64 | 64 | 85.5 us | 600 B | 8.7 ns | 74.5 us | 8.56e3x | 1.1 |
+| tetrahedron | irregular | 6 | fp32 | 64 | 1.23 ms | 588 B | 9.3 ns | 1.22 ms | 1.31e5x | 1 |
+| tetrahedron | irregular | 6 | fp64 | 64 | 1.24 ms | 1176 B | 14.8 ns | 1.22 ms | 8.22e4x | 1 |
+| tetrahedron | irregular | 8 | fp32 | 64 | 16.9 ms | 972 B | 13.4 ns | 16.8 ms | 1.25e6x | 1 |
+| tetrahedron | irregular | 8 | fp64 | 64 | 16.9 ms | 1944 B | 23 ns | 16.9 ms | 7.34e5x | 1 |
+| tetrahedron | irregular | 10 | fp32 | 64 | 185 ms | 1452 B | 19.3 ns | 185 ms | 9.62e6x | 1 |
+| tetrahedron | irregular | 10 | fp64 | 64 | 185 ms | 2904 B | 35 ns | 185 ms | 5.28e6x | 1 |
+| tetrahedron | regular | 4 | fp32 | 64 | 78.4 us | 300 B | 6.51 ns | 72.9 us | 1.12e4x | 1.1 |
+| tetrahedron | regular | 4 | fp64 | 64 | 82.5 us | 600 B | 8.76 ns | 73.1 us | 8.35e3x | 1.1 |
+| tetrahedron | regular | 6 | fp32 | 64 | 1.23 ms | 588 B | 9.48 ns | 1.22 ms | 1.29e5x | 1 |
+| tetrahedron | regular | 6 | fp64 | 64 | 1.24 ms | 1176 B | 14.8 ns | 1.22 ms | 8.24e4x | 1 |
+| tetrahedron | regular | 8 | fp32 | 64 | 16.9 ms | 972 B | 13.6 ns | 16.9 ms | 1.24e6x | 1 |
+| tetrahedron | regular | 8 | fp64 | 64 | 16.9 ms | 1944 B | 23 ns | 16.9 ms | 7.33e5x | 1 |
+| tetrahedron | regular | 10 | fp32 | 64 | 185 ms | 1452 B | 19.3 ns | 185 ms | 9.61e6x | 1 |
+| tetrahedron | regular | 10 | fp64 | 64 | 185 ms | 2904 B | 35 ns | 185 ms | 5.29e6x | 1 |
+
+L2P (hot, one thread, 64 bodies):
+
+| geometry | layout | p | prec | bodies | T_build/target | row bytes | stored apply | procedural | ratio | K_break_even |
+|---|---|---|---|---|---|---|---|---|---|---|
+| prism | irregular | 4 | fp32 | 64 | 39.7 us | 400 B | 5.87 ns | 9.02 us | 1.54e3x | 4.4 |
+| prism | irregular | 4 | fp64 | 64 | 36 us | 800 B | 11 ns | 9.03 us | 819x | 4 |
+| prism | irregular | 6 | fp32 | 64 | 71.5 us | 784 B | 8.82 ns | 42 us | 4.76e3x | 1.7 |
+| prism | irregular | 6 | fp64 | 64 | 70.3 us | 1568 B | 18.7 ns | 42 us | 2.25e3x | 1.7 |
+| prism | irregular | 8 | fp32 | 64 | 179 us | 1296 B | 13.2 ns | 129 us | 9.78e3x | 1.4 |
+| prism | irregular | 8 | fp64 | 64 | 174 us | 2592 B | 24 ns | 129 us | 5.37e3x | 1.3 |
+| prism | irregular | 10 | fp32 | 64 | 395 us | 1936 B | 18.6 ns | 321 us | 1.73e4x | 1.2 |
+| prism | irregular | 10 | fp64 | 64 | 391 us | 3872 B | 36.9 ns | 322 us | 8.72e3x | 1.2 |
+| prism | regular | 4 | fp32 | 64 | 38 us | 400 B | 5.71 ns | 8.99 us | 1.57e3x | 4.2 |
+| prism | regular | 4 | fp64 | 64 | 35.5 us | 800 B | 9.53 ns | 8.99 us | 943x | 3.9 |
+| prism | regular | 6 | fp32 | 64 | 70.6 us | 784 B | 8.86 ns | 41.9 us | 4.73e3x | 1.7 |
+| prism | regular | 6 | fp64 | 64 | 70.5 us | 1568 B | 18.7 ns | 41.9 us | 2.24e3x | 1.7 |
+| prism | regular | 8 | fp32 | 64 | 180 us | 1296 B | 13.2 ns | 129 us | 9.81e3x | 1.4 |
+| prism | regular | 8 | fp64 | 64 | 172 us | 2592 B | 24 ns | 129 us | 5.38e3x | 1.3 |
+| prism | regular | 10 | fp32 | 64 | 400 us | 1936 B | 18.6 ns | 322 us | 1.73e4x | 1.2 |
+| prism | regular | 10 | fp64 | 64 | 398 us | 3872 B | 35.4 ns | 322 us | 9.09e3x | 1.2 |
+| tetrahedron | irregular | 4 | fp32 | 64 | 204 us | 400 B | 5.77 ns | 170 us | 2.94e4x | 1.2 |
+| tetrahedron | irregular | 4 | fp64 | 64 | 199 us | 800 B | 9.57 ns | 167 us | 1.75e4x | 1.2 |
+| tetrahedron | irregular | 6 | fp32 | 64 | 2.77 ms | 784 B | 8.93 ns | 2.72 ms | 3.05e5x | 1 |
+| tetrahedron | irregular | 6 | fp64 | 64 | 2.77 ms | 1568 B | 16.1 ns | 2.7 ms | 1.68e5x | 1 |
+| tetrahedron | irregular | 8 | fp32 | 64 | 35.6 ms | 1296 B | 13.3 ns | 35.5 ms | 2.68e6x | 1 |
+| tetrahedron | irregular | 8 | fp64 | 64 | 35.6 ms | 2592 B | 24 ns | 35.4 ms | 1.47e6x | 1 |
+| tetrahedron | irregular | 10 | fp32 | 64 | 358 ms | 1936 B | 18.7 ns | 358 ms | 1.92e7x | 1 |
+| tetrahedron | irregular | 10 | fp64 | 64 | 358 ms | 3872 B | 36.8 ns | 358 ms | 9.71e6x | 1 |
+| tetrahedron | regular | 4 | fp32 | 64 | 202 us | 400 B | 5.71 ns | 169 us | 2.97e4x | 1.2 |
+| tetrahedron | regular | 4 | fp64 | 64 | 198 us | 800 B | 11.1 ns | 167 us | 1.50e4x | 1.2 |
+| tetrahedron | regular | 6 | fp32 | 64 | 2.78 ms | 784 B | 8.86 ns | 2.74 ms | 3.10e5x | 1 |
+| tetrahedron | regular | 6 | fp64 | 64 | 2.77 ms | 1568 B | 18.6 ns | 2.72 ms | 1.46e5x | 1 |
+| tetrahedron | regular | 8 | fp32 | 64 | 35.6 ms | 1296 B | 13.2 ns | 35.6 ms | 2.70e6x | 1 |
+| tetrahedron | regular | 8 | fp64 | 64 | 35.6 ms | 2592 B | 24.6 ns | 35.5 ms | 1.44e6x | 1 |
+| tetrahedron | regular | 10 | fp32 | 64 | 358 ms | 1936 B | 18.7 ns | 358 ms | 1.91e7x | 1 |
+| tetrahedron | regular | 10 | fp64 | 64 | 358 ms | 3872 B | 35.2 ns | 358 ms | 1.02e7x | 1 |
+
+The prism expansions are the cheapest finite operators in the study and still
+lose by two to three orders of magnitude, because a stored row is a dense
+`3 C` or `4 C` dot product at the memory roof while the builder walks the
+Cartesian polynomial table of every mode and evaluates one exact
+volume-averaged monomial per term and axis (172 terms at p 6, 470 at p 10).
+The tetrahedron expansions are far worse: `tetrahedron_averaged_monomial`
+expands each monomial in barycentric coordinates with a heap-allocating
+polynomial product per (mode, term, axis), so one source costs 9.5 us at p 4,
+166 us at p 6 and 2.3 ms at p 8, and one target 0.17 ms at p 4 rising to
+358 ms at p 10.
+
+### Hybrid representations
+
+Not pursued, and the profile says why. The brief allowed a hybrid of small
+precomputed shape invariants plus a procedural position-dependent recurrence
+only if the separation is mathematically clean and the geometry-only part
+dominates. It is clean: a prism's per-axis even moments
+`h^gamma / (2^gamma (gamma+1)!)` and a tetrahedron's barycentric simplex
+moments `6 prod(n_i!) / (3 + |n|)!` depend only on the body, and the
+displacement enters through a binomial shift. But the measured gap is 150x to
+1,250,000x per update, while the hoistable part is a handful of scalars per
+monomial: hoisting it cannot close three to five orders of magnitude, because
+what remains is the `O(C x terms)` walk itself. A hybrid would also have to
+retain a per-body invariant table of `(p+1)(p+2)(p+3)/6` monomials (286 at
+p 10), which is the same order as the `4 C` row it would replace (484 at
+p 10). No hybrid was implemented.
+
+### Parts H and I: the full-FMM gate
+
+Every finite operator family fails the gate by three to six orders of
+magnitude in the realistic streaming microbenchmark, so no procedural finite
+path was integrated into `UniformFmm` and no complete FMM measurement was run;
+per the brief, the amortisation is recorded instead and the family stops
+there. No forced-procedural FMM path, no cache change: the persistent
+geometry-cache format and keys are untouched, and the question of whether a
+production procedural path would need a cache-key change never arose.
+
+### Part K: memory
+
+Persistent bytes per representation, from the `*_bytes` columns of the CSV
+(depth-3 lattice, 681k pairs, 4096 bodies):
+
+| Stage | representation | geometry | topology | operator | index/metadata | invariants | total persistent |
+|---|---|---|---|---|---|---|---|
+| P2P prism->prism regular FP32 | tensor-dictionary-2B | 98.3 kB | 89.3 kB | 5.95 kB | 947 kB | 0 B | 1.14 MB |
+| P2P prism->prism regular FP32 | procedural | 98.3 kB | 89.3 kB | 0 B | 0 B | 0 B | 188 kB |
+| P2P prism->prism irregular FP32 | tensor-dictionary-4B | 197 kB | 89.3 kB | 8.13 MB | 2.99 MB | 0 B | 11.4 MB |
+| P2P prism->prism irregular FP32 | procedural | 197 kB | 89.3 kB | 0 B | 0 B | 0 B | 286 kB |
+| P2P tetra->tetra regular FP32 | tensor-dictionary-2B | 98.4 kB | 89.3 kB | 4.34 kB | 947 kB | 0 B | 1.14 MB |
+| P2P tetra->tetra regular FP32 | procedural | 98.4 kB | 89.3 kB | 0 B | 0 B | 496 B | 188 kB |
+| P2M prism p 6 FP32 | packed-rows | 98.3 kB | 20.5 kB | 2.41 MB | 0 B | 0 B | 2.53 MB |
+| P2M prism p 6 FP32 | procedural-builder | 98.3 kB | 20.5 kB | 0 B | 0 B | 0 B | 119 kB |
+| L2P prism p 6 FP32 | packed-rows | 98.3 kB | 20.5 kB | 3.21 MB | 0 B | 0 B | 3.33 MB |
+| L2P prism p 6 FP32 | procedural-builder | 98.3 kB | 20.5 kB | 0 B | 0 B | 0 B | 119 kB |
+| P2M tetra p 6 FP32 | packed-rows | 98.4 kB | 20.5 kB | 2.41 MB | 0 B | 0 B | 2.53 MB |
+| P2M tetra p 6 FP32 | procedural-builder | 98.4 kB | 20.5 kB | 0 B | 0 B | 0 B | 119 kB |
+| L2P tetra p 6 FP32 | packed-rows | 98.4 kB | 20.5 kB | 3.21 MB | 0 B | 0 B | 3.33 MB |
+| L2P tetra p 6 FP32 | procedural-builder | 98.4 kB | 20.5 kB | 0 B | 0 B | 0 B | 119 kB |
+
+The procedural representations retain the geometry and topology they would
+need anyway plus the hoisted per-body invariants, and no operator: 0 bytes of
+tensors against 0.95 MB (regular, one-byte dictionary tokens) to 19.3 MB
+(irregular, 98% unique tensors) for P2P, and 0 bytes of rows against 1.2 MB
+(P2M) and 1.6 MB (L2P) at p 4 FP32 rising to 5.9 MB and 7.9 MB at p 10. On a
+regular lattice the dictionary already compresses the near field by 12x to
+36x, which is the representation procedural execution would have to beat.
+
+### Correctness, sanitizer and validation
+
+Every one of the 1003 CPU and 178 CUDA measurement rows carries the maximum
+relative error of its own result against the FP64 canonical operator on the
+final moments of that run. All procedural FP64 reconstructions agree with the
+canonical operator to 5e-15 or better and most to 1e-16; the FP32 rows sit at
+2e-7 to 3e-6 beside 2e-7 to 1e-6 for the quantised stored packings. Four rows
+of the whole set exceed 1e-4, all of them the deliberate float-arithmetic
+prism variant in the far-separation hot class (4.5e-4): reconstructing the
+analytical prism tensor in `float` loses four digits where its corner sums
+cancel, which is a further argument against the one finite family the device
+could execute.
+
+The production prism refactor is bit-identical, not merely close. A one-off
+probe linked the pre-refactor implementation from the parent commit beside the
+refactored one and compared
+the IEEE bit patterns of 20,680 tensors over five prisms and 4136
+displacements, including every face, edge, vertex and symmetry plane, the
+coincident self tensor, the two-sided `getF_limit` branch and the far field:
+zero differences, zero exceptions, and matching exception behaviour. The
+invariant is now locked at the lowest layer by a new case in
+`tests/test_rectangular_prism_magtense.cpp`, which requires the `long double`
+instantiation of the shared kernel to equal the public tensor exactly and the
+`double` one to stay within 1e-12.
+
+`compute-sanitizer` 2026.1.1 over the new procedural prism device kernel and
+the stored CUDA plans it is compared against, both pair directions:
+
+| Tool | prism -> point | point -> prism |
+|---|---|---|
+| memcheck | 0 errors | 0 errors |
+| racecheck | 0 hazards | 0 hazards |
+| initcheck | 0 errors | 0 errors |
+| synccheck | 0 errors | 0 errors |
+
+racecheck matters here because the kernel accumulates each target's field from
+several work items with atomics. One defect was found and fixed during the
+study by the benchmark's own correctness column, not by the sanitizer: the
+first device kernel applied a point source's coincident self pair instead of
+excluding it, which the canonical operator marks `skip_for_identity`. It
+showed up as an order-unity error on every point-source row, the affected
+measurements were discarded and the prism cases re-measured with the corrected
+kernel.
+
+Four fresh pinned trees on the final state, each a clean configure, build,
+full CTest and Python suite with conda `g++` 15.3.0 as C++ and CUDA host
+compiler:
+
+| Tree | CTest | pytest |
+|---|---|---|
+| portable CPU | 228 / 228 | 140 passed, 8 skipped |
+| oneMKL | 228 / 228 | 142 passed, 6 skipped |
+| CUDA | 228 / 228 | 145 passed, 3 skipped |
+| CUDA + oneMKL | 228 / 228 | 147 passed, 1 skipped |
+
+The skips are the optional backends absent from each configuration. The new
+kernel case is test 94, "precision-generic prism kernel is the production
+point tensor". The whitespace check is clean. `src/cache/`,
+`include/cdfmm/c_api.h`, `src/bindings/` and `fortran/` are untouched, so the
+cache format and keys, the C ABI and the Fortran interface are unchanged, and
+no public header, option or enumeration gained or lost a member.
+
+### Production decision
+
+Outcome A of the brief: every finite procedural path loses, and the finite
+operators stay precomputed on every backend. This is now a measured statement
+rather than an assumption, and `docs/static-p2p.md` and
+`docs/architecture.md` say so with the numbers. No production policy, option
+or executor was added; `PointExpansionExecution` keeps its point-only
+semantics.
+
+Accepted from this study:
+
+- `src/geometry/primitives/rectangular_prism_point_kernel.hpp`, the
+  precision-generic MagTense prism point tensor that production instantiates
+  in `long double` (bit-identical) and that made the CUDA measurement
+  possible without a second copy of the mathematics; and
+- the benchmark infrastructure (`benchmark_operator_representation`, its
+  device kernel, `run_operator_representation.py`,
+  `analyse_operator_representation.py`), which reproduces every table above
+  from the final `refactor/architecture-v0.2` code.
+
+Rejected: procedural finite P2P on the CPU (all eight pairs), procedural
+finite P2P on CUDA (prism family measured, others not ported with the reason
+recorded), procedural finite P2M and L2P for prisms and tetrahedra at orders
+4-10 in both precisions, and the invariant/recurrence hybrid.
+
+Observations for Phase 3C, recorded and not acted on: the point/prism pair
+loops and the per-leaf P2M and per-target L2P plan construction are serial
+while the polyhedron pair loops are parallel; the prism tensor's `long double`
+arithmetic costs 2.7x its `double` equivalent for 4.5e-15 of agreement; and
+`tetrahedron_averaged_monomial` heap-allocates a barycentric polynomial per
+(mode, term, axis), which dominates exact tetrahedron P2M/L2P construction.
