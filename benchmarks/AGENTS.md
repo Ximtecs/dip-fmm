@@ -11,8 +11,19 @@ benchmarks/
 |-- benchmark_p2p.cpp                 P2P representations/backends
 |-- benchmark_uniform_fmm.cpp         setup and repeated FMM evaluation
 |-- benchmark_cache_initialisation.cpp cache construction/reuse
+|-- benchmark_operator_representation.cpp
+|                                     precomputed versus procedural exact
+|                                     operators (P2P/P2M/L2P, hot and
+|                                     streaming, construction separately)
+|-- benchmark_operator_representation_cuda.{hpp,cu}
+|                                     its procedural prism P2P device kernel
 |-- run_benchmarks.py                 profile runner and result handling
 |-- run_p2p_sweep.py                  representation sweep
+|-- run_p2p_packing_matrix.py         geometry/backend/packing matrix
+|-- run_operator_representation.py    representation matrix (resumable)
+|-- analyse_operator_representation.py
+|                                     ratios, retained bytes and the
+|                                     amortisation break-even
 `-- run_high_occupancy_p2p.py         dense-leaf CUDA study
 ```
 
@@ -27,7 +38,14 @@ once there are enough cohesive drivers to justify them.
   problem-size configuration needed to reproduce a result.
 - Preserve established CSV/result schemas unless a migration is explicit.
 - Do not make benchmark-only operator mathematics. Exercise production plans
-  or clearly labelled reference/experimental representations.
+  or clearly labelled reference/experimental representations. A representation
+  study that needs a formula in another precision or on the device shares the
+  production kernel (as `benchmark_operator_representation_cuda.cu` shares
+  `src/geometry/primitives/rectangular_prism_point_kernel.hpp`); it does not
+  copy the mathematics.
+- A benchmark may retain a measured-losing representation when it is useful
+  evidence for a paper and is isolated from production execution. Say which
+  one it is and where the measurement is recorded.
 - CUDA decomposition comparisons must check launch/transfer/allocation counts,
   synchronisation and near/far overlap, not elapsed time alone.
 
@@ -45,6 +63,7 @@ cmake --build --preset benchmark-all -j
 
 python benchmarks/run_benchmarks.py --help
 python benchmarks/run_p2p_sweep.py --help
+python benchmarks/run_operator_representation.py --help
 ```
 
 Use `profile-all` for NVTX-enabled profiling. See `docs/benchmarks.md` and

@@ -361,6 +361,100 @@ arrays contain the same particle positions, and both FMM and direct P2P use the
 same explicit identity map to exclude only each particle's singular self-pair.
 Consequently `--sources` and `--targets` must be equal.
 
+## Operator representation: precomputed versus procedural
+
+`benchmark_operator_representation` answers one question for a single operator
+family: is it faster to build the exact operator once and stream it on every
+moment update, or to reconstruct it from the retained geometry during every
+update? It measures the two representations separately from construction:
+
+- **precomputed** builds the operator with the production builders
+  (`build_static_p2p_operator`, `operators::p2m::build_cuboid` /
+  `build_tetrahedron`, `operators::l2p::build_cuboid` / `build_tetrahedron`),
+  derives the production execution packings (particle-row SoA, dense leaf
+  blocks, the signed tensor dictionary, the dense `PackedP2M` / `PackedL2P`
+  rows, and on CUDA the leaf-block and dictionary plans) and applies them with
+  the production apply functions; and
+- **procedural** retains only the sorted positions, the body records, the
+  list-1 topology and the per-body invariants a builder already hoists
+  (prepared tetrahedra, polyhedron surfaces), then calls the *same* per-pair
+  or per-body builder during every update and applies the result at once.
+  No operator is stored.
+
+Both are checked against the FP64 canonical operator on the final moments of
+every run, every update uses different moments and every result is
+checksummed, so no work can be elided. Construction is timed separately and
+never enters an update time.
+
+Two modes bracket the memory behaviour:
+
+- `--mode hot` repeats one small set (`--pairs`, default 512 pairs or 64
+  bodies) single-threaded, so the stored operator stays in L1/L2 and the
+  result is the intrinsic arithmetic cost of the representation; and
+- `--mode streaming` traverses the complete list-1 neighbourhood of a lattice
+  with every thread, as the FMM near field does. `--depth 3
+  --bodies-per-leaf-axis 2` gives 4096 bodies and 681k pairs; depth 4 gives
+  32768 bodies and 6.2M pairs, whose stored tensors exceed the last-level
+  cache and the GPU L2.
+
+`--separation` selects the numerical branch of a hot P2P set: `self` (the
+physical finite demagnetisation tensor at zero displacement), `adjacent`,
+`list1`, `small-far` (quarter-size bodies at list-1 offsets) and
+`far-safeguard`, which places the bodies ten summed circumradii apart, beyond
+the `polyhedron_far_separation_factor` switch to the Gauss-averaged source
+tensor. A point source has no self pair: it is the singular one the identity
+map excludes.
+
+```console
+# one finite pair type, both representations, hot and streaming
+./build-cuda/benchmarks/benchmark_operator_representation \
+  --stage p2p --source prism --target tetrahedron --mode streaming \
+  --layout irregular --output results.csv
+
+# the exact finite expansions at several orders
+./build-cuda/benchmarks/benchmark_operator_representation \
+  --stage p2m --source tetrahedron --orders 4,6,8 --mode streaming \
+  --output results.csv
+
+# the CUDA stored representations and the procedural prism device kernel
+./build-cuda/benchmarks/benchmark_operator_representation \
+  --stage p2p --source prism --target point --mode streaming --cuda \
+  --no-cpu-precomputed --no-cpu-procedural --output results.csv
+```
+
+A procedural finite update can take minutes, so
+`--procedural-budget-seconds` (default 60) bounds one precision's complete
+procedural measurement: the benchmark first reduces the evaluations per
+sample and only then truncates the leaf traversal, recording the fraction it
+measured in `measured_fraction` and scaling the reported update time by it.
+
+`benchmarks/run_operator_representation.py --binary <executable> --output
+<csv> --suite {p2p-hot,p2p-streaming,p2p-large,p2p-cuda,p2m,l2p,all}` runs the
+whole matrix and appends every row to one CSV. It resumes: a case whose rows
+are already in the CSV is skipped unless `--no-resume` is given.
+`benchmarks/analyse_operator_representation.py <csv> [--markdown out.md]
+[--summary-csv out.csv]` pairs each procedural row with the best precomputed
+representation of the same configuration and reports the ratio, the persistent
+bytes saved and the amortisation break-even
+
+```text
+K_break_even = (T_build - T_procedural_setup) / (T_procedural - T_apply)
+```
+
+in complete field updates. The row CSV carries the reproduction metadata
+(`commit`, `compiler`, `compiler_version`, `build_type`, `cpu_model`,
+`gpu_model`, `threads`), the configuration (`stage`, `source_geometry`,
+`target_geometry`, `layout`, `separation`, `mode`, `precision`, `order`,
+`backend`, `bodies`, `leaves`, `items`), the timings (`build_seconds`,
+`build_seconds_per_item`, `update_seconds`, `ns_per_item`,
+`measured_fraction`), the memory breakdown (`geometry_bytes`,
+`topology_bytes`, `operator_bytes`, `index_bytes`, `metadata_bytes`,
+`invariant_bytes`, `scratch_bytes`, `total_persistent_bytes`,
+`unique_operators`) and the verification (`checksum`,
+`max_relative_error`, `note`). The measured result is in
+`agent_docs/performance_optimization.md`, "Exact finite-geometry procedural vs
+precomputed operators (Phase 3B.5b)".
+
 ## Automated profiles
 
 For a deliberately coarse six-backend comparison, use the `rough` profile:
