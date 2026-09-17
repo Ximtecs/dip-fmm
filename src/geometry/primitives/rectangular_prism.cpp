@@ -2,12 +2,13 @@
 
 #include "cdfmm/geometry/primitives/rectangular_prism.hpp"
 
+#include "geometry/primitives/rectangular_prism_point_kernel.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
 #include <numbers>
-#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -79,222 +80,9 @@ Real safe_atan_ratio(const Real numerator, const Real denominator)
     return std::copysign(0.5L * std::numbers::pi_v<Real>, numerator);
 }
 
-Real prism_ratio(const Real numerator, const Real denominator)
-{
-    if (denominator != 0.0L) {
-        return numerator / denominator;
-    }
-    if (numerator == 0.0L) {
-        return 0.0L;
-    }
-    return std::copysign(std::numeric_limits<Real>::infinity(), numerator);
-}
-
 Real safe_log_abs(const Real value, const Real epsilon)
 {
     return std::log(std::abs(value == 0.0L ? epsilon : value));
-}
-
-// MagTense TileRectangularPrismTensor.f90, f_3D/g_3D/h_3D.  The dimensions
-// a,b,c are full side lengths; the source routine internally uses a/2 etc.
-Real f_3d(const Real a, const Real b, const Real c,
-          const Real x, const Real y, const Real z)
-{
-    const Real u = 0.5L * a - x;
-    const Real v = 0.5L * b - y;
-    const Real w = 0.5L * c - z;
-    const Real distance = std::hypot(std::hypot(u, v), w);
-    if (u == 0.0L) {
-        // MagTense perturbs the coincident face on both sides, averages the
-        // ratios, and only then applies atan in getN_prism_3D.
-        const Real u_low = 0.5L * a - 0.9999L * x;
-        const Real u_high = 0.5L * a - 1.0001L * x;
-        const Real d_low = std::hypot(std::hypot(u_low, v), w);
-        const Real d_high = std::hypot(std::hypot(u_high, v), w);
-        return std::atan(0.5L *
-                         (prism_ratio(v * w, u_low * d_low) +
-                          prism_ratio(v * w, u_high * d_high)));
-    }
-    return safe_atan_ratio(v * w, u * distance);
-}
-
-Real g_3d(const Real a, const Real b, const Real c,
-          const Real x, const Real y, const Real z)
-{
-    const Real u = 0.5L * a - x;
-    const Real v = 0.5L * b - y;
-    const Real w = 0.5L * c - z;
-    const Real distance = std::hypot(std::hypot(u, v), w);
-    if (v == 0.0L) {
-        const Real v_low = 0.5L * b - 0.9999L * y;
-        const Real v_high = 0.5L * b - 1.0001L * y;
-        const Real d_low = std::hypot(std::hypot(u, v_low), w);
-        const Real d_high = std::hypot(std::hypot(u, v_high), w);
-        return std::atan(0.5L *
-                         (prism_ratio(u * w, v_low * d_low) +
-                          prism_ratio(u * w, v_high * d_high)));
-    }
-    return safe_atan_ratio(u * w, v * distance);
-}
-
-Real h_3d(const Real a, const Real b, const Real c,
-          const Real x, const Real y, const Real z)
-{
-    const Real u = 0.5L * a - x;
-    const Real v = 0.5L * b - y;
-    const Real w = 0.5L * c - z;
-    const Real distance = std::hypot(std::hypot(u, v), w);
-    if (w == 0.0L) {
-        const Real w_low = 0.5L * c - 0.9999L * z;
-        const Real w_high = 0.5L * c - 1.0001L * z;
-        const Real d_low = std::hypot(std::hypot(u, v), w_low);
-        const Real d_high = std::hypot(std::hypot(u, v), w_high);
-        return std::atan(0.5L *
-                         (prism_ratio(u * v, w_low * d_low) +
-                          prism_ratio(u * v, w_high * d_high)));
-    }
-    return safe_atan_ratio(u * v, w * distance);
-}
-
-Real prism_corner_sum(const Real a, const Real b, const Real c,
-                      const Vec3& displacement,
-                      Real (*component)(Real, Real, Real, Real, Real, Real))
-{
-    Real result = 0.0L;
-    constexpr Real signs[2] = {-1.0L, 1.0L};
-    for (const Real sx : signs) {
-        for (const Real sy : signs) {
-            for (const Real sz : signs) {
-                result += component(a, b, c, sx * displacement.x,
-                                    sy * displacement.y, sz * displacement.z);
-            }
-        }
-    }
-    return result;
-}
-
-Real prism_corner_factor(const Real a, const Real b, const Real c,
-                         const Real x, const Real y, const Real z)
-{
-    const Real u = 0.5L * a - x;
-    const Real v = 0.5L * b - y;
-    const Real w = 0.5L * c - z;
-    const Real distance = std::hypot(std::hypot(u, v), w);
-    // This is FF_3D in TileRectangularPrismTensor.f90.  Rationalise for a
-    // negative w to avoid losing all significant bits in R+w.  The zero
-    // transverse-distance case is exact, rather than a 0/0 division.
-    if (w < 0.0L) {
-        const Real transverse_squared = u * u + v * v;
-        if (transverse_squared == 0.0L) {
-            return 0.0L;
-        }
-        return transverse_squared / (distance - w);
-    }
-    return distance + w;
-}
-
-struct LogProductPair {
-    Real numerator{0.0L};
-    Real denominator{0.0L};
-};
-
-std::optional<LogProductPair> log_ff_products_at(
-    const Real a, const Real b, const Real c,
-    const Real x, const Real y, const Real z)
-{
-    // TileNComponents.getN_prism_3D forms these four numerator and four
-    // denominator factors (FF_3D, or its cyclic GG/HH counterpart).
-    const Real numerator[4] = {
-        prism_corner_factor(a, b, c, x, y, z),
-        prism_corner_factor(-a, -b, c, x, y, z),
-        prism_corner_factor(a, -b, -c, x, y, z),
-        prism_corner_factor(-a, b, -c, x, y, z)
-    };
-    const Real denominator[4] = {
-        prism_corner_factor(a, -b, c, x, y, z),
-        prism_corner_factor(-a, b, c, x, y, z),
-        prism_corner_factor(a, b, -c, x, y, z),
-        prism_corner_factor(-a, -b, -c, x, y, z)
-    };
-    LogProductPair result;
-    for (const Real value : numerator) {
-        if (!(value > 0.0L) || !std::isfinite(value)) {
-            return std::nullopt;
-        }
-        result.numerator += std::log(value);
-    }
-    for (const Real value : denominator) {
-        if (!(value > 0.0L) || !std::isfinite(value)) {
-            return std::nullopt;
-        }
-        result.denominator += std::log(value);
-    }
-    return result;
-}
-
-std::optional<Real> log_ff_ratio_at(const Real a, const Real b, const Real c,
-                                    const Real x, const Real y, const Real z)
-{
-    const std::optional<LogProductPair> products =
-        log_ff_products_at(a, b, c, x, y, z);
-    if (!products) {
-        return std::nullopt;
-    }
-    return products->numerator - products->denominator;
-}
-
-Real log_ff_ratio(const Real a, const Real b, const Real c,
-                  const Real x, const Real y, const Real z)
-{
-    // The MagTense F/F product is the xy component (with cyclic coordinate
-    // permutations for yz/xz).  Reflection symmetry makes this component
-    // exactly zero on either of its two coordinate planes.  In particular,
-    // do not replace an exact zero here with an arbitrary epsilon: the
-    // getF_limit perturbation is a two-sided positional limit and its
-    // products cancel on these symmetry planes.
-    if (x == 0.0L || y == 0.0L) {
-        return 0.0L;
-    }
-    if (const std::optional<Real> result =
-            log_ff_ratio_at(a, b, c, x, y, z)) {
-        return *result;
-    }
-
-    // MagTense getF_limit evaluates at 0.9999 and 1.0001 times the position
-    // when one factor vanishes.  Average the products in log space so the
-    // limiting branch cannot overflow or underflow before taking their ratio.
-    const auto perturbed = [](const Real value, const Real factor) {
-        // Match TileRectangularPrismTensor.getF_limit exactly: zero
-        // coordinates remain zero under a multiplicative perturbation.
-        return factor * value;
-    };
-    const Real x_low = perturbed(x, 0.9999L);
-    const Real y_low = perturbed(y, 0.9999L);
-    const Real z_low = perturbed(z, 0.9999L);
-    const Real x_high = perturbed(x, 1.0001L);
-    const Real y_high = perturbed(y, 1.0001L);
-    const Real z_high = perturbed(z, 1.0001L);
-    const std::optional<LogProductPair> low =
-        log_ff_products_at(a, b, c, x_low, y_low, z_low);
-    const std::optional<LogProductPair> high =
-        log_ff_products_at(a, b, c, x_high, y_high, z_high);
-    if (low && high) {
-        const auto log_sum_exp = [](const Real first, const Real second) {
-            const Real larger = std::max(first, second);
-            const Real smaller = std::min(first, second);
-            return larger + std::log1p(std::exp(smaller - larger));
-        };
-        // MagTense averages products, not ratios:
-        // log((nom_low+nom_high)/(den_low+den_high)).
-        return log_sum_exp(low->numerator, high->numerator) -
-            log_sum_exp(low->denominator, high->denominator);
-    }
-
-    // A prism field is finite away from a degenerate prism.  This fallback is
-    // only reachable for an extreme floating-point corner; retain a bounded
-    // one-sided limit rather than returning NaN from log(0).
-    throw std::domain_error(
-        "rectangular-prism off-diagonal limit is outside floating-point range");
 }
 
 // MagTense TileRectangularPrismAvgTensor.f90, F1.  The small replacements
@@ -436,25 +224,27 @@ PairTensor rectangular_prism_point_tensor(
 {
     validate_displacement(target_minus_source_representative);
     validate_prism(source, "source prism");
-    const Real a = source.hx;
-    const Real b = source.hy;
-    const Real c = source.hz;
-    const Real volume = a * b * c;
+    // The formulas live in the precision-generic kernel header; the
+    // production tensor evaluates them in `long double`.
     const Vec3& r = target_minus_source_representative;
-    const Real diagonal_scale = -1.0L / (four_pi * volume);
-    const Real off_diagonal_scale = 1.0L / (four_pi * volume);
-    const Real xx = diagonal_scale * prism_corner_sum(a, b, c, r, f_3d);
-    const Real yy = diagonal_scale * prism_corner_sum(a, b, c, r, g_3d);
-    const Real zz = diagonal_scale * prism_corner_sum(a, b, c, r, h_3d);
-    const Real xy = off_diagonal_scale * log_ff_ratio(a, b, c,
-                                                       r.x, r.y, r.z);
-    const Real yz = off_diagonal_scale * log_ff_ratio(b, c, a,
-                                                       r.y, r.z, r.x);
-    const Real xz = off_diagonal_scale * log_ff_ratio(c, a, b,
-                                                       r.z, r.x, r.y);
-    return {static_cast<double>(xx), static_cast<double>(xy),
-            static_cast<double>(xz), static_cast<double>(yy),
-            static_cast<double>(yz), static_cast<double>(zz)};
+    Real tensor[6];
+    detail::prism_kernel::rectangular_prism_point_tensor_components<Real>(
+        static_cast<Real>(source.hx), static_cast<Real>(source.hy),
+        static_cast<Real>(source.hz), static_cast<Real>(r.x),
+        static_cast<Real>(r.y), static_cast<Real>(r.z), tensor);
+    for (const Real component : tensor) {
+        if (std::isnan(component)) {
+            // A prism field is finite away from a degenerate prism.  This is
+            // only reachable for an extreme floating-point corner of the
+            // off-diagonal limit; keep the historical diagnostic.
+            throw std::domain_error(
+                "rectangular-prism off-diagonal limit is outside "
+                "floating-point range");
+        }
+    }
+    return {static_cast<double>(tensor[0]), static_cast<double>(tensor[1]),
+            static_cast<double>(tensor[2]), static_cast<double>(tensor[3]),
+            static_cast<double>(tensor[4]), static_cast<double>(tensor[5])};
 }
 
 PairTensor rectangular_prism_rectangular_prism_tensor(

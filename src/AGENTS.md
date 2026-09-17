@@ -28,6 +28,12 @@ src/
 |-- operators/p2p_point_kernel.hpp          the single point-dipole pair formula
 |                                          shared by evaluate_pair and the CPU
 |                                          and CUDA position-based executors
+|-- geometry/primitives/rectangular_prism_point_kernel.hpp
+|                                          precision-generic MagTense prism
+|                                          point tensor; production evaluates
+|                                          it in long double, the
+|                                          representation benchmark in double,
+|                                          float and on the device
 |-- operators/point_expansion_kernel.hpp    procedural point P2M/L2P kernels and
 |                                          their per-mode factor tables, shared
 |                                          by the CPU and CUDA executors

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <numbers>
@@ -8,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "cdfmm/rectangular_prism.hpp"
+#include "geometry/primitives/rectangular_prism_point_kernel.hpp"
 
 using namespace cdfmm;
 
@@ -269,4 +271,60 @@ TEST_CASE("rectangular prism tensor preserves total-moment normalisation",
     REQUIRE(from_total.x == Catch::Approx(expected.x).margin(2.0e-13));
     REQUIRE(from_total.y == Catch::Approx(expected.y).margin(2.0e-13));
     REQUIRE(from_total.z == Catch::Approx(expected.z).margin(2.0e-13));
+}
+
+TEST_CASE("precision-generic prism kernel is the production point tensor",
+          "[rectangular_prism][kernel]")
+{
+    // The shared kernel holds the single definition of the MagTense prism
+    // point tensor: production instantiates it in `long double`, while the
+    // representation benchmark instantiates it in `double`, in `float` and
+    // inside a CUDA kernel.  The `long double` instantiation must therefore
+    // reproduce the public tensor exactly, bit for bit, and the `double` one
+    // must stay accurate enough to be the same operator.
+    const std::array<RectangularPrism, 3> prisms{
+        {{1.0, 1.0, 1.0}, {0.8, 1.3, 0.5}, {0.125, 2.5, 0.05}}};
+    const std::array<Vec3, 9> displacements{
+        {{0.0, 0.0, 0.0},        // coincident: the finite self tensor
+         {1.1, -0.7, 0.9},       // generic
+         {0.5, 0.0, 0.0},        // face plane and a symmetry plane
+         {0.5, 0.3, 0.0},        // face plane, getF_limit branch
+         {0.4, 0.65, 0.25},      // near a vertex
+         {0.0, 0.3, 0.7},        // x symmetry plane
+         {0.3, 0.0, 0.7},        // y symmetry plane
+         {1.0e-9, 1.0e-9, 1.0e-9},
+         {40.0, -31.0, 27.0}}};  // far field
+
+    for (const RectangularPrism& prism : prisms) {
+        for (const Vec3& displacement : displacements) {
+            const PairTensor production =
+                rectangular_prism_point_tensor(displacement, prism);
+            const double expected[6] = {production.xx, production.xy,
+                                        production.xz, production.yy,
+                                        production.yz, production.zz};
+
+            long double exact[6];
+            detail::prism_kernel::rectangular_prism_point_tensor_components<
+                long double>(prism.hx, prism.hy, prism.hz, displacement.x,
+                             displacement.y, displacement.z, exact);
+            for (int component = 0; component < 6; ++component) {
+                REQUIRE(static_cast<double>(exact[component]) ==
+                        expected[component]);
+            }
+
+            double narrowed[6];
+            detail::prism_kernel::rectangular_prism_point_tensor_components<
+                double>(prism.hx, prism.hy, prism.hz, displacement.x,
+                        displacement.y, displacement.z, narrowed);
+            double scale = 0.0;
+            for (const double value : expected) {
+                scale = std::max(scale, std::abs(value));
+            }
+            for (int component = 0; component < 6; ++component) {
+                REQUIRE(narrowed[component] ==
+                        Catch::Approx(expected[component])
+                            .margin(1.0e-12 * std::max(scale, 1.0)));
+            }
+        }
+    }
 }
