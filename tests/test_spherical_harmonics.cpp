@@ -3,10 +3,12 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <numeric>
 #include <numbers>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 #include "cdfmm/operators.hpp"
@@ -14,6 +16,7 @@
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
+#include "math/solid_harmonic_recurrence.hpp"
 
 using namespace cdfmm;
 
@@ -532,4 +535,63 @@ TEST_CASE("spherical CUDA partial and full agree with CPU static", "[cuda]")
     REQUIRE(cuda.cuda_plan_statistics().m2l_unique_matrix_count ==
             cuda.static_plan_statistics().m2l_operators);
   }
+}
+
+TEST_CASE("solid-harmonic recurrence reproduces the polynomial regular basis")
+{
+  // The procedural point P2M/L2P executors stream R_lm and grad R_lm from
+  // the factorial-normalised recurrence in src/math/solid_harmonic_recurrence.hpp
+  // and multiply the per-mode factor in afterwards; both parts together must
+  // reproduce the polynomial evaluation that builds the stored operators, in
+  // the same coefficient order, at every order the executors compile for.
+  const std::vector<Vec3> points{{0.3, -0.4, 0.5},
+                                 {-0.012, 0.007, 0.02},
+                                 {0.0, 0.0, 0.031},
+                                 {0.25, 0.0, 0.0},
+                                 {0.0, -0.4, 0.0},
+                                 {-0.61, 0.33, -0.27}};
+  const auto check = [&](auto order_tag) {
+    constexpr int order = decltype(order_tag)::value;
+    const SphericalHarmonicBasis basis(order);
+    const std::vector<double> factors =
+        solid_harmonics::regular_solid_harmonic_mode_factors(order);
+    REQUIRE(static_cast<int>(factors.size()) == basis.size());
+    for (const Vec3& r : points) {
+      const SolidHarmonicValues expected = regular_solid_harmonics(basis, r);
+      std::vector<double> values(static_cast<std::size_t>(basis.size()), 0.0);
+      std::vector<Vec3> gradients(static_cast<std::size_t>(basis.size()));
+      solid_harmonics::visit_regular_solid_harmonics<order>(
+          r.x, r.y, r.z,
+          [&](const int index, const double value, const double gx,
+              const double gy, const double gz) {
+            const double f = factors[static_cast<std::size_t>(index)];
+            values[static_cast<std::size_t>(index)] = f * value;
+            gradients[static_cast<std::size_t>(index)] = {f * gx, f * gy,
+                                                          f * gz};
+          });
+      const double radius = std::sqrt(dot(r, r));
+      for (int mode = 0; mode < basis.size(); ++mode) {
+        const int l = basis[mode].l;
+        // Rounding grows with the degree; scale by the natural magnitude of
+        // a degree-l harmonic so tiny high-degree values are checked too.
+        const double scale = std::pow(std::max(radius, 1.0e-3), l) + 1.0e-300;
+        const auto index = static_cast<std::size_t>(mode);
+        CAPTURE(order, mode, l, basis[mode].m, r.x, r.y, r.z);
+        REQUIRE(std::abs(values[index] - expected.values[index]) <=
+                1.0e-12 * scale);
+        const double gradient_scale =
+            l == 0 ? 1.0 : std::pow(std::max(radius, 1.0e-3), l - 1) * l;
+        REQUIRE(norm(gradients[index] - expected.gradients[index]) <=
+                1.0e-12 * gradient_scale);
+      }
+    }
+  };
+  check(std::integral_constant<int, 0>{});
+  check(std::integral_constant<int, 1>{});
+  check(std::integral_constant<int, 2>{});
+  check(std::integral_constant<int, 4>{});
+  check(std::integral_constant<int, 6>{});
+  check(std::integral_constant<int, 8>{});
+  check(std::integral_constant<int, 10>{});
+  check(std::integral_constant<int, 12>{});
 }
