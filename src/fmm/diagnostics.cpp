@@ -82,6 +82,18 @@ std::string_view name(const StaticOperatorExecutor value) {
   return "unknown";
 }
 
+std::string_view name(const PointExpansionExecution value) {
+  switch (value) {
+  case PointExpansionExecution::Auto:
+    return "auto";
+  case PointExpansionExecution::Precomputed:
+    return "precomputed";
+  case PointExpansionExecution::Procedural:
+    return "procedural";
+  }
+  return "unknown";
+}
+
 std::string_view name(const P2PExecutionPacking value) {
   switch (value) {
   case P2PExecutionPacking::Reference:
@@ -219,6 +231,10 @@ void UniformFmm::print_initialisation_summary(
   stream << "  p2p_packing.requested: " << name(requested_p2p_packing_)
          << '\n';
   stream << "  p2p_packing: " << name(p2p_execution_packing_) << '\n';
+  stream << "  point_expansion.requested: "
+         << name(requested_point_expansion_) << '\n';
+  stream << "  p2m_execution: " << name(p2m_execution()) << '\n';
+  stream << "  l2p_execution: " << name(l2p_execution()) << '\n';
   stream << "  spatial_layout: " << cuda_policy::name(spatial_layout_) << '\n';
   if (cuda_policy_ && (backend_ == ExecutionBackend::CudaM2LP2P ||
                        backend_ == ExecutionBackend::CudaFull)) {

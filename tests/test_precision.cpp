@@ -381,6 +381,9 @@ TEST_CASE("CUDA FP32 point plans build without a geometry cache") {
       UniformFmm reference(positions, positions, options);
       options.backend = backend;
       options.precision = StaticPrecision::Float32;
+      // The FP32 leaf-block plan is the regression subject; the automatic
+      // FP32 point policy would select the position-based kernel instead.
+      options.p2p_packing = P2PExecutionPacking::LeafBlock;
       UniformFmm fp32(positions, positions, options);
       CAPTURE(backend);
       REQUIRE(fp32.p2p_execution_packing() == P2PExecutionPacking::LeafBlock);

@@ -10,6 +10,7 @@
 
 #include "cdfmm/plan/static_plan.hpp"
 #include "cdfmm/timings.hpp"
+#include "cdfmm/tree/static_topology.hpp"
 
 namespace cdfmm::cuda_p2p_detail {
 
@@ -70,6 +71,62 @@ struct CudaLeafP2PDeviceView {
   int *block_target_leaves{nullptr};
   StaticP2PLeafBlock *leaf_blocks{nullptr};
   Scalar *tensors{nullptr};
+};
+
+/** @brief Four-wide aligned device scalar used for one resident position. */
+template <typename Scalar>
+struct CudaScalar4;
+
+template <>
+struct CudaScalar4<float> {
+  using type = float4;
+};
+
+template <>
+struct CudaScalar4<double> {
+  using type = CudaDouble4;
+};
+
+/**
+ * @brief One canonical list-1 record for the position-based point executor.
+ *
+ * Mirrors `StaticP2PLeafRecord`: the dense target/source ranges of one
+ * (target leaf, source leaf, image) pair, the shift that carries a source
+ * position into the target leaf's frame (source leaf centre minus target leaf
+ * centre plus the periodic image shift) in the plan's precision, and the
+ * canonical identity marker.
+ */
+template <typename Scalar>
+struct CudaPointGeometryP2PRecord {
+  int target_begin{0};
+  int target_count{0};
+  int source_begin{0};
+  int source_count{0};
+  Scalar shift_x{0};
+  Scalar shift_y{0};
+  Scalar shift_z{0};
+  int skip_for_identity{0};
+};
+
+/**
+ * @brief Device view of the position-based point P2P executor.
+ *
+ * No pair tensors are resident: the kernel recomputes every point-dipole pair
+ * from the sorted positions, stored relative to their leaf centre, plus the
+ * record's shift, with the shared formula in
+ * `operators/p2p_point_kernel.hpp`. When sources and targets are the same
+ * sorted points the target array aliases the source array.
+ */
+template <typename Scalar>
+struct CudaPointGeometryP2PDeviceView {
+  int target_count{0};
+  int record_count{0};
+  int threads_per_block{0};
+  std::size_t interaction_count{0};
+  CudaPointGeometryP2PRecord<Scalar> *records{nullptr};
+  typename CudaScalar4<Scalar>::type *source_positions{nullptr};
+  typename CudaScalar4<Scalar>::type *target_positions{nullptr};
+  bool shared_positions{false};
 };
 
 template <typename Scalar>
@@ -133,6 +190,29 @@ void launch_leaf_p2p(const CudaLeafP2PDeviceView<double> &plan,
 void launch_leaf_p2p(const CudaLeafP2PDeviceView<float> &plan,
                      const FloatVec3 *moments, const int *self_indices,
                      FloatVec3 *fields, cudaStream_t stream);
+
+void launch_point_geometry_p2p(const CudaPointGeometryP2PDeviceView<double> &plan,
+                               const Vec3 *moments, const int *self_indices,
+                               Vec3 *fields, cudaStream_t stream);
+void launch_point_geometry_p2p(const CudaPointGeometryP2PDeviceView<float> &plan,
+                               const FloatVec3 *moments,
+                               const int *self_indices, FloatVec3 *fields,
+                               cudaStream_t stream);
+
+/**
+ * @brief Uploads the sorted positions and list-1 records of a topology for
+ *        the position-based point executor; no canonical tensors are read.
+ */
+void upload_cuda_point_geometry(
+    const StaticFmmTopology &topology,
+    CudaPointGeometryP2PDeviceView<double> &device,
+    CudaPlanStatistics &statistics, const char *allocation_operation,
+    const char *upload_operation);
+void upload_cuda_point_geometry(
+    const StaticFmmTopology &topology,
+    CudaPointGeometryP2PDeviceView<float> &device,
+    CudaPlanStatistics &statistics, const char *allocation_operation,
+    const char *upload_operation);
 
 void launch_signed_dictionary_p2p(
     const CudaSignedDictionaryP2PDeviceView<double> &plan,
@@ -208,6 +288,10 @@ void release_p2p_device_view(
     CudaCompactP2PDeviceView<float> &plan) noexcept;
 void release_p2p_device_view(CudaLeafP2PDeviceView<double> &plan) noexcept;
 void release_p2p_device_view(CudaLeafP2PDeviceView<float> &plan) noexcept;
+void release_p2p_device_view(
+    CudaPointGeometryP2PDeviceView<double> &plan) noexcept;
+void release_p2p_device_view(
+    CudaPointGeometryP2PDeviceView<float> &plan) noexcept;
 void release_p2p_device_view(
     CudaSignedDictionaryP2PDeviceView<double> &plan) noexcept;
 void release_p2p_device_view(

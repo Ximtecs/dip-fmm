@@ -70,8 +70,9 @@ enum class P2PExecutionPacking {
   CudaBsr3,
   /// Dense target-leaf/source-leaf SoA blocks executed one warp per block.
   LeafBlock,
-  /// CPU point-source pairs recomputed from the sorted positions (no stored
-  /// tensors): the canonical list-1 records are swept per target leaf.
+  /// Point-source / point-target pairs recomputed from the sorted positions
+  /// (no stored tensors): the CPU executor sweeps the canonical list-1
+  /// records per target leaf, the CUDA kernel runs one warp per record.
   PointGeometry,
   /// Request value: let the backend's execution policy choose.
   Auto
@@ -195,6 +196,23 @@ struct UniformFmmOptions {
      * the reason at construction.
      */
     P2PExecutionPacking p2p_packing{P2PExecutionPacking::Auto};
+
+    /**
+     * @brief Execution strategy of the point-source P2M and point-target
+     *        L2P operators.
+     *
+     * `Auto` keeps the measured policy (see docs/backends.md). `Precomputed`
+     * streams the coefficient rows built at construction; `Procedural`
+     * recomputes the point operators from the sorted positions during every
+     * evaluation and retains no rows. Procedural execution exists for the
+     * spherical basis at orders 1 to 10 on the static backends; a stage with
+     * a finite far-field model keeps its precomputed rows in every mode, and
+     * an explicit `Procedural` request that no stage can honour throws
+     * `std::invalid_argument` at construction. The result is identical for
+     * every value.
+     */
+    PointExpansionExecution point_expansion_execution{
+        PointExpansionExecution::Auto};
 
     /**
      * @brief Explicitly selects the global one-thread-per-target CUDA
@@ -380,6 +398,13 @@ public:
   [[nodiscard]] P2PExecutionPacking p2p_execution_packing() const noexcept;
   /// @brief Returns the packing requested at construction (`Auto` by default).
   [[nodiscard]] P2PExecutionPacking requested_p2p_packing() const noexcept;
+  /** @brief Requested execution strategy of the point P2M/L2P operators. */
+  [[nodiscard]] PointExpansionExecution
+  requested_point_expansion_execution() const noexcept;
+  /** @brief Resolved P2M execution: `Precomputed` or `Procedural`. */
+  [[nodiscard]] PointExpansionExecution p2m_execution() const noexcept;
+  /** @brief Resolved L2P execution: `Precomputed` or `Procedural`. */
+  [[nodiscard]] PointExpansionExecution l2p_execution() const noexcept;
   /// @brief Returns the spatial layout hint the plan was constructed with.
   [[nodiscard]] SpatialLayout spatial_layout() const noexcept;
   /// @brief Returns CUDA traffic and persistent-allocation diagnostics.
@@ -480,6 +505,8 @@ private:
   void apply_p2p_packing_request(
       cuda_policy::CudaExecutionPolicyInputs &inputs) const;
   void build_reduced_symmetry_p2p_packing();
+  void release_stored_p2p_tensors();
+  void resolve_point_expansion_execution();
   void print_initialisation_summary(const UniformFmmOptions &options) const;
   void build_cuda_p2p_plan();
   void build_cuda_full_plan();
@@ -585,6 +612,11 @@ private:
   bool cuda_dictionary_power2_microtiles_{false};
   int signed_p2p_target_tile_size_{32};
   SpatialLayout spatial_layout_{SpatialLayout::General};
+  // Point P2M/L2P execution: the request and the per-stage resolution.
+  PointExpansionExecution requested_point_expansion_{
+      PointExpansionExecution::Auto};
+  bool procedural_p2m_{false};
+  bool procedural_l2p_{false};
   // Resolved CUDA strategy choices; opaque so the public header stays free of
   // backend types.
   std::unique_ptr<CudaExecutionPolicyOwner> cuda_policy_{};

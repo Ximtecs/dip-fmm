@@ -6,6 +6,7 @@
 #include "cdfmm/core/precision.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 #include "cdfmm/timings.hpp"
+#include "cdfmm/tree/static_topology.hpp"
 
 namespace cdfmm {
 
@@ -21,7 +22,8 @@ namespace cdfmm {
  * at construction is uploaded once; omitting it retains the dynamic identity
  * behaviour required by the existing hybrid FMM path. The constructors select
  * canonical AoS rows, source-only SoA rows, compact leaf blocks, signed
- * Tensor6 dictionaries, or cuSPARSE BSR(3), respectively.
+ * Tensor6 dictionaries, cuSPARSE BSR(3), or the position-based point
+ * executor, respectively.
  */
 class CudaP2PPlan {
 public:
@@ -52,6 +54,18 @@ public:
 
   /** @brief Builds a persistent cuSPARSE BSR(3) CUDA plan. */
   explicit CudaP2PPlan(const StaticP2PBsrPlan &plan);
+
+  /**
+   * @brief Builds the position-based point P2P plan in either precision.
+   *
+   * Only the sorted positions and the canonical list-1 records of the
+   * topology are uploaded; every point-dipole pair is recomputed during
+   * evaluation, so no pair tensors are resident. Point sources and point
+   * targets are required.
+   */
+  explicit CudaP2PPlan(const StaticFmmTopology &topology,
+                       StaticPrecision precision,
+                       std::span<const int> fixed_self_indices = {});
 
   /** @brief Builds the canonical FP32 CUDA baseline. */
   explicit CudaP2PPlan(const FloatStaticP2POperator &operator_map,

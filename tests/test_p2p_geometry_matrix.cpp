@@ -255,9 +255,15 @@ std::vector<P2PExecutionPacking> packings_for(const ExecutionBackend backend,
         }
         return result;
     }
-    return {P2PExecutionPacking::CanonicalAos, P2PExecutionPacking::LeafBlock,
-            P2PExecutionPacking::CudaBsr3,
-            P2PExecutionPacking::TensorDictionary};
+    std::vector<P2PExecutionPacking> result{
+        P2PExecutionPacking::CanonicalAos, P2PExecutionPacking::LeafBlock,
+        P2PExecutionPacking::CudaBsr3, P2PExecutionPacking::TensorDictionary};
+    if (point_pair(pair)) {
+        // The CUDA position-based kernel recomputes point pairs like the CPU
+        // executor and is rejected for finite geometry the same way.
+        result.push_back(P2PExecutionPacking::PointGeometry);
+    }
+    return result;
 }
 
 std::vector<ExecutionBackend> available_backends()

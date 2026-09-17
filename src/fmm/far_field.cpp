@@ -171,11 +171,19 @@ void UniformFmm::upward_pass_prepared_float() {
     const StaticLeafRange &leaf_range =
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
     const auto M = multipole_float_for_node(leaf_index);
-    detail::cpu::apply_packed_p2m(
-        cpu_packing_->fp32.p2m, leaf_range.begin,
+    const std::span<const FloatVec3> leaf_moments =
         std::span<const FloatVec3>(sorted_dipole_moments_float_)
-            .subspan(leaf_range.begin, leaf_range.count),
-        M.data());
+            .subspan(leaf_range.begin, leaf_range.count);
+    if (procedural_p2m_) {
+      cpu_packing_->procedural_fp32.apply_p2m(
+          nodes[static_cast<std::size_t>(leaf_index)].centre,
+          std::span<const Vec3>(topology_->sorted_source_positions)
+              .subspan(leaf_range.begin, leaf_range.count),
+          leaf_moments, M.data());
+    } else {
+      detail::cpu::apply_packed_p2m(cpu_packing_->fp32.p2m, leaf_range.begin,
+                                    leaf_moments, M.data());
+    }
   }
   last_timings_.p2m.add(elapsed_seconds(phase_start));
 
@@ -270,11 +278,20 @@ void UniformFmm::upward_pass_prepared() {
     const auto &leaf = nodes[static_cast<std::size_t>(leaf_index)];
     if (p2m_executor != StaticOperatorExecutor::Reference) {
       const auto M = multipole_for_node(leaf_index);
-      detail::cpu::apply_packed_p2m(
-          cpu_packing_->fp64.p2m, leaf_range.begin,
+      const std::span<const Vec3> leaf_moments =
           std::span<const Vec3>(sorted_dipole_moments_)
-              .subspan(leaf_range.begin, leaf_range.count),
-          M.data());
+              .subspan(leaf_range.begin, leaf_range.count);
+      if (procedural_p2m_) {
+        cpu_packing_->procedural_fp64.apply_p2m(
+            leaf.centre,
+            std::span<const Vec3>(topology_->sorted_source_positions)
+                .subspan(leaf_range.begin, leaf_range.count),
+            leaf_moments, M.data());
+      } else {
+        detail::cpu::apply_packed_p2m(cpu_packing_->fp64.p2m,
+                                      leaf_range.begin, leaf_moments,
+                                      M.data());
+      }
     } else {
       const CoeffVector M = operators::p2m::evaluate(basis_, leaf.centre,
                      std::span<const Vec3>(topology_->sorted_source_positions)
@@ -447,6 +464,16 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
       const int leaf_index = leaf_range.node;
       const auto &leaf = nodes[static_cast<std::size_t>(leaf_index)];
       const double *L = local_for_node(leaf_index).data();
+      if (procedural_l2p_ &&
+          l2p_executor != StaticOperatorExecutor::Reference) {
+        cpu_packing_->procedural_fp64.apply_l2p(
+            leaf.centre, targets.subspan(leaf_range.begin, leaf_range.count),
+            L,
+            std::span<PotentialField>(sorted_results_)
+                .subspan(leaf_range.begin, leaf_range.count),
+            want_field, want_potential);
+        continue;
+      }
       for (std::size_t target_index = leaf_range.begin;
            target_index < leaf_range.begin + leaf_range.count; ++target_index) {
         if (l2p_executor != StaticOperatorExecutor::Reference) {
@@ -540,6 +567,17 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
           occupied_leaves[static_cast<std::size_t>(occupied_index)];
       const int leaf_index = leaf_range.node;
       const float *L = local_float_for_node(leaf_index).data();
+      if (procedural_l2p_) {
+        cpu_packing_->procedural_fp32.apply_l2p(
+            nodes[static_cast<std::size_t>(leaf_index)].centre,
+            std::span<const Vec3>(topology_->sorted_target_positions)
+                .subspan(leaf_range.begin, leaf_range.count),
+            L,
+            std::span<FloatPotentialField>(sorted_results_float_)
+                .subspan(leaf_range.begin, leaf_range.count),
+            want_field, want_potential);
+        continue;
+      }
       for (std::size_t target_index = leaf_range.begin;
            target_index < leaf_range.begin + leaf_range.count; ++target_index) {
         FloatPotentialField result;

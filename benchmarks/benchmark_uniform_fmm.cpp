@@ -65,6 +65,7 @@ struct Options {
     bool irregular_bodies{false};
     // Explicit list-1 packing (UniformFmmOptions::p2p_packing) or "auto".
     std::string p2p_packing{"auto"};
+    std::string point_expansion{"auto"};
     // Fully periodic cubic cell equal to the root box.
     bool periodic{false};
     std::string precision{"float32"};
@@ -182,6 +183,7 @@ Options parse_options(const int argc, char** argv)
         else if (key == "--target-geometry") options.target_geometry = value;
         else if (key == "--body-fill") options.body_fill = std::stod(value);
         else if (key == "--p2p-packing") options.p2p_packing = value;
+        else if (key == "--point-expansion") options.point_expansion = value;
         else if (key == "--output") options.output = value;
         else throw std::invalid_argument("Unknown option: " + key);
     }
@@ -226,6 +228,33 @@ Options parse_options(const int argc, char** argv)
         throw std::invalid_argument("--body-fill must be in (0, 1)");
     }
     return options;
+}
+
+cdfmm::PointExpansionExecution parse_point_expansion(const std::string& name)
+{
+    if (name == "auto") return cdfmm::PointExpansionExecution::Auto;
+    if (name == "precomputed") {
+        return cdfmm::PointExpansionExecution::Precomputed;
+    }
+    if (name == "procedural") {
+        return cdfmm::PointExpansionExecution::Procedural;
+    }
+    throw std::invalid_argument(
+        "--point-expansion must be auto, precomputed or procedural");
+}
+
+std::string_view point_expansion_name(
+    const cdfmm::PointExpansionExecution value)
+{
+    switch (value) {
+    case cdfmm::PointExpansionExecution::Auto:
+        return "auto";
+    case cdfmm::PointExpansionExecution::Precomputed:
+        return "precomputed";
+    case cdfmm::PointExpansionExecution::Procedural:
+        return "procedural";
+    }
+    return "unknown";
 }
 
 cdfmm::P2PExecutionPacking parse_p2p_packing(const std::string& name)
@@ -882,6 +911,8 @@ int main(int argc, char** argv)
             fmm_options.periodic.lengths = Vec3{2.0, 2.0, 2.0};
         }
         fmm_options.p2p_packing = parse_p2p_packing(options.p2p_packing);
+        fmm_options.point_expansion_execution =
+            parse_point_expansion(options.point_expansion);
 
         fmm_options.spatial_layout = options.spatial_layout == "regular-grid"
             ? cdfmm::SpatialLayout::RegularGrid
@@ -1359,7 +1390,9 @@ int main(int argc, char** argv)
                "periodic,p2p_packing_requested,"
                "p2p_unique_tensors,p2p_dictionary_token_width_bytes,"
                "p2p_dictionary_total_bytes,p2p_canonical_total_bytes,"
-               "near_field_operator_bytes\n";
+               "near_field_operator_bytes,cuda_p2p_geometry_bytes,"
+               "point_expansion_requested,p2m_execution,l2p_execution,"
+               "p2m_operator_bytes,l2p_operator_bytes\n";
         const char* build_type =
 #ifdef NDEBUG
             "Release";
@@ -1465,7 +1498,16 @@ int main(int argc, char** argv)
             << static_plan.p2p_dictionary_token_width_bytes << ','
             << static_plan.p2p_dictionary_total_bytes << ','
             << static_plan.p2p_canonical_total_bytes << ','
-            << static_plan.near_field_operator_bytes << '\n';
+            << static_plan.near_field_operator_bytes << ','
+            << cuda_statistics.p2p_geometry_bytes << ','
+            << options.point_expansion << ','
+            << (fmm ? point_expansion_name(fmm->p2m_execution())
+                    : std::string_view{"direct"})
+            << ','
+            << (fmm ? point_expansion_name(fmm->l2p_execution())
+                    : std::string_view{"direct"})
+            << ',' << static_plan.p2m_operator_bytes << ','
+            << static_plan.l2p_operator_bytes << '\n';
 
         if (!options.output.empty()) {
             std::cout << "Wrote " << options.output << "\n";

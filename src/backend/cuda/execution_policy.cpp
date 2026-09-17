@@ -33,21 +33,59 @@ constexpr double dictionary_microtile_occupancy = 48.0;
 constexpr double dictionary_source_warp_occupancy = 72.0;
 
 // Device-cost estimates behind the stream-priority rule: about 18 ps per
-// list-1 pair for the leaf-block kernel (3.95 ms for 192M pairs) and 0.22 ps
-// per M2L multiply-add (translations x coefficient_count^2; 2.6 ms for 4.9M
-// translations of 49 coefficients), both from the FP32 measurements of the
-// Phase-3 P2P unification. Only their ratio matters.
-constexpr double p2p_picoseconds_per_pair = 18.0;
+// list-1 pair for the FP32 leaf-block kernel (3.95 ms for 192M pairs) and
+// 0.22 ps per M2L multiply-add (translations x coefficient_count^2; 2.6 ms
+// for 4.9M translations of 49 coefficients), both from the FP32 measurements
+// of the Phase-3 P2P unification. Only their ratio matters. The other
+// packings are the 128-points-per-leaf kernel times of the Phase-3B.5 study
+// divided by the same 192M pairs (FP32 / FP64): canonical rows 8.2 ms / about
+// twice that, BSR(3) 5.0 ms / about twice that, the signed dictionary 8 ps
+// (5-10 ps across the calibrated lattices) / 26 ps, and the position-based
+// kernel 0.54 ms / 12.3 ms.
+constexpr double leaf_block_picoseconds_per_pair = 18.0;
 constexpr double m2l_picoseconds_per_flop = 0.22;
 constexpr double far_field_dominance_ratio = 3.0;
 
 } // namespace
 
+double p2p_picoseconds_per_pair(const CudaP2PPacking packing,
+                                const StaticPrecision precision) noexcept {
+  const bool fp64 = precision == StaticPrecision::Float64;
+  switch (packing) {
+  case CudaP2PPacking::CanonicalRows:
+    return fp64 ? 86.0 : 43.0;
+  case CudaP2PPacking::LeafBlock:
+    return fp64 ? 37.0 : leaf_block_picoseconds_per_pair;
+  case CudaP2PPacking::Bsr3:
+    return fp64 ? 52.0 : 26.0;
+  case CudaP2PPacking::SignedDictionary:
+    return fp64 ? 26.0 : 8.0;
+  case CudaP2PPacking::PointGeometry:
+    return fp64 ? 64.0 : 3.0;
+  }
+  return leaf_block_picoseconds_per_pair;
+}
+
+bool far_field_stream_priority(const std::size_t p2p_pair_count,
+                               const std::size_t m2l_translation_count,
+                               const int coefficient_count,
+                               const CudaP2PPacking packing,
+                               const StaticPrecision precision) noexcept {
+  const double p2p_picoseconds =
+      p2p_picoseconds_per_pair(packing, precision) *
+      static_cast<double>(p2p_pair_count);
+  const double far_field_picoseconds =
+      m2l_picoseconds_per_flop * static_cast<double>(m2l_translation_count) *
+      static_cast<double>(coefficient_count) *
+      static_cast<double>(coefficient_count);
+  return far_field_picoseconds < far_field_dominance_ratio * p2p_picoseconds;
+}
+
 bool far_field_stream_priority(const std::size_t p2p_pair_count,
                                const std::size_t m2l_translation_count,
                                const int coefficient_count) noexcept {
   const double p2p_picoseconds =
-      p2p_picoseconds_per_pair * static_cast<double>(p2p_pair_count);
+      leaf_block_picoseconds_per_pair * static_cast<double>(p2p_pair_count);
   const double far_field_picoseconds =
       m2l_picoseconds_per_flop * static_cast<double>(m2l_translation_count) *
       static_cast<double>(coefficient_count) *
@@ -78,6 +116,14 @@ double dictionary_source_warp_occupancy_limit() {
 
 std::uint8_t dictionary_layout_max_token_width_bytes() noexcept { return 2; }
 
+int procedural_lanes_per_leaf(const double mean_leaf_occupancy) noexcept {
+  int lanes = 1;
+  while (lanes < 32 && static_cast<double>(lanes) < mean_leaf_occupancy) {
+    lanes <<= 1;
+  }
+  return lanes;
+}
+
 const char *
 explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
                            const CudaP2PPacking packing) noexcept {
@@ -104,6 +150,18 @@ explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
              "select CanonicalAos or LeafBlock";
     }
     return nullptr;
+  case CudaP2PPacking::PointGeometry:
+    // The position-based kernel reads the identity map at run time like the
+    // leaf-block kernel, so it accepts fixed and changing identity maps and
+    // periodic image records; it needs point sources and point targets
+    // because it recomputes the point-dipole formula instead of applying a
+    // stored finite-body tensor.
+    if (!inputs.effective_point_source || !inputs.effective_point_target) {
+      return "PointGeometry recomputes point-dipole pairs from the positions; "
+             "finite near-field sources or targets need their stored pair "
+             "tensors (CanonicalAos, LeafBlock, CudaBsr3 or TensorDictionary)";
+    }
+    return nullptr;
   }
   return "unknown CUDA P2P packing";
 }
@@ -116,9 +174,14 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
   policy.translation_wide_lanes = translation_wide_lanes;
   policy.translation_lanes = translation_narrow_lanes;
   policy.translation_wide_outputs = translation_wide_outputs;
-  policy.far_field_stream_priority = far_field_stream_priority(
-      inputs.p2p_pair_count, inputs.m2l_translation_count,
-      inputs.coefficient_count);
+  // The stream-priority decision depends on the resolved packing's cost, so
+  // it is taken last (see `finish`).
+  const auto finish = [&](CudaExecutionPolicy resolved) {
+    resolved.far_field_stream_priority = far_field_stream_priority(
+        inputs.p2p_pair_count, inputs.m2l_translation_count,
+        inputs.coefficient_count, resolved.p2p_packing, inputs.precision);
+    return resolved;
+  };
 
   if (inputs.explicit_packing.has_value()) {
     // An explicit request is honoured verbatim; the caller has already
@@ -131,7 +194,7 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
             : (inputs.explicit_dictionary_power2_microtiles
                    ? CudaDictionaryExecutor::PowerOfTwoMicrotiles
                    : CudaDictionaryExecutor::SourceWarp);
-    return policy;
+    return finish(policy);
   }
 
   // The signed dictionary encodes fixed point-source self pairs as the zero
@@ -161,7 +224,23 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
             : (inputs.explicit_dictionary_power2_microtiles
                    ? CudaDictionaryExecutor::PowerOfTwoMicrotiles
                    : CudaDictionaryExecutor::SourceWarp);
-    return policy;
+    return finish(policy);
+  }
+  // FP32 point sources and point targets on a CUDA backend recompute every
+  // pair from the resident positions (Phase 3B.5). On random points the
+  // position-based kernel beat the leaf blocks at every occupancy from 8 to
+  // 128 per leaf (1.3x to 7.5x) with 10-30x less device memory, and on
+  // lattices it was faster than or equal to the dictionary in evaluation
+  // time at every measured occupancy (the dictionary kernel alone is still
+  // up to 2x faster at 8 points per leaf on a 262k lattice, where the far
+  // field dominates the evaluation), so the layout hint no longer selects
+  // the dictionary for FP32 points. FP64 plans keep the stored tensors: the
+  // FP64 arithmetic rate of the consumer GPU makes recomputation 1.7-3x
+  // slower than streaming. The CPU keeps its own rules (`cuda_backend`).
+  if (inputs.cuda_backend && inputs.precision == StaticPrecision::Float32 &&
+      inputs.effective_point_source && inputs.effective_point_target) {
+    policy.p2p_packing = CudaP2PPacking::PointGeometry;
+    return finish(policy);
   }
   if (layout_dictionary) {
     policy.p2p_packing = CudaP2PPacking::SignedDictionary;
@@ -181,7 +260,7 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
         policy.dictionary_executor = CudaDictionaryExecutor::SourceWarp;
       }
     }
-    return policy;
+    return finish(policy);
   }
 
   // General default: dense leaf blocks for every geometry. Phase 3A chose
@@ -192,7 +271,7 @@ resolve_cuda_execution_policy(const CudaExecutionPolicyInputs &inputs) {
   // is gone. BSR(3) and canonical rows remain explicit packings; periodic
   // plans follow the same rule since their image records pack identically.
   policy.p2p_packing = CudaP2PPacking::LeafBlock;
-  return policy;
+  return finish(policy);
 }
 
 const char *name(const CudaP2PPacking packing) noexcept {
@@ -205,6 +284,8 @@ const char *name(const CudaP2PPacking packing) noexcept {
     return "cusparse_bsr3";
   case CudaP2PPacking::SignedDictionary:
     return "signed_dictionary";
+  case CudaP2PPacking::PointGeometry:
+    return "point_geometry";
   }
   return "unknown";
 }

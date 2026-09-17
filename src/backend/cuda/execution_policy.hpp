@@ -11,7 +11,15 @@
 namespace cdfmm::cuda_policy {
 
 /** @brief Derived list-1 P2P representation executed by the CUDA backends. */
-enum class CudaP2PPacking { CanonicalRows, LeafBlock, Bsr3, SignedDictionary };
+enum class CudaP2PPacking {
+  CanonicalRows,
+  LeafBlock,
+  Bsr3,
+  SignedDictionary,
+  /// Point-dipole pairs recomputed from the resident sorted positions; the
+  /// CUDA counterpart of `P2PExecutionPacking::PointGeometry`.
+  PointGeometry
+};
 
 /** @brief Kernel used for the signed tensor-dictionary packing. */
 enum class CudaDictionaryExecutor { SourceWarp, TargetOwned, PowerOfTwoMicrotiles };
@@ -30,6 +38,8 @@ struct CudaExecutionPolicyInputs {
   bool cuda_backend{false};
   /// Point-dipole near-field sources (geometry or near-field model).
   bool effective_point_source{true};
+  /// Point near-field targets (geometry or near-field model).
+  bool effective_point_target{true};
   bool periodic{false};
   /// A fixed target-to-source identity map is available in sorted order.
   bool fixed_identity_available{false};
@@ -100,8 +110,32 @@ explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
 [[nodiscard]] int translation_lanes_for_outputs(std::size_t outputs);
 
 /**
+ * @brief Estimated device time per list-1 pair of one P2P packing in
+ *        picoseconds, measured on the RTX 5090 (Phase 3A/3B.5 records).
+ *
+ * Only ratios against the M2L estimate matter; the values are the kernel
+ * times of the 128-points-per-leaf random workload divided by its pair count.
+ */
+[[nodiscard]] double p2p_picoseconds_per_pair(CudaP2PPacking packing,
+                                              StaticPrecision precision) noexcept;
+
+/**
+ * @brief Stream-priority rule for a plan whose P2P packing and precision are
+ *        known (see the three-argument overload for the rule itself).
+ */
+[[nodiscard]] bool far_field_stream_priority(std::size_t p2p_pair_count,
+                                             std::size_t m2l_translation_count,
+                                             int coefficient_count,
+                                             CudaP2PPacking packing,
+                                             StaticPrecision precision) noexcept;
+
+/**
  * @brief Whether the full backend's far-field stream should outrank its P2P
  * stream, from the estimated device costs of the two branches.
+ *
+ * This overload assumes the FP32 leaf-block kernel cost (the Phase-3 P2P
+ * unification calibration); the packing-aware overload above is what the
+ * resolved policy uses.
  *
  * Measured on the RTX 5090 (Phase-3 P2P unification): with the far field
  * prioritised, evaluations were 4-10 % faster wherever the far field is
@@ -130,6 +164,15 @@ explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
  * keep the dictionary within about 1.5 MB, which streams from cache.
  */
 [[nodiscard]] std::uint8_t dictionary_layout_max_token_width_bytes() noexcept;
+
+/**
+ * @brief Lane-group width of the procedural point P2M/L2P kernels.
+ *
+ * A group of this many consecutive lanes (a power of two from 1 to 32) owns
+ * one leaf, so a warp holds several small leaves instead of idling; the width
+ * is the smallest power of two covering the mean leaf occupancy.
+ */
+[[nodiscard]] int procedural_lanes_per_leaf(double mean_leaf_occupancy) noexcept;
 
 [[nodiscard]] const char *name(CudaP2PPacking packing) noexcept;
 [[nodiscard]] const char *name(CudaDictionaryExecutor executor) noexcept;

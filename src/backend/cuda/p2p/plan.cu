@@ -3,6 +3,7 @@
 #include "cdfmm/backend/cuda/p2p.hpp"
 #include "backend/cuda/p2p/internal.hpp"
 #include "backend/cuda/common/error.hpp"
+#include "operators/p2p_point_kernel.hpp"
 
 #include <algorithm>
 #include <array>
@@ -205,6 +206,119 @@ __global__ void __launch_bounds__(leaf_p2p_threads) leaf_p2p_kernel(
       atomicAdd(&fields[target].z, hz);
     }
   }
+}
+
+constexpr int point_geometry_p2p_threads = 128;
+
+// Position-based point P2P: one warp per canonical list-1 record (target
+// leaf, source leaf, image) with the leaf-block lane layout, `stride`
+// consecutive targets times `32 / stride` source slots. Instead of six stored
+// tensor components a lane reads one aligned position and one moment per
+// source, both uniform across a lane group, and recomputes the point-dipole
+// pair from the displacement (plus the record's image shift) with the shared
+// formula of `operators/p2p_point_kernel.hpp`. The self pair is removed
+// without control flow (unit displacement, zero weight) exactly like the CPU
+// executor, so the source loop stays uniform. Source-slot partial fields are
+// combined with shuffles and the record's contribution is added atomically,
+// because the other records of the same target leaf run in other warps.
+template <typename Scalar, typename Vector>
+__global__ void __launch_bounds__(point_geometry_p2p_threads)
+point_geometry_p2p_kernel(
+    const CudaPointGeometryP2PRecord<Scalar> *__restrict__ records,
+    const int record_count,
+    const typename CudaScalar4<Scalar>::type *__restrict__ source_positions,
+    const typename CudaScalar4<Scalar>::type *__restrict__ target_positions,
+    const Vector *__restrict__ moments, const int *__restrict__ self_indices,
+    Vector *__restrict__ fields) {
+  const int warp = static_cast<int>((blockIdx.x * blockDim.x + threadIdx.x) >> 5);
+  const int lane = static_cast<int>(threadIdx.x & 31);
+  if (warp >= record_count) {
+    return;
+  }
+  const CudaPointGeometryP2PRecord<Scalar> record = records[warp];
+
+  int stride = 32;
+  while (stride > 1 && (stride >> 1) >= record.target_count) {
+    stride >>= 1;
+  }
+  const int source_slots = 32 / stride;
+  const int source_slot = lane / stride;
+  const int target_slot = lane - source_slot * stride;
+
+  for (int target_base = 0; target_base < record.target_count;
+       target_base += stride) {
+    const int local_target = target_base + target_slot;
+    const bool active = local_target < record.target_count;
+    const int target = record.target_begin + (active ? local_target : 0);
+    const int self = active ? self_indices[target] : -1;
+    const auto target_position = target_positions[target];
+    const Scalar tx = target_position.x;
+    const Scalar ty = target_position.y;
+    const Scalar tz = target_position.z;
+    Scalar hx = Scalar{0};
+    Scalar hy = Scalar{0};
+    Scalar hz = Scalar{0};
+    for (int local_source = source_slot; local_source < record.source_count;
+         local_source += source_slots) {
+      const int source = record.source_begin + local_source;
+      const auto source_position = source_positions[source];
+      const Vector moment = moments[source];
+      const bool excluded =
+          !active || (record.skip_for_identity != 0 && source == self);
+      const Scalar weight = excluded ? Scalar{0} : Scalar{1};
+      const Scalar rx =
+          excluded ? Scalar{1} : tx - (source_position.x + record.shift_x);
+      const Scalar ry =
+          excluded ? Scalar{0} : ty - (source_position.y + record.shift_y);
+      const Scalar rz =
+          excluded ? Scalar{0} : tz - (source_position.z + record.shift_z);
+      Scalar cx = Scalar{0};
+      Scalar cy = Scalar{0};
+      Scalar cz = Scalar{0};
+      operators::p2p::accumulate_point_dipole_field(
+          rx, ry, rz, static_cast<Scalar>(moment.x),
+          static_cast<Scalar>(moment.y), static_cast<Scalar>(moment.z), cx, cy,
+          cz);
+      hx += weight * cx;
+      hy += weight * cy;
+      hz += weight * cz;
+    }
+    for (int offset = stride; offset < 32; offset <<= 1) {
+      hx += __shfl_xor_sync(0xffffffffU, hx, offset);
+      hy += __shfl_xor_sync(0xffffffffU, hy, offset);
+      hz += __shfl_xor_sync(0xffffffffU, hz, offset);
+    }
+    if (active && source_slot == 0) {
+      atomicAdd(&fields[target].x, hx);
+      atomicAdd(&fields[target].y, hy);
+      atomicAdd(&fields[target].z, hz);
+    }
+  }
+}
+
+template <typename Scalar, typename Vector>
+void launch_point_geometry_p2p_typed(
+    const CudaPointGeometryP2PDeviceView<Scalar> &plan, const Vector *moments,
+    const int *self_indices, Vector *fields, cudaStream_t stream) {
+  if (plan.target_count == 0) {
+    return;
+  }
+  // Records accumulate atomically, so the fields start from zero.
+  check_cuda(cudaMemsetAsync(fields, 0,
+                             static_cast<std::size_t>(plan.target_count) *
+                                 sizeof(Vector),
+                             stream),
+             "clear position-based P2P fields");
+  if (plan.record_count == 0) {
+    return;
+  }
+  constexpr int warps_per_block = point_geometry_p2p_threads / 32;
+  point_geometry_p2p_kernel<<<(plan.record_count + warps_per_block - 1) /
+                                  warps_per_block,
+                              point_geometry_p2p_threads, 0, stream>>>(
+      plan.records, plan.record_count, plan.source_positions,
+      plan.target_positions, moments, self_indices, fields);
+  check_cuda(cudaGetLastError(), "launch position-based point P2P kernel");
 }
 
 constexpr int cuda_dictionary_warp_size = 32;
@@ -1668,6 +1782,153 @@ void upload_cuda_leaf(const FloatStaticP2PLeafPlan &host,
                          upload_operation);
 }
 
+// The position-based executor needs no canonical tensors: it uploads the
+// sorted positions (one aligned four-scalar slot each) and the canonical
+// list-1 records with their shift and identity marker. Positions are stored
+// relative to their own leaf centre and each record's shift is the source
+// leaf centre minus the target leaf centre plus the image shift, computed in
+// FP64 and rounded once: the displacement `x_t - x_s` is then formed from
+// leaf-sized numbers and an (exactly representable) centre difference, which
+// keeps the FP32 pair error near the rounding level instead of the
+// cancellation of two root-frame coordinates. Sources and targets share one
+// position array when they are the same sorted points in the same leaves.
+template <typename Scalar>
+void upload_cuda_point_geometry_typed(
+    const StaticFmmTopology &topology,
+    CudaPointGeometryP2PDeviceView<Scalar> &device,
+    CudaPlanStatistics &statistics, const char *allocation_operation,
+    const char *upload_operation) {
+  using Scalar4 = typename CudaScalar4<Scalar>::type;
+  device.target_count =
+      static_cast<int>(topology.sorted_target_positions.size());
+  device.record_count = static_cast<int>(topology.p2p_leaf_records.size());
+  device.threads_per_block = point_geometry_p2p_threads;
+  const auto &nodes = topology.nodes;
+
+  std::vector<CudaPointGeometryP2PRecord<Scalar>> records;
+  records.reserve(topology.p2p_leaf_records.size());
+  std::size_t interactions = 0;
+  for (const StaticP2PLeafRecord &record : topology.p2p_leaf_records) {
+    const Vec3 shift =
+        nodes[static_cast<std::size_t>(record.source_leaf)].centre -
+        nodes[static_cast<std::size_t>(record.target_leaf)].centre +
+        record.source_shift;
+    CudaPointGeometryP2PRecord<Scalar> packed;
+    packed.target_begin = static_cast<int>(record.target_begin);
+    packed.target_count = static_cast<int>(record.target_count);
+    packed.source_begin = static_cast<int>(record.source_begin);
+    packed.source_count = static_cast<int>(record.source_count);
+    packed.shift_x = static_cast<Scalar>(shift.x);
+    packed.shift_y = static_cast<Scalar>(shift.y);
+    packed.shift_z = static_cast<Scalar>(shift.z);
+    packed.skip_for_identity = record.skip_for_identity ? 1 : 0;
+    records.push_back(packed);
+    interactions += record.target_count * record.source_count;
+  }
+  device.interaction_count = interactions;
+
+  // Every sorted point lies in exactly one occupied leaf range.
+  const auto pack_positions = [&nodes](const std::vector<Vec3> &positions,
+                                       std::span<const StaticLeafRange> leaves) {
+    std::vector<Scalar4> packed(positions.size());
+    for (const StaticLeafRange &leaf : leaves) {
+      const Vec3 centre = nodes[static_cast<std::size_t>(leaf.node)].centre;
+      for (std::size_t index = leaf.begin; index < leaf.begin + leaf.count;
+           ++index) {
+        const Vec3 d = positions[index] - centre;
+        packed[index].x = static_cast<Scalar>(d.x);
+        packed[index].y = static_cast<Scalar>(d.y);
+        packed[index].z = static_cast<Scalar>(d.z);
+        packed[index].w = Scalar{0};
+      }
+    }
+    return packed;
+  };
+  const std::vector<Scalar4> sources =
+      pack_positions(topology.sorted_source_positions, topology.source_leaves);
+  std::vector<Scalar4> targets =
+      pack_positions(topology.sorted_target_positions, topology.target_leaves);
+  const bool shared_positions =
+      targets.size() == sources.size() &&
+      std::equal(targets.begin(), targets.end(), sources.begin(),
+                 [](const Scalar4 &a, const Scalar4 &b) {
+                   return a.x == b.x && a.y == b.y && a.z == b.z;
+                 });
+  device.shared_positions = shared_positions;
+  if (shared_positions) {
+    targets.clear();
+  }
+
+  const std::size_t record_bytes =
+      records.size() * sizeof(CudaPointGeometryP2PRecord<Scalar>);
+  const std::size_t source_bytes = sources.size() * sizeof(Scalar4);
+  const std::size_t target_bytes = targets.size() * sizeof(Scalar4);
+  const auto allocate = [&](void **pointer, const std::size_t bytes) {
+    check_cuda(cudaMalloc(pointer, std::max(bytes, std::size_t{1})),
+               allocation_operation);
+  };
+  const auto upload = [&](void *destination, const void *source,
+                          const std::size_t bytes) {
+    if (bytes != 0) {
+      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
+                 upload_operation);
+    }
+  };
+  allocate(reinterpret_cast<void **>(&device.records), record_bytes);
+  allocate(reinterpret_cast<void **>(&device.source_positions), source_bytes);
+  upload(device.records, records.data(), record_bytes);
+  upload(device.source_positions, sources.data(), source_bytes);
+  if (shared_positions) {
+    device.target_positions = device.source_positions;
+  } else {
+    allocate(reinterpret_cast<void **>(&device.target_positions), target_bytes);
+    upload(device.target_positions, targets.data(), target_bytes);
+  }
+
+  const std::size_t total_bytes = record_bytes + source_bytes + target_bytes;
+  statistics.setup_h2d_bytes += total_bytes;
+  statistics.persistent_device_bytes += total_bytes;
+  statistics.p2p_interaction_count = interactions;
+  statistics.p2p_tensor_bytes = 0;
+  statistics.p2p_index_bytes = 0;
+  statistics.p2p_row_metadata_bytes = 0;
+  statistics.p2p_leaf_metadata_bytes = record_bytes;
+  statistics.p2p_geometry_bytes = source_bytes + target_bytes;
+  statistics.p2p_scratch_bytes = 0;
+  statistics.p2p_threads_per_block = point_geometry_p2p_threads;
+}
+
+void upload_cuda_point_geometry(
+    const StaticFmmTopology &topology,
+    CudaPointGeometryP2PDeviceView<double> &device,
+    CudaPlanStatistics &statistics, const char *allocation_operation,
+    const char *upload_operation) {
+  upload_cuda_point_geometry_typed(topology, device, statistics,
+                                   allocation_operation, upload_operation);
+}
+
+void upload_cuda_point_geometry(
+    const StaticFmmTopology &topology,
+    CudaPointGeometryP2PDeviceView<float> &device,
+    CudaPlanStatistics &statistics, const char *allocation_operation,
+    const char *upload_operation) {
+  upload_cuda_point_geometry_typed(topology, device, statistics,
+                                   allocation_operation, upload_operation);
+}
+
+void launch_point_geometry_p2p(
+    const CudaPointGeometryP2PDeviceView<double> &plan, const Vec3 *moments,
+    const int *self_indices, Vec3 *fields, cudaStream_t stream) {
+  launch_point_geometry_p2p_typed(plan, moments, self_indices, fields, stream);
+}
+
+void launch_point_geometry_p2p(
+    const CudaPointGeometryP2PDeviceView<float> &plan,
+    const FloatVec3 *moments, const int *self_indices, FloatVec3 *fields,
+    cudaStream_t stream) {
+  launch_point_geometry_p2p_typed(plan, moments, self_indices, fields, stream);
+}
+
 void upload_cuda_canonical(
     const StaticP2POperator &host,
     CudaP2PDeviceView<StaticDipoleBlock> &device,
@@ -1838,6 +2099,27 @@ void release_p2p_device_view(CudaLeafP2PDeviceView<float> &plan) noexcept {
   release_leaf_p2p(plan);
 }
 
+template <typename Scalar>
+void release_point_geometry_p2p(
+    CudaPointGeometryP2PDeviceView<Scalar> &plan) noexcept {
+  cudaFree(plan.records);
+  cudaFree(plan.source_positions);
+  if (!plan.shared_positions) {
+    cudaFree(plan.target_positions);
+  }
+  plan = {};
+}
+
+void release_p2p_device_view(
+    CudaPointGeometryP2PDeviceView<double> &plan) noexcept {
+  release_point_geometry_p2p(plan);
+}
+
+void release_p2p_device_view(
+    CudaPointGeometryP2PDeviceView<float> &plan) noexcept {
+  release_point_geometry_p2p(plan);
+}
+
 void release_p2p_device_view(
     CudaSignedDictionaryP2PDeviceView<double> &plan) noexcept {
   release_dictionary_p2p(plan);
@@ -1866,7 +2148,8 @@ struct CudaP2PPlan::Implementation {
     Compact,
     Leaf,
     TensorDictionary,
-    Bsr
+    Bsr,
+    PointGeometry
   };
 
   int source_count{0};
@@ -1883,6 +2166,8 @@ struct CudaP2PPlan::Implementation {
   CudaLeafP2PDeviceView<float> leaf_float{};
   CudaSignedDictionaryP2PDeviceView<float> dictionary_float{};
   CudaBsrP2PDeviceView<float> bsr_float{};
+  CudaPointGeometryP2PDeviceView<double> point_geometry{};
+  CudaPointGeometryP2PDeviceView<float> point_geometry_float{};
   Vec3* moments{nullptr};
   int* self_indices{nullptr};
   Vec3* fields{nullptr};
@@ -2385,12 +2670,34 @@ CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PBsrPlan &bsr)
   plan.statistics.p2p_threads_per_block = 0;
 }
 
+CudaP2PPlan::CudaP2PPlan(const StaticFmmTopology &topology,
+                         const StaticPrecision precision,
+                         const std::span<const int> fixed_self_indices)
+    : CudaP2PPlan(static_cast<int>(topology.sorted_source_positions.size()),
+                  static_cast<int>(topology.sorted_target_positions.size()),
+                  fixed_self_indices, true, precision) {
+  auto &plan = *implementation_;
+  plan.kind = Implementation::Kind::PointGeometry;
+  if (plan.fp32) {
+    upload_cuda_point_geometry(topology, plan.point_geometry_float,
+                               plan.statistics,
+                               "allocate position-based P2P data",
+                               "upload position-based P2P data");
+  } else {
+    upload_cuda_point_geometry(topology, plan.point_geometry, plan.statistics,
+                               "allocate position-based P2P data",
+                               "upload position-based P2P data");
+  }
+}
+
 CudaP2PPlan::~CudaP2PPlan() {
   if (implementation_ == nullptr) {
     return;
   }
   auto& plan = *implementation_;
   cancel_evaluate();
+  release_p2p_device_view(plan.point_geometry);
+  release_p2p_device_view(plan.point_geometry_float);
   release_p2p_device_view(plan.canonical);
   release_p2p_device_view(plan.compact);
   release_p2p_device_view(plan.leaf);
@@ -2472,6 +2779,10 @@ void CudaP2PPlan::begin_evaluate(
     case Implementation::Kind::Leaf:
       launch_leaf_p2p(plan.leaf, plan.moments, plan.self_indices,
                       plan.fields, plan.stream);
+      break;
+    case Implementation::Kind::PointGeometry:
+      launch_point_geometry_p2p(plan.point_geometry, plan.moments,
+                                plan.self_indices, plan.fields, plan.stream);
       break;
     case Implementation::Kind::TensorDictionary:
       launch_signed_dictionary_p2p(plan.dictionary, plan.moments, plan.fields,
@@ -2583,6 +2894,11 @@ void CudaP2PPlan::begin_evaluate(
     case Implementation::Kind::Leaf:
       launch_leaf_p2p(plan.leaf_float, plan.moments_float, plan.self_indices,
                       plan.fields_float, plan.stream);
+      break;
+    case Implementation::Kind::PointGeometry:
+      launch_point_geometry_p2p(plan.point_geometry_float, plan.moments_float,
+                                plan.self_indices, plan.fields_float,
+                                plan.stream);
       break;
     case Implementation::Kind::TensorDictionary:
       launch_signed_dictionary_p2p(plan.dictionary_float, plan.moments_float,

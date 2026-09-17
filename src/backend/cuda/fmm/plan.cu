@@ -23,9 +23,11 @@ namespace cdfmm {
 using cuda_p2p_detail::CudaBsrP2PDeviceView;
 using cuda_p2p_detail::CudaLeafP2PDeviceView;
 using cuda_p2p_detail::CudaP2PDeviceView;
+using cuda_p2p_detail::CudaPointGeometryP2PDeviceView;
 using cuda_p2p_detail::CudaSignedDictionaryP2PDeviceView;
 using cuda_p2p_detail::launch_bsr_p2p;
 using cuda_p2p_detail::launch_leaf_p2p;
+using cuda_p2p_detail::launch_point_geometry_p2p;
 using cuda_p2p_detail::launch_signed_dictionary_p2p;
 using cuda_p2p_detail::launch_static_p2p;
 using cuda_p2p_detail::release_p2p_device_view;
@@ -33,6 +35,7 @@ using cuda_p2p_detail::static_operator_threads;
 using cuda_p2p_detail::upload_cuda_bsr;
 using cuda_p2p_detail::upload_cuda_canonical;
 using cuda_p2p_detail::upload_cuda_leaf;
+using cuda_p2p_detail::upload_cuda_point_geometry;
 using cuda_p2p_detail::upload_cuda_signed_dictionary;
 using cuda_m2l_detail::CudaM2LExecutionPlan;
 using cuda_far_field_detail::CudaFarFieldExecutionPlan;
@@ -70,6 +73,18 @@ __global__ void combine_order_kernel(const Vector *far_fields,
   }
 }
 
+// Pair count of the position-based executor, which derives its records from
+// the topology instead of a stored packing.
+std::size_t point_geometry_pair_count(const StaticFmmTopology *topology) {
+  std::size_t pairs = 0;
+  if (topology != nullptr) {
+    for (const StaticP2PLeafRecord &record : topology->p2p_leaf_records) {
+      pairs += record.target_count * record.source_count;
+    }
+  }
+  return pairs;
+}
+
 } // namespace
 
 bool cuda_m2l_available() noexcept { return cuda_m2l_p2p_available(); }
@@ -101,9 +116,12 @@ struct CudaFullPlan::Implementation {
     CudaBsrP2PDeviceView<float> p2p_bsr_float{};
     CudaSignedDictionaryP2PDeviceView<float> p2p_dictionary_float{};
     CudaLeafP2PDeviceView<float> p2p_leaf_float{};
+    CudaPointGeometryP2PDeviceView<double> p2p_point{};
+    CudaPointGeometryP2PDeviceView<float> p2p_point_float{};
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
   bool use_p2p_leaf{false};
+  bool use_p2p_point_geometry{false};
   bool p2p_dictionary_power2_microtiles{false};
   CudaM2LExecutionPlan<double, StaticM2LPlan> *m2l{nullptr};
   CudaFarFieldExecutionPlan<float, FloatStaticOperatorEntry> *far_field_float{nullptr};
@@ -164,17 +182,24 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
     throw std::invalid_argument(
         "full CUDA P2P cannot select BSR and tensor dictionary together");
   }
+  plan.use_p2p_point_geometry = data.use_p2p_point_geometry;
+  if (plan.use_p2p_point_geometry && data.topology == nullptr) {
+    throw std::invalid_argument(
+        "full CUDA position-based P2P needs the plan topology");
+  }
   plan.p2p.target_count = plan.target_count;
   plan.p2p_bsr.target_count = plan.target_count;
   plan.p2p_bsr.source_count = plan.source_count;
   plan.p2p_bsr.interaction_count =
       static_cast<int>(data.p2p_bsr.source_indices.size());
-  plan.p2p_block_count = data.use_p2p_dictionary
+  plan.p2p_block_count = data.use_p2p_point_geometry
+      ? point_geometry_pair_count(data.topology)
+      : (data.use_p2p_dictionary
       ? data.p2p_dictionary.token_count()
       : (data.use_p2p_bsr
              ? data.p2p_bsr.source_indices.size()
              : (data.use_p2p_leaf ? data.p2p_leaf.tensors[0].size()
-                                  : data.p2p.blocks.size()));
+                                  : data.p2p.blocks.size())));
   if (data.far_field_stream_priority) {
     cuda_detail::create_priority_stream(plan.far_field_stream,
                                         "create full FMM far-field stream");
@@ -260,6 +285,10 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
            data.target_permutation.size() * sizeof(int));
   if (plan.use_p2p_dictionary) {
     // The dictionary metadata and values were uploaded together above.
+  } else if (plan.use_p2p_point_geometry) {
+    upload_cuda_point_geometry(*data.topology, plan.p2p_point,
+                               plan.statistics, "allocate full FMM buffer",
+                               "upload full FMM static data");
   } else if (plan.use_p2p_leaf) {
     upload_cuda_leaf(data.p2p_leaf, plan.p2p_leaf, plan.statistics,
                      "allocate full FMM buffer", "upload full FMM static data");
@@ -275,21 +304,28 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
         "create full FMM cuSPARSE P2P BSR descriptor");
     plan.statistics.p2p_scratch_bytes = plan.p2p_bsr.workspace_size;
   }
+  cuda_far_field_detail::CudaFarFieldStaticData<StaticOperatorEntry>
+      far_field_data{data.coefficient_count,
+                     data.m2l.level_count - 1,
+                     data.coefficient_degrees,
+                     data.p2m,
+                     data.l2p,
+                     data.m2m.matrices,
+                     data.m2m.interactions,
+                     data.m2m.entries_per_matrix,
+                     data.m2m.matrix_count,
+                     data.l2l.matrices,
+                     data.l2l.interactions,
+                     data.l2l.entries_per_matrix,
+                     data.l2l.matrix_count};
+  far_field_data.procedural_p2m = data.procedural_p2m;
+  far_field_data.procedural_l2p = data.procedural_l2p;
+  far_field_data.expansion_order = data.expansion_order;
+  far_field_data.p2m_lanes_per_leaf = data.p2m_lanes_per_leaf;
+  far_field_data.l2p_lanes_per_leaf = data.l2p_lanes_per_leaf;
+  far_field_data.topology = data.topology;
   plan.far_field = new CudaFarFieldExecutionPlan<double, StaticOperatorEntry>(
-      {data.coefficient_count,
-       data.m2l.level_count - 1,
-       data.coefficient_degrees,
-       data.p2m,
-       data.l2p,
-       data.m2m.matrices,
-       data.m2m.interactions,
-       data.m2m.entries_per_matrix,
-       data.m2m.matrix_count,
-       data.l2l.matrices,
-       data.l2l.interactions,
-       data.l2l.entries_per_matrix,
-       data.l2l.matrix_count},
-      plan.far_field_stream);
+      far_field_data, plan.far_field_stream);
   if (data.has_fixed_self_indices) {
     plan.fixed_self_indices = data.fixed_self_indices;
     plan.identity_initialised = true;
@@ -353,7 +389,7 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
     plan.statistics.p2p_identity_bytes = 0;
     plan.statistics.p2p_scratch_bytes = plan.p2p_bsr.workspace_size;
     plan.statistics.p2p_threads_per_block = 0;
-  } else if (plan.use_p2p_leaf) {
+  } else if (plan.use_p2p_leaf || plan.use_p2p_point_geometry) {
     plan.statistics.p2p_identity_bytes =
         static_cast<std::size_t>(plan.target_count) * sizeof(int);
   } else {
@@ -387,17 +423,24 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
     throw std::invalid_argument(
         "FP32 full CUDA P2P cannot select BSR and tensor dictionary together");
   }
+  plan.use_p2p_point_geometry = data.use_p2p_point_geometry;
+  if (plan.use_p2p_point_geometry && data.topology == nullptr) {
+    throw std::invalid_argument(
+        "FP32 full CUDA position-based P2P needs the plan topology");
+  }
   plan.p2p_float.target_count = plan.target_count;
   plan.p2p_bsr_float.target_count = plan.target_count;
   plan.p2p_bsr_float.source_count = plan.source_count;
   plan.p2p_bsr_float.interaction_count =
       static_cast<int>(data.p2p_bsr.source_indices.size());
-  plan.p2p_block_count = data.use_p2p_dictionary
+  plan.p2p_block_count = data.use_p2p_point_geometry
+      ? point_geometry_pair_count(data.topology)
+      : (data.use_p2p_dictionary
       ? data.p2p_dictionary.token_count()
       : (data.use_p2p_bsr
              ? data.p2p_bsr.source_indices.size()
              : (data.use_p2p_leaf ? data.p2p_leaf.tensors[0].size()
-                                  : data.p2p.blocks.size()));
+                                  : data.p2p.blocks.size())));
 
   if (data.far_field_stream_priority) {
     cuda_detail::create_priority_stream(
@@ -476,6 +519,11 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
          data.target_permutation.size() * sizeof(int));
   if (plan.use_p2p_dictionary) {
     // The dictionary metadata and values were uploaded together above.
+  } else if (plan.use_p2p_point_geometry) {
+    upload_cuda_point_geometry(*data.topology, plan.p2p_point_float,
+                               plan.statistics,
+                               "allocate FP32 full FMM buffer",
+                               "upload FP32 full FMM static data");
   } else if (plan.use_p2p_leaf) {
     upload_cuda_leaf(data.p2p_leaf, plan.p2p_leaf_float, plan.statistics,
                      "allocate FP32 full FMM buffer",
@@ -493,22 +541,29 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
         "create FP32 full FMM cuSPARSE P2P BSR descriptor");
     plan.statistics.p2p_scratch_bytes = plan.p2p_bsr_float.workspace_size;
   }
+  cuda_far_field_detail::CudaFarFieldStaticData<FloatStaticOperatorEntry>
+      far_field_data{data.coefficient_count,
+                     data.m2l.level_count - 1,
+                     data.coefficient_degrees,
+                     data.p2m,
+                     data.l2p,
+                     data.m2m.matrices,
+                     data.m2m.interactions,
+                     data.m2m.entries_per_matrix,
+                     data.m2m.matrix_count,
+                     data.l2l.matrices,
+                     data.l2l.interactions,
+                     data.l2l.entries_per_matrix,
+                     data.l2l.matrix_count};
+  far_field_data.procedural_p2m = data.procedural_p2m;
+  far_field_data.procedural_l2p = data.procedural_l2p;
+  far_field_data.expansion_order = data.expansion_order;
+  far_field_data.p2m_lanes_per_leaf = data.p2m_lanes_per_leaf;
+  far_field_data.l2p_lanes_per_leaf = data.l2p_lanes_per_leaf;
+  far_field_data.topology = data.topology;
   plan.far_field_float =
       new CudaFarFieldExecutionPlan<float, FloatStaticOperatorEntry>(
-          {data.coefficient_count,
-           data.m2l.level_count - 1,
-           data.coefficient_degrees,
-           data.p2m,
-           data.l2p,
-           data.m2m.matrices,
-           data.m2m.interactions,
-           data.m2m.entries_per_matrix,
-           data.m2m.matrix_count,
-           data.l2l.matrices,
-           data.l2l.interactions,
-           data.l2l.entries_per_matrix,
-           data.l2l.matrix_count},
-          plan.far_field_stream);
+          far_field_data, plan.far_field_stream);
   if (data.has_fixed_self_indices) {
     plan.fixed_self_indices = data.fixed_self_indices;
     plan.identity_initialised = true;
@@ -574,7 +629,7 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
           data.p2p_bsr.row_offsets.size() * sizeof(int);
     plan.statistics.p2p_scratch_bytes = plan.p2p_bsr_float.workspace_size;
     plan.statistics.p2p_threads_per_block = 0;
-  } else if (plan.use_p2p_leaf) {
+  } else if (plan.use_p2p_leaf || plan.use_p2p_point_geometry) {
     plan.statistics.p2p_identity_bytes =
         static_cast<std::size_t>(plan.target_count) * sizeof(int);
   } else {
@@ -603,10 +658,12 @@ CudaFullPlan::~CudaFullPlan() {
   release_p2p_device_view(plan.p2p_bsr);
   release_p2p_device_view(plan.p2p_dictionary);
   release_p2p_device_view(plan.p2p_leaf);
+  release_p2p_device_view(plan.p2p_point);
   release_p2p_device_view(plan.p2p_float);
   release_p2p_device_view(plan.p2p_bsr_float);
   release_p2p_device_view(plan.p2p_dictionary_float);
   release_p2p_device_view(plan.p2p_leaf_float);
+  release_p2p_device_view(plan.p2p_point_float);
   delete plan.far_field;
   delete plan.m2l;
   delete plan.far_field_float;
@@ -720,6 +777,10 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
           plan.near_field_stream);
     } else if (plan.use_p2p_bsr) {
       launch_bsr_p2p(plan.p2p_bsr, plan.near_fields, plan.near_field_stream);
+    } else if (plan.use_p2p_point_geometry) {
+      launch_point_geometry_p2p(plan.p2p_point, plan.sorted_moments,
+                                plan.self_indices, plan.near_fields,
+                                plan.near_field_stream);
     } else if (plan.use_p2p_leaf) {
       launch_leaf_p2p(plan.p2p_leaf, plan.sorted_moments, plan.self_indices,
                       plan.near_fields, plan.near_field_stream);
@@ -924,6 +985,10 @@ void CudaFullPlan::evaluate(
   } else if (plan.use_p2p_bsr) {
     launch_bsr_p2p(plan.p2p_bsr_float, plan.near_fields_float,
                    plan.near_field_stream);
+  } else if (plan.use_p2p_point_geometry) {
+    launch_point_geometry_p2p(plan.p2p_point_float, plan.sorted_moments_float,
+                              plan.self_indices, plan.near_fields_float,
+                              plan.near_field_stream);
   } else if (plan.use_p2p_leaf) {
     launch_leaf_p2p(plan.p2p_leaf_float, plan.sorted_moments_float,
                     plan.self_indices, plan.near_fields_float,

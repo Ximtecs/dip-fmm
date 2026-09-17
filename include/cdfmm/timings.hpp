@@ -269,6 +269,9 @@ struct CudaPlanStatistics {
     std::size_t p2p_identity_bytes{0};
     /// @brief Bytes occupied by persistent P2P evaluation scratch.
     std::size_t p2p_scratch_bytes{0};
+    /// @brief Bytes occupied by the resident sorted positions of the
+    /// position-based point P2P executor (zero for stored-tensor packings).
+    std::size_t p2p_geometry_bytes{0};
     /// @brief Threads per block for a custom P2P kernel, or zero for cuSPARSE.
     int p2p_threads_per_block{0};
     /// @brief Immutable setup traffic and per-evaluation dynamic traffic.

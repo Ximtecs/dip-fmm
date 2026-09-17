@@ -10,6 +10,7 @@
 #include "backend/cuda/execution_policy.hpp"
 #include "backend/cuda/fmm/internal.hpp"
 #include "backend/cpu/far_field/packing.hpp"
+#include "backend/cpu/far_field/procedural.hpp"
 #include "backend/cpu/m2l/schedule.hpp"
 #include "backend/cpu/p2p/geometry.hpp"
 #include "backend/mkl/m2l.hpp"
@@ -67,6 +68,10 @@ public:
   /// Position-based P2P workspace (P2PExecutionPacking::PointGeometry only);
   /// FP64 arithmetic serves both plan precisions.
   detail::cpu::PointGeometryP2P<double> p2p{};
+  /// Procedural point P2M/L2P executor in the plan's precision, constructed
+  /// only when a stage resolves to procedural execution.
+  detail::cpu::ProceduralPointExpansion<double> procedural_fp64{};
+  detail::cpu::ProceduralPointExpansion<float> procedural_fp32{};
 };
 
 /** @brief Resolved CUDA execution policy of one plan (see execution_policy.hpp). */

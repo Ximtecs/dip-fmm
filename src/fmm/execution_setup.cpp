@@ -283,6 +283,7 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
     near_fields_.resize(target_count);
   }
   sorted_self_indices_.resize(target_count, -1);
+  requested_point_expansion_ = options.point_expansion_execution;
   initialise_p2p_policy(options);
   {
     // Plan preparation supplies the geometry/option facts cache identity is
@@ -438,6 +439,9 @@ void UniformFmm::resolve_cuda_execution_policy() {
   inputs.effective_point_source =
       source_geometry_ == SourceGeometry::PointDipole ||
       near_field_source_model_ == SourceModel::PointDipole;
+  inputs.effective_point_target =
+      target_geometry_ == TargetGeometry::Point ||
+      near_field_target_model_ == TargetModel::Point;
   inputs.periodic = periodic_.enabled;
   inputs.fixed_identity_available = fixed_target_source_indices_.has_value();
   inputs.explicit_reduced_symmetry = use_reduced_symmetry_p2p_;
@@ -561,11 +565,13 @@ void UniformFmm::apply_p2p_packing_request(
     break;
   case P2PExecutionPacking::ParticleRowSoa:
     reject("ParticleRowSoa is the CPU row packing; CUDA backends execute "
-           "CanonicalAos, LeafBlock, CudaBsr3 or TensorDictionary");
+           "CanonicalAos, LeafBlock, CudaBsr3, TensorDictionary or "
+           "PointGeometry");
   case P2PExecutionPacking::PointGeometry:
-    reject("PointGeometry is the CPU position-based executor; CUDA backends "
-           "execute stored tensors (CanonicalAos, LeafBlock, CudaBsr3 or "
-           "TensorDictionary)");
+    // The CUDA position-based kernel; explicit_packing_rejection checks the
+    // point-source / point-target requirement.
+    packing = CudaP2PPacking::PointGeometry;
+    break;
   default:
     break;
   }
@@ -785,6 +791,16 @@ void UniformFmm::build_cuda_p2p_plan() {
     p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     return;
   }
+  if (policy.p2p_packing == CudaP2PPacking::PointGeometry) {
+    // Positions replace the stored pair tensors on the device as well; the
+    // canonical operator is already in the cache, so release it here.
+    cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
+        std::make_unique<CudaP2PPlan>(*topology_, precision_,
+                                      fixed_identities));
+    p2p_execution_packing_ = P2PExecutionPacking::PointGeometry;
+    release_stored_p2p_tensors();
+    return;
+  }
   if (policy.p2p_packing == CudaP2PPacking::LeafBlock) {
     if (precision_ == StaticPrecision::Float32) {
       cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
@@ -835,7 +851,66 @@ FloatStaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan_float() const {
       leaf_pairs_from_topology(*topology_)));
 }
 
+void UniformFmm::resolve_point_expansion_execution() {
+  // Explicit override > measured policy > precomputed rows. Procedural
+  // execution exists for the spherical basis at orders 1..10 on the static
+  // backends and applies to a stage whose far-field model is a point; a
+  // finite far-field model keeps its exact precomputed rows whatever the
+  // request, because evaluating the prism or tetrahedron expansion integrals
+  // every evaluation would cost far more than streaming them.
+  constexpr int max_order =
+      detail::cpu::ProceduralPointExpansion<double>::max_order;
+  const bool point_p2m =
+      source_geometry_ == SourceGeometry::PointDipole ||
+      far_field_source_model_ == SourceModel::PointDipole;
+  const bool point_l2p =
+      target_geometry_ == TargetGeometry::Point ||
+      far_field_target_model_ == TargetModel::Point;
+  const int order = expansion_order();
+  const bool procedural_available =
+      expansion_basis_ == ExpansionBasis::Spherical &&
+      backend_ != ExecutionBackend::CpuReference && order >= 1 &&
+      order <= max_order;
+  procedural_p2m_ = false;
+  procedural_l2p_ = false;
+  switch (requested_point_expansion_) {
+  case PointExpansionExecution::Precomputed:
+    return;
+  case PointExpansionExecution::Procedural:
+    if (!procedural_available || (!point_p2m && !point_l2p)) {
+      throw std::invalid_argument(
+          "UniformFmmOptions::point_expansion_execution = Procedural needs the "
+          "spherical basis, an expansion order between 1 and 10, a static "
+          "backend and at least one point far-field model");
+    }
+    procedural_p2m_ = point_p2m;
+    procedural_l2p_ = point_l2p;
+    return;
+  case PointExpansionExecution::Auto:
+    break;
+  }
+  // Measured policy (agent_docs/performance_optimization.md, Phase 3B.5).
+  // The CPU hierarchy (CpuStatic and the hybrid backend) recomputes the point
+  // operators in both precisions: the rows stream 12-24 C bytes per point
+  // from DRAM while the recurrence runs from cache-resident positions, and
+  // the procedural stages were faster from p = 4 upwards and several times
+  // faster at p >= 6, with no per-point rows resident. The device recomputes
+  // them for FP32 plans (3-7x faster P2M/L2P kernels from p = 6, equal within
+  // a few microseconds at p = 4, about 100 MB less device memory at 50k
+  // points and p = 6); the FP64 device kernels are slower than the streamed
+  // rows, so FP64 CudaFull keeps them.
+  if (!procedural_available) {
+    return;
+  }
+  const bool device_hierarchy = backend_ == ExecutionBackend::CudaFull;
+  const bool procedural_faster =
+      !device_hierarchy || precision_ == StaticPrecision::Float32;
+  procedural_p2m_ = procedural_faster && point_p2m;
+  procedural_l2p_ = procedural_faster && point_l2p;
+}
+
 void UniformFmm::build_backend_packing() {
+  resolve_point_expansion_execution();
   if (backend_ != ExecutionBackend::CudaFull) {
     build_cpu_far_field_packing();
   }
@@ -922,16 +997,24 @@ void UniformFmm::build_cpu_far_field_packing() {
   std::size_t packed_translation_bytes = 0;
   if (precision_ == StaticPrecision::Float32) {
     auto &packing = owner->fp32;
-    packing.p2m = detail::cpu::pack_p2m(
-        std::span<const FloatP2MPlan>(p2m_plans_float_), source_count, n);
+    if (procedural_p2m_ || procedural_l2p_) {
+      owner->procedural_fp32 =
+          detail::cpu::ProceduralPointExpansion<float>(expansion_order());
+    }
+    if (!procedural_p2m_) {
+      packing.p2m = detail::cpu::pack_p2m(
+          std::span<const FloatP2MPlan>(p2m_plans_float_), source_count, n);
+    }
     packing.m2m = detail::cpu::pack_translation_bank(
         std::span<const FloatStaticCoefficientOperator>(m2m_operators_float_),
         degrees, level_count);
     packing.l2l = detail::cpu::pack_translation_bank(
         std::span<const FloatStaticCoefficientOperator>(l2l_operators_float_),
         degrees, level_count);
-    packing.l2p = detail::cpu::pack_l2p(
-        std::span<const FloatStaticL2PEvaluator>(l2p_evaluators_float_), n);
+    if (!procedural_l2p_) {
+      packing.l2p = detail::cpu::pack_l2p(
+          std::span<const FloatStaticL2PEvaluator>(l2p_evaluators_float_), n);
+    }
     for (const FloatP2MPlan &plan : p2m_plans_float_) {
       canonical_p2m_bytes +=
           plan.operator_map.entries.size() * sizeof(FloatStaticOperatorEntry);
@@ -948,16 +1031,24 @@ void UniformFmm::build_cpu_far_field_packing() {
     l2p_evaluators_float_.shrink_to_fit();
   } else {
     auto &packing = owner->fp64;
-    packing.p2m = detail::cpu::pack_p2m(std::span<const P2MPlan>(p2m_plans_),
-                                        source_count, n);
+    if (procedural_p2m_ || procedural_l2p_) {
+      owner->procedural_fp64 =
+          detail::cpu::ProceduralPointExpansion<double>(expansion_order());
+    }
+    if (!procedural_p2m_) {
+      packing.p2m = detail::cpu::pack_p2m(
+          std::span<const P2MPlan>(p2m_plans_), source_count, n);
+    }
     packing.m2m = detail::cpu::pack_translation_bank(
         std::span<const StaticCoefficientOperator>(m2m_operators_), degrees,
         level_count);
     packing.l2l = detail::cpu::pack_translation_bank(
         std::span<const StaticCoefficientOperator>(l2l_operators_), degrees,
         level_count);
-    packing.l2p = detail::cpu::pack_l2p(
-        std::span<const StaticL2PEvaluator>(l2p_evaluators_), n);
+    if (!procedural_l2p_) {
+      packing.l2p = detail::cpu::pack_l2p(
+          std::span<const StaticL2PEvaluator>(l2p_evaluators_), n);
+    }
     for (const P2MPlan &plan : p2m_plans_) {
       canonical_p2m_bytes +=
           plan.operator_map.entries.size() * sizeof(StaticOperatorEntry);
@@ -998,41 +1089,60 @@ void UniformFmm::build_cpu_far_field_packing() {
   if (p2p_execution_packing_ == P2PExecutionPacking::PointGeometry) {
     // Positions replace the stored pair tensors; release the canonical and
     // row operators (the cache is already written) and account the scratch.
-    // The statistics attributed exactly `near_field_operator_bytes` of the
-    // operator total to those containers on every construction path.
-    const std::size_t released = static_plan_statistics_.near_field_operator_bytes;
     int thread_capacity = 1;
 #ifdef CDFMM_USE_OPENMP
     thread_capacity = omp_get_max_threads();
 #endif
     owner->p2p =
         detail::cpu::PointGeometryP2P<double>(*topology_, thread_capacity);
-    p2p_operator_ = {};
-    p2p_compact_plan_ = {};
-    p2p_operator_float_ = {};
-    p2p_compact_plan_float_ = {};
-    const std::size_t scratch = owner->p2p.memory_bytes();
-    static_plan_statistics_.operator_bytes -=
-        std::min(static_plan_statistics_.operator_bytes, released);
-    static_plan_statistics_.near_field_operator_bytes = 0;
-    static_plan_statistics_.p2p_value_bytes = 0;
-    static_plan_statistics_.p2p_index_bytes = 0;
-    static_plan_statistics_.p2p_canonical_total_bytes = 0;
-    static_plan_statistics_.scratch_bytes += scratch;
+    release_stored_p2p_tensors();
+    static_plan_statistics_.scratch_bytes += owner->p2p.memory_bytes();
   }
   cpu_packing_ = std::move(owner);
   // Report the resident packing instead of the released canonical maps; the
-  // eight shared translation operators stay resident and keep their bytes.
+  // eight shared translation operators stay resident and keep their bytes. A
+  // procedural stage retains only the executor's factor tables.
+  const bool fp32 = precision_ == StaticPrecision::Float32;
+  const std::size_t procedural_p2m_bytes =
+      procedural_p2m_ ? (fp32 ? cpu_packing_->procedural_fp32.p2m_memory_bytes()
+                              : cpu_packing_->procedural_fp64.p2m_memory_bytes())
+                      : 0;
+  const std::size_t procedural_l2p_bytes =
+      procedural_l2p_ ? (fp32 ? cpu_packing_->procedural_fp32.l2p_memory_bytes()
+                              : cpu_packing_->procedural_fp64.l2p_memory_bytes())
+                      : 0;
   static_plan_statistics_.operator_bytes +=
-      packed_p2m_bytes + packed_l2p_bytes + packed_translation_bytes;
+      packed_p2m_bytes + packed_l2p_bytes + packed_translation_bytes +
+      procedural_p2m_bytes + procedural_l2p_bytes;
   static_plan_statistics_.operator_bytes -=
       std::min(static_plan_statistics_.operator_bytes,
                canonical_p2m_bytes + canonical_l2p_bytes);
-  static_plan_statistics_.p2m_operator_bytes = packed_p2m_bytes;
-  static_plan_statistics_.l2p_operator_bytes = packed_l2p_bytes;
+  static_plan_statistics_.p2m_operator_bytes =
+      procedural_p2m_ ? procedural_p2m_bytes : packed_p2m_bytes;
+  static_plan_statistics_.l2p_operator_bytes =
+      procedural_l2p_ ? procedural_l2p_bytes : packed_l2p_bytes;
   static_plan_statistics_.m2m_operator_bytes += packed_translation_bytes / 2;
   static_plan_statistics_.l2l_operator_bytes += packed_translation_bytes / 2;
   static_plan_statistics_.far_field_packing.add(elapsed_seconds(start));
+}
+
+void UniformFmm::release_stored_p2p_tensors() {
+  // A position-based executor (CPU or CUDA) keeps no pair tensors resident.
+  // The statistics attributed exactly `near_field_operator_bytes` of the
+  // operator total to the canonical and row containers on every construction
+  // path, so that amount is what leaves the resident total.
+  const std::size_t released =
+      static_plan_statistics_.near_field_operator_bytes;
+  p2p_operator_ = {};
+  p2p_compact_plan_ = {};
+  p2p_operator_float_ = {};
+  p2p_compact_plan_float_ = {};
+  static_plan_statistics_.operator_bytes -=
+      std::min(static_plan_statistics_.operator_bytes, released);
+  static_plan_statistics_.near_field_operator_bytes = 0;
+  static_plan_statistics_.p2p_value_bytes = 0;
+  static_plan_statistics_.p2p_index_bytes = 0;
+  static_plan_statistics_.p2p_canonical_total_bytes = 0;
 }
 
 void UniformFmm::build_cuda_full_plan() {
@@ -1051,6 +1161,8 @@ void UniformFmm::build_cuda_full_plan() {
       policy.dictionary_executor == CudaDictionaryExecutor::PowerOfTwoMicrotiles;
   const bool use_leaf = policy.p2p_packing == CudaP2PPacking::LeafBlock;
   const bool use_bsr = policy.p2p_packing == CudaP2PPacking::Bsr3;
+  const bool use_point_geometry =
+      policy.p2p_packing == CudaP2PPacking::PointGeometry;
   if (precision_ == StaticPrecision::Float32) {
     FloatCudaFullPlanData data;
     data.coefficient_count = coefficient_count();
@@ -1067,7 +1179,21 @@ void UniformFmm::build_cuda_full_plan() {
       data.coefficient_degrees.push_back(coefficient_degree(coefficient));
     }
     const auto &nodes = topology_->nodes;
+    data.topology = topology_.get();
+    data.procedural_p2m = procedural_p2m_;
+    data.procedural_l2p = procedural_l2p_;
+    data.expansion_order = expansion_order();
+    data.p2m_lanes_per_leaf = cuda_policy::procedural_lanes_per_leaf(
+        topology_->source_leaves.empty()
+            ? 0.0
+            : static_cast<double>(data.source_count) /
+                  static_cast<double>(topology_->source_leaves.size()));
+    data.l2p_lanes_per_leaf = cuda_policy::procedural_lanes_per_leaf(
+        cuda_policy_->inputs.mean_leaf_occupancy);
     for (const FloatP2MPlan &leaf_plan : p2m_plans_float_) {
+      if (procedural_p2m_) {
+        break;
+      }
       const auto &leaf = nodes[static_cast<std::size_t>(leaf_plan.leaf)];
       for (FloatStaticOperatorEntry entry : leaf_plan.operator_map.entries) {
         entry.input += static_cast<int>(leaf_plan.begin) * 3;
@@ -1109,6 +1235,9 @@ void UniformFmm::build_cuda_full_plan() {
     }
     data.m2l = m2l_plan_float_;
     for (const StaticLeafRange& leaf_range : topology_->target_leaves) {
+      if (procedural_l2p_) {
+        break;
+      }
       const auto &leaf = nodes[static_cast<std::size_t>(leaf_range.node)];
       for (std::size_t target = leaf_range.begin;
            target < leaf_range.begin + leaf_range.count; ++target) {
@@ -1134,6 +1263,8 @@ void UniformFmm::build_cuda_full_plan() {
       data.p2p_dictionary_target_owned = target_owned;
       data.p2p_dictionary_power2_microtiles = power2_microtiles;
       data.p2p_dictionary = std::move(*p2p_tensor_dictionary_plan_float_);
+    } else if (use_point_geometry) {
+      data.use_p2p_point_geometry = true;
     } else if (use_leaf) {
       data.use_p2p_leaf = true;
       data.p2p_leaf = build_cuda_leaf_plan_float();
@@ -1143,14 +1274,19 @@ void UniformFmm::build_cuda_full_plan() {
     } else {
       data.p2p = p2p_operator_float_;
     }
-    p2p_execution_packing_ = data.use_p2p_dictionary
+    p2p_execution_packing_ = data.use_p2p_point_geometry
+        ? P2PExecutionPacking::PointGeometry
+        : (data.use_p2p_dictionary
         ? P2PExecutionPacking::TensorDictionary
         : (data.use_p2p_bsr
                ? P2PExecutionPacking::CudaBsr3
                : (data.use_p2p_leaf ? P2PExecutionPacking::LeafBlock
-                                    : P2PExecutionPacking::CanonicalAos));
+                                    : P2PExecutionPacking::CanonicalAos)));
     cuda_full_plan_ = std::make_unique<CudaFullPlanOwner>(
         std::make_unique<CudaFullPlan>(data));
+    if (data.use_p2p_point_geometry) {
+      release_stored_p2p_tensors();
+    }
     return;
   }
 
@@ -1167,8 +1303,22 @@ void UniformFmm::build_cuda_full_plan() {
     data.coefficient_degrees.push_back(coefficient_degree(coefficient));
   }
   const auto &nodes = topology_->nodes;
+  data.topology = topology_.get();
+  data.procedural_p2m = procedural_p2m_;
+  data.procedural_l2p = procedural_l2p_;
+  data.expansion_order = expansion_order();
+  data.p2m_lanes_per_leaf = cuda_policy::procedural_lanes_per_leaf(
+      topology_->source_leaves.empty()
+          ? 0.0
+          : static_cast<double>(data.source_count) /
+                static_cast<double>(topology_->source_leaves.size()));
+  data.l2p_lanes_per_leaf = cuda_policy::procedural_lanes_per_leaf(
+      cuda_policy_->inputs.mean_leaf_occupancy);
 
   for (const P2MPlan &leaf_plan : p2m_plans_) {
+    if (procedural_p2m_) {
+      break;
+    }
     const auto &leaf = nodes[static_cast<std::size_t>(leaf_plan.leaf)];
     for (StaticOperatorEntry entry : leaf_plan.operator_map.entries) {
       entry.input += static_cast<int>(leaf_plan.begin) * 3;
@@ -1210,6 +1360,9 @@ void UniformFmm::build_cuda_full_plan() {
   }
   data.m2l = m2l_plan_;
   for (const StaticLeafRange& leaf_range : topology_->target_leaves) {
+    if (procedural_l2p_) {
+      break;
+    }
     const auto &leaf = nodes[static_cast<std::size_t>(leaf_range.node)];
     for (std::size_t target = leaf_range.begin;
          target < leaf_range.begin + leaf_range.count; ++target) {
@@ -1235,6 +1388,8 @@ void UniformFmm::build_cuda_full_plan() {
     data.p2p_dictionary_target_owned = target_owned;
     data.p2p_dictionary_power2_microtiles = power2_microtiles;
     data.p2p_dictionary = std::move(*p2p_tensor_dictionary_plan_);
+  } else if (use_point_geometry) {
+    data.use_p2p_point_geometry = true;
   } else if (use_leaf) {
     data.use_p2p_leaf = true;
     data.p2p_leaf = build_cuda_leaf_plan();
@@ -1248,14 +1403,19 @@ void UniformFmm::build_cuda_full_plan() {
   } else {
     data.p2p = p2p_operator_;
   }
-  p2p_execution_packing_ = data.use_p2p_dictionary
+  p2p_execution_packing_ = data.use_p2p_point_geometry
+      ? P2PExecutionPacking::PointGeometry
+      : (data.use_p2p_dictionary
       ? P2PExecutionPacking::TensorDictionary
       : (data.use_p2p_bsr
              ? P2PExecutionPacking::CudaBsr3
              : (data.use_p2p_leaf ? P2PExecutionPacking::LeafBlock
-                                  : P2PExecutionPacking::CanonicalAos));
+                                  : P2PExecutionPacking::CanonicalAos)));
   cuda_full_plan_ =
       std::make_unique<CudaFullPlanOwner>(std::make_unique<CudaFullPlan>(data));
+  if (data.use_p2p_point_geometry) {
+    release_stored_p2p_tensors();
+  }
 }
 
 } // namespace cdfmm

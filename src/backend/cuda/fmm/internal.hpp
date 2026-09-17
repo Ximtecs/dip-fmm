@@ -10,6 +10,7 @@
 #include "cdfmm/math/potential_field.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 #include "cdfmm/timings.hpp"
+#include "cdfmm/tree/static_topology.hpp"
 #include "backend/cuda/common/runtime.hpp"
 #include "backend/cuda/far_field/internal.hpp"
 
@@ -58,11 +59,25 @@ struct CudaFullPlanData {
   StaticP2PBsrPlan p2p_bsr{};
   StaticP2PSignedTensorDictionaryPlan p2p_dictionary{};
   StaticP2PLeafPlan p2p_leaf{};
+  /** @brief Plan topology: the position-based P2P executor and the
+   *  procedural point P2M/L2P read positions and leaf ranges from it during
+   *  construction only. */
+  const StaticFmmTopology *topology{nullptr};
+  /** @brief Procedural point P2M/L2P (spherical basis, orders 1..10):
+   *  recompute the operator from the positions instead of streaming the
+   *  entry lists, which are then left empty. */
+  bool procedural_p2m{false};
+  bool procedural_l2p{false};
+  int expansion_order{0};
+  int p2m_lanes_per_leaf{32};
+  int l2p_lanes_per_leaf{32};
   std::vector<int> fixed_self_indices{};
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
   /** @brief Selects the warp-per-block dense leaf packing. */
   bool use_p2p_leaf{false};
+  /** @brief Selects the position-based point executor (no pair tensors). */
+  bool use_p2p_point_geometry{false};
   /** @brief Selects one-thread-per-target dictionary P2P execution. */
   bool p2p_dictionary_target_owned{false};
   /** @brief Selects power-of-two target microtiles for dictionary P2P. */
@@ -90,11 +105,25 @@ struct FloatCudaFullPlanData {
   FloatStaticP2PBsrPlan p2p_bsr{};
   FloatStaticP2PSignedTensorDictionaryPlan p2p_dictionary{};
   FloatStaticP2PLeafPlan p2p_leaf{};
+  /** @brief Plan topology: the position-based P2P executor and the
+   *  procedural point P2M/L2P read positions and leaf ranges from it during
+   *  construction only. */
+  const StaticFmmTopology *topology{nullptr};
+  /** @brief Procedural point P2M/L2P (spherical basis, orders 1..10):
+   *  recompute the operator from the positions instead of streaming the
+   *  entry lists, which are then left empty. */
+  bool procedural_p2m{false};
+  bool procedural_l2p{false};
+  int expansion_order{0};
+  int p2m_lanes_per_leaf{32};
+  int l2p_lanes_per_leaf{32};
   std::vector<int> fixed_self_indices{};
   bool use_p2p_bsr{false};
   bool use_p2p_dictionary{false};
   /** @brief Selects the warp-per-block dense leaf packing. */
   bool use_p2p_leaf{false};
+  /** @brief Selects the position-based point executor (no pair tensors). */
+  bool use_p2p_point_geometry{false};
   /** @brief Selects one-thread-per-target dictionary P2P execution. */
   bool p2p_dictionary_target_owned{false};
   /** @brief Selects power-of-two target microtiles for dictionary P2P. */

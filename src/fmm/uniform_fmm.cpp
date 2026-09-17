@@ -99,6 +99,18 @@ P2PExecutionPacking UniformFmm::requested_p2p_packing() const noexcept {
 SpatialLayout UniformFmm::spatial_layout() const noexcept {
   return spatial_layout_;
 }
+PointExpansionExecution
+UniformFmm::requested_point_expansion_execution() const noexcept {
+  return requested_point_expansion_;
+}
+PointExpansionExecution UniformFmm::p2m_execution() const noexcept {
+  return procedural_p2m_ ? PointExpansionExecution::Procedural
+                         : PointExpansionExecution::Precomputed;
+}
+PointExpansionExecution UniformFmm::l2p_execution() const noexcept {
+  return procedural_l2p_ ? PointExpansionExecution::Procedural
+                         : PointExpansionExecution::Precomputed;
+}
 const CudaPlanStatistics &UniformFmm::cuda_plan_statistics() const {
   if (cuda_full_plan_) {
     return cuda_full_plan_->plan->statistics();

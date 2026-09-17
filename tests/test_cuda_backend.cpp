@@ -842,8 +842,43 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
   inputs.occupied_target_leaf_count = 512;
   inputs.mean_leaf_occupancy = 8.0;
   inputs.bsr_budget_bytes = 1ULL << 40;
+  // The stored-tensor rules below are exercised on FP64 plans; FP32 point
+  // pairs have their own rule (first section).
+  inputs.precision = StaticPrecision::Float64;
 
-  SECTION("General point sources keep the leaf-block default") {
+  SECTION("FP32 point pairs recompute the pairs from positions") {
+    inputs.precision = StaticPrecision::Float32;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::PointGeometry);
+    inputs.fixed_identity_available = false;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::PointGeometry);
+    // The lattice hint does not bring the dictionary back for FP32 points.
+    inputs.spatial_layout = SpatialLayout::RegularGrid;
+    inputs.fixed_identity_available = true;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::PointGeometry);
+    // Finite targets or sources keep the stored tensors.
+    inputs.spatial_layout = SpatialLayout::General;
+    inputs.effective_point_target = false;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::LeafBlock);
+    inputs.effective_point_target = true;
+    inputs.effective_point_source = false;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::LeafBlock);
+    // Explicit reduced symmetry still wins over the FP32 rule.
+    inputs.effective_point_source = true;
+    inputs.explicit_reduced_symmetry = true;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::SignedDictionary);
+    // The CPU keeps its own rules.
+    inputs.explicit_reduced_symmetry = false;
+    inputs.cuda_backend = false;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::LeafBlock);
+  }
+  SECTION("FP64 point sources keep the leaf-block default") {
     REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
             CudaP2PPacking::LeafBlock);
     inputs.fixed_identity_available = false;
@@ -956,6 +991,25 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
             CudaDictionaryExecutor::SourceWarp);
   }
   SECTION("the far-field stream outranks P2P unless the far field dominates") {
+    // The rule depends on the resolved packing's cost per pair: the
+    // position-based FP32 kernel is about six times cheaper than the leaf
+    // blocks, so the same M-like plan no longer prioritises the far field
+    // with it, while FP64 recomputation is the most expensive packing.
+    using cdfmm::cuda_policy::p2p_picoseconds_per_pair;
+    REQUIRE(p2p_picoseconds_per_pair(CudaP2PPacking::PointGeometry,
+                                     StaticPrecision::Float32) <
+            p2p_picoseconds_per_pair(CudaP2PPacking::LeafBlock,
+                                     StaticPrecision::Float32));
+    REQUIRE(p2p_picoseconds_per_pair(CudaP2PPacking::PointGeometry,
+                                     StaticPrecision::Float64) >
+            p2p_picoseconds_per_pair(CudaP2PPacking::LeafBlock,
+                                     StaticPrecision::Float64));
+    REQUIRE(!cdfmm::cuda_policy::far_field_stream_priority(
+        16300000, 640000, 49, CudaP2PPacking::PointGeometry,
+        StaticPrecision::Float32));
+    REQUIRE(cdfmm::cuda_policy::far_field_stream_priority(
+        192000000, 40000, 49, CudaP2PPacking::PointGeometry,
+        StaticPrecision::Float32));
     // M-like plan (640k translations of 49 coefficients, 16.3M pairs):
     // far field about 340 us versus P2P about 290 us -> prioritise.
     REQUIRE(cdfmm::cuda_policy::far_field_stream_priority(16300000, 640000, 49));
@@ -964,9 +1018,15 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
     // Deep tree (200k points, depth 5): 4.9M translations, 35.8M pairs ->
     // the far field is more than three times the P2P kernel -> equal.
     REQUIRE(!cdfmm::cuda_policy::far_field_stream_priority(35800000, 4900000, 49));
+    // Through the resolver the cost follows the resolved packing: an FP32
+    // point plan recomputes its pairs cheaply, so the deep tree keeps equal
+    // priority and the 128-per-leaf plan prioritises the far field.
+    inputs.precision = StaticPrecision::Float32;
     inputs.p2p_pair_count = 35800000;
     inputs.m2l_translation_count = 4900000;
     inputs.coefficient_count = 49;
+    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
+            CudaP2PPacking::PointGeometry);
     REQUIRE(!resolve_cuda_execution_policy(inputs).far_field_stream_priority);
     inputs.p2p_pair_count = 192000000;
     inputs.m2l_translation_count = 40000;
@@ -1065,13 +1125,20 @@ TEST_CASE("regular-grid layout hint selects the dictionary on CUDA plans",
     }
   }
 
-  // FP32 through the regular-grid dictionary agrees with the FP64 reference.
+  // An FP32 point lattice recomputes its pairs from the positions (the
+  // dictionary is not selected by the hint for FP32 points since Phase
+  // 3B.5) and agrees with the FP64 reference; the FP32 dictionary stays an
+  // explicit choice.
   UniformFmmOptions fp32_options =
       lattice_cuda_options(ExecutionBackend::CudaFull, 2, identities);
   fp32_options.spatial_layout = SpatialLayout::RegularGrid;
   fp32_options.precision = StaticPrecision::Float32;
   UniformFmm fp32(positions, positions, fp32_options);
-  REQUIRE(fp32.p2p_execution_packing() == P2PExecutionPacking::TensorDictionary);
+  REQUIRE(fp32.p2p_execution_packing() == P2PExecutionPacking::PointGeometry);
+  fp32_options.use_reduced_symmetry_p2p = true;
+  UniformFmm fp32_dictionary(positions, positions, fp32_options);
+  REQUIRE(fp32_dictionary.p2p_execution_packing() ==
+          P2PExecutionPacking::TensorDictionary);
   UniformFmmOptions fp64_options =
       lattice_cuda_options(ExecutionBackend::CpuStatic, 2, identities);
   UniformFmm fp64(positions, positions, fp64_options);
@@ -1290,12 +1357,16 @@ TEST_CASE("explicit P2P packing requests are honoured by both CUDA backends",
     UniformFmm reference(positions, positions, options);
     const auto expected = reference.evaluate(moments, OutputFlags::Field);
 
+    std::vector<P2PExecutionPacking> packings{
+        P2PExecutionPacking::CanonicalAos, P2PExecutionPacking::LeafBlock,
+        P2PExecutionPacking::CudaBsr3, P2PExecutionPacking::TensorDictionary};
+    if (geometry == SourceGeometry::PointDipole) {
+      // The position-based kernel recomputes point pairs on the device.
+      packings.push_back(P2PExecutionPacking::PointGeometry);
+    }
     for (const ExecutionBackend backend :
          {ExecutionBackend::CudaPartial, ExecutionBackend::CudaFull}) {
-      for (const P2PExecutionPacking packing :
-           {P2PExecutionPacking::CanonicalAos, P2PExecutionPacking::LeafBlock,
-            P2PExecutionPacking::CudaBsr3,
-            P2PExecutionPacking::TensorDictionary}) {
+      for (const P2PExecutionPacking packing : packings) {
         options.backend = backend;
         options.p2p_packing = packing;
         options.cuda_p2p_bsr_max_bytes = 0; // explicit BSR ignores the budget
@@ -1324,7 +1395,11 @@ TEST_CASE("explicit P2P packing requests are honoured by both CUDA backends",
   options.backend = ExecutionBackend::CudaPartial;
   options.enable_cache = false;
   options.p2p_packing = P2PExecutionPacking::PointGeometry;
-  require_rejection(options, "CPU position-based executor");
+  options.source_geometry = SourceGeometry::RectangularPrism;
+  options.source_sizes = {RectangularPrism{0.04, 0.03, 0.05}};
+  require_rejection(options, "recomputes point-dipole pairs");
+  options.source_geometry = SourceGeometry::PointDipole;
+  options.source_sizes.clear();
   options.p2p_packing = P2PExecutionPacking::ParticleRowSoa;
   require_rejection(options, "CPU row packing");
   options.p2p_packing = P2PExecutionPacking::CudaBsr3;
@@ -1380,7 +1455,14 @@ TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
   point_options.fixed_target_source_indices = identities;
   point_options.cuda_p2p_bsr_max_bytes = 0;
   UniformFmm point(positions, positions, point_options);
-  REQUIRE(point.p2p_execution_packing() == P2PExecutionPacking::LeafBlock);
+  // FP32 point pairs recompute their pairs from the positions; FP64 point
+  // sources keep the leaf blocks (never the budget-steered BSR fallback).
+  REQUIRE(point.p2p_execution_packing() ==
+          P2PExecutionPacking::PointGeometry);
+  point_options.precision = StaticPrecision::Float64;
+  UniformFmm point_fp64(positions, positions, point_options);
+  REQUIRE(point_fp64.p2p_execution_packing() ==
+          P2PExecutionPacking::LeafBlock);
 }
 
 TEST_CASE("CUDA BSR supports finite cuboid point and cuboid self fields",

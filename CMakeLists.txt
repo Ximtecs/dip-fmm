@@ -69,6 +69,7 @@ add_library(cdfmm_core
     src/backend/cpu/m2l/executor.cpp
     src/backend/cpu/far_field/executor.cpp
     src/backend/cpu/far_field/packing.cpp
+    src/backend/cpu/far_field/procedural.cpp
     src/backend/cpu/m2l/schedule.cpp
     src/backend/cpu/p2p/geometry.cpp
     src/backend/mkl/m2l.cpp

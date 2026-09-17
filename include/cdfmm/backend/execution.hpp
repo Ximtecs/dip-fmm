@@ -39,4 +39,22 @@ enum class SpatialLayout {
     RegularGrid
 };
 
+/**
+ * @brief Execution strategy of the point-source P2M and point-target L2P
+ *        operators.
+ *
+ * The stored operators are coefficient rows precomputed at construction
+ * (`3 C` scalars per point). For point far-field models in the spherical
+ * basis the same operator can instead be recomputed from the sorted positions
+ * during every evaluation (`Procedural`), which retains no rows; `Auto` keeps
+ * the measured policy. A finite far-field model (prism or tetrahedron P2M or
+ * L2P) always keeps its exact precomputed rows. The mathematical result is
+ * the same for every value.
+ */
+enum class PointExpansionExecution {
+    Auto,
+    Precomputed,
+    Procedural
+};
+
 } // namespace cdfmm

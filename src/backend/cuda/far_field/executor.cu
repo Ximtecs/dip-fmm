@@ -4,6 +4,7 @@
 #include "backend/cuda/execution_policy.hpp"
 #include "backend/cuda/far_field/entries.cuh"
 #include "backend/cuda/far_field/internal.hpp"
+#include "backend/cuda/far_field/procedural.cuh"
 #include "backend/cuda/far_field/translation.cuh"
 
 #include <cuda_runtime.h>
@@ -12,6 +13,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -42,6 +44,23 @@ template <typename Scalar> struct DeviceCsrOperator {
     cudaFree(row_offsets);
     cudaFree(inputs);
     cudaFree(values);
+  }
+};
+
+// Procedural point P2M or L2P: the occupied leaves, every point's
+// displacement from its leaf centre, and the per-mode factor table. No
+// coefficient rows are resident; the kernels recompute the operator.
+template <typename Scalar> struct DeviceProcedural {
+  ProceduralLeaf *leaves{nullptr};
+  ProceduralPoint<Scalar> *displacements{nullptr};
+  Scalar *factors{nullptr};
+  int leaf_count{0};
+  int lanes_per_leaf{32};
+
+  void release() noexcept {
+    cudaFree(leaves);
+    cudaFree(displacements);
+    cudaFree(factors);
   }
 };
 
@@ -77,6 +96,11 @@ template <typename Scalar, typename Entry>
 struct CudaFarFieldExecutionPlan<Scalar, Entry>::Implementation {
   DeviceCsrOperator<Scalar> p2m{};
   DeviceCsrOperator<Scalar> l2p{};
+  DeviceProcedural<Scalar> procedural_p2m{};
+  DeviceProcedural<Scalar> procedural_l2p{};
+  bool use_procedural_p2m{false};
+  bool use_procedural_l2p{false};
+  int expansion_order{0};
   DeviceTranslation<Scalar> m2m{};
   DeviceTranslation<Scalar> l2l{};
   int coefficient_count{0};
@@ -86,6 +110,8 @@ struct CudaFarFieldExecutionPlan<Scalar, Entry>::Implementation {
   ~Implementation() {
     p2m.release();
     l2p.release();
+    procedural_p2m.release();
+    procedural_l2p.release();
     m2m.release();
     l2l.release();
   }
@@ -108,6 +134,58 @@ void upload(T *destination, std::span<const T> values, cudaStream_t stream,
                                cudaMemcpyHostToDevice, stream),
                description);
   }
+}
+
+// Builds and uploads the procedural data of one stage: the leaf ranges, the
+// displacement of every point from its leaf centre (computed in FP64 and
+// narrowed once) and the factor table. Returns the uploaded bytes.
+template <typename Scalar>
+std::size_t build_procedural(DeviceProcedural<Scalar> &device,
+                             std::span<const StaticLeafRange> leaves,
+                             std::span<const StaticFmmTopology::Node> nodes,
+                             std::span<const Vec3> positions,
+                             const std::vector<double> &factors,
+                             const int lanes_per_leaf,
+                             const char *description) {
+  std::vector<ProceduralLeaf> leaf_records;
+  leaf_records.reserve(leaves.size());
+  std::vector<ProceduralPoint<Scalar>> displacements(positions.size());
+  for (const StaticLeafRange &leaf : leaves) {
+    leaf_records.push_back({leaf.node, static_cast<int>(leaf.begin),
+                            static_cast<int>(leaf.count), 0});
+    const Vec3 centre = nodes[static_cast<std::size_t>(leaf.node)].centre;
+    for (std::size_t point = leaf.begin; point < leaf.begin + leaf.count;
+         ++point) {
+      const Vec3 d = positions[point] - centre;
+      displacements[point] = {static_cast<Scalar>(d.x),
+                              static_cast<Scalar>(d.y),
+                              static_cast<Scalar>(d.z), Scalar{0}};
+    }
+  }
+  std::vector<Scalar> narrowed(factors.size());
+  for (std::size_t index = 0; index < factors.size(); ++index) {
+    narrowed[index] = static_cast<Scalar>(factors[index]);
+  }
+  device.leaf_count = static_cast<int>(leaf_records.size());
+  device.lanes_per_leaf = lanes_per_leaf;
+  const std::size_t leaf_bytes = leaf_records.size() * sizeof(ProceduralLeaf);
+  const std::size_t point_bytes =
+      displacements.size() * sizeof(ProceduralPoint<Scalar>);
+  const std::size_t factor_bytes = narrowed.size() * sizeof(Scalar);
+  allocate(&device.leaves, leaf_bytes, description);
+  allocate(&device.displacements, point_bytes, description);
+  allocate(&device.factors, factor_bytes, description);
+  const auto copy = [&](void *destination, const void *source,
+                        const std::size_t bytes) {
+    if (bytes != 0) {
+      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
+                 description);
+    }
+  };
+  copy(device.leaves, leaf_records.data(), leaf_bytes);
+  copy(device.displacements, displacements.data(), point_bytes);
+  copy(device.factors, narrowed.data(), factor_bytes);
+  return leaf_bytes + point_bytes + factor_bytes;
 }
 
 // Host-side CSR-by-output image of a flat entry list.
@@ -438,15 +516,40 @@ CudaFarFieldExecutionPlan<Scalar, Entry>::CudaFarFieldExecutionPlan(
     const auto identity = [](const Entry &entry) {
       return static_cast<Scalar>(entry.value);
     };
-    const HostCsrOperator<Scalar> p2m = build_csr_by_output<Scalar, Entry>(
-        data.p2m, output_row_count<Scalar, Entry>(data.p2m), identity);
-    const HostCsrOperator<Scalar> l2p = build_csr_by_output<Scalar, Entry>(
-        data.l2p, output_row_count<Scalar, Entry>(data.l2p), identity);
     std::size_t uploaded_bytes = 0;
-    uploaded_bytes += upload_csr(plan.p2m, p2m, stream,
-                                 "upload CUDA far-field P2M entries");
-    uploaded_bytes += upload_csr(plan.l2p, l2p, stream,
-                                 "upload CUDA far-field L2P entries");
+    plan.use_procedural_p2m = data.procedural_p2m;
+    plan.use_procedural_l2p = data.procedural_l2p;
+    plan.expansion_order = data.expansion_order;
+    if ((data.procedural_p2m || data.procedural_l2p) &&
+        data.topology == nullptr) {
+      throw std::invalid_argument(
+          "CUDA procedural point expansion needs the plan topology");
+    }
+    if (data.procedural_p2m) {
+      uploaded_bytes += build_procedural<Scalar>(
+          plan.procedural_p2m, data.topology->source_leaves,
+          data.topology->nodes, data.topology->sorted_source_positions,
+          operators::point_expansion::p2m_mode_factors(data.expansion_order),
+          data.p2m_lanes_per_leaf, "upload CUDA procedural P2M data");
+    } else {
+      const HostCsrOperator<Scalar> p2m = build_csr_by_output<Scalar, Entry>(
+          data.p2m, output_row_count<Scalar, Entry>(data.p2m), identity);
+      uploaded_bytes += upload_csr(plan.p2m, p2m, stream,
+                                   "upload CUDA far-field P2M entries");
+    }
+    if (data.procedural_l2p) {
+      uploaded_bytes += build_procedural<Scalar>(
+          plan.procedural_l2p, data.topology->target_leaves,
+          data.topology->nodes, data.topology->sorted_target_positions,
+          operators::point_expansion::l2p_field_mode_factors(
+              data.expansion_order),
+          data.l2p_lanes_per_leaf, "upload CUDA procedural L2P data");
+    } else {
+      const HostCsrOperator<Scalar> l2p = build_csr_by_output<Scalar, Entry>(
+          data.l2p, output_row_count<Scalar, Entry>(data.l2p), identity);
+      uploaded_bytes += upload_csr(plan.l2p, l2p, stream,
+                                   "upload CUDA far-field L2P entries");
+    }
     const std::size_t m2m_bytes = build_translation<Scalar, Entry>(
         plan.m2m, data.m2m_matrices, data.m2m_interactions,
         data.m2m_entries_per_matrix, data.coefficient_count,
@@ -484,6 +587,17 @@ template <typename Scalar, typename Entry>
 void CudaFarFieldExecutionPlan<Scalar, Entry>::enqueue_p2m(
     const Scalar *input, Scalar *output, cudaStream_t stream) const {
   const auto &plan = *implementation_;
+  if (plan.use_procedural_p2m) {
+    using Vector =
+        std::conditional_t<std::is_same_v<Scalar, double>, Vec3, FloatVec3>;
+    launch_procedural_p2m<Scalar, Vector>(
+        plan.expansion_order, plan.procedural_p2m.leaves,
+        plan.procedural_p2m.leaf_count, plan.procedural_p2m.lanes_per_leaf,
+        plan.procedural_p2m.displacements,
+        reinterpret_cast<const Vector *>(input), plan.procedural_p2m.factors,
+        output, stream);
+    return;
+  }
   if (plan.p2m.entry_count != 0) {
     const std::size_t items =
         static_cast<std::size_t>(plan.p2m.row_count) * entry_row_lanes;
@@ -524,6 +638,16 @@ template <typename Scalar, typename Entry>
 void CudaFarFieldExecutionPlan<Scalar, Entry>::enqueue_l2p(
     const Scalar *input, Scalar *output, cudaStream_t stream) const {
   const auto &plan = *implementation_;
+  if (plan.use_procedural_l2p) {
+    using Vector =
+        std::conditional_t<std::is_same_v<Scalar, double>, Vec3, FloatVec3>;
+    launch_procedural_l2p<Scalar, Vector>(
+        plan.expansion_order, plan.procedural_l2p.leaves,
+        plan.procedural_l2p.leaf_count, plan.procedural_l2p.lanes_per_leaf,
+        plan.procedural_l2p.displacements, input, plan.procedural_l2p.factors,
+        reinterpret_cast<Vector *>(output), stream);
+    return;
+  }
   if (plan.l2p.entry_count != 0) {
     const std::size_t items =
         static_cast<std::size_t>(plan.l2p.row_count) * entry_row_lanes;

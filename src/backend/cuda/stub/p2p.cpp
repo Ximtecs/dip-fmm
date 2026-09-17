@@ -30,6 +30,12 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan &) {
   throw std::runtime_error("CUDA BSR P2P is unavailable in this build");
 }
 
+CudaP2PPlan::CudaP2PPlan(const StaticFmmTopology &, StaticPrecision,
+                         std::span<const int>) {
+  throw std::runtime_error(
+      "CUDA position-based point P2P is unavailable in this build");
+}
+
 CudaP2PPlan::CudaP2PPlan(const FloatStaticP2POperator &,
                          std::span<const int>) {
   throw std::runtime_error("CUDA static P2P is unavailable in this build");

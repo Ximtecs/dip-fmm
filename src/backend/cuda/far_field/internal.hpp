@@ -14,6 +14,7 @@ using cudaStream_t = void *;
 
 #include "cdfmm/plan/static_coefficient.hpp"
 #include "cdfmm/timings.hpp"
+#include "cdfmm/tree/static_topology.hpp"
 
 namespace cdfmm {
 
@@ -44,6 +45,15 @@ template <typename Entry> struct CudaFarFieldStaticData {
   std::span<const CudaTranslationInteraction> l2l_interactions{};
   int l2l_entries_per_matrix{0};
   int l2l_matrix_count{0};
+  /// Procedural point P2M/L2P: when set, the corresponding entry span is
+  /// ignored and the executor recomputes the operator from the positions of
+  /// `topology` during every evaluation (spherical basis, orders 1..10).
+  bool procedural_p2m{false};
+  bool procedural_l2p{false};
+  int expansion_order{0};
+  int p2m_lanes_per_leaf{32};
+  int l2p_lanes_per_leaf{32};
+  const StaticFmmTopology *topology{nullptr};
 };
 
 /**
