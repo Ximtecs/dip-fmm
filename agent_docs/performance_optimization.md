@@ -1971,3 +1971,32 @@ the M2L phase is FMA-bound (Phase 3B). No procedural M2L experiment was run.
 - The precomputed CPU P2M at M measured 436 us against 166 us in the 3B
   record; not investigated here (same code path, same-session comparison
   used).
+
+### Correctness, sanitizer and validation (final HEAD of `worktree-p2p-unification`)
+
+- Correctness: `tests/test_p2p_geometry_matrix.cpp` (every geometry pair,
+  every packing of every available backend including the CUDA `PointGeometry`
+  kernel, both precisions, both layouts, free-space and periodic, against the
+  FP64 dense reference), `tests/test_procedural_point_expansion.cpp`
+  (procedural versus precomputed P2M/L2P on CpuStatic, CudaPartial and
+  CudaFull, FP32 and FP64, orders 1/3/6/10, field and potential, selection
+  rules, warm cache), the recurrence test at orders 0-12, and the updated
+  policy, packing, precision and Python tests. Arithmetic differences are
+  quantified above (FP32 P2P 3-5e-6 of the field scale, FP32 P2M/L2P
+  5e-8-1.5e-7, FP64 at most 1e-15); no tolerance was loosened (FP32
+  geometry-matrix tolerance 2e-4, FP64 1e-10; the new procedural test uses
+  5e-5 FP32 / 1e-11 FP64 against the precomputed rows).
+- `compute-sanitizer --tool memcheck` and `--tool racecheck` over the
+  position-based P2P kernel (`[packing]` cases, both backends) and over the
+  procedural P2M/L2P kernels through the benchmark driver (FP32 and FP64,
+  orders 4, 6 and 10, `cuda-full` and `cuda-partial`): 0 errors, 0 hazards.
+- Four fresh trees with the conda `g++` 15.3 pinned as C++ and CUDA host
+  compiler (`PYTHON_EXECUTABLE` pinned to the environment's Python 3.11 so a
+  fresh tree does not pick the base-environment interpreter): portable CPU,
+  CUDA, oneMKL, CUDA + oneMKL. Full CTest 227/227 on each (tests of an
+  absent backend are skipped); `pytest python_tests` 140 / 145 / 142 / 147
+  passed with the rest skipped. `git diff --check` clean. `src/cache/`,
+  `include/cdfmm/c_api.h`, `src/bindings/` and `fortran/` are untouched, so
+  cache format and keys, the C ABI and the Fortran interface are unchanged;
+  `CudaPlanStatistics`, `StaticExecutionPlan` consumers and
+  `UniformFmmOptions` gained fields without changing existing members.
