@@ -455,11 +455,18 @@ the same fixed-geometry, repeated-moment workload as the point cases:
 - `--p2p-packing` forces `canonical-aos`, `particle-row-soa`,
   `tensor-dictionary`, `leaf-block`, `cuda-bsr3`, or `point-geometry`
   (`auto` keeps the backend policy); an impossible combination fails at
-  construction with its reason.
+  construction with its reason. `point-geometry` runs on the CPU and, since
+  Phase 3B.5, on both CUDA backends.
+- `--point-expansion` forces `precomputed` or `procedural` point P2M/L2P
+  (`auto` keeps the measured policy; see `docs/backends.md`, "Point P2M and
+  L2P execution").
 - `--periodic` evaluates a fully periodic cubic cell equal to the root box.
 - The CSV gains `source_geometry`, `target_geometry`, `irregular_bodies`,
   `body_fill`, `periodic`, `p2p_packing_requested`, the dictionary size and
-  token width, and the canonical/dictionary/near-field operator bytes.
+  token width, the canonical/dictionary/near-field operator bytes,
+  `cuda_p2p_geometry_bytes` (resident positions of the CUDA position-based
+  P2P executor), `point_expansion_requested`, the resolved `p2m_execution` /
+  `l2p_execution`, and `p2m_operator_bytes` / `l2p_operator_bytes`.
 
 `benchmarks/run_p2p_packing_matrix.py --binary <benchmark_uniform_fmm>
 --output <csv> --suite {periodic,finite,cuda-finite,crossover,all}` runs the

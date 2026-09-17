@@ -50,9 +50,17 @@ follow-up are COMPLETE (see `agent_docs/performance_optimization.md` and
 nine point/prism/tetrahedron pairs run on every production backend through
 every stored-tensor packing, `UniformFmmOptions::p2p_packing` forces a
 packing, and `P2PExecutionPacking::PointGeometry` is the one deliberate
-geometry-specific executor); 3C construction / plan-preparation optimization
-is NEXT, 3D the final cross-backend review, and Phase 4 repository pruning
-follows. Do not begin construction optimisation,
+geometry-specific executor). The Phase-3B.5 study of procedural versus
+precomputed point operators is also COMPLETE: precomputation is an execution
+choice, not a mathematical requirement (`docs/static-p2p.md`, "Precomputed
+and procedural representations"); the position-based `PointGeometry` P2P now
+runs on the CUDA backends too and is the FP32 default for point pairs, and
+the point-source P2M / point-target L2P have a procedural representation
+(`UniformFmmOptions::point_expansion_execution`, spherical basis, orders 1-10)
+that is the default on the CPU hierarchy and for FP32 `CudaFull`; finite
+tiles keep their exact precomputed operators. 3C construction /
+plan-preparation optimization is NEXT, 3D the final cross-backend review, and
+Phase 4 repository pruning follows. Do not begin construction optimisation,
 benchmark redesign, or repository pruning as a side effect of another change.
 
 The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor

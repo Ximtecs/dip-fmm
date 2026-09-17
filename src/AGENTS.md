@@ -14,6 +14,10 @@ and geometry payloads now have explicit homes under `cache/`.
 ```text
 src/
 |-- math/                                  Taylor, Laplace, spherical mathematics
+|-- math/solid_harmonic_recurrence.hpp     allocation-free host/device recurrence
+|                                          for the real regular solid harmonics
+|                                          and their gradients (procedural point
+|                                          P2M/L2P on both targets)
 |-- geometry/primitives/                   exact prism and tetrahedron analysis
 |-- tree/{common,uniform,adaptive}/        spatial hierarchy and topology
 |-- tree/common/static_topology.cpp        canonical topology validation/storage
@@ -23,7 +27,10 @@ src/
 |                                          and dynamic application
 |-- operators/p2p_point_kernel.hpp          the single point-dipole pair formula
 |                                          shared by evaluate_pair and the CPU
-|                                          position-based executor
+|                                          and CUDA position-based executors
+|-- operators/point_expansion_kernel.hpp    procedural point P2M/L2P kernels and
+|                                          their per-mode factor tables, shared
+|                                          by the CPU and CUDA executors
 |-- plan/precision.cpp                       FP64-to-FP32 static conversion
 |-- plan/direct/dense.cpp                   dense-direct plan preparation
 |-- plan/p2p/                               canonical and derived P2P packings
@@ -49,6 +56,10 @@ src/
 |                                          P2M/M2M/L2L/L2P (dense rows,
 |                                          level-scaled column banks) built
 |                                          once at construction
+|-- backend/cpu/far_field/procedural.{hpp,cpp}, lanes.hpp
+|                                          procedural point P2M/L2P executor
+|                                          (SIMD packs of points through the
+|                                          shared recurrence; no rows)
 |-- backend/mkl/{m2l,direct/dense}.cpp      oneMKL execution
 |-- backend/cuda/execution_policy.{hpp,cpp} deterministic CUDA strategy choices
 |                                          (P2P packing/executor, M2L and
@@ -57,12 +68,16 @@ src/
 |-- backend/cuda/common/runtime.{hpp,cu}    CUDA runtime helpers
 |-- backend/cuda/direct/{direct,dense}.cu   CUDA point/dense direct execution
 |-- backend/cuda/stub/direct.cpp            non-CUDA direct stubs
-|-- backend/cuda/p2p/{internal.hpp,plan.cu} CUDA P2P plans, kernels, and state
+|-- backend/cuda/p2p/{internal.hpp,plan.cu} CUDA P2P plans, kernels (stored
+|                                          packings and the position-based
+|                                          point kernel), and state
 |-- backend/cuda/stub/p2p.cpp               non-CUDA P2P stubs
 |-- backend/cuda/m2l/{internal.hpp,plan.cu} CUDA M2L plan, kernels, and state
 |-- backend/cuda/stub/m2l.cpp               non-CUDA M2L stubs
-|-- backend/cuda/far_field/{internal.hpp,executor.cu,entries.cuh,translation.cuh}
-|                                          CUDA P2M/L2P entries and M2M/L2L
+|-- backend/cuda/far_field/{internal.hpp,executor.cu,entries.cuh,translation.cuh,
+|                           procedural.cuh}
+|                                          CUDA P2M/L2P entries, procedural
+|                                          point P2M/L2P kernels, and M2M/L2L
 |                                          execution state and shared kernels
 |-- backend/cuda/fmm/{internal.hpp,plan.cu} complete CUDA FMM orchestration
 |-- backend/cuda/stub/fmm.cpp                 non-CUDA full-FMM stubs

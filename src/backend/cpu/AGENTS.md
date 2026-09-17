@@ -11,7 +11,11 @@ the public entry-map reference kernels plus the derived execution packing
 (`packing.{hpp,cpp}`: dense P2M rows, level-scaled M2M/L2L column banks and
 flat L2P rows) that the hierarchy executes; the packing is built once at
 construction from the canonical operators and must not change their
-mathematics, identity, or per-target accumulation order. Keep plan
+mathematics, identity, or per-target accumulation order. `far_field/
+procedural.{hpp,cpp}` is the procedural point P2M/L2P executor: it feeds
+SIMD packs of points (`lanes.hpp`) through the shared kernels in
+`operators/point_expansion_kernel.hpp` and retains only the per-mode factor
+tables, so it defines no operator mathematics of its own either. Keep plan
 construction and precision conversion in `src/plan`, mathematical construction
 in `src/operators`, and vendor/device resources elsewhere. SIMD specialisation
 must preserve the portable loop's arithmetic, identity, and accumulation

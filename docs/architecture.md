@@ -163,7 +163,8 @@ point / prism / tetrahedron geometry
 - Periodic image records are ordinary stored tensors to every packing.
 - `P2PExecutionPacking::PointGeometry` is the single deliberate exception, a
   fused point-geometry evaluation for point sources and point targets on the
-  CPU; it is named as such and rejected for finite geometry.
+  CPU and (since Phase 3B.5) on the CUDA backends; it is named as such and
+  rejected for finite geometry.
 - `UniformFmmOptions::p2p_packing` forces any packing a backend can execute,
   with precedence over the automatic policy; impossible combinations fail
   at construction with their representational reason.
@@ -172,6 +173,40 @@ The capability matrix and its reasons live in `static-p2p.md`; the enforcing
 test is `tests/test_p2p_geometry_matrix.cpp` (every pair, every packing of
 every available backend, both precisions, free-space and periodic, against
 the FP64 `DenseDirectPlan` reference).
+
+### Precomputed and procedural operator representations
+
+The invariant above says where an operator is defined; it does not say that
+an executor must hold it as stored data. Phase 3B.5 made the refinement
+explicit:
+
+```text
+physical operator
+    +--> precomputed representation   tensor / coefficient rows / compressed
+    |                                 packing, built once at construction
+    +--> procedural representation    the mathematically identical cheap
+                                      point operator reconstructed from the
+                                      positions during every evaluation
+```
+
+Precomputation is an execution choice, not a mathematical requirement. For
+finite tiles (rectangular prisms, tetrahedra, future grains) it remains the
+expected production strategy: an expensive exact geometry-specific
+calculation once, then a compact reusable operator applied cheaply. For point
+sources and point targets the operator is a closed formula or a short
+recurrence of resident positions, and the executor may reconstruct it when
+that was measured faster or when it removes substantial persistent memory at
+equal speed. The procedural representations in the tree are the
+position-based point P2P (`PointGeometry`, CPU and CUDA), the procedural
+point P2M and the procedural point L2P (spherical basis; `src/math/
+solid_harmonic_recurrence.hpp`, `src/operators/point_expansion_kernel.hpp`,
+`src/backend/cpu/far_field/procedural.{hpp,cpp}`,
+`src/backend/cuda/far_field/procedural.cuh`). The mathematics stays defined
+once: the procedural kernels call the same formula or recurrence the stored
+construction is validated against, and `tests/test_spherical_harmonics.cpp`
+checks the recurrence against the polynomial basis at every compiled order.
+Selection follows the measured policies in `docs/backends.md`, with explicit
+overrides (`p2p_packing`, `point_expansion_execution`) taking precedence.
 
 ## Static-geometry invariant
 

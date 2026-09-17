@@ -17,10 +17,10 @@ and P2P packing rather than leaving `Auto` ambiguous.
 | Public selection | P2M | M2M | M2L | L2L | L2P | P2P | Device residency |
 |---|---|---|---|---|---|---|---|
 | `CpuReference` | CPU reference | CPU reference | CPU reference | CPU reference | CPU reference | CPU direct `list1` | Host |
-| `CpuStatic` + `Portable` | CPU static | CPU static | CPU class-sorted blocks | CPU static | CPU static | CPU point geometry (point sources and targets, free-space or periodic) / SoA tensor | Host |
-| `CpuStatic` + `OneMkl` | CPU static | CPU static | oneMKL SGEMM/DGEMM | CPU static | CPU static | CPU point geometry (point sources and targets, free-space or periodic) / SoA tensor | Host |
-| `CudaPartial` | CPU static | CPU static | CUDA target rows | CPU static | CPU static | CUDA static tensor | Static GPU data; expansion state crosses at the M2L boundary |
-| `CudaFull` | CUDA static | CUDA static | CUDA target rows | CUDA static | CUDA static | CUDA static tensor | Operators and coefficient state remain on device |
+| `CpuStatic` + `Portable` | CPU static (procedural for point models) | CPU static | CPU class-sorted blocks | CPU static | CPU static (procedural for point models) | CPU point geometry (point sources and targets, free-space or periodic) / SoA tensor | Host |
+| `CpuStatic` + `OneMkl` | CPU static (procedural for point models) | CPU static | oneMKL SGEMM/DGEMM | CPU static | CPU static (procedural for point models) | CPU point geometry (point sources and targets, free-space or periodic) / SoA tensor | Host |
+| `CudaPartial` | CPU static (procedural for point models) | CPU static | CUDA target rows | CPU static | CPU static (procedural for point models) | CUDA point geometry (FP32 point sources and targets) / CUDA static tensor | Static GPU data; expansion state crosses at the M2L boundary |
+| `CudaFull` | CUDA static (procedural for FP32 point models) | CUDA static | CUDA target rows | CUDA static | CUDA static (procedural for FP32 point models) | CUDA point geometry (FP32 point sources and targets) / CUDA static tensor | Operators and coefficient state remain on device |
 | `DenseDirectPlan` | — | — | — | — | — | CPU dense exact | Host geometry tensors |
 | `CudaDirectPlan` | — | — | — | — | — | CUDA dense exact | Persistent device geometry and scratch |
 
@@ -38,15 +38,25 @@ measured at run time, and the choice never changes the mathematical result.
 |---|---|---|
 | explicit `p2p_packing` (valid for the plan) | the requested packing | `cuda_dictionary_target_owned` > `cuda_dictionary_power2_microtiles` > source-warp |
 | explicit `use_reduced_symmetry_p2p` (valid) | signed tensor dictionary | `cuda_dictionary_target_owned` > `cuda_dictionary_power2_microtiles` > source-warp |
-| `spatial_layout = RegularGrid`, any geometry (point sources need a fixed identity map), built dictionary with one- or two-byte tokens | signed tensor dictionary | explicit executor option if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned from 48 to below 72, source-warp from 72 upwards |
+| FP32 plan, point sources and point targets (geometry or near-field model), any layout | position-based point kernel (`PointGeometry`: sorted positions and list-1 records, no pair tensors) | — |
+| `spatial_layout = RegularGrid`, any other plan (FP64 points need a fixed identity map), built dictionary with one- or two-byte tokens | signed tensor dictionary | explicit executor option if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned from 48 to below 72, source-warp from 72 upwards |
 | `RegularGrid` whose built dictionary needs four-byte tokens (more than 65535 variants) | falls back to the `General` rule below | — |
 | `General`, any geometry | dense leaf blocks (one warp per leaf pair) | — |
 
-Neither geometry nor periodicity enters the table: the leaf packing carries
-the canonical identity marker, so finite self tensors and point self
-exclusion execute through the same kernels, and periodic image records are
-ordinary dense leaf pairs (tagged with their image ordinal), merged BSR
-blocks or additional row entries. cuSPARSE BSR(3) and canonical target rows
+Periodicity enters no row: the leaf packing carries the canonical identity
+marker, so finite self tensors and point self exclusion execute through the
+same stored-tensor kernels, and periodic image records are ordinary dense leaf
+pairs (tagged with their image ordinal), merged BSR blocks, additional row
+entries or, for the position-based kernel, records carrying their image
+shift. Geometry enters only through the point-pair rule: recomputing the
+point-dipole formula from positions is a representation available to point
+sources and point targets alone, and it is selected for FP32 plans because it
+was measured faster than every stored packing there (1.3-7.5x faster than
+leaf blocks on random points from 8 to 128 per leaf, faster than or equal to
+the lattice dictionary in evaluation time) with 2-33x less device memory,
+while FP64 recomputation is 1.7-3x slower than streaming on this GPU (see
+`docs/static-p2p.md`).
+ cuSPARSE BSR(3) and canonical target rows
 remain explicit packings; `cuda_p2p_bsr_max_bytes` is retained for source
 compatibility and no longer steers the automatic policy (leaf blocks were
 measured faster than BSR(3) on finite bodies as well as on points). A packing
@@ -88,6 +98,39 @@ signed dictionary is the explicit `use_reduced_symmetry_p2p` choice, and
 of these packings enters the persistent cache; the cached canonical operators
 are unchanged. See [static P2P](static-p2p.md) for the capability matrix and
 the execution invariant behind it.
+
+### Point P2M and L2P execution
+
+The point-source P2M and point-target L2P operators have two execution
+strategies, selected by `UniformFmmOptions::point_expansion_execution`
+(`PointExpansionExecution::Auto`, `Precomputed`, `Procedural`). `Precomputed`
+streams the coefficient rows built at construction (`3 C` scalars per source
+and per target, `C = (p + 1)^2`; 588 bytes per point at `p = 6` in FP32).
+`Procedural` recomputes the operator from the sorted positions during every
+evaluation with the allocation-free solid-harmonic recurrence in
+`src/math/solid_harmonic_recurrence.hpp` and the shared kernels in
+`src/operators/point_expansion_kernel.hpp`; the plan then retains three
+`C`-entry factor tables instead of the rows. It exists for the spherical basis
+at orders 1 to 10; the Cartesian basis keeps its precomputed rows, and a stage
+whose far-field model is a finite body (prism or tetrahedron P2M or L2P) keeps
+its exact precomputed rows in every mode. An explicit `Procedural` request
+that no stage can honour throws `std::invalid_argument` at construction.
+
+`Auto` follows the Phase-3B.5 measurements (`agent_docs/
+performance_optimization.md`): the CPU hierarchy (`CpuStatic` and the CPU
+stages of `CudaPartial`) recomputes both operators in FP32 and FP64, where
+the procedural stages were faster from `p = 4` upwards and several times
+faster at `p >= 6`; `CudaFull` recomputes them for FP32 plans (3-7x faster
+P2M/L2P kernels from `p = 6`, equal within a few microseconds at `p = 4`,
+about 100 MB less device memory at 50k points and `p = 6`) and keeps the
+streamed rows for FP64 plans, whose device recurrence is slower than the
+rows. The initialisation summary prints `point_expansion.requested`,
+`p2m_execution` and `l2p_execution`; `UniformFmm::p2m_execution()` and
+`l2p_execution()` report the resolved choice, and
+`StaticPlanStatistics::p2m_operator_bytes` / `l2p_operator_bytes` report the
+factor tables for a procedural stage. The result is identical for every
+strategy up to rounding; the persistent cache stores the canonical operators
+regardless, so cache format and keys are unchanged.
 
 `Portable` and `OneMkl` in the table are values of `StaticMatrixBackend`.
 oneMKL accelerates M2L only: interactions sharing a normalised transfer matrix
@@ -166,8 +209,9 @@ fixed target/source identity map is part of the plan; changing it requires a
 new evaluator. The far-field stream outranks the near-field stream when the
 execution policy estimates the far field at less than three times the P2P
 kernel (`cuda_policy.far_field_stream_priority` in the initialisation
-summary), so the many short far-field kernels are not stretched behind the
-P2P kernel; when a deep tree makes the far field dominate, both streams keep
+summary; the P2P estimate uses the measured cost per pair of the resolved
+packing and precision), so the many short far-field kernels are not stretched
+behind the P2P kernel; when a deep tree makes the far field dominate, both streams keep
 equal priority so the small P2P kernel can hide inside it.
 
 ## Compatibility names and availability

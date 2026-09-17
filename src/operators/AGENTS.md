@@ -14,8 +14,13 @@ construction as `cdfmm::operators::p2p::build_pair`. The flat
 delegation and is the only compatibility spelling of that mathematics; the
 former `src/cuboid.cpp` home is removed. Tetrahedral pairs stay with the
 tetrahedron operator path. `p2p_point_kernel.hpp` holds the inline
-point-dipole pair formula that `evaluate_pair` and the CPU position-based
-P2P executor both call; change the formula there and nowhere else.
+point-dipole pair formula that `evaluate_pair` and the CPU and CUDA
+position-based P2P executors all call; change the formula there and nowhere
+else. `point_expansion_kernel.hpp` holds the procedural point P2M/L2P kernels
+(the spherical operators of `p2m.cpp`/`l2p.cpp` reconstructed from the
+recurrence in `math/solid_harmonic_recurrence.hpp`) and the only copies of
+their constants; the stored construction remains the authoritative
+definition the procedural kernels are tested against.
 
 Current tree:
 
@@ -29,5 +34,7 @@ operators/
 |-- m2p.cpp
 |-- p2m.cpp
 |-- p2p.cpp
+|-- p2p_point_kernel.hpp
+|-- point_expansion_kernel.hpp
 `-- spherical_cartesian_conversion.hpp
 ```

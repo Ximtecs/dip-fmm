@@ -31,12 +31,50 @@ its zero variant only for marked blocks, and the BSR builder zeroes only marked
 blocks, so an executor never infers identity handling from geometry.
 
 The one deliberate exception is `P2PExecutionPacking::PointGeometry`: a fused
-geometry evaluation for point sources and point targets on the CPU that
-recomputes the point-dipole formula from the resident sorted positions instead
-of streaming stored tensors. It is not a tensor executor and is rejected for
-finite near-field geometry; finite bodies keep precomputed tensors because
-evaluating analytical prism or tetrahedron tensors on every evaluation would
-cost far more than streaming them.
+geometry evaluation for point sources and point targets that recomputes the
+point-dipole formula from the resident sorted positions instead of streaming
+stored tensors. It exists on the CPU (a gathered per-leaf sweep) and, since
+Phase 3B.5, on the CUDA backends (one warp per canonical list-1 record, with
+the same lane layout as the leaf-block kernel); both call the single formula
+in `src/operators/p2p_point_kernel.hpp`. It is not a tensor executor and is
+rejected for finite near-field geometry; finite bodies keep precomputed
+tensors because evaluating analytical prism or tetrahedron tensors on every
+evaluation would cost far more than streaming them.
+
+### Precomputed and procedural representations
+
+The invariant separates the mathematical operator from how an executor holds
+it. Every near-field or far-field operator has two possible representations:
+
+```text
+physical operator
+    |
+    +--> precomputed representation   tensor rows, coefficient rows,
+    |                                 compressed packings (built once)
+    |
+    +--> procedural representation    the mathematically identical cheap
+                                      point operator reconstructed from the
+                                      positions during every evaluation
+```
+
+Precomputation is an execution choice, not a mathematical requirement. For
+finite tiles it remains the production strategy: the exact prism and
+tetrahedron operators are expensive to construct and cheap to stream. For
+point sources and point targets the operator is a closed formula (P2P) or a
+short recurrence (the regular solid harmonics of P2M and L2P) of positions
+that stay cache resident, so recomputing it can beat streaming its stored
+form. Three point operators have a procedural representation, each selected
+by a measured policy with an explicit override (`docs/backends.md`):
+
+| Operator | Precomputed form | Procedural form | Default |
+|---|---|---|---|
+| point P2P | pair tensors (24-53 bytes per pair) | `PointGeometry`, positions plus list-1 records | CPU: always; CUDA: FP32 plans |
+| point P2M | dense rows, `3 C` scalars per source | recurrence per source, `C`-entry factor table | CPU hierarchy: always; CudaFull: FP32 plans |
+| point L2P | dense rows, `3 C` scalars per target (plus `C` for the potential) | recurrence per target, factor tables | CPU hierarchy: always; CudaFull: FP32 plans |
+
+The procedural point P2M/L2P executors (`UniformFmmOptions::
+point_expansion_execution`) exist for the spherical basis at orders 1 to 10;
+the Cartesian basis and finite far-field models keep their precomputed rows.
 
 ### Capability matrix
 
@@ -57,7 +95,8 @@ periodic.
 | `CudaPartial`, `CudaFull` | `LeafBlock` | any pair | none (the general default for every geometry) |
 | `CudaPartial`, `CudaFull` | `CudaBsr3` | any pair | point sources need `fixed_target_source_indices` (explicit only; `cuda_p2p_bsr_max_bytes` no longer steers the policy) |
 | `CudaPartial`, `CudaFull` | `TensorDictionary` (source-warp, target-owned, power-of-two microtiles) | any pair | point sources need `fixed_target_source_indices`; automatic on a `RegularGrid` layout whose built dictionary has one- or two-byte tokens |
-| `CudaPartial`, `CudaFull` | `ParticleRowSoa`, `PointGeometry` | none | CPU executors; requested explicitly they fail with that reason |
+| `CudaPartial`, `CudaFull` | `PointGeometry` | point -> point only (free-space or periodic) | the position-based kernel and the default for FP32 point pairs; fixed or changing identity maps; finite near-field geometry is rejected explicitly |
+| `CudaPartial`, `CudaFull` | `ParticleRowSoa` | none | CPU row packing; requested explicitly it fails with that reason |
 | `CpuReference` | `Reference` | point -> point only | the reference backend forms dynamic Cartesian contractions and has no finite P2M/L2P; it rejects exact finite stages explicitly, which does not restrict the static operator |
 
 Periodic image records are ordinary stored tensors: the per-pair packings keep
@@ -146,6 +185,38 @@ identity maps and the fallback when BSR is too large.
 Leaf-block CUDA won only the high-occupancy `(N=65536, depth=4)` and
 `(N=131072, depth=4)` cases in that sweep. Those two points do not yet justify
 an occupancy dispatch rule, so leaf blocking remains an experimental packing.
+(Phase 3A later made leaf blocks the general CUDA default; see below.)
+
+## Position-based point P2P on CUDA (Phase 3B.5)
+
+The CUDA `PointGeometry` kernel keeps one warp per canonical list-1 record
+(target leaf, source leaf, image) and the leaf-block lane layout, but reads
+one aligned position (16 bytes in FP32) and one moment per source instead of
+six stored tensor components, and recomputes the pair with the shared
+point-dipole formula. Measured on the RTX 5090 against the best stored
+packing of each plan (`agent_docs/performance_optimization.md`, Phase 3B.5,
+FP32, order 6, `cuda-full`):
+
+- random points, depth 3, 8 to 128 points per leaf: the kernel is 1.3x (8 per
+  leaf) to 7.5x (128 per leaf) faster than the leaf blocks and the evaluation
+  1.0-6.2x faster, with 2-33x less persistent device memory (14-144 MB
+  instead of 32-4747 MB);
+- regular lattices: in evaluation time it is faster than or equal to the
+  dictionary at every measured occupancy (8, 16, 32 and 64 per leaf, 4096 to
+  262144 points); the dictionary kernel alone is still up to 2x faster at 8
+  points per leaf on a 262k lattice, where the far field dominates the
+  evaluation and the two agree within 1.3 %;
+- FP64: recomputation is 1.7-3x slower than the leaf blocks and 2x slower than
+  the dictionary, because the consumer GPU's FP64 rate is a small fraction of
+  its FP32 rate.
+
+The CUDA execution policy therefore selects `PointGeometry` for FP32 plans
+with point sources and point targets on any layout, and keeps the leaf blocks
+and the lattice dictionary for FP64 point plans and for finite bodies. The
+stored packings remain explicit choices (`p2p_packing`,
+`use_reduced_symmetry_p2p`). Resident memory of the procedural plan is the
+sorted positions (16 or 32 bytes per point), one 32- or 48-byte record per
+list-1 leaf pair and the identity map.
 
 ## Further experiments
 
