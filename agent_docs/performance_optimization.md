@@ -1601,3 +1601,373 @@ difference from icpx's default fast floating-point model), and nvcc 13.x
 rejects icpx/clang 22 as a host compiler, so the CUDA + oneMKL configure
 fails outright. Both trees pass fully once g++ is pinned, which is the
 documented toolchain.
+
+## Procedural vs precomputed point operators (Phase 3B.5)
+
+### Scope, starting point and method
+
+Question: for the analytically cheap point operators (P2P, P2M, L2P), when is
+it faster to reconstruct the operator during every evaluation than to stream
+a precomputed representation? Starting HEAD `38f1b98` (`docs(agent): record
+the final four-tree validation and the icpx toolchain note`) on
+`worktree-p2p-unification`, which `refactor/architecture-v0.2` was
+fast-forwarded to at the start of the task. Same machine, toolchain and rules
+as the previous Phase-3 stages: RTX 5090 (driver 595.84), i9-14900KF with
+eight pinned P-core threads, conda `g++` 15.3 as C++ and CUDA host compiler
+(the environment's `icpx`/`-ccbin=icpx` overridden), nvcc 13.x, Release, LTO,
+`-march=native`; `benchmark_uniform_fmm` with the spherical basis, random
+points (seed 314159) or the `--regular-grid` lattice, fixed identity map,
+field output, `--no-direct --no-workload-comparison --warmups 3 --evaluations
+20 --samples 5 --accuracy-targets 128`, medians of the five samples;
+construction is reported separately and never enters the evaluation medians.
+All CUDA-only rows come from one build tree (`build-cuda`) and were taken with
+no other load; the CPU and hybrid rows were re-measured on an idle machine
+after a first pass had been perturbed by concurrent host work (the perturbed
+pass is not reported). Nsight Compute counters remain unavailable
+(`ERR_NVGPUCTRPERM`); evidence is CUDA-event kernel timings, the phase
+timers, byte counts and controlled variants.
+
+Conceptual result (now in `docs/static-p2p.md` and `docs/architecture.md`):
+the near-field invariant "geometry builds tensors, executors apply tensors"
+describes where an operator is defined, not how an executor must hold it.
+Every operator has a *precomputed* representation (tensor / coefficient rows
+/ compressed packing built once) and, for point geometry, a *procedural* one
+(the identical operator reconstructed from resident positions every
+evaluation). Precomputation is an execution choice. Finite tiles keep it;
+three point operators now have a measured procedural alternative.
+
+### Part A: CUDA position-based point P2P (`PointGeometry` on CUDA)
+
+Design: `src/backend/cuda/p2p/plan.cu`, `point_geometry_p2p_kernel`. One
+warp per canonical list-1 record (target leaf, source leaf, image) with the
+leaf-block lane layout (`stride` consecutive targets x `32/stride` source
+slots), so nothing about the topology, ranges, identity handling or periodic
+records changed. A lane reads one aligned position (16 bytes FP32 / 32 bytes
+FP64) and one moment per source instead of six tensor components, recomputes
+the pair with the shared `operators/p2p_point_kernel.hpp` formula (now
+`__host__ __device__`, with an inverse-radius overload so an executor may
+choose its inverse square root), removes the self pair without control flow
+like the CPU executor, reduces the source slots with shuffles and adds the
+record atomically. Uploaded per plan: the sorted positions (aliased when
+sources and targets are the same points), one 32-byte (FP32) / 48-byte (FP64)
+record per list-1 leaf pair, and the identity map; no canonical tensor is
+read, and the host canonical/row operators are released after the cache is
+written (as on the CPU). `P2PExecutionPacking::PointGeometry` is the public
+selector on every backend; internally `cuda_policy::CudaP2PPacking::
+PointGeometry`. `CudaPlanStatistics::p2p_geometry_bytes` reports the resident
+positions.
+
+Accuracy: the first version formed `x_t - x_s` from root-frame FP32
+coordinates and lost about five digits to cancellation: the FP32 field
+differed from the stored FP32 tensors by 9.4e-5 of the field scale, and its
+error against the FP64 direct reference on 512 sampled targets was 5.2e-5
+against 1.6e-6 for the stored tensors (50k points, depth 4, p 6). Storing
+every position relative to its own leaf centre and folding the (exactly
+representable) source-minus-target leaf-centre difference plus the image
+shift into each record fixed it at zero run-time cost: the difference to the
+stored tensors is now 4.6e-6 (50k, d4), 3.2e-6 (32768, d3) and 4.8e-6
+(hybrid, 50k) of the scale, and the error against the direct reference is
+1.582e-6 versus 1.583e-6 for the stored tensors (identical to three digits);
+FP64 differs by 5.6e-16 (summation order). `tests/test_p2p_geometry_matrix.cpp`
+now runs `PointGeometry` on both CUDA backends for every point pair,
+free-space and periodic, both precisions, both layouts, against the FP64
+dense reference at the unchanged tolerances (2e-4 FP32, 1e-10 FP64).
+
+Random points, depth 3 (512 leaves), FP32, order 6, `cuda-full`, P2P kernel /
+evaluation median [us] / persistent device MB:
+
+| Points per leaf (N) | Pairs | leaf block | position-based | canonical rows | BSR(3) | kernel speedup vs leaf |
+|---|---:|---|---|---|---|---:|
+| 8 (4096) | 0.75M | 12.4 / 122 / 32 | 9.7 / 121 / 14 | 120 / 172 / 50 | 47 / 124 / 44 | 1.3x |
+| 16 (8192) | 3.0M | 26.6 / 137 / 95 | 17.5 / 136 / 23 | | | 1.5x |
+| 32 (16384) | 12.0M | 291 / 397 / 328 | 48 / 160 / 40 | 646 / 734 / 615 | 410 / 488 / 519 | 6.1x |
+| 48 (24576) | 26.9M | 616 / 725 / 703 | 80 / 196 / 58 | | | 7.7x |
+| 64 (32768) | 48.0M | 1071 / 1215 / 1225 | 126 / 248 / 75 | | | 8.5x |
+| 96 (49152) | 108M | 2352 / 2587 / 2702 | 258 / 432 / 110 | | | 9.1x |
+| 128 (65536) | 192M | 4031 / 4501 / 4747 | 536 / 723 / 144 | 8248 / 8779 / 9351 | 5002 / 5509 / 7816 | 7.5x |
+
+Bytes per pair streamed: 24 (leaf block FP32) / 36 + index (BSR) / 24 + 12
+index (canonical) versus about 28 bytes per *source* per record for the
+position-based kernel, i.e. 28 / `stride` bytes per pair from L2 (all
+positions of 65k points are 1 MB). The kernel is compute-bound: 2.8 ps per
+pair at 128 per leaf (about 25 flops plus one inverse square root), against
+18 ps for the DRAM-bound leaf blocks.
+
+Other random workloads (FP32, kernel / evaluation / device MB, leaf block ->
+position-based): S 10k d3 p4: 93 / 178 / 120 -> 23 / 114 / 13; 100k d4 p6:
+1500 / 1853 / 1799 -> 505 / 791 / 237; 200k d5 p6: 721 / 3161 / 1466 -> 404 /
+2865 / 613.
+
+FP64 (random, depth 3): leaf block -> position-based, kernel / evaluation
+[us]: 16 per leaf 116 / 395 -> 347 / 497; 64 per leaf 2090 / 2327 -> 3674 /
+4066; 128 per leaf 7059 / 7657 -> 12300 / 13094. Recomputation is 1.7-3x
+*slower*: the RTX 5090's FP64 rate is a small fraction of its FP32 rate, so
+the compute-bound kernel loses to the bandwidth-bound tensors. FP64 keeps the
+stored packings.
+
+Regular lattices, FP32, order 6, `cuda-full` (`--regular-grid`; the
+dictionary rows use the `RegularGrid` hint with its calibrated executor),
+kernel / evaluation [us] / device MB:
+
+| Lattice | Per leaf | Leaves | dictionary | position-based | leaf block |
+|---|---:|---:|---|---|---|
+| 16^3, d3 | 8 | 512 | 29.6 / 119 | 7.7 / 120 | |
+| 32^3, d4 | 8 | 4096 | 38.8 / 362 / 88 | 36.7 / 372 / 83 | 117 / 513 / 232 |
+| 64^3, d5 | 8 | 32768 | 210 / 3138 / 705 | 466 / 3179 / 663 | 990 / 3715 / 1931 |
+| 32x16x16, d3 | 16 | 512 | 85 / 145 | 13.9 / 134 | |
+| 64x32x32, d4 | 16 | 4096 | 196 / 592 | 254 / 575 | |
+| 32x32x16, d3 | 32 | 512 | 211 / 285 | 29.8 / 158 | |
+| 64x64x32, d4 | 32 | 4096 | 525 / 1206 | 548 / 917 | |
+| 32^3, d3 | 64 | 512 | 440 / 536 / 158 | 82 / 215 / 71 | 654 / 802 / 1117 |
+| 64^3, d4 | 64 | 4096 | 1607 / 2397 / 1339 | 1122 / 1885 / 546 | 6185 / 7137 / 10110 |
+
+The dictionary kernel alone stays ahead only at 8 (and marginally 16) points
+per leaf on lattices with thousands of leaves (2.2x at 64^3 depth 5), where
+the position-based kernel's per-record reduction and atomics dominate its 64
+pairs per record; in evaluation time the two are within 1.3 % there because
+the far field dominates, and everywhere else the position-based kernel wins
+(up to 7x kernel, 1.9x evaluation). Its resident memory is never larger. FP64
+lattices: dictionary 183 / 2273 (32^3 d4) and 1148 / 1340 (32^3 d3) versus
+position-based 366 / 2530 and 2484 / 2904 -> the FP64 dictionary stays.
+
+Hybrid backend (`cuda-partial`, FP32, idle machine, kernel / evaluation /
+device MB): M 50k d4 p6 leaf 287 / 1686 / 416 -> position-based 60 / 1689 /
+26 (the CPU hierarchy is the critical path, so the evaluation is unchanged);
+128 per leaf 3971 / 4452 / 4610 -> 392 / 1661 / 7.9.
+
+Policy (`src/backend/cuda/execution_policy.cpp`): FP32 plans with point
+sources and point targets select `PointGeometry` on both CUDA backends, on
+any layout (the `RegularGrid` hint no longer brings the dictionary back for
+FP32 points, which measured equal or faster in evaluation time with equal or
+less memory); FP64 point plans and finite bodies keep the Phase-3A/3B rules
+(leaf blocks, lattice dictionary). Explicit `p2p_packing` and
+`use_reduced_symmetry_p2p` keep precedence. The stream-priority rule now uses
+the measured cost per pair of the resolved packing and precision
+(`p2p_picoseconds_per_pair`: leaf 18 / 37, canonical 43 / 86, BSR 26 / 52,
+dictionary 8 / 26, position-based 3 / 64 ps, FP32 / FP64) instead of the
+leaf-block constant, so with the cheaper kernel the far field is prioritised
+less often. `CudaExecutionPolicyInputs` gained `effective_point_target`.
+
+### Parts B and C: procedural point P2M and L2P
+
+Audit of the retained operators (spherical, `C = (p+1)^2 = 49` at p 6):
+
+- CPU packing (`backend/cpu/far_field/packing.hpp`): dense P2M rows of
+  `3 C` scalars per source (12 C bytes FP32, 24 C FP64: 588 / 1176 bytes at
+  p 6) and dense L2P rows of `4 C` scalars per target (field plus potential:
+  784 / 1568 bytes), streamed every evaluation at the DRAM roof (0.125-0.25
+  flop per byte). Point, prism and tetrahedron plans retain exactly the same
+  bytes per point because the packing is dense (measured: 588 / 784 bytes per
+  point on a 16^3 lattice for all three geometries).
+- CUDA (`backend/cuda/far_field/executor.cu`): a CSR-by-output copy of the
+  sparse canonical entries, about `3 C` (value, input) pairs per point, i.e.
+  24 C bytes (1176 bytes at p 6, FP32) plus row offsets, read by eight-lane
+  row groups.
+- The mathematics is `M_lm = 1/(4 pi) sum m . grad R_lm(d)` and
+  `H = -sum L_lm grad R_lm(dx)` with the real regular solid harmonics; the
+  existing `regular_solid_harmonics` evaluates them mode by mode from
+  Cartesian polynomial tables with heap allocation and is not usable per
+  point in a kernel.
+
+Implementation:
+
+- `src/math/solid_harmonic_recurrence.hpp`: allocation-free host/device
+  recurrence in the factorial normalisation `Q_l^m = r^l P_l^m e^{im phi} /
+  (l+m)!`, whose three-term, diagonal and gradient relations have rational
+  coefficients only (`d/dz Q_l^m = Q_{l-1}^m`, `(d/dx +- i d/dy) Q_l^m =
+  +-Q_{l-1}^{m+-1}`); the repository's real mode is `f_{l,m}` times the real
+  or imaginary part, with `f_{l,m} = sqrt((l-m)!(l+m)!) sqrt(2) (-1)^m`
+  applied once per leaf from a `C`-entry table. Generic over the lane type
+  (float, double or a SIMD pack). `tests/test_spherical_harmonics.cpp` checks
+  values and gradients against the polynomial basis at orders 0-12 to 1e-12.
+- `src/operators/point_expansion_kernel.hpp`: the P2M accumulation, the L2P
+  field and potential dot products, and the only copies of the constants
+  (`f/(4 pi)`, `-f`, `f`). Both executors call these kernels.
+- CPU (`backend/cpu/far_field/procedural.{hpp,cpp}`, `lanes.hpp`): packs of
+  four FP64 or eight FP32 points run the recurrence as SIMD lanes (a
+  fixed-width pack type whose operators are constant-length loops), tails are
+  zero-padded, P2M reduces the pack per mode, L2P scales the leaf's locals
+  once. Orders 1-10 are compiled (`dispatch_order`).
+- CUDA (`backend/cuda/far_field/procedural.cuh`): lane groups of
+  `procedural_lanes_per_leaf(mean occupancy)` lanes (a power of two, 1-32)
+  own one leaf each, so small leaves do not idle the warp; P2M lanes stride
+  through the sources keeping the `C` Q-normalised sums in registers, reduce
+  with shuffles and one lane scales into the leaf's multipole slot (no
+  atomics); L2P lanes evaluate whole targets from the leaf's pre-scaled
+  locals. Displacements from the leaf centre are uploaded once (16 / 32 bytes
+  per point), so the far-field executor holds no coefficient rows for a
+  procedural stage. Orders 1-10 instantiated.
+- Selection: `UniformFmmOptions::point_expansion_execution`
+  (`PointExpansionExecution::Auto / Precomputed / Procedural`, mirrored in
+  Python), resolved once per stage in `UniformFmm::
+  resolve_point_expansion_execution` (`src/fmm/execution_setup.cpp`) before
+  the packings are built; `p2m_execution()` / `l2p_execution()` and the
+  initialisation summary report the result; a procedural stage skips its row
+  packing / CSR upload, so `p2m_operator_bytes` / `l2p_operator_bytes` drop to
+  the factor tables (588 bytes in total at p 6 FP32). Finite far-field models
+  (prism / tetrahedron P2M or L2P) keep their exact rows in every mode; the
+  Cartesian basis keeps its rows (a procedural Cartesian evaluator would need
+  the multi-index table on the device and was not needed for the production
+  default). The cache still stores the canonical operators: format and keys
+  are unchanged.
+
+Measurements, precomputed -> procedural, per-evaluation means of the P2M and
+L2P phases and the evaluation median [us]; device MB for `cuda-full`:
+
+`cuda-full`, FP32:
+
+| Case | P2M | L2P | evaluation | device MB |
+|---|---|---|---|---|
+| S 10k d3 p4 | 11.4 -> 13.9 | 7.5 -> 6.1 | 180 -> 167 | 120 -> 111 |
+| M 50k d4 p6 | 40.2 -> 12.9 | 36.5 -> 8.2 | 689 -> 634 | 521 -> 421 |
+| H 50k d4 p8 | 63.5 -> 18.7 | 57.4 -> 8.2 | 1120 -> 1019 | 603 -> 429 |
+| L 100k d4 p6 | 75.8 -> 28.9 | 160 -> 87 | 1885 -> 1754 | 1799 -> 1599 |
+| X 50k d4 p10 | 94.9 -> 38.1 | 88.2 -> 12.3 | 1672 -> 1536 | 728 -> 428 |
+| M FP64 | 59.3 -> 110.7 | 94.1 -> 103.9 | 2911 -> 2933 | |
+
+(These rows were taken with the leaf-block P2P forced on both variants so
+that only the far-field stages differ; the device MB column includes the leaf
+tensors.)
+
+`cpu-static-matrix`, 8 threads, idle machine:
+
+| Case | P2M | L2P | evaluation |
+|---|---|---|---|
+| S 10k d3 p4 FP32 | 13.8 -> 15.7 | 18.1 -> 15.9 | 1252 -> 1240 |
+| M 50k d4 p6 FP32 | 436 -> 103 | 459 -> 91 | 12409 -> 11838 |
+| H 50k d4 p8 FP32 | 887 -> 292 | 963 -> 331 | 25374 -> 24249 |
+| L 100k d4 p6 FP32 | 1000 -> 212 | 1130 -> 170 | 22861 -> 20738 |
+| X 50k d4 p10 FP32 | 1436 -> 380 | 1545 -> 507 | 63286 -> 60934 |
+| M 50k d4 p6 FP64 | 1009 -> 175 | 1028 -> 198 | 17733 -> 16090 |
+
+(The precomputed P2M at M FP32 measured 436 us in this session against 166 us
+in the Phase-3B record on the same code path; the comparison above is
+same-session and same-binary. The packed rows stream 588 bytes per point from
+DRAM, the procedural stages run from cache-resident positions at 8-16 flops
+per byte.)
+
+`cuda-partial` (CPU hierarchy, device M2L and P2P), FP32, idle machine:
+
+| Case | P2M | L2P | evaluation |
+|---|---|---|---|
+| S 10k d3 p4 | 14.1 -> 18.5 | 16.8 -> 15.1 | 210 -> 208 |
+| M 50k d4 p6 | 359 -> 93 | 342 -> 76 | 1691 -> 1101 |
+| H 50k d4 p8 | 710 -> 141 | 708 -> 111 | 2960 -> 1746 |
+| L 100k d4 p6 | 941 -> 137 | 944 -> 111 | 3247 -> 2006 |
+| X 50k d4 p10 | 1186 -> 207 | 1148 -> 162 | 5059 -> 3037 |
+| M 50k d4 p6 FP64 | 950 -> 121 | 872 -> 101 | 4937 -> 3303 |
+
+Accuracy (`accuracy_check.py` on 50k / 20k random points): procedural versus
+precomputed fields differ by 5e-8 to 1.5e-7 of the field scale in FP32 (both
+CUDA and CPU, p 4-10) and by 9e-17 (CUDA) / 7e-20 (CPU) in FP64; both have
+the same error against the direct reference to four digits.
+`tests/test_procedural_point_expansion.cpp` compares the two on every static
+backend, both precisions, orders 1, 3, 6 and 10 (field; potential on the
+CPU), checks the selection rules (Cartesian and out-of-range orders rejected
+for an explicit request, finite far-field models kept precomputed) and the
+warm cache.
+
+Policy (`resolve_point_expansion_execution`): the CPU hierarchy (`CpuStatic`
+and the CPU stages of `CudaPartial`) recomputes point P2M and L2P in both
+precisions at orders 1-10 (equal within microseconds at p 4 with the rows
+gone; 3-6x faster stages at p >= 6); `CudaFull` recomputes them for FP32 plans
+(3-7x faster kernels from p 6, +2.5 / -1.4 us at p 4, about 100 MB less
+device memory at M) and keeps the streamed rows for FP64, where the device
+recurrence is slower (P2M 59 -> 111 us). No dependence on N or the layout
+was needed.
+
+### Automatic policy, final state (`Auto` everywhere, idle machine)
+
+| Case | Backend | Prec | Before (38f1b98) [us] | After [us] | Speedup | Device MB before -> after |
+|---|---|---|---:|---:|---:|---|
+| S 10k d3 p4 | cuda-full | FP32 | 178 | 116 | 1.54x | 120 -> 4.0 |
+| M 50k d4 p6 | cuda-full | FP32 | 689 | 450 | 1.53x | 521 -> 30.5 |
+| H 50k d4 p8 | cuda-full | FP32 | 1120 | 704 | 1.59x | 603 -> 38.3 |
+| L 100k d4 p6 | cuda-full | FP32 | 1885 | 657 | 2.87x | 1799 -> 36.5 |
+| 128 per leaf (65536, d3) | cuda-full | FP32 | 4501 | 654 | 6.9x | 4747 -> 13.4 |
+| 200k d5 p6 | cuda-full | FP32 | 3161 | 2613 | 1.21x | 1466 -> 208 |
+| lattice 32^3 d4 (hint) | cuda-full | FP32 | 362 (dictionary) | 362 (position-based) | 1.0x | 88 -> 28.5 |
+| lattice 64^3 d5 (hint) | cuda-full | FP32 | 3138 (dictionary) | 2901 (position-based) | 1.08x | 705 -> 225 |
+| M 50k d4 p6 | cuda-full | FP64 | 2911 | 2823 | 1.03x (noise; leaf block, rows kept) | 972 -> 972 |
+| lattice 32^3 d4 (hint) | cuda-full | FP64 | 2273 | 2276 (dictionary kept) | 1.0x | 123 -> 123 |
+| M 50k d4 p6 | cuda-partial | FP32 | 1686 | 1081 | 1.56x | 416 -> 25.7 |
+| 128 per leaf | cuda-partial | FP32 | 4452 | 906 | 4.9x | 4610 -> 7.9 |
+| M 50k d4 p6 | cpu-static | FP32 | 12409 | 11713 | 1.06x | (host rows 59 MB -> 588 B) |
+| lattice 32^3 d4 (hint) | cpu-static | FP32 | 9476 (record) | 9175 (dictionary kept) | | |
+
+The M FP32 `cuda-full` evaluation is now 450 us (P2P 58 us, P2M 12 us, L2P
+6 us, M2L 174 us): 1.7x faster than the Phase-3B all-backend table (767 us)
+with 17x less device memory.
+
+### CudaPartial check
+
+With procedural P2M/L2P on the hybrid's CPU hierarchy and the position-based
+P2P on both backends, `cuda-full` beats `cuda-partial` everywhere measured:
+M 450 vs 1081 us, 128 per leaf 654 vs 906 us (FP32). The 1-2 % crossover in
+favour of the hybrid at 128-160 points per leaf recorded in the previous
+stage no longer exists: the procedural P2P shortened the device near field
+seven-fold, so the hybrid's CPU hierarchy (P2M 76 + L2P 56 us at 128 per
+leaf, plus the M2L round trip) is the critical path again. Phase-3D input:
+prefer `cuda-full` in every measured regime.
+
+### Regular-grid check
+
+FP32 point lattices moved from the dictionary to the position-based kernel by
+policy: evaluation 362 -> 362 us (32^3 d4) and 3138 -> 2901 us (64^3 d5) with
+3x less device memory; the dictionary kernel itself is faster only at 8
+points per leaf on the large lattice (210 vs 260-466 us), where the far field
+dominates. FP64 lattices keep the dictionary (2276 us, unchanged), the CPU
+lattice rule is unchanged (dictionary, 9175 us), and finite lattices are
+untouched. The dictionary remains explicit for FP32 points
+(`use_reduced_symmetry_p2p`, `p2p_packing`), verified by the updated
+lattice tests.
+
+### Finite-geometry check and retained-operator audit
+
+Prism and tetrahedron paths are unchanged: every finite pair still executes
+through stored tensors (the position-based packing is rejected for finite
+near-field geometry on every backend), and finite far-field models keep
+their exact P2M/L2P rows under every `point_expansion_execution` value
+(`tests/test_procedural_point_expansion.cpp`, geometry-matrix tests). No
+construction was optimised. Retained operators on a 16^3 lattice (4096
+bodies, depth 3, 681k list-1 pairs, spherical p 6, `CpuStatic`):
+
+| Geometry | P2M per source | L2P per target | P2P (SoA rows) | Shared M2M / M2L / L2L |
+|---|---|---|---|---|
+| point, precomputed | 588 B (FP32) / 1176 B (FP64) | 784 B / 1568 B | 0 (position-based; 93 kB scratch) | 281 kB / 3.04 MB / 281 kB (FP32) |
+| point, procedural | 588 B in total (three tables) | included | 0 | same |
+| prism, exact | 588 B / 1176 B | 784 B / 1568 B | 89 B per pair (60.7 MB) FP32, 165 B (112.5 MB) FP64 | same |
+| tetrahedron, exact | 588 B / 1176 B | 784 B / 1568 B | 89 B per pair FP32, 165 B FP64 | same |
+
+Construction times seen in that audit (Phase 3C input, not optimised): exact
+prism P2P 64.5 s (the serial prism pair loop) against 15 s for the
+tetrahedra; exact tetrahedron P2M 5.0 s and L2P 11.1 s for 4096 bodies.
+
+### M2M / M2L / L2L audit
+
+Left unchanged. The translation operators are a small set reused by every
+interaction: eight level-scaled M2M and L2L class banks (281 kB each at p 6
+FP32) and 316 M2L class matrices (3.04 MB), applied through the class-sorted
+schedule so that one matrix stays in L1 across a run of interactions. No
+operator is streamed once per interaction; recomputing a 49 x 49 transfer
+matrix per interaction would cost far more than the cache-resident read, and
+the M2L phase is FMA-bound (Phase 3B). No procedural M2L experiment was run.
+
+### Rejected experiments and observations
+
+- Root-frame FP32 displacement in the CUDA point kernel: correct but 30x less
+  accurate than the stored FP32 tensors (5.2e-5 vs 1.6e-6 of the scale
+  against the reference); replaced by leaf-relative positions, kept.
+- Procedural point P2P in FP64 on CUDA: 1.7-3x slower than leaf blocks at
+  every occupancy; remains an explicit packing, not selected.
+- Procedural point P2M/L2P in FP64 on `CudaFull`: P2M 1.9x slower, L2P 1.1x
+  slower than the streamed rows; remains explicit, not selected.
+- Dictionary for FP32 point lattices: faster kernel only at 8-16 points per
+  leaf on thousands of leaves, equal or slower evaluation, never less memory
+  than the position-based kernel; the FP32 lattice rule was replaced. The
+  FP64 lattice rule and finite lattices keep the dictionary.
+- A procedural Cartesian P2M/L2P was not implemented (production default is
+  spherical; it would need the multi-index table on the device).
+- The precomputed CPU P2M at M measured 436 us against 166 us in the 3B
+  record; not investigated here (same code path, same-session comparison
+  used).

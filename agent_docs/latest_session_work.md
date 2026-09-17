@@ -1,5 +1,39 @@
 # Latest session work
 
+## 2026-09-17 — Procedural vs precomputed point operators (Phase 3B.5)
+
+Starting HEAD `38f1b98` on `worktree-p2p-unification` (the user
+fast-forwarded `refactor/architecture-v0.2` to the same SHA at the start).
+Question answered with measurements: when is recomputing a cheap point
+operator every evaluation faster than streaming its precomputed form.
+Result: the near-field invariant now has an explicit refinement
+(precomputed versus procedural representation, `docs/static-p2p.md`,
+`docs/architecture.md`); finite tiles keep precomputed operators. Added:
+`P2PExecutionPacking::PointGeometry` on both CUDA backends (one warp per
+list-1 record, leaf-relative positions, no pair tensors; FP32 default for
+point pairs: 1.3-7.5x faster kernels than leaf blocks on random points,
+equal or faster evaluations than the lattice dictionary, 2-33x less device
+memory; FP64 keeps stored tensors); an allocation-free host/device
+solid-harmonic recurrence (`src/math/solid_harmonic_recurrence.hpp`, tested
+against the polynomial basis); procedural point P2M/L2P on the CPU (SIMD
+packs) and CudaFull (lane groups per leaf) behind
+`UniformFmmOptions::point_expansion_execution` (Auto/Precomputed/
+Procedural, Python mirrored), default on the CPU hierarchy in both
+precisions and on FP32 CudaFull (3-7x faster P2M/L2P from p 6, rows gone),
+FP64 CudaFull keeps rows; the stream-priority cost model now follows the
+resolved packing. End to end (`Auto`, FP32): cuda-full S 178 -> 116 us,
+M 689 -> 450, L 1885 -> 657, 128 per leaf 4501 -> 654 with 17-350x less
+device memory; cuda-partial M 1686 -> 1081; the prior 1-2 % hybrid crossover
+is gone (cuda-full wins everywhere). Correctness: procedural results match
+the stored operators to rounding (FP32 P2P 3-5e-6 of scale after the
+leaf-relative fix, P2M/L2P 5e-8-1.5e-7; FP64 <= 1e-15); new tests
+`test_procedural_point_expansion.cpp`, recurrence test, geometry-matrix and
+policy tests extended; compute-sanitizer memcheck/racecheck clean on every
+new kernel. Full record: `agent_docs/performance_optimization.md`, "Procedural
+vs precomputed point operators (Phase 3B.5)". Not done (recorded for 3C):
+construction still builds the canonical operators that procedural plans
+never read; prism pair construction is serial (64 s for 4096 prisms).
+
 ## 2026-09-16 — P2P execution unification, geometry/backend coverage, CudaPartial crossover
 
 Starting HEAD `af50b69`, worktree branch `worktree-p2p-unification`. Commits,

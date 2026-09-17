@@ -1,5 +1,25 @@
 # Project progress
 
+## Procedural vs precomputed point operators (Phase 3B.5): COMPLETE — 2026-09-17
+
+Starting HEAD `38f1b98`. Precomputation is now an explicit execution choice
+rather than a mathematical requirement: point P2P, point P2M and point L2P
+have procedural representations selected by measured policies with explicit
+overrides, while finite prism/tetrahedron operators stay precomputed. CUDA
+backends gained the position-based `PointGeometry` P2P (FP32 default for point
+pairs; 1.3-7.5x faster than leaf blocks on random points, never slower than
+the lattice dictionary in evaluation time, 2-33x less device memory; FP64
+keeps stored tensors). Point P2M/L2P are recomputed from a shared
+allocation-free solid-harmonic recurrence on the CPU hierarchy (both
+precisions) and on FP32 `CudaFull` (`UniformFmmOptions::
+point_expansion_execution`; 3-7x faster stages from p 6, 588 bytes of tables
+instead of 12-24 C bytes per point). End to end (FP32, `Auto`): `cuda-full`
+S/M/L/128-per-leaf 1.5x / 1.5x / 2.9x / 6.9x faster than the previous HEAD
+with 17-350x less device memory, `cuda-partial` M 1.56x; `cuda-full` now beats
+the hybrid in every measured regime. Cache format/keys, C ABI and Fortran
+interface unchanged. Full record in `agent_docs/performance_optimization.md`.
+**Phase 3C construction / plan preparation is NEXT.**
+
 ## P2P execution unification, full geometry/backend coverage, CudaPartial crossover: COMPLETE — 2026-09-16
 
 Starting HEAD `af50b69`. The near-field invariant "geometry builds tensors,
