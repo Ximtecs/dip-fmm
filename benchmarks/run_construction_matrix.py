@@ -31,9 +31,9 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
-import itertools
 import os
 import pathlib
+import resource
 import subprocess
 import sys
 import time
@@ -264,6 +264,11 @@ def run_row(
     # Every row in this matrix is a cold build.
     environment["CDFMM_DISABLE_CACHE"] = "1"
 
+    # `ru_maxrss` over child processes is a running maximum, so the peak of
+    # this row is only meaningful as the amount by which it rises.  Rows run
+    # one at a time, so that difference is this row's peak whenever it is the
+    # largest row so far, and is reported as zero otherwise.
+    before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
     started = time.monotonic()
     try:
         completed = subprocess.run(
@@ -278,6 +283,8 @@ def run_row(
         print(f"  TIMEOUT after {timeout:.0f} s", flush=True)
         return None
     wall = time.monotonic() - started
+    after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    peak_rss_kib = after if after > before else 0
 
     if completed.returncode != 0:
         print(f"  FAILED rc={completed.returncode}", flush=True)
@@ -308,6 +315,7 @@ def run_row(
         "backend": row.backend,
         "precision": row.precision,
         "wall_seconds": f"{wall:.6f}",
+        "peak_rss_kib": str(peak_rss_kib),
     }
     for key in PHASE_KEYS:
         record[f"setup_{key}_s"] = summary.get(f"setup.{key}_seconds", "")
@@ -330,6 +338,7 @@ def field_names() -> list[str]:
         "backend",
         "precision",
         "wall_seconds",
+        "peak_rss_kib",
     ]
     names += [f"setup_{key}_s" for key in PHASE_KEYS]
     names += [key.replace(".", "_") for key in SUMMARY_KEYS]

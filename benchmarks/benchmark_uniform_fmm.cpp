@@ -66,6 +66,10 @@ struct Options {
     // Explicit list-1 packing (UniformFmmOptions::p2p_packing) or "auto".
     std::string p2p_packing{"auto"};
     std::string point_expansion{"auto"};
+    // Far-field model for finite bodies: "point" expands each body from its
+    // centre, "exact" uses the exact finite P2M/L2P moment operators.  The
+    // near field is always exact geometry.
+    std::string far_field_model{"point"};
     // Fully periodic cubic cell equal to the root box.
     bool periodic{false};
     std::string precision{"float32"};
@@ -184,6 +188,7 @@ Options parse_options(const int argc, char** argv)
         else if (key == "--body-fill") options.body_fill = std::stod(value);
         else if (key == "--p2p-packing") options.p2p_packing = value;
         else if (key == "--point-expansion") options.point_expansion = value;
+        else if (key == "--far-field-model") options.far_field_model = value;
         else if (key == "--output") options.output = value;
         else throw std::invalid_argument("Unknown option: " + key);
     }
@@ -226,6 +231,10 @@ Options parse_options(const int argc, char** argv)
     }
     if (!(options.body_fill > 0.0) || options.body_fill >= 1.0) {
         throw std::invalid_argument("--body-fill must be in (0, 1)");
+    }
+    if (options.far_field_model != "point" &&
+        options.far_field_model != "exact") {
+        throw std::invalid_argument("--far-field-model must be point or exact");
     }
     return options;
 }
@@ -902,8 +911,13 @@ int main(int argc, char** argv)
                                               options.irregular_bodies));
                 }
             }
-            fmm_options.far_field_source_model = SourceModel::PointDipole;
-            fmm_options.far_field_target_model = TargetModel::Point;
+            if (options.far_field_model == "exact") {
+                fmm_options.far_field_source_model = SourceModel::ExactGeometry;
+                fmm_options.far_field_target_model = TargetModel::ExactGeometry;
+            } else {
+                fmm_options.far_field_source_model = SourceModel::PointDipole;
+                fmm_options.far_field_target_model = TargetModel::Point;
+            }
         }
         if (options.periodic) {
             fmm_options.periodic.enabled = true;
@@ -1391,6 +1405,7 @@ int main(int argc, char** argv)
                "p2p_unique_tensors,p2p_dictionary_token_width_bytes,"
                "p2p_dictionary_total_bytes,p2p_canonical_total_bytes,"
                "near_field_operator_bytes,cuda_p2p_geometry_bytes,"
+               "far_field_model,"
                "point_expansion_requested,p2m_execution,l2p_execution,"
                "p2m_operator_bytes,l2p_operator_bytes\n";
         const char* build_type =
@@ -1500,6 +1515,7 @@ int main(int argc, char** argv)
             << static_plan.p2p_canonical_total_bytes << ','
             << static_plan.near_field_operator_bytes << ','
             << cuda_statistics.p2p_geometry_bytes << ','
+            << options.far_field_model << ','
             << options.point_expansion << ','
             << (fmm ? point_expansion_name(fmm->p2m_execution())
                     : std::string_view{"direct"})

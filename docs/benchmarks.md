@@ -543,9 +543,14 @@ the same fixed-geometry, repeated-moment workload as the point cases:
   `tetrahedron`; finite bodies are centred on the particle positions with
   extent `--body-fill` (default 0.9) of the nominal spacing, one common record
   by default and one varying record per body with `--irregular-bodies`.
-  Finite bodies use point far-field models, so every backend shares the
-  identical hierarchy and the comparison isolates the stored-tensor P2P.
+  Finite bodies use point far-field models by default, so every backend shares
+  the identical hierarchy and the comparison isolates the stored-tensor P2P.
   `--exact-cuboid-p2p` is the legacy spelling of the regular prism workload.
+- `--far-field-model` selects `point` (the default above) or `exact`. `exact`
+  restores the `UniformFmmOptions` default of exact finite far-field models,
+  which is what exercises the finite P2M and L2P moment operators, including
+  the tetrahedron barycentric expansion. The near field is exact geometry
+  either way. The CSV records the choice as `far_field_model`.
 - `--p2p-packing` forces `canonical-aos`, `particle-row-soa`,
   `tensor-dictionary`, `leaf-block`, `cuda-bsr3`, or `point-geometry`
   (`auto` keeps the backend policy); an impossible combination fails at
@@ -559,8 +564,10 @@ the same fixed-geometry, repeated-moment workload as the point cases:
   `body_fill`, `periodic`, `p2p_packing_requested`, the dictionary size and
   token width, the canonical/dictionary/near-field operator bytes,
   `cuda_p2p_geometry_bytes` (resident positions of the CUDA position-based
-  P2P executor), `point_expansion_requested`, the resolved `p2m_execution` /
-  `l2p_execution`, and `p2m_operator_bytes` / `l2p_operator_bytes`.
+  P2P executor), `far_field_model`, `point_expansion_requested`, the resolved
+  `p2m_execution` / `l2p_execution`, and `p2m_operator_bytes` /
+  `l2p_operator_bytes`. Every column is read by name, so the added column does
+  not migrate an existing reader.
 
 `benchmarks/run_p2p_packing_matrix.py --binary <benchmark_uniform_fmm>
 --output <csv> --suite {periodic,finite,cuda-finite,crossover,all}` runs the
@@ -602,6 +609,25 @@ spherical `p=6`, FP32, rectangular-prism plan twice and emits `CACHE_BENCH` CSV
 rows for cold and warm setup, with normalization, tree, lookup/hash/load,
 analytical operator, backend-packing, CUDA-upload, and byte-count columns.
 Backends are `portable`, `onemkl`, and `cuda-full`.
+
+### Cold construction matrix
+
+Construction and repeated evaluation are measured separately.
+`benchmarks/run_construction_matrix.py --binary <benchmark_uniform_fmm>
+--output <csv> --preset {quick,baseline,full}` sweeps geometry (random and
+lattice points, regular and irregular prisms, regular and irregular
+tetrahedra), size, expansion order, precision, and backend, and records the
+per-phase `StaticPlanStatistics` timings with the plan's byte accounting. It
+sets `CDFMM_DISABLE_CACHE` for every row, so each one is a cold build, and
+keeps an evaluation median per row as the regression guard. Rows are appended
+as they complete and an existing CSV is resumed, so an interrupted sweep can
+be restarted and an expensive row skipped without losing the matrix.
+
+The near-field stage is reported as `p2p_tensor_plan` and decomposed into
+`p2p_interaction_setup`, `p2p_canonical_operator` and `p2p_derived_packing`;
+`precision_conversion` times the FP64-to-FP32 conversion. The warm
+geometry-cache path records the same timings, so a cache hit's remaining cost
+is attributable rather than visible only in the total.
 
 ## Reproducible optimisation configuration
 
