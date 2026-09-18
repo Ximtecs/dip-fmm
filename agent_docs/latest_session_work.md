@@ -1,5 +1,95 @@
 # Latest session work
 
+## 2026-09-18 — Final cross-backend integration and production policy (Phase 3D)
+
+Starting HEAD `49b5fe3` on `phase3c5-dense-construction`; work on
+`phase3d-final-integration`, based exactly on it. Note that
+`refactor/architecture-v0.2` still pointed at `a2af367` when this phase began.
+`49b5fe3` is a linear descendant, so the integration branch had simply not
+been fast-forwarded after Phase 3C/3C.5; nothing had diverged and no history
+was rewritten. Fast-forwarding it is a separate, deliberate step and was left
+to the maintainer.
+
+Question answered: does the combined implementation, after 3A, 3B, 3B.5,
+3B.5b, 3C and 3C.5, still make the production decisions its measurements
+chose — and is anything left that a user would notice?
+
+Answer: yes, and almost nothing. All fourteen automatic policies resolve
+exactly as the measured record intends, on every backend and both precisions,
+and every one of them is confirmed against its credible forced alternative on
+the phase it governs. **No automatic performance policy changed**, because no
+measurement asked for one. What the phase did find were three defects and a
+set of stale statements.
+
+The defects. `ExactOperatorClasses` narrowed `std::size_t` pair indices into
+`std::uint32_t` with no guard; a dense all-to-all plan passes that range at
+roughly 65536 bodies per side. Widening would have doubled `class_of_pair`,
+which holds one entry per pair, so the compact words stay and classification
+is abandoned instead — the file's established idiom, and a decision that costs
+only reuse, never correctness. The guard precedes the allocation, so its test
+costs no memory. The duplicated `classify_endpoint_operators` took the same
+guard. Second, an explicit FP32 `CudaBsr3` request under a lowered
+`cuda_p2p_bsr_max_bytes` left construction reporting `CudaBsr3` and then failed
+the evaluation with "CUDA FP32 P2P dimensions are inconsistent": the budget
+gated a speculative prebuild that the executor consumed unconditionally.
+`docs/static-p2p.md` already promised that `p2p_packing` outranks the budget,
+so this aligned the code to its documented contract; FP32 is the default
+precision, so only the budget had to be lowered to reach it. The pre-existing
+test asserted the packing *name*, which a default-constructed plan satisfies,
+so the new case evaluates the field and fails without the fix. Third,
+`ReducedSymmetryP2P.ipynb` set two options that no longer exist and raised
+`AttributeError`; no test executes that notebook.
+
+The measurements. 158 evaluation cases, a cold construction matrix and a
+cold/warm startup decomposition, all on one `benchmark-all` tree so every
+comparison is same-session. The sharpest lesson is methodological: a rule that
+governs one stage must be judged on that stage. FP64 `CudaFull` point
+expansions differ by 2 % end to end — which would have read as "procedural is
+fine now" — and by 1.39x on P2M+L2P, with P2M alone 1.86x, reproducing Phase
+3B.5's figure almost exactly. Judged on the total, the FP64 rule would have
+looked wrong; judged on its own phase, it is right.
+
+Startup changed more than policy did. Phase 3C had named warm derived packing
+"the clearest next lead" at 0.469 s of a 0.978 s warm setup at 32,768 bodies.
+Re-measured at that exact size, the warm setup is 0.419 s and derived packing
+is 0.00 ms, for a point plan and a finite lattice alike; the timer is still
+charged on warm hits and the stages account for the total, so the zero is
+real. What replaced it is the FP32 precision conversion at 167 ms, 40 % of the
+warm setup, whose removal means persisting the FP32 plan — a cache-format
+change this phase is explicitly not authorised to make, and not worth one for
+a one-time 167 ms against a 1 ms evaluation. The universal operator bank is
+confirmed as the dominant truly-cold cost (0.083 / 1.34 / 11.82 s at p = 4 /
+6 / 8, identical across geometries and backends) and is removed entirely by
+its cache.
+
+One audit finding was wrong and is worth recording as such. A subagent flagged
+`CudaPartial`'s unconditional top-priority M2L stream as an inconsistency
+against `CudaFull`'s conditional rule. It is deliberate and measured — the host
+blocks on exactly that stream — so the code now says so at both call sites
+rather than inviting the same conclusion again.
+
+Rejected on measurement, each with its number: the CPU lattice dictionary as a
+default (8 % faster, 20-31x more host memory), oneMKL as the default M2L (it
+wins one row of four), removing `CudaPartial` (slower everywhere but far
+smaller at high occupancy), FP64 CUDA `PointGeometry` (1.30x slower, retained
+as an explicit memory trade), FP64 procedural expansions (above), and
+calibrating the explicit dictionary executor — that last one because "neither
+flag set" is the only way to select the source-warp kernel, so calibrating it
+would remove that ability; it is documented instead, with the 2.59x it costs
+at 8 targets per leaf and the one flag that recovers it.
+
+Deferred to Phase 4, all confirmed by reading the code: the `cuda_policy`
+module's name understating that it also decides CPU policy, the two
+structurally identical classifiers, the dead `use_cuboid_p2m_` /
+`use_cuboid_l2p_` members, the write-only `periodic` and `bsr_*` policy inputs,
+the uncalled three-argument `far_field_stream_priority` overload that carries
+the rule's documentation, and the notebook's remaining pre-3A idioms.
+
+No public API, C ABI, Python API, Fortran interface, cache format or cache key
+changed. `benchmarks/baselines/phase3d/` retains the numbers, labelled an
+engineering regression baseline and not an Article1 benchmark; the publication
+campaign remains deferred until after Phase-4 pruning.
+
 ## 2026-09-18 — Dense/all-to-all construction optimization (Phase 3C.5)
 
 Starting HEAD `cefc975` on the worktree branch `phase3c-construction`, a

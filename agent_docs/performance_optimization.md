@@ -3731,3 +3731,534 @@ FMM operator and no cache content or key.
    arithmetic is cheaper than the lookup. A cheaper key — the displacement
    alone, three words, when the whole plan shares one record — might change
    that balance, and was not attempted.
+
+## Final cross-backend integration and production policy (Phase 3D)
+
+Starting HEAD `49b5fe3` ("docs(perf): record the Phase 3C.5 validation
+evidence"), the tip of `phase3c5-dense-construction`. Note that
+`refactor/architecture-v0.2` still pointed at `a2af367` when this phase began:
+`49b5fe3` is a linear descendant of it, so the integration branch had simply
+not been fast-forwarded after Phase 3C/3C.5. Work happened on
+`phase3d-final-integration`, based exactly on `49b5fe3`.
+
+This phase reconciles the measured history of Phase 3 with what the code
+actually does. It is an internal regression and policy-validation matrix, not
+the Article1 campaign: no external framework comparison, no publication
+figures, and no Article1 data were touched.
+
+### Environment
+
+Intel i9-14900KF, 8 P-cores pinned for every CPU measurement
+(`OMP_NUM_THREADS=8`, `OMP_PLACES={0},{2},{4},{6},{8},{10},{12},{14}`,
+`OMP_PROC_BIND=close`); RTX 5090 (sm_120, 32 GB, driver 595.84); conda `cdfmm`
+environment with g++ 15.3.0 as C++ *and* nvcc host compiler, nvcc 13.3.73,
+oneMKL 2026.1, Python 3.11.16. The environment's `CC=icx`, `CXX=icpx` and
+`NVCC_PREPEND_FLAGS=-ccbin=icpx` were unset for every tree, and Python was not
+installed into the conda environment (`CDFMM_INSTALL_PYTHON_TO_ENV=OFF`,
+`PYTHONPATH` instead), so the user's environment is unchanged.
+
+Measurements come from one `build-bench-all` tree (CPU + oneMKL + CUDA in one
+binary), so every comparison below is same-session and same-binary.
+
+### Integration hygiene
+
+**The exact-reuse index boundary.** `ExactOperatorClasses` stores pair indices
+and class numbers as `std::uint32_t`, and `class_of_pair` holds one entry per
+pair. A dense all-to-all plan exceeds that range at roughly 65536 bodies per
+side (`pair_count = ns * nt`), and
+`result.representative.push_back(static_cast<std::uint32_t>(index))` narrowed
+silently. Widening both vectors would have doubled the largest transient
+allocation of a big build, so the compact words were kept and classification
+is abandoned instead when the indices do not fit -- which is already the
+established outcome of the sample and class-count gates, and costs only the
+reuse, never correctness. The guard runs before the per-pair allocation and
+before the first key, so its unit test costs no memory.
+`classify_endpoint_operators` in `src/fmm/plan_preparation.cpp` is a separate
+helper with the same pattern on leaf/target counts (N-bounded, not N^2) and
+takes the same guard. The duplication between the two classifiers is recorded
+for Phase 4 rather than merged here.
+
+The dense reuse test's shared comment claimed every section was large enough
+to classify; production deliberately never classifies point-to-point plans,
+because a point pair costs about 4 ns against about 260 ns for the cheapest
+finite pair. That section exercises the unclassified loop, and the same
+expectation is correct for both paths because they agree bit for bit. The
+comment now says so.
+
+**An explicit FP32 BSR(3) request under a lowered budget (correctness).**
+`docs/static-p2p.md` states that `p2p_packing` "takes precedence over
+`spatial_layout`, `use_reduced_symmetry_p2p` and the BSR memory budget". The
+FP32 path did not honour the last clause. `cuda_p2p_bsr_max_bytes` gates a
+speculative BSR prebuild in `quantise_static_plan_to_float()`, while
+`build_cuda_p2p_plan()` consumed `p2p_bsr_plan_float_` unconditionally once
+the policy resolved to BSR(3). With a budget below the plan's estimate the
+prebuild was skipped and the executor received a default-constructed plan:
+construction reported `CudaBsr3` and the evaluation then failed with "CUDA
+FP32 P2P dimensions are inconsistent". FP32 is the default precision, so only
+the budget had to be lowered to reach it; the FP64 branch always rebuilt and
+was unaffected. The FP32 branch now builds on demand exactly as FP64 does.
+
+The pre-existing budget test asserted the resolved packing *name*, which a
+default-constructed plan satisfies. The new case evaluates the field at a
+single level, where every pair is near field, and requires the two budgets to
+agree on a field verified to be non-zero. It fails without the change and
+passes with it.
+
+**A stale example.** `examples/simple_notebooks/ReducedSymmetryP2P.ipynb` set
+`options.use_cuboid_p2m` / `use_cuboid_l2p`; neither exists on
+`UniformFmmOptions` nor in the bindings, which declare no dynamic attributes,
+so the notebook raised `AttributeError` and could not run. No regression test
+executes it. Both flags selected a point far-field model, so they became
+`far_field_source_model` / `far_field_target_model`. The notebook's other
+pre-Phase-3A assumptions are recorded for Phase 4.
+
+### Phase A -- production policy inventory
+
+Every row was read from the source rather than from the Phase-3 record.
+
+| Decision | Owner |
+|---|---|
+| execution backend | `execution_setup.cpp:246-257` |
+| P2P packing (CPU **and** CUDA) | `cuda_policy::resolve_cuda_execution_policy`, `execution_policy.cpp:169-275` |
+| CPU packing resolution | `resolve_cpu_p2p_packing`, `execution_setup.cpp:968-985` |
+| CPU point rule | `selects_point_geometry_p2p`, `execution_setup.cpp:948-966` |
+| point P2M/L2P execution | `resolve_point_expansion_execution`, `execution_setup.cpp:854-910` |
+| M2L implementation | `static_matrix_backend`, applied in `far_field.cpp:48-89` |
+| dictionary token guard | `execution_setup.cpp:634-638`, threshold `execution_policy.cpp:117` |
+| stream priority | `execution_policy.cpp:69-82`, `backend/cuda/common/stream.hpp` |
+
+Despite its name, `resolve_cuda_execution_policy` runs for *every* backend and
+also decides whether the CPU builds the signed dictionary. That is a naming
+and ownership wart, not a duplicated rule; it is recorded for Phase 4.
+
+Resolver precedence: explicit packing -> explicit reduced symmetry -> **the
+FP32 CUDA point rule** -> the layout dictionary -> the leaf-block default. The
+FP32 point rule sits above the layout hint, so an FP32 CUDA point lattice
+deliberately ignores `RegularGrid`.
+
+| Situation | Auto | Override | Fallback |
+|---|---|---|---|
+| CpuStatic point->point, General | `PointGeometry` | `p2p_packing`, `use_reduced_symmetry_p2p` | -- |
+| CpuStatic point->point, RegularGrid + fixed identity | `TensorDictionary` | as above | token > 2 B -> `PointGeometry` |
+| CpuStatic point->point, RegularGrid, no fixed identity | `PointGeometry` | as above | -- |
+| CpuStatic finite, General | `ParticleRowSoa` | `p2p_packing` | -- |
+| CpuStatic finite, RegularGrid | `TensorDictionary` | `p2p_packing` | token > 2 B -> `ParticleRowSoa` |
+| CUDA FP32 point->point, any layout | `PointGeometry` | `p2p_packing`, `use_reduced_symmetry_p2p` | -- |
+| CUDA FP64 point->point, General | `LeafBlock` | as above | -- |
+| CUDA FP64 point->point, RegularGrid + fixed identity | `TensorDictionary` | as above | token > 2 B -> General rules |
+| CUDA finite, General | `LeafBlock` | `p2p_packing` | -- |
+| CUDA finite, RegularGrid | `TensorDictionary` | `p2p_packing` | token > 2 B -> `LeafBlock` |
+
+Point P2M/L2P (`procedural_available` needs the spherical basis, a
+non-`CpuReference` backend and order 1-10): the CPU hierarchy -- which
+includes `CudaPartial`, whose hierarchy *is* the CPU -- and `CudaFull` FP32
+resolve to procedural; `CudaFull` FP64 resolves to precomputed. Precision
+enters at one line. Finite far-field models are unconditionally precomputed,
+and an explicit `Procedural` request no stage can honour throws.
+
+M2L: `StaticMatrixBackend` has **no** `Auto`; the default is `Portable` and
+oneMKL runs only on an explicit request. `ExecutionBackend::Auto` resolves to
+`CpuStatic`; **neither CUDA backend is ever auto-selected**.
+
+Reachability: `CudaBsr3` and `CanonicalAos` are explicit-only.
+`cuda_p2p_bsr_max_bytes` bounds the speculative FP32 prebuild only.
+
+Mathematical/model choices (they change the field): expansion basis and order,
+precision, near/far-field models, periodicity, tree depth and root bounds.
+Execution-representation choices (they must not, beyond rounding): P2P
+packing, dictionary executor, point expansion execution, `StaticMatrixBackend`,
+`ExecutionBackend`, the `SpatialLayout` hint, M2L pairs per thread,
+translation lane groups, stream priority, and the BSR byte budget.
+### Phase B -- internal regression matrix
+
+`benchmarks/run_phase3d_regression.py` (suite `all`, 158 cases, 0 failures),
+`--evaluations 20 --warmups 3 --samples 5 --threads 8`. Every automatic policy
+resolved exactly as the Phase-3 record intends, on every backend and both
+precisions:
+
+| Workload | CPU | CudaFull FP32 | CudaFull FP64 | CudaPartial |
+|---|---|---|---|---|
+| A random points | `point-geometry`, procedural | `point-geometry`, procedural | `leaf-block`, precomputed | `point-geometry`/`leaf-block`, **procedural** (CPU hierarchy) |
+| B/C point lattice, General | `point-geometry` | `point-geometry` | `leaf-block` | as CudaFull's packing |
+| B/C point lattice, `RegularGrid` | `tensor-dictionary` | `point-geometry` (hint deliberately ignored) | `tensor-dictionary` | as CudaFull's packing |
+| D/E finite lattice, General | `particle-row-soa` | `leaf-block` | `leaf-block` | `leaf-block` |
+| D/E finite lattice, `RegularGrid` | `tensor-dictionary` | `tensor-dictionary` | `tensor-dictionary` | `tensor-dictionary` |
+| F irregular finite | `particle-row-soa` | `leaf-block` | -- | `leaf-block` |
+| D/E exact far field | precomputed P2M/L2P | -- | -- | -- |
+
+The derived dictionaries reproduce the variant counts recorded in the code:
+248 distinct prism tensors and 187 tetrahedron tensors at FP32, one-byte
+tokens, 28-33x smaller than the canonical operator. The point lattices reach
+172 variants at 8 per leaf (one-byte tokens, 29-55x) and 1688 at 64 per leaf
+(two-byte tokens, 20-38x). Irregular geometry builds no dictionary at all and
+falls back as designed.
+
+Evaluation medians [ms], automatic policy, 8 threads:
+
+| Case | CPU portable | CPU oneMKL | CudaFull | CudaPartial |
+|---|---:|---:|---:|---:|
+| A random S 10k p4 FP32 | 1.234 | 1.167 | 0.115 | 0.203 |
+| A random M 50k p6 FP32 | 11.787 | 15.655 | 0.448 | 1.091 |
+| A random M 50k p6 FP64 | 16.002 | 30.180 | 2.762 | 3.213 |
+| B lattice 8/leaf FP32 | 9.798 | 13.728 | 0.361 | 0.942 |
+| C lattice 64/leaf FP32 | 8.598 | 8.100 | 0.210 | 0.377 |
+| D prism N4096 FP32 | 1.029 | 0.823 | 0.127 | 0.206 |
+| E tetrahedron N4096 FP32 | 1.049 | 0.825 | 0.128 | 0.208 |
+| F irregular prism FP32 | 1.085 | 0.900 | 0.133 | 0.208 |
+
+### Phase C -- automatic policy against forced alternatives
+
+A policy comparison is decided on the phase the policy governs. Total
+evaluation time hides a P2M/L2P rule inside an M2L-dominated evaluation: the
+FP64 `CudaFull` expansion rows differ by 2 % end to end but by 1.39x on
+P2M+L2P, which is the number that matters. Both are given below.
+
+**Point P2P packing.** P2P phase [ms], then evaluation, then retained bytes.
+
+| Case | Auto | Alternative | P2P ratio | eval ratio | memory |
+|---|---|---|---:|---:|---|
+| CPU random M FP32 | `point-geometry` 3.044 | `particle-row-soa` 8.300 | 2.73x slower | 1.46x | 1481 MB vs 29 MB host |
+| CPU random M FP64 | `point-geometry` 3.025 | `particle-row-soa` 15.249 | 5.04x slower | 1.85x | 2727 MB vs 36 MB host |
+| CUDA random M FP32 | `point-geometry` 0.0576 | `leaf-block` 0.4835 | 8.39x slower | 1.48x | 421 MB vs 30 MB device |
+| CUDA random M FP64 | `leaf-block` 2.411 | `point-geometry` 3.146 | 1.30x slower | 1.27x | but 192 MB vs 972 MB device |
+| CUDA lattice 8/leaf FP32 | `point-geometry` 0.0306 | `tensor-dictionary` 0.0671 | 2.19x slower | 1.03x | 33 MB vs 28 MB device |
+| CUDA lattice 8/leaf FP64 | `leaf-block` 0.2438 | hint `tensor-dictionary` 0.1841 | **1.32x faster** | 0.99x | 123 MB vs 416 MB device |
+
+Every automatic choice is confirmed. The FP32/FP64 split on CUDA point pairs
+is still exactly right: recomputation wins by 8.4x on the FP32 P2P phase and
+loses by 1.30x in FP64. The FP32 rule's precedence over the layout hint is
+also still right -- the dictionary is 2.19x slower than recomputation at 8
+points per leaf.
+
+**Point P2M/L2P.** P2M+L2P phase [ms]:
+
+| Case | procedural | precomputed | Auto picks | ratio |
+|---|---:|---:|---|---:|
+| CPU M FP32 | 0.195 | 0.958 | procedural | 4.92x |
+| CPU M FP64 | 0.367 | 2.103 | procedural | 5.73x |
+| CudaFull M FP32 | 0.0185 | 0.0730 | procedural | 3.95x |
+| CudaFull M FP64 | 0.214 | 0.154 | **precomputed** | 1.39x |
+
+The FP64 `CudaFull` P2M alone is 1.86x slower procedurally (0.1105 against
+0.0595 ms), reproducing the "P2M 1.9x slower" of Phase 3B.5 almost exactly.
+Every point-expansion rule is confirmed on the phase it governs.
+
+**CPU M2L, portable against oneMKL** (evaluation medians [ms]):
+
+| Case | Portable | oneMKL | winner |
+|---|---:|---:|---|
+| point M 50k p6 FP32 | 11.890 | 15.689 | Portable 1.32x |
+| point M 50k p6 FP64 | 16.046 | 30.102 | Portable 1.88x |
+| prism N4096 p6 FP32 | 1.048 | 0.824 | **oneMKL 1.27x** |
+| prism N4096 p6 FP64 | 1.667 | 2.092 | Portable 1.25x |
+
+**CudaFull against CudaPartial** (evaluation medians [ms]):
+
+| Case | CudaFull | CudaPartial | ratio |
+|---|---:|---:|---:|
+| random M FP32 | 0.447 | 1.084 | 2.42x |
+| random M FP64 | 2.860 | 3.285 | 1.15x |
+| 128 points per leaf FP32 | 0.656 | 0.888 | 1.35x |
+
+The 1-2 % crossover in the hybrid's favour at 128-160 points per leaf,
+recorded before the procedural point P2P landed, is gone: `CudaFull` is now
+1.35x ahead there. `CudaPartial` does retain far less host memory at high
+occupancy (8.4 MB against 158.6 MB), which is its remaining reason to exist
+besides being an explicit backend.
+### Phase D -- accepted and rejected changes
+
+**Accepted.** All four are correctness or clarity; no automatic performance
+policy changed, because no measurement asked for one.
+
+1. `fix(operators)` -- the exact-reuse index guard and the corrected dense
+   reuse test comment (above).
+2. `fix(fmm)` -- an explicit FP32 BSR(3) request is honoured under a lowered
+   budget (above). Before: construction reported `CudaBsr3` and the evaluation
+   threw "CUDA FP32 P2P dimensions are inconsistent". After: it evaluates, and
+   both budgets agree on the field.
+3. `fix(examples)` -- the P2P notebook runs again.
+4. `docs(cuda)` and `docs(backends)` -- the hybrid's unconditional M2L stream
+   priority and the policy's true inputs are recorded where they are read.
+
+**Rejected, with the measurement that rejected each.**
+
+- *Making the CPU lattice dictionary the default for point plans.* At 8 points
+  per leaf the dictionary's P2P phase is 2.2x faster than recomputation
+  (0.562 against 1.256 ms FP32) and the evaluation 8 % faster, but the plan
+  retains 583 MB against 28 MB, because `PointGeometry` keeps no pair tensors
+  at all while the dictionary needs the canonical operator built first. A 4-8 %
+  evaluation gain does not buy a 20-31x memory increase by default. The hint
+  remains the opt-in way to ask for it.
+- *Making oneMKL the default M2L.* It wins exactly one of four rows -- the
+  small finite FP32 lattice, by 1.27x -- and loses the point workloads by
+  1.32x (FP32) and 1.88x (FP64). Portable stays the default, oneMKL stays
+  supported and explicit, and the crossover is documented rather than turned
+  into a threshold.
+- *Removing `CudaPartial`.* `CudaFull` is 1.15-2.42x faster on every measured
+  row and the old 128-per-leaf crossover is gone, but the hybrid retains 8.4 MB
+  against 158.6 MB of host bytes at 128 points per leaf. It stays a valid
+  explicit backend.
+- *Switching CUDA FP64 point pairs to `PointGeometry`.* 1.30x slower on the
+  P2P phase. It does retain 14x less host and 5x less device memory, so it
+  stays available explicitly and that trade is now documented.
+- *Switching FP64 `CudaFull` point expansions to procedural.* 1.39x slower on
+  P2M+L2P, P2M alone 1.86x. The 2 % end-to-end difference that first suggested
+  otherwise is noise inside an M2L-dominated evaluation.
+- *Making an explicit dictionary request consult the occupancy calibration.*
+  An explicit `p2p_packing = TensorDictionary` with neither executor flag gets
+  the source-warp kernel and is 2.59x slower on the P2P phase than the same
+  packing chosen by the hint at 8 targets per leaf (0.477 against 0.184 ms,
+  FP64); adding `--dictionary-power2-microtiles` recovers it exactly
+  (0.183 ms), which confirms the executor is the only difference. Not changed
+  for two reasons: the source-warp default of `use_reduced_symmetry_p2p` was a
+  deliberate recorded decision of the Phase-3A closure, and "neither flag set"
+  is the *only* way to request source-warp, so calibrating it would remove the
+  ability to select that kernel below 72 targets per leaf. Documented instead.
+- *Removing the dead `use_cuboid_p2m_` / `use_cuboid_l2p_` members, the unused
+  three-argument `far_field_stream_priority` overload, and the write-only
+  `periodic` / `bsr_*` policy inputs.* All confirmed unused, all Phase-4
+  pruning; the members sit in a public header, so removing them changes the
+  class layout and belongs in a deliberate pruning step.
+
+### Phase E -- cold and warm startup
+
+`benchmarks/run_phase3d_startup.py`, portable CPU, FP32, per-stage timings
+[ms]:
+
+| Stage | point 32768 d4 | | | prism 32768 d4 lattice | | |
+|---|---:|---:|---:|---:|---:|---:|
+| | cold | +write | warm | cold | +write | warm |
+| total | 2355 | 2650 | **373** | 2652 | 2918 | **419** |
+| universal operator build | 1337 | 1338 | 0 | 1336 | 1336 | 0 |
+| canonical near field | 587 | 579 | 0 | 660 | 660 | 0 |
+| derived P2P packing | 0 | 0 | **0** | 167 | 166 | **0** |
+| FP32 precision conversion | 221 | 222 | 80 | 315 | 313 | **167** |
+| far-field packing | 31 | 30 | 25 | 13 | 12 | 12 |
+| geometry cache load | 0 | 0 | 152 | 0 | 0 | 133 |
+| geometry cache write | 0 | 287 | 0 | 0 | 249 | 0 |
+
+Two of the four Phase-3C startup observations change.
+
+*The universal operator bank is confirmed as the dominant cold cost and is
+fully cached.* The cold construction matrix measures it at 0.083 s (p = 4),
+1.34 s (p = 6) and 11.82 s (p = 8), identical to within noise across point,
+prism and tetrahedron geometries and across all four backends -- it is
+geometry-independent, as documented -- and it is 88-99 % of a cold build for
+every geometry except irregular tetrahedra. A warm hit removes it entirely.
+
+*Derived packing on a warm cache no longer reproduces.* Phase 3C recorded
+0.469 s of a 0.978 s warm setup at 32,768 bodies as the largest warm cost and
+"the clearest next lead". At that same size the warm setup is now 0.419 s and
+its derived packing is 0.00 ms, for the point plan and the finite lattice
+alike. The timer is still charged on a warm hit -- `precision_conversion`
+beside it is -- and the stages account for the total (167 + 133 + 12 ms
+against a 321 ms static plan), so the zero is real rather than an uncharged
+timer. What replaced it is the FP32 precision conversion, 167 ms or 40 % of
+the warm setup.
+
+*The canonical near field a point plan never reads is unchanged*: 587 ms of a
+2355 ms cold build at 32,768 points, still built for a plan whose executor is
+`PointGeometry`. Skipping it still requires a cache-identity change, which
+Phase 3D deliberately does not make.
+
+### Phase F -- remaining bottlenecks, and what was left alone
+
+Ranked by absolute user-facing time rather than by percentage.
+
+1. **The universal operator bank**, 11.8 s at p = 8 and 1.34 s at p = 6 on a
+   truly cold build. Geometry-independent and removed completely by the
+   universal cache, so it is paid once per (basis, order, precision) per
+   machine. Shrinking it is M2L operator mathematics -- symmetry between the
+   316 classes -- and outside this phase.
+2. **Irregular tetrahedra**, 14.8 s of near-field construction at 4096 bodies
+   and p = 6, identical on all four backends because it is shared host work.
+   Every pair holds a unique record, so there is no duplicate to find; the
+   lever is the tetrahedron pair mathematics.
+3. **FP32 precision conversion on a warm reload**, 167 ms of a 419 ms warm
+   setup at 32,768 finite bodies. Removing it means persisting the FP32 plan,
+   which is a cache-format change. Not taken: Phase 3D's stated default is to
+   preserve the cache format and keys, and 167 ms once per process against a
+   1 ms evaluation does not justify a format migration. Recorded for post-v0.2.
+4. **The canonical near field a procedural point plan discards**, 587 ms of a
+   2355 ms cold build. Unchanged for the same cache-identity reason Phase 3C
+   recorded.
+
+Nothing here was optimised, and that is the finding: the three items Phase 3C
+left as leads are now either cached away, gone, or blocked behind a cache
+change that this phase is not authorised to make.
+
+### Phase G -- CUDA execution closure
+
+The resolved policy was captured for representative point and finite rows on
+both CUDA backends. `CudaFull` FP32 points resolve to `PointGeometry` with
+procedural expansions; FP64 points to `LeafBlock` with precomputed
+expansions; finite geometry to `LeafBlock` on a `General` layout and to the
+signed dictionary under the hint, with the occupancy-calibrated executor.
+`CudaPartial` resolves the same packings and keeps the CPU hierarchy, so its
+expansions are procedural in both precisions.
+
+The stream-priority rule survives the much faster point P2P unchanged. It is
+still conditional on `CudaFull` and unconditional on the hybrid, and the
+reason is now recorded at both call sites. The rule's estimate uses the
+resolved packing's cost per pair, so the eightfold cheaper `PointGeometry`
+kernel feeds into it correctly rather than being priced as a leaf block. No
+stream, synchronisation or device allocation behaviour changed in this phase,
+so no new sanitizer campaign was required for a changed kernel; the campaign
+below covers the changed FP32 BSR construction path.
+
+### Phase H -- CPU and oneMKL closure
+
+Measured above. The explicit production policy is unchanged and now stated:
+**`StaticMatrixBackend::Portable` is the default and there is no `Auto` on
+this axis; oneMKL runs only when the caller asks for it.** Portable wins the
+point workloads decisively (1.32x FP32, 1.88x FP64 at 50k points, p = 6) and
+the FP64 finite lattice (1.25x); oneMKL wins the FP32 finite lattice (1.27x).
+One crossover in four rows, in the direction of small finite plans, is not a
+reason to change a default, and it is not a reason to remove oneMKL either.
+A caller whose workload looks like the finite FP32 row has a documented,
+one-line way to take that 1.27x.
+
+### Phase I -- architecture review
+
+Two invariants were checked directly and hold. No file under `src/operators/`,
+`src/plan/`, `include/cdfmm/operators/` or `include/cdfmm/plan/` mentions
+`ExecutionBackend`, `CudaFull`, `CudaPartial`, `SpatialLayout` or
+`StaticMatrixBackend`, so no backend concept has leaked into mathematical
+construction. No file under `src/backend/cpu/p2p/` or `src/backend/cuda/p2p/`
+mentions `SpatialLayout`, `SourceGeometry` or `TargetGeometry`, so the
+executors branch only on flags resolved upstream and no geometry rule has
+leaked into execution.
+
+Found and fixed here: the BSR budget was the one policy question answered in
+two places with two different rules, and the FP32 half was wrong; the notebook
+and the two stale doc/comment statements.
+
+Found and deliberately deferred to Phase 4, all confirmed by reading the code:
+
+- `cuda_policy::resolve_cuda_execution_policy` runs for every backend and also
+  decides the CPU dictionary, so its name and its home under
+  `src/backend/cuda/` understate its ownership.
+- `classify_exact_operators` (`src/operators/exact_operator_reuse.hpp`) and
+  `classify_endpoint_operators` (`src/fmm/plan_preparation.cpp`) are
+  structurally the same helper; the second is not routed through the shared
+  one.
+- `UniformFmm::use_cuboid_p2m_` / `use_cuboid_l2p_` are assigned in five
+  places and read nowhere.
+- `CudaExecutionPolicyInputs::periodic`, `bsr_estimate_bytes` and
+  `bsr_budget_bytes` are written and never read by any rule.
+- The three-argument `far_field_stream_priority` overload has no caller, but
+  carries the rule's authoritative documentation, so removing it means moving
+  that text.
+- `ReducedSymmetryP2P.ipynb` still uses `cuda_p2p_bsr_max_bytes = 0` as an
+  idiom for "do not use BSR", which has not steered the policy since leaf
+  blocks became the general default.
+### Phase J -- final production decision ledger for v0.2
+
+What executes, why, when it changes, how to override it, and what happens when
+the choice cannot be honoured. This table is the engineering truth at the
+Phase-3D HEAD and is meant to be read without the development history.
+
+| Operator / backend | Representation | Why | Changes when | Override | Fallback |
+|---|---|---|---|---|---|
+| point P2P, CPU, General | `PointGeometry` (recomputed from positions) | 2.7x faster P2P and 51x less host memory than SoA rows at 50k points | never automatically | `p2p_packing`, `use_reduced_symmetry_p2p` | none needed; it is always constructible |
+| point P2P, CPU, RegularGrid | signed `TensorDictionary` | 2.2x faster P2P at 8 per leaf; needs a fixed identity map | the hint is set **and** the built dictionary has 1-2 byte tokens | `p2p_packing` | token width > 2 B, or no fixed identity -> `PointGeometry` |
+| point P2P, CUDA, FP32 | `PointGeometry` | 8.4x faster P2P and 14x less device memory than leaf blocks | never; this rule outranks the layout hint | `p2p_packing`, `use_reduced_symmetry_p2p` | none |
+| point P2P, CUDA, FP64 | `LeafBlock` (General), `TensorDictionary` (RegularGrid) | recomputation is 1.30x slower in FP64 on this GPU; the lattice dictionary is 1.32x faster than leaf blocks and uses 3.4x less device memory | layout hint, fixed identity, token width | `p2p_packing` | token width > 2 B -> `LeafBlock` |
+| finite P2P, CPU, General | `ParticleRowSoa` | stored exact tensors; procedural finite reconstruction lost by 150x-1,300,000x (Phase 3B.5b) | never automatically | `p2p_packing` | -- |
+| finite P2P, CPU, RegularGrid | signed `TensorDictionary` | 248 prism / 187 tetrahedron distinct tensors, 28-33x smaller than canonical | hint set and tokens 1-2 B | `p2p_packing` | token width > 2 B -> `ParticleRowSoa` |
+| finite P2P, CUDA, General | `LeafBlock` | measured faster than BSR(3) on finite bodies as well as points | never automatically | `p2p_packing` | -- |
+| finite P2P, CUDA, RegularGrid | signed `TensorDictionary`, occupancy-calibrated executor | equal-to-5 % faster with 3.4x less device memory | hint set and tokens 1-2 B | `p2p_packing`, `cuda_dictionary_*` | token width > 2 B -> `LeafBlock` |
+| point P2M / L2P, CPU (incl. `CudaPartial`) | procedural | 4.9x (FP32) and 5.7x (FP64) faster than streaming the rows, and 3.4-4.8x less memory | spherical basis, order 1-10, not `CpuReference` | `point_expansion_execution` | unavailable -> precomputed |
+| point P2M / L2P, `CudaFull` FP32 | procedural | 3.95x faster than the rows | as above | `point_expansion_execution` | as above |
+| point P2M / L2P, `CudaFull` FP64 | **precomputed** | procedural is 1.39x slower on P2M+L2P, P2M alone 1.86x | precision alone | `point_expansion_execution` | -- |
+| finite P2M / L2P, every backend | precomputed, always | exact operators are expensive to build and cheap to apply; every procedural variant lost (Phase 3B.5b) | never | none; an explicit `Procedural` request that only a finite stage could honour throws | -- |
+| M2L, CPU | portable, class-sorted block schedule | 1.32x (FP32) and 1.88x (FP64) faster than oneMKL on point workloads | never; there is no `Auto` on this axis | `static_matrix_backend = OneMkl` | -- |
+| M2L, CUDA | target rows, 16 pairs/thread for FP32 with >= 250k translations else 8 | Phase 3A calibration | translation count and precision | none | -- |
+| execution backend | `CpuStatic` | `Auto` never selects a CUDA backend | -- | `backend` | requesting an uncompiled CUDA backend throws |
+| dense direct, CPU | exact tensors, one build per exact class | Phase 3C.5; classification is skipped for point-to-point plans because a point pair is ~4 ns against ~260 ns | geometry has exact duplicates | `DenseDirectBackend` | irregular geometry classifies nothing |
+| dense direct, CUDA | the same host plan, uploaded | one construction path serves all three backends | -- | -- | -- |
+
+Two things this table deliberately does not promise. `SpatialLayout` is a
+hint, not a guarantee: it is verified against the built dictionary's token
+width and released when the geometry does not compress. And an explicit
+`p2p_packing = TensorDictionary` without an executor flag gets the source-warp
+kernel, which is 2.59x slower than the calibrated choice below 48 targets per
+leaf; that is the only way to select that kernel, and
+`cuda_dictionary_power2_microtiles` recovers the difference exactly.
+
+### Phase K -- retained regression baseline
+
+`benchmarks/baselines/phase3d/` holds the accepted-HEAD numbers as CSV plus a
+short Markdown summary, labelled an engineering regression baseline. It is
+enough to catch a major future regression in construction, warm loading,
+evaluation and memory, and it is explicitly **not** an Article1 benchmark: it
+must not be copied into the article, compared with jaxFMM or FMM3D, or turned
+into publication figures. The publication campaign runs after Phase-4 pruning
+against a frozen implementation.
+
+### Phase L -- deferred
+
+The matched production-versus-forced-precomputed point benchmark, the final
+finite operator representation summary, the CPU/CUDA scaling and cold/warm
+construction plots, the dense-direct comparison, and the jaxFMM and FMM3D
+comparisons are all deferred to Article1 after Phase-4 pruning, as the brief
+requires. None was started. When it happens it must use dip-fmm's best
+production point path -- which is `PointGeometry` with procedural expansions
+in FP32 -- rather than forcing precomputed point tensors.
+### Phase M -- validation
+
+Four fresh pinned trees at the accepted HEAD, each configured with the conda
+`g++` 15.3 as C++ *and* CUDA host compiler and with the environment's Python
+3.11 pinned; the Python module under test is the just-built one, selected
+through `PYTHONPATH`, because nothing was installed into the conda
+environment.
+
+| Tree | CTest | pytest |
+|---|---|---|
+| portable CPU (`build-v-cpu`) | 244 / 244 passed, 519 s | 140 passed, 8 skipped |
+| oneMKL (`build-v-mkl`) | 244 / 244 passed, 503 s | 142 passed, 6 skipped |
+| CUDA (`build-v-cuda`) | 244 / 244 passed, 1137 s | 145 passed, 3 skipped |
+| CUDA + oneMKL (`build-v-cuda-mkl`) | 244 / 244 passed, 1144 s | 147 passed, 1 skipped |
+
+Skipped cases are those of a backend the tree does not compile. `git diff
+--check` is clean.
+
+**Sanitizers.** No kernel, stream or synchronisation was changed, but the FP32
+BSR(3) fix makes a previously-unbuilt plan get allocated and uploaded, so that
+path is new device-allocation behaviour and was covered:
+
+| Tool | Scope | Result |
+|---|---|---|
+| `memcheck` | explicit BSR under a lowered budget | 0 errors |
+| `memcheck` | BSR memory budget fallback | 0 errors |
+| `memcheck` | `[packing]` (every CUDA P2P executor, 10410 assertions) | 0 errors |
+| `racecheck` | explicit BSR under a lowered budget | 0 hazards |
+| `initcheck` | explicit BSR under a lowered budget | 0 errors |
+| `synccheck` | explicit BSR under a lowered budget | 0 errors |
+
+**Cache compatibility.** `src/cache/` is untouched by this phase, so the
+stronger property was checked directly rather than assumed. The starting HEAD
+`49b5fe3` was exported with `git archive` and built separately, and a cache
+was written from cold by each side for a point plan and for a finite prism
+lattice:
+
+- the serialised payloads are **byte-identical** between `49b5fe3` and the
+  accepted HEAD for both geometries, so no serialised operator value changed;
+  and
+- each side reads the other's cache as a hit
+  (`cache.geometry.hit: true` in both directions), so no cache key changed.
+
+**ABI and API.** No file under `include/` changed at all (`git diff
+49b5fe3..HEAD -- include/` is empty), so `CDFMM_ABI_VERSION` stays 1 and the C
+header is untouched; `src/bindings/`, `python/`, `fortran/` and `src/cache/`
+are likewise untouched. The Python public API is exercised by the four pytest
+runs above. The Fortran interface could **not** be compile-verified: no
+Fortran compiler is installed in this environment. Its source and the C ABI it
+wraps are both unchanged, so the interface is unchanged by construction, but
+that is an argument rather than a build, and it is recorded as such.
+
+**Production diff.** Three source files and 40 lines:
+`src/operators/exact_operator_reuse.hpp` (+14),
+`src/fmm/plan_preparation.cpp` (+15, of which 5 are comment) and
+`src/fmm/execution_setup.cpp` (+11), plus a comment-only change to
+`src/backend/cuda/m2l/plan.cu`.

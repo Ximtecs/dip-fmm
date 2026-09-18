@@ -1,5 +1,50 @@
 # Project progress
 
+## Final cross-backend integration and production policy (Phase 3D): COMPLETE — 2026-09-18
+
+Starting HEAD `49b5fe3`. The last optimisation phase before repository
+pruning: reconcile the measured history of Phase 3 with what the code
+actually does, and establish a final engineering baseline.
+
+All fourteen automatic production policies resolve exactly as the Phase-3
+measurements intend, on every backend and both precisions, and each is
+confirmed against its credible forced alternative on the phase that rule
+governs. **No automatic performance policy changed.** Point pairs recompute
+from positions on the CPU and on CUDA FP32 (8.4x faster on the CUDA P2P phase,
+14x less device memory) and keep stored tensors on CUDA FP64 (recomputation is
+1.30x slower there); point expansions are procedural everywhere except
+`CudaFull` FP64 (procedural is 1.39x slower on P2M+L2P); finite operators are
+precomputed everywhere; `RegularGrid` selects the signed dictionary, verified
+against the built plan's token width; portable CPU M2L remains the default
+with oneMKL explicit-only; `ExecutionBackend::Auto` remains `CpuStatic` and
+never selects a CUDA backend.
+
+Three defects were found and fixed. `ExactOperatorClasses` narrowed
+`std::size_t` pair indices into `std::uint32_t` unguarded, which a dense plan
+passes at roughly 65536 bodies per side; classification is now abandoned
+rather than wrapped, keeping the compact per-pair class map. An explicit FP32
+`CudaBsr3` request under a lowered `cuda_p2p_bsr_max_bytes` reported success at
+construction and then failed the evaluation, because the budget gated a
+prebuild the executor consumed unconditionally — the documented contract was
+already that `p2p_packing` outranks the budget. And a stale example notebook
+raised `AttributeError` on two options that no longer exist.
+
+Startup is the part that moved. Phase 3C's "clearest next lead", warm derived
+packing at 0.469 s of a 0.978 s warm setup at 32,768 bodies, no longer
+reproduces: the warm setup is 0.419 s and its derived packing is 0.00 ms. The
+largest remaining warm cost is the FP32 precision conversion at 167 ms, whose
+removal needs a cache-format change and is recorded for post-v0.2. The
+universal operator bank remains the dominant truly-cold cost (11.8 s at p = 8)
+and is fully removed by its cache.
+
+No public API, C ABI, Python API, Fortran interface, cache format or cache key
+changed. Validation ran four fresh pinned trees (portable CPU, oneMKL, CUDA,
+CUDA + oneMKL) with the full CTest and Python suites, plus Compute Sanitizer
+over the changed FP32 BSR construction path. `benchmarks/baselines/phase3d/`
+retains the numbers as an engineering regression baseline, explicitly not an
+Article1 benchmark. Phase 4 repository pruning is NEXT; the publication
+campaign follows it.
+
 ## Dense/all-to-all construction optimization (Phase 3C.5): COMPLETE — 2026-09-18
 
 Starting HEAD `cefc975`. Phase 3C optimised the FMM hierarchy's construction

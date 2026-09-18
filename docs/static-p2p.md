@@ -174,6 +174,19 @@ table above is enforced by `tests/test_p2p_geometry_matrix.cpp`, which runs
 every pair through every packing of every available backend in FP32 and FP64
 against the FP64 `DenseDirectPlan` reference.
 
+One caveat for an explicit dictionary request on CUDA. The layout hint picks
+the dictionary executor from the measured occupancy calibration, but an
+explicit `p2p_packing = TensorDictionary` or `use_reduced_symmetry_p2p` with
+neither `cuda_dictionary_target_owned` nor `cuda_dictionary_power2_microtiles`
+set keeps the source-warp kernel. That is the documented meaning of "neither
+flag" and the only way to select that kernel, but below the calibration's
+first threshold it costs real time: on a 32768-point FP64 lattice at 8 targets
+per leaf the explicit request's P2P phase is 2.59x slower than the same
+packing chosen by the hint (0.477 against 0.184 ms), and adding
+`cuda_dictionary_power2_microtiles` recovers it exactly (0.183 ms). Set the
+executor flag when requesting the dictionary explicitly at low occupancy, or
+use `spatial_layout` and let the calibration choose.
+
 ## Signed Tensor6 dictionary packing
 
 The P2P execution plan retains the exact canonical interaction topology as

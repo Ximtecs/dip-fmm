@@ -28,11 +28,16 @@ and P2P packing rather than leaving `Auto` ambiguous.
 
 Within a selected CUDA backend the implementation strategy is resolved once,
 deterministically, by `src/backend/cuda/execution_policy.{hpp,cpp}` from
-facts of the constructed plan — precision, source geometry, periodicity,
-whether a fixed identity map exists, the number of occupied target leaves and
-the mean targets per leaf, the list-1 pair and M2L translation counts, the
-BSR(3) size estimate and budget — together with the options. Nothing is
-measured at run time, and the choice never changes the mathematical result.
+facts of the constructed plan — precision, effective point sources and
+targets, whether a fixed identity map exists, the mean targets per occupied
+target leaf, and the list-1 pair and M2L translation counts — together with
+the options. Nothing is measured at run time, and the choice never changes the
+mathematical result.
+
+Periodicity and the BSR(3) size estimate and budget are carried on the policy
+inputs for diagnostics only: no rule reads them. Periodic image records pack
+like any other pair, and the automatic policy has not selected BSR(3) since
+leaf blocks became the general default.
 
 | Situation | List-1 P2P packing | Dictionary executor |
 |---|---|---|

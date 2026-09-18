@@ -689,6 +689,43 @@ ordinary row; without an identity map the two sets are placed half a cell
 apart, since a point source has no self field and an unmapped coincident
 point pair is a singular configuration rather than a measurement.
 
+### Internal cross-backend regression matrix (Phase 3D)
+
+`benchmarks/run_phase3d_regression.py --binary <benchmark_uniform_fmm>
+--output <csv> --suite {regression,policy,all}` is the internal
+policy-validation and regression matrix, and
+`benchmarks/analyse_phase3d_regression.py --input <csv> --view
+{policy,matrix,both}` summarises it. The `regression` suite runs the workload
+classes -- random points, point lattices at low and high occupancy, regular
+prism and tetrahedron lattices with and without the layout hint, an irregular
+finite control -- under the automatic policy on every available backend; the
+`policy` suite runs the automatic policy against the credible forced
+alternatives. Each row records the resolved representation (`p2p_packing`,
+`p2m_execution`, `l2p_execution`, `static_multiply_backend`) beside repeated
+evaluation, its phases, and the retained host and device bytes, so a stale
+production rule is visible without reading the source. Completed cases are
+cached per case file, so the matrix resumes and every comparison inside a
+suite stays same-session.
+
+Two rules for reading it. The comparison number for a rule that governs one
+stage is **that stage**, not the total: a P2M/L2P rule is invisible inside an
+M2L-dominated evaluation. And this driver leaves the caches enabled, so its
+`fmm_setup_seconds` is a warm number that catches only a gross setup
+regression -- cold construction is `run_construction_matrix.py`.
+
+`benchmarks/run_phase3d_startup.py --binary <binary> --output <csv>` splits
+startup into `cold-no-cache` (`CDFMM_DISABLE_CACHE`), `cold-write` (an empty
+cache directory, so the build also pays the write) and `warm-hit` (the same
+directory again), keeping the per-stage timings. It selects a cache directory
+and changes no cache format or key. The difference between the last two is
+what a returning caller saves; the stages still charged on a warm hit are what
+is left to optimise.
+
+`benchmarks/baselines/phase3d/` retains the accepted-HEAD output of all three,
+with a README stating what it is. It is an engineering regression baseline and
+explicitly not an Article1 benchmark: its numbers must not enter the article,
+become publication figures, or be compared with external frameworks.
+
 ## Reproducible optimisation configuration
 
 Release builds enable LTO and native CPU instruction selection by default:

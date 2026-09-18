@@ -103,10 +103,33 @@ records. Exact reuse also finds less on a lattice whose spacing is not exactly
 representable, since equal index differences then round to different
 displacement bits; dense plans have no canonical-grid normalisation, so that
 rests on the caller's geometry. No public API, C ABI, Python API, Fortran
-interface or cache format changed. 3D the final
-cross-backend review is NEXT, and Phase 4 repository pruning follows. Do not
-begin benchmark redesign or repository pruning as a side effect of another
-change.
+interface or cache format changed. **Phase 3D (final cross-backend
+integration and production policy) is also COMPLETE.** All fourteen automatic
+production policies were re-derived from the source, then measured against
+their credible forced alternatives on the phase each rule governs, on one
+combined CPU/oneMKL/CUDA tree so every comparison is same-session. Every one
+resolves as the Phase-3 measurements intend and **no automatic performance
+policy changed**: point pairs recompute from positions on the CPU and on CUDA
+FP32 and keep stored tensors on CUDA FP64, point expansions are procedural
+everywhere except `CudaFull` FP64, finite operators stay precomputed
+everywhere, `RegularGrid` selects the signed dictionary subject to the built
+plan's token width, portable CPU M2L stays the default with oneMKL
+explicit-only, and `ExecutionBackend::Auto` stays `CpuStatic`. What the phase
+changed is three defects: the unguarded `std::uint32_t` narrowing of dense pair
+indices in `ExactOperatorClasses` (now abandons classification instead of
+wrapping), an explicit FP32 `CudaBsr3` request under a lowered
+`cuda_p2p_bsr_max_bytes` that reported success and then failed the evaluation,
+and a stale example notebook. Phase 3C's largest warm-cache cost no longer
+reproduces; the FP32 precision conversion replaced it and needs a cache-format
+change, so it is recorded for post-v0.2. The final production decision ledger,
+every rejected change with the measurement that rejected it, and the deferred
+Phase-4 inventory are in `agent_docs/performance_optimization.md`, "Final
+cross-backend integration and production policy (Phase 3D)"; the retained
+numbers are in `benchmarks/baselines/phase3d/` and are an engineering
+regression baseline, not an Article1 benchmark. **Phase 4 repository pruning
+and documentation cleanup is NEXT**, and the Article1 publication campaign
+follows it. Do not begin benchmark redesign or repository pruning as a side
+effect of another change.
 
 The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor
 implementation. Architectural work occurs on `refactor/architecture-v0.2`.
