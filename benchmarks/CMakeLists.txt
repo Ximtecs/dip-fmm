@@ -25,3 +25,10 @@ if(CDFMM_ENABLE_CUDA)
     CUDA_STANDARD_REQUIRED ON)
 endif()
 cdfmm_enable_ipo(benchmark_operator_representation)
+
+add_executable(benchmark_dense_direct_construction
+               benchmark_dense_direct_construction.cpp)
+target_link_libraries(benchmark_dense_direct_construction PRIVATE cdfmm_core)
+target_include_directories(benchmark_dense_direct_construction
+                           PRIVATE ${PROJECT_SOURCE_DIR}/src)
+cdfmm_enable_ipo(benchmark_dense_direct_construction)
