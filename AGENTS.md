@@ -66,10 +66,27 @@ representations (`benchmark_operator_representation`), reconstruction lost by
 ten updates, so finite operators stay precomputed on every backend and no
 production policy changed; the one accepted production change is the
 precision-generic prism point-tensor kernel that production and the device
-benchmark now share. 3C construction /
-plan-preparation optimization is NEXT, 3D the final cross-backend review, and
-Phase 4 repository pruning follows. Do not begin construction optimisation,
-benchmark redesign, or repository pruning as a side effect of another change.
+benchmark now share. **Phase 3C (static-plan construction and plan
+preparation) is also COMPLETE.** Cold construction was dominated by building
+the same operator over and over: an exact pair tensor is a pure function of
+the displacement and the participating body records, a finite P2M or L2P
+operator of the basis, the body's shape record and its offset from its leaf
+centre, and normalisation puts body centres on a canonical grid, so
+equivalent interactions agree *bitwise* rather than approximately. All three
+canonical pair loops and both finite endpoint loops now classify by those
+exact bit patterns, build each distinct operator once, and do so in parallel
+(`src/operators/p2p.cpp`, `src/fmm/plan_preparation.cpp`,
+`docs/architecture.md`, `docs/static-p2p.md`). Cold construction of a
+4096-body regular prism lattice falls from 66.8 s to 1.5 s, the tetrahedron
+lattice from 15.9 s to 1.5 s, and the exact finite tetrahedron endpoint
+operators by two orders of magnitude, with byte-identical persisted plans
+throughout. No cache format, cache key, C ABI, Python API or Fortran
+interface changed; the canonical near-field build for point plans was
+deliberately left in place, because skipping it would change cache contents
+under a key that distinguishes neither packing nor backend. 3D the final
+cross-backend review is NEXT, and Phase 4 repository pruning follows. Do not
+begin benchmark redesign or repository pruning as a side effect of another
+change.
 
 The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor
 implementation. Architectural work occurs on `refactor/architecture-v0.2`.

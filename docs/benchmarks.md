@@ -625,9 +625,11 @@ be restarted and an expensive row skipped without losing the matrix.
 
 The near-field stage is reported as `p2p_tensor_plan` and decomposed into
 `p2p_interaction_setup`, `p2p_canonical_operator` and `p2p_derived_packing`;
-`precision_conversion` times the FP64-to-FP32 conversion. The warm
-geometry-cache path records the same timings, so a cache hit's remaining cost
-is attributable rather than visible only in the total.
+`precision_conversion` times the FP64-to-FP32 conversion. A warm
+geometry-cache hit records `p2p_derived_packing` and `precision_conversion`,
+so the cost it still pays is attributable rather than visible only in the
+total; the construction timers themselves stay at zero calls on a hit, which
+is how a warm plan is distinguished from a rebuilt one.
 
 ## Reproducible optimisation configuration
 

@@ -18,6 +18,21 @@ physical geometry (point, rectangular prism, tetrahedron)
     -> CPU / CUDA executors
 ```
 
+The construction is also the only step that can see the same interaction
+twice. A pair tensor is a pure function of the displacement and the two body
+records, and a periodic image shift is folded into the displacement before any
+tensor call, so pairs whose inputs agree bit for bit describe one operator.
+Normalisation puts body centres on a canonical grid, which makes that
+agreement exact rather than approximate: a 4096-body regular prism lattice
+reaches its 681,472 near-field pairs from 343 distinct displacements. All
+three pair loops therefore classify by those exact bit patterns, build one
+tensor per class in parallel and scatter it. The classification never compares
+with a tolerance, numbers its classes in first-seen order so a plan does not
+depend on scheduling, and is abandoned when an initial sample shows too few
+duplicates to repay it. The tetrahedron pair classifies among its reciprocity
+owners alone, so `K_{t<-s}(r)` and `K_{s<-t}(-r)^T` keep sharing one owner's
+bits. See Phase 3C in `agent_docs/performance_optimization.md`.
+
 Once the canonical operator exists, no packing builder or executor reads a
 `SourceGeometry`, `TargetGeometry`, prism size or tetrahedron record; they see
 tensor components, indices, leaf ranges, image ordinals and identity markers

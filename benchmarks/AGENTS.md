@@ -18,6 +18,9 @@ benchmarks/
 |-- benchmark_operator_representation_cuda.{hpp,cu}
 |                                     its procedural prism P2P device kernel
 |-- run_benchmarks.py                 profile runner and result handling
+|-- run_construction_matrix.py        cold static-plan construction matrix
+|                                     (per-phase timings, plan bytes, peak
+|                                     resident set; resumable)
 |-- run_p2p_sweep.py                  representation sweep
 |-- run_p2p_packing_matrix.py         geometry/backend/packing matrix
 |-- run_operator_representation.py    representation matrix (resumable)
@@ -33,7 +36,13 @@ once there are enough cohesive drivers to justify them.
 ## Rules
 
 - Keep setup, one-time packing/upload, repeated evaluation, and transfer timing
-  distinct. Static-plan reuse is part of the measured contract.
+  distinct. Static-plan reuse is part of the measured contract. A construction
+  measurement disables the geometry cache, so every row is a cold build; a
+  cache measurement says so explicitly.
+- Finite bodies default to point far-field models so that a backend or packing
+  comparison isolates the near field. Use `--far-field-model exact` when the
+  finite P2M/L2P operators are what is being measured; without it they are
+  never built.
 - Record precision, geometry, expansion, backend, packing, thread/device, and
   problem-size configuration needed to reproduce a result.
 - Preserve established CSV/result schemas unless a migration is explicit.

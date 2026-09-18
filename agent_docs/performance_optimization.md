@@ -2671,3 +2671,603 @@ while the polyhedron pair loops are parallel; the prism tensor's `long double`
 arithmetic costs 2.7x its `double` equivalent for 4.5e-15 of agreement; and
 `tetrahedron_averaged_monomial` heap-allocates a barycentric polynomial per
 (mode, term, axis), which dominates exact tetrahedron P2M/L2P construction.
+
+## Static-plan construction and plan-preparation optimization (Phase 3C)
+
+### Question, starting point and method
+
+Phase 3A and 3B optimised repeated evaluation; 3B.5 and 3B.5b settled which
+operator representation to execute. None of them touched the cost of *making*
+a plan. This phase asks where cold plan construction spends its time and
+memory, and which of that work can be parallelised, reused, deduplicated or
+avoided without slowing repeated evaluation.
+
+Starting HEAD `a2af367` ("docs(perf): record the exact finite procedural
+versus precomputed study") on `refactor/architecture-v0.2`, which
+`origin/refactor/architecture-v0.2` already pointed at; the local branch was
+fast-forwarded to it at the start of the session. Work was done on the
+worktree branch `phase3c-construction` and fast-forwarded back.
+
+Hardware: Intel i9-14900KF, eight P-cores used for every controlled
+measurement (`OMP_NUM_THREADS=8`,
+`OMP_PLACES={0},{2},{4},{6},{8},{10},{12},{14}`, `OMP_PROC_BIND=close`);
+NVIDIA RTX 5090 (sm_120, 32 GB, 96 MB L2). Toolchain pinned explicitly rather
+than inherited: g++ 15.3.0 from the `cdfmm` conda environment for C++ and as
+the `nvcc` host compiler, CUDA 13.2, oneMKL 2026.1. The environment's `icpx`
+/ `icx` / `NVCC_PREPEND_FLAGS` defaults are unset for every build in this
+study.
+
+Method. Construction and evaluation are measured separately.
+`benchmarks/run_construction_matrix.py` sweeps geometry, size, order,
+precision and backend with `CDFMM_DISABLE_CACHE` set, so every row is a cold
+build, and records the per-phase `StaticPlanStatistics` timings. Correctness
+is checked by byte-comparing the persisted geometry plan, which serialises the
+canonical P2P blocks, the P2M plans and the L2P evaluators: if the file is
+identical, the operators are identical bit for bit, which is a far stronger
+statement than a tolerance comparison of fields.
+
+Two measurement faults were found and corrected during the study, and both
+changed conclusions:
+
+- `benchmark_uniform_fmm` hard-coded point far-field models for finite
+  bodies, so the exact finite P2M/L2P operators -- and with them the
+  tetrahedron barycentric expansion that Phase 3B.5b flagged -- were never
+  exercised by any benchmark. `--far-field-model exact` restores the
+  `UniformFmmOptions` default and is what makes Lead 5 measurable at all.
+- One killed benchmark process survived and competed for the cores during an
+  early exact far-field sweep, inflating those rows by roughly 2x. Those
+  numbers were discarded and re-measured on an idle machine.
+
+### Baseline (`a2af367`), cold, cache disabled, 4096 bodies, p = 6, FP32, CpuStatic
+
+| case | total setup | P2P stage | P2P share | unique tensors |
+|---|---|---|---|---|
+| point, random | 1.448 s | 0.062 s | 4.3 % | n/a |
+| point, lattice | 1.488 s | 0.087 s | 5.8 % | 172 |
+| prism lattice | 66.81 s | 65.41 s | 97.9 % | 248 |
+| prism irregular | 66.11 s | 64.70 s | 97.9 % | 24,947 |
+| tetrahedron lattice | 15.87 s | 14.48 s | 91.2 % | 187 |
+| tetrahedron irregular | 19.74 s | 18.35 s | 93.0 % | n/a |
+
+For every finite case the canonical near-field build is 91-98 % of cold
+construction. For point cases the floor is `universal_operator_build`
+(1.33 s at p = 6): the 316 M2L class matrices, which depend only on basis,
+order and precision, are already OpenMP-parallel, and are served from the
+universal cache in normal use.
+
+### Dominant cost 1: the near field built every pair, and built it serially
+
+Two independent causes, found by audit and confirmed by measurement.
+
+The generic pair loop (`src/operators/p2p.cpp`) serving the point/prism
+combinations and both point/tetrahedron directions -- six of the nine pairs --
+was serial. Nothing forced that: the block vector is sized and ordered before
+any tensor is built and every iteration writes one distinct entry. It was
+simply the one loop that had never been given the OpenMP exception
+scaffolding the two polyhedron loops already carried.
+
+Far larger: every pair was evaluated although almost all of them describe the
+same operator. A pair tensor is a pure function of the displacement and the
+participating body records, and a periodic image shift is folded into the
+displacement before any tensor call, so pairs whose inputs agree bit for bit
+are the same interaction. The decisive fact is that they agree *exactly*
+rather than approximately, because normalisation puts body centres on a
+canonical grid. Measured on the baseline with a temporary probe over the
+exact inputs, 4096 bodies at depth 3:
+
+| case | near-field pairs | distinct exact inputs | redundancy |
+|---|---|---|---|
+| point, random | 745,226 | 741,130 | 1.006x |
+| point, lattice | 681,472 | 342 | 1992x |
+| prism lattice | 681,472 | 343 | 1986x |
+| prism irregular | 681,472 | 34,643 | 19.7x |
+
+The irregular row is the informative one: 343 distinct displacements survive
+even when every body has its own size record, so the reuse comes from the
+lattice geometry and not from the bodies being identical.
+
+The cost asymmetry decides where the classification is worth its own price.
+The near-field stage costs about 96 us per pair on the prism lattice
+(65.4 s / 681,472) against 78 ns per pair on random points (0.058 s /
+745,226), and the point figure is itself dominated by sorting the interaction
+list rather than by the tensor. A hash lookup is therefore invisible beside a
+finite tensor and would be the whole cost of a point pair, which -- as the
+table shows -- has no duplicates to find anyway. Point pairs build directly.
+
+### Accepted: `perf(p2p): build each exact near-field operator once and in parallel`
+
+All three pair loops now classify their pairs by exact operator inputs, build
+one tensor per class in parallel, and scatter. Design points that matter:
+
+- the key holds raw bit patterns and is never compared with a tolerance;
+  `-0.0` stays distinct from `+0.0`, which can at worst repeat one build,
+  where merging them would assume a continuity the exact corner formulas do
+  not have;
+- classes are numbered in first-seen order, so the classification, the
+  representatives and every built value are independent of thread count and
+  of hash iteration order;
+- classification is abandoned when an initial sample shows too few duplicates
+  to repay it, which bounds both the table and the wasted lookups on
+  irregular geometry and only ever changes performance;
+- the tetrahedron pair classifies among its reciprocity owners alone, so the
+  reciprocal pair keeps sharing one owner's bits exactly as before, and the
+  coincident-geometry selector is part of the key because it selects a
+  different algorithm;
+- a failure is now reported from the lowest failing pair index in all three
+  loops, which is the pair a serial build would have reached first, so the
+  reported cause no longer depends on scheduling.
+
+Cold construction, 4096 bodies, p = 6, FP32, eight threads, cache disabled:
+
+| case | P2P before | P2P after | P2P speedup | total before | total after |
+|---|---|---|---|---|---|
+| prism lattice | 65.41 s | 0.119 s | 550x | 66.81 s | 1.515 s |
+| prism irregular | 64.70 s | 0.547 s | 118x | 66.11 s | 1.946 s |
+| tetrahedron lattice | 14.48 s | 0.150 s | 96.6x | 15.87 s | 1.537 s |
+| tetrahedron irregular | 18.35 s | 14.71 s | 1.25x | 19.74 s | 16.09 s |
+| point random | 0.062 s | 0.061 s | 1.02x | 1.448 s | 1.439 s |
+
+Irregular tetrahedra have no exact duplicates to find -- every body carries
+its own four vertices -- so classification abandons as designed and the gain
+there is the rebalanced schedule alone. That row is the honest limit of the
+mechanism, not a defect in it.
+
+### Dominant cost 2: the finite endpoint operators, once the near field was fixed
+
+With the near field fixed, the remaining serial work showed up only under
+exact finite far-field models, which no benchmark had been exercising. At
+4096 bodies, p = 6, the tetrahedron case spent 32.6 s of its 34.4 s
+construction in the two serial endpoint loops.
+
+A finite P2M or L2P operator is a pure function of the expansion basis, the
+body's shape record and its displacement from its leaf centre. Leaf P2M
+entries are indexed by leaf-local source, so two leaves whose bodies sit at
+the same offsets with the same shapes produce identical entries; a target's
+L2P rows depend on nothing but its own displacement and shape. Both are
+therefore reusable on exactly the same bitwise terms as the near field, and
+both loops are embarrassingly parallel -- the only shared state was the byte
+accounting inside the loop, which is now summed afterwards.
+
+### Accepted: `perf(plan): reuse and parallelise the finite endpoint operators`
+
+Measured against the same tree with the accepted P2P change but serial
+endpoint loops, 4096 bodies, exact far-field models, cache disabled:
+
+| geometry | p | P2M before -> after | L2P before -> after | total setup |
+|---|---|---|---|---|
+| prism | 4 | 0.0228 s -> 0.0008 s (28x) | 0.0384 s -> 0.0009 s (43x) | 0.321 s -> 0.260 s |
+| tetrahedron | 4 | 0.3002 s -> 0.0014 s (214x) | 0.6857 s -> 0.0022 s (312x) | 1.266 s -> 0.284 s |
+| prism | 6 | 0.1153 s -> 0.0021 s (55x) | 0.1742 s -> 0.0014 s (124x) | 1.811 s -> 1.523 s |
+| tetrahedron | 6 | 5.0147 s -> 0.0115 s (436x) | 11.0745 s -> 0.0228 s (486x) | 17.62 s -> 1.576 s |
+| prism | 8 | 0.3646 s -> 0.0040 s (91x) | 0.5315 s -> 0.0028 s (190x) | 12.94 s -> 11.99 s |
+
+With point far-field models at 32,768 bodies the same change gives 4-7x
+rather than hundreds, and that number is now correct rather than
+disappointing: what remains is the unavoidable copy of one materialised plan
+per leaf and per target (about 51 MB of L2P rows at p = 6), not the build.
+Sharing that storage instead of copying it would need a plan-representation
+and cache-format change and was not attempted.
+
+Parallelism alone, measured separately before reuse was added, gave 7.4-8.6x
+on both loops, so the two mechanisms compose rather than overlap.
+
+### Rejected and not pursued
+
+**Prism `long double` arithmetic (Phase-3B.5b lead 6).** Not changed, and no
+numerical audit was needed, because the premise no longer holds. 3B.5b
+measured the shared exact prism point formula 2.7x faster in `double` than in
+`long double`, agreeing to 4.5e-15 of field scale, when that formula ran once
+per near-field pair. It now runs once per *distinct* operator. On the 4096-body
+prism lattice the exact tensor evaluation is a small fraction of a near-field
+stage that is itself under a tenth of construction, so a 2.7x there is
+invisible: of the 0.0685 s canonical stage on the 4096-body prism lattice, the
+343 exact tensors are about 4 ms. The irregular prism case is the one where
+the arithmetic still dominates its own stage -- roughly 0.42 s of a 0.49 s
+canonical stage -- and even there a 2.7x would return about 0.26 s of a
+1.95 s cold build, some 13 %, bought by changing the numerical contract of the
+production exact tensor. That fails the phase's own rule that construction
+speed alone does not justify a precision reduction, so production keeps
+`long double` and the numerical audit the change would have required was not
+needed.
+
+**Sharing endpoint operator storage instead of copying it.** After reuse, what
+remains in the point far-field endpoint stages is the copy of one materialised
+P2M plan per leaf and one L2P evaluator per target. Referencing a shared
+operator instead of copying it would remove that, but `P2MPlan` and
+`StaticL2PEvaluator` own their storage and both are serialised by the
+geometry cache, so it is a plan-representation and cache-format change. Out of
+scope for this phase; recorded as the next endpoint opportunity.
+
+**Skipping the canonical near-field build for point plans (lead 7). STOPPED
+at the cache boundary, not attempted.** A CPU plan whose resolved packing is
+`PointGeometry` never executes the canonical near-field tensors: the compact
+plan is already skipped and `release_stored_p2p_tensors()` frees them once the
+CPU far-field packing is built. The build itself is still paid, and it is
+worth real time -- 1.16 s of the 3.15 s cold construction of a 32,768-point
+random plan at order 6.
+
+Every in-process consumer was classified and none of them blocks it. The
+compact plan (`src/fmm/plan_preparation.cpp`), the signed tensor dictionary
+(`src/fmm/execution_setup.cpp`, which early-returns unless the policy chose
+`SignedDictionary`), the CUDA BSR/canonical/leaf plans, and the `CanonicalAos`
+evaluation branch are all unreachable under `PointGeometry`, and an explicit
+`UniformFmmOptions::p2p_packing` request for any other packing already turns
+the predicate off before the build. Backend resolution happens before plan
+preparation, so nothing re-chooses the packing afterwards.
+
+The cache does block it, in two ways, and this is the phase's declared stop
+condition rather than a judgement call:
+
+- `write_geometry_cache` serialises the canonical blocks unconditionally
+  (`src/cache/geometry.cpp`, called from `src/fmm/plan_preparation.cpp`), so a
+  skipped build would write a structurally valid but empty near-field section.
+  The on-disk *format* would be unchanged; the *contents* would not.
+- `CacheIdentityInputs` (`src/cache/internal.hpp`) carries basis, precision,
+  order, geometries, near and far models, `use_reduced_symmetry_p2p`, periodic
+  options, the tree, the size and tetrahedron records and the fixed identity
+  map -- but neither `p2p_packing` nor the backend. One geometry therefore has
+  one cache entry shared by every packing and every backend, and a warm read
+  reconstructs the operator from the file rather than rebuilding it. An entry
+  written by a skipped build would silently give a later `CanonicalAos`,
+  `ParticleRowSoa` or CUDA plan an empty near field: wrong results, not an
+  error.
+
+One exposed statistic would also change: `p2p_interactions` is the only
+operator-derived counter that `release_stored_p2p_tensors()` does not zero, so
+it would fall to zero for point plans. It has a topology-derived equivalent
+already computed for the CUDA policy, so that part is not the obstacle.
+
+Two related wastes were found on the same path and are recorded, not fixed:
+even under `PointGeometry` the FP32 conversion still quantises the whole
+canonical operator into an FP32 copy that nothing reads, and the FP32 BSR plan
+is built on CPU plans with a fixed identity map although only CUDA consumes
+it.
+
+The opportunity is real and worth taking, but every safe framing of it -- a
+cache key that distinguishes a plan without a stored near field, or a header
+flag saying the section is unpopulated -- is a persistent-cache change. Phase
+3C is not authorised to make one, so the subtask stops here.
+
+### Cache behaviour
+
+Three states of the same plan, spherical, FP32, eight threads: cold with
+`CDFMM_DISABLE_CACHE`, cold into an empty cache directory, and a warm hit on
+what that wrote.
+
+| case | cold, no cache | cold + write | warm hit |
+|---|---|---|---|
+| point, 4096, p = 6 | 1.479 s | 1.540 s | 0.110 s |
+| prism, 4096, p = 6 | 1.515 s | 1.576 s | 0.107 s |
+| tetrahedron, 4096, p = 6 | 1.534 s | 1.610 s | 0.106 s |
+| prism, 4096, p = 8 | 11.99 s | -- | -- |
+| prism, 32768, p = 6 | 3.066 s | 3.407 s | 0.978 s |
+
+Writing the geometry plan costs 0.035 s at 4096 bodies and 0.298 s at 32,768.
+A warm hit is 14x faster than a cold build at 4096 bodies and 3.1x at 32,768.
+
+Two things the warm rows make explicit, both of which the new timers were
+needed to see:
+
+- The `universal_operator_build` floor disappears entirely on a warm hit
+  (1.33 s at p = 6, 11.79 s at p = 8, to zero). It depends only on basis,
+  order and precision, so one file serves every geometry ever built at that
+  configuration. The cold-cache-disabled numbers elsewhere in this section
+  therefore overstate what a user pays in normal operation.
+- What remains on a warm hit is mostly the derived execution packings, which
+  are deliberately not persisted: 0.469 s of the 0.978 s warm setup at 32,768
+  bodies is the near-field derived packing being rebuilt from the loaded
+  canonical operator. After this phase that is the largest single warm-cache
+  cost and the clearest remaining lead.
+
+Cache format, cache keys, and the ability to load an existing compatible file
+are unchanged; no cache code was touched.
+
+### Backend preparation
+
+Backend-specific setup at 4096 bodies, p = 6, FP32, over all four backends:
+`backend_packing` 0.006-0.043 s, `far_field_packing` at most 0.003 s and
+correctly zero for `CudaFull` which does not build it, `cuda_upload`
+0.0015-0.039 s, and `precision_conversion` 0.017-0.053 s. None of these is a
+bottleneck once geometry construction is fixed, and none was changed. The
+largest of them, the FP64-to-FP32 conversion, is also the one that still
+converts a canonical near-field operator that a `PointGeometry` plan will
+never read; see lead 7 above.
+
+### Memory
+
+Peak resident set over the whole 42-row matrix stayed below 0.6 GiB, and the
+largest rows are the CUDA ones, where the device staging dominates rather than
+the classification.
+
+The classification's own transient cost is small and bounded by construction.
+It holds one `uint32_t` class per pair, allocated up front, plus one key per
+distinct class: 2.7 MB and about 77 kB respectively for the 4096-body prism
+lattice. When classification is abandoned the table can never exceed the
+65,536-pair sample, so an irregular plan pays the per-pair class array and a
+bounded table and nothing more. No configuration trades setup time for a large
+transient allocation.
+
+### Final stage decomposition
+
+Cold, cache disabled, regular prism lattice, 4096 bodies, p = 6, FP32,
+CpuStatic, eight threads, after both accepted changes:
+
+| stage | seconds | share |
+|---|---|---|
+| `universal_operator_build` | 1.3355 | 87.95 % |
+| `p2p_tensor_plan` | 0.1209 | 7.96 % |
+| -- `p2p_interaction_setup` | 0.0036 | 0.24 % |
+| -- `p2p_canonical_operator` | 0.0685 | 4.51 % |
+| -- `p2p_derived_packing` | 0.0488 | 3.21 % |
+| `precision_conversion` | 0.0483 | 3.18 % |
+| `backend_packing` | 0.0334 | 2.20 % |
+| `topology_construction` | 0.0035 | 0.23 % |
+| `tree_construction` | 0.0025 | 0.16 % |
+| `far_field_packing` | 0.0013 | 0.09 % |
+| `m2m` / `l2l` / `m2l` / `p2m` / `l2p` / `geometry_hash` / `normalisation` | each under 0.002 | under 0.1 % each |
+| total setup | 1.5184 | 100 % |
+
+`precision_conversion` and `backend_packing` overlap by the FP32 near-field
+packing, which both timers see; they are not additive.
+
+Two things follow.
+
+First, what is left of the near-field stage is no longer the exact
+mathematics. Of the 0.0685 s canonical stage, the 343 distinct exact tensors
+account for about 4 ms on eight threads, and the classification for roughly
+another 12 ms -- the difference between this stage and the point case, which
+does no classifying, is only some 20 ns per pair. The remainder is the
+`std::sort` of the 681,472-entry interaction list and the row-offset pass,
+both of which predate this phase and are now the largest single item in the
+stage. That is an estimate by subtraction rather than a direct measurement,
+and it names the next lever: the interaction list is generated in a structured
+order from the leaf records, so it could be produced already sorted, or sorted
+in parallel, instead of being sorted serially after the fact.
+
+Second, everything above the near field is now dominated by the
+geometry-independent universal operator bank, which the cache removes
+entirely.
+
+### Threading
+
+Construction thread scaling at 4096 bodies, p = 6, FP32, on one, two, four and
+eight pinned P-cores. The near-field stage is shown, plus the endpoint stages
+for the exact far-field case.
+
+| builder | 1 | 2 | 4 | 8 | 8-thread speedup |
+|---|---|---|---|---|---|
+| tetrahedron irregular near field, no reuse possible | 115.26 s | 58.35 s | 28.73 s | 14.69 s | 7.84x |
+| prism irregular near field, 34,643 classes | 3.417 s | 1.772 s | 0.961 s | 0.549 s | 6.22x |
+| prism lattice near field, 343 classes | 0.152 s | 0.132 s | 0.124 s | 0.120 s | 1.27x |
+| tetrahedron exact far field, P2M | 0.0116 s | 0.0109 s | 0.0104 s | 0.0103 s | 1.13x |
+| tetrahedron exact far field, L2P | 0.0232 s | 0.0228 s | 0.0226 s | 0.0228 s | 1.02x |
+
+The two mechanisms divide the work exactly as intended. Where reuse cannot
+help -- irregular tetrahedra, whose four vertices differ per body -- the
+parallel build carries the case and scales almost linearly. Where reuse has
+already collapsed millions of pairs to a few hundred operators, thread count
+barely matters, because what is left is the serial classification pass and the
+serial sort of the interaction list rather than the parallel build. Neither
+case regresses in the other's regime, which is why both were kept.
+
+The schedules are `dynamic` throughout the construction builders, because an
+exact finite operator's cost varies by an order of magnitude between a
+coincident pair, an adjacent pair and a far-separated one, and because a
+classified build has few, very unequal items. The M2L class loop keeps the
+`dynamic` schedule it already had. Nothing nests: construction runs before any
+evaluation parallel region and the endpoint and near-field loops are
+sequential with respect to one another.
+
+### Final results (accepted HEAD versus the Phase-3C baseline `a2af367`)
+
+Cold construction, cache disabled, 4096 bodies, p = 6, FP32, CpuStatic, eight
+P-cores, identical builds and settings:
+
+| case | baseline setup | final setup | speedup | baseline P2P | final P2P |
+|---|---|---|---|---|---|
+| point, random | 1.448 s | 1.436 s | 1.0x | 0.062 s | 0.062 s |
+| point, lattice | 1.488 s | 1.478 s | 1.0x | 0.087 s | 0.086 s |
+| prism lattice | 66.81 s | 1.518 s | 44.0x | 65.41 s | 0.121 s |
+| prism irregular | 66.11 s | 1.950 s | 33.9x | 64.70 s | 0.552 s |
+| tetrahedron lattice | 15.87 s | 1.535 s | 10.3x | 14.48 s | 0.151 s |
+| tetrahedron irregular | 19.74 s | 16.08 s | 1.2x | 18.35 s | 14.70 s |
+
+Under exact finite far-field models, where the endpoint operators are real
+work, the order-6 tetrahedron case falls from 17.62 s to 1.576 s with P2M 436x
+and L2P 486x (measured against the same tree carrying the accepted near-field
+change but serial endpoint loops, because the baseline benchmark could not
+select exact far-field models at all).
+
+What this does and does not change. The *cold* path improved by up to 44x; the
+*warm* path is unchanged, because a geometry-cache hit returns before any of
+these builders runs and loads the operators instead. That is visible in the
+cache table above, where the warm hit costs the same 0.107 s for point, prism
+and tetrahedron geometry even though their cold builds differed by a factor of
+forty. What this phase fixed is therefore exactly what a first-ever geometry,
+a cache miss, a changed geometry or a cache-disabled run pays -- which is also
+what every benchmark, test and parameter sweep pays.
+
+### Correctness
+
+The construction changes are allowed to change construction order, scheduling
+and temporary representation, and nothing else. That is checked directly
+rather than inferred, by byte-comparing the persisted geometry plan against a
+binary built without the change: the file serialises the canonical P2P blocks,
+the P2M plans and the L2P evaluators, so identical bytes mean identical
+operators. A tolerance comparison of evaluated fields would not have been
+able to make that statement.
+
+Thirty-nine configurations are byte identical:
+
+- the near-field change, 17 configurations: all three geometries against
+  themselves on a regular lattice, the same with per-body records, and a
+  general layout; the six mixed geometry pairs; FP32 and FP64; orders 4, 6 and
+  8; free-space and fully periodic evaluation.
+- the endpoint change, 22 configurations: three geometries times exact and
+  point far-field models times three layouts, plus FP64 at order 4 for prisms
+  and tetrahedra, a periodic prism lattice, and the Cartesian basis.
+
+`tests/test_p2p_exact_reuse.cpp` pins the reuse contract itself rather than
+its consequences, because a byte comparison can only say that today's two
+implementations agree. It checks that a repeated displacement really does
+carry repeated bits; that a batched build matches a pair-by-pair reference
+bitwise for every geometry combination, offering the reciprocal partner where
+the tetrahedron pair shares one owner's bits; that a prism half-width or a
+tetrahedron vertex one ULP away never aliases; that a displacement one ULP
+away never aliases; that per-body sizes reach their own operators; that
+periodic images landing on one displacement legitimately share and a different
+image does not; that the finite self tensor survives and is not confused with
+the point identity exclusion; and that a coincident point pair keeps its
+undefined tensor and its marker.
+
+Two of those tests were wrong when first written and were corrected, not the
+code. A tetrahedron pair does not match a single-pair reference bitwise,
+because the pre-existing reciprocity rule makes `K_{t<-s}(r)` and
+`K_{s<-t}(-r)^T` share whichever owner computed them, and the identity marker
+carries the interaction's own request rather than meaning "this is a self
+pair".
+
+Cache compatibility is confirmed in both directions. The byte comparisons
+above show that a cache file written after the change is identical to one
+written before it, and a separate check has the baseline binary load a cache
+written by the changed binary and report both a universal and a geometry hit.
+No file under `src/cache/` was modified, and the cache identity inputs are
+unchanged.
+
+### Construction determinism
+
+Five loops became parallel in this phase, so a race would show as a plan that
+differs between runs or between thread counts. Six cases -- prism,
+tetrahedron and point geometry, each as a regular lattice with exact
+far-field models and as an irregular general layout -- were each built at one,
+two, four and eight threads and once more at eight, and every persisted plan
+byte-compared against the single-threaded one. All 24 comparisons are
+identical. That is the host-side counterpart of `racecheck`, and it also
+confirms that numbering classes in first-seen order really does make the
+result independent of scheduling.
+
+No CUDA source was changed in this phase, so no `compute-sanitizer` run was
+warranted; the CUDA and CUDA-plus-oneMKL trees below exercise the device
+paths, and the host plan they upload is byte-identical to the one the previous
+implementation produced.
+
+### Tests and validation
+
+Four fresh trees at the accepted HEAD, each configured with g++ 15.3.0 pinned
+explicitly for C++ and as the `nvcc` host compiler:
+
+| tree | build | CTest | Python |
+|---|---|---|---|
+| portable CPU | ok | 237/237 passed | 140 passed, 8 skipped |
+| oneMKL | ok | 237/237 passed | 142 passed, 6 skipped |
+| CUDA | ok | 237/237 passed | 145 passed, 3 skipped |
+| CUDA + oneMKL | ok | 237/237 passed | 147 passed, 1 skipped |
+
+`git diff --check` is clean. The skip count falls from eight to one as
+capability is added, which is the expected shape: the combined tree runs the
+CUDA-only and oneMKL-only cases that the portable build skips.
+
+One real regression was caught here and nowhere else. The warm-cache
+instrumentation initially recorded its work under `p2p_tensor_plan` as well,
+which broke the contract in `tests/test_cache.cpp` that every construction
+timer reports zero calls on a geometry-cache hit -- the way a warm plan is
+distinguished from a rebuilt one. Byte-comparing plans could not have found
+it, because timings are not serialised. Only the new `p2p_derived_packing` and
+`precision_conversion` timers record the warm path now.
+
+### Repeated-evaluation regression gate
+
+Eleven cases at 32,768 bodies, order 6, across CpuStatic, oneMKL, CudaFull and
+CudaPartial, 1000 timed evaluations per binary per case. Both binaries share
+one geometry cache and each case is warmed first, so both measured runs see
+the same cache state: a cold build and a warm load can resolve their execution
+packing differently, and comparing one against the other would read as a
+regression that is not there.
+
+| case | baseline | current | ratio |
+|---|---|---|---|
+| cpu-static point M fp32 | 12.249 ms | 13.710 ms | 1.119 (see below) |
+| cpu-static point M fp64 | 15.387 ms | 15.194 ms | 0.988 |
+| cpu-static prism lattice fp32 | 9.600 ms | 9.341 ms | 0.973 |
+| cpu-static tetra lattice fp32 | 9.831 ms | 9.525 ms | 0.969 |
+| onemkl point M fp32 | 13.921 ms | 13.828 ms | 0.993 |
+| cuda-full point M fp32 | 0.37807 ms | 0.37871 ms | 1.002 |
+| cuda-full point M fp64 | 2.3223 ms | 2.3193 ms | 0.999 |
+| cuda-full point L fp32, P2P heavy | 0.24404 ms | 0.24557 ms | 1.006 |
+| cuda-full prism lattice fp32 | 0.36122 ms | 0.36226 ms | 1.003 |
+| cuda-full tetra lattice fp32 | 0.36016 ms | 0.36037 ms | 1.001 |
+| cuda-partial point M fp32 | 0.99161 ms | 0.99097 ms | 0.999 |
+
+The one row that moved was the first measured, immediately after another stage
+finished, and it does not reproduce. Re-measured on a settled machine with the
+binary order alternated, four rounds give 1.0137, 1.0202, 1.0299 and 0.9635 --
+a mean of 1.007, with the current binary faster in one round -- and both
+binaries drop from 12-14 ms to 10.6-11.3 ms, which is what shows the original
+row was taken while the machine was still busy. The run-to-run spread of about
+3.5 % is the noise floor of that case.
+
+Nothing here is a regression, which is what the mechanism predicts: the plans
+are byte-identical and no execution packing, kernel or policy was touched.
+
+### Measurement provenance
+
+Two contamination sources were identified and handled rather than absorbed.
+A benchmark process survived a cancelled sweep and competed for the cores,
+inflating an early exact far-field measurement roughly twofold; those rows were
+discarded and re-measured. Separately, an unrelated task ran on the
+workstation from about 09:23; every construction timing in this section was
+recorded before that, between 07:30 and 09:10, and the only stage that
+overlapped it was the four-tree validation, which is a correctness check that
+contention can slow but not invalidate.
+
+### Remaining bottlenecks
+
+In rough order of what a user would notice.
+
+1. **The universal operator bank.** `universal_operator_build` is 1.33 s at
+   p = 6 and 11.79 s at p = 8, which is 88 % and 99 % of a cold
+   cache-disabled build of every geometry measured here. It is the 316 M2L
+   class matrices, it depends only on basis, order and precision, it is
+   already OpenMP-parallel over the classes, and the universal cache removes
+   it entirely after the first build at a given configuration. Shrinking it
+   would mean exploiting symmetry between the 316 classes, which is M2L
+   operator mathematics and outside this phase.
+
+2. **Irregular tetrahedra.** 14.7 s at 4096 bodies and p = 6, and 134 s at
+   32,768 bodies and p = 8, is exact Galerkin face-pair integration with no
+   duplicate to find: every body carries its own four vertices. The build is
+   parallel and scales 7.8x on eight cores, so the only levers left are in
+   the tetrahedron pair mathematics itself.
+
+3. **The near-field interaction sort.** With the exact tensors reduced to a
+   few hundred builds, the largest single item inside the canonical stage on
+   a lattice is the serial `std::sort` of the interaction list and the
+   row-offset pass -- of a 0.0685 s stage, roughly 40 ms by subtraction. The
+   list is generated in a structured order from the leaf records, so it could
+   be produced already sorted or sorted in parallel. Neither predates nor was
+   introduced by this phase.
+
+4. **Derived packings on a warm cache.** 0.469 s of the 0.978 s warm setup at
+   32,768 bodies rebuilds the near-field derived packing from the loaded
+   canonical operator. The derived forms are deliberately not persisted, so
+   this is the largest warm-cache cost and the clearest next lead.
+
+5. **Work a point plan never reads.** The canonical near-field operator, and
+   its FP32 conversion, are built for point plans whose executor is
+   `PointGeometry` and never reads them: 1.16 s of a 3.15 s cold build at
+   32,768 points. No in-process consumer blocks skipping it; the geometry
+   cache does, because it serialises the operator under a key that
+   distinguishes neither packing nor backend. A cache change, and therefore
+   explicit approval, is required.
+
+6. **Endpoint plan copying.** After reuse, the point far-field P2M and L2P
+   stages are dominated by copying one materialised plan per leaf and per
+   target -- about 51 MB of L2P rows at 32,768 bodies and p = 6 -- rather
+   than by building anything. Sharing that storage is a plan-representation
+   and cache-format change.
+
+7. **A cheaper classification key.** The key carries the shape record even
+   when the whole build shares one, which is the common case. Dropping it
+   there would shorten the key from nine words to three for a common-size
+   prism plan. Worth a small part of the canonical stage and not taken,
+   because the stage is no longer dominated by the classification.

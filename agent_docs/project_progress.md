@@ -1,5 +1,60 @@
 # Project progress
 
+## Static-plan construction and plan preparation (Phase 3C): COMPLETE — 2026-09-18
+
+Starting HEAD `a2af367`. Cold plan construction was dominated by building the
+same operator over and over. An exact near-field pair tensor is a pure
+function of the displacement and the participating body records, with any
+periodic image shift folded into the displacement; a finite P2M or L2P
+operator is a pure function of the expansion basis, the body's shape record
+and its offset from its leaf centre. Normalisation puts body centres on a
+canonical grid, so equivalent interactions agree *bitwise* rather than
+approximately: a 4096-body regular prism lattice reaches its 681,472
+near-field pairs from 343 distinct displacements, and 343 survive even when
+every body carries its own size record. All three canonical pair loops and
+both finite endpoint loops now classify by those exact bit patterns, build
+each distinct operator once, and do so in parallel; the generic pair loop and
+both endpoint loops had been serial with no data dependency forcing it.
+
+Cold construction, 4096 bodies, order 6, FP32, eight P-cores, cache disabled:
+regular prism lattice 66.81 s -> 1.52 s (44x), irregular prisms 66.11 s ->
+1.95 s (34x), regular tetrahedra 15.87 s -> 1.54 s (10x). Irregular
+tetrahedra have no exact duplicates to find and gain only the rebalanced
+schedule (19.7 s -> 16.1 s), which is the honest limit of the mechanism.
+Under exact finite far-field models the endpoint operators fall by two orders
+of magnitude: the order-6 tetrahedron case goes from 17.6 s to 1.58 s, with
+P2M 436x and L2P 486x. Where reuse cannot help, the parallel build scales
+7.8x on eight cores.
+
+Correctness is pinned by byte-comparing the persisted geometry plan, which
+serialises the canonical P2P blocks, the P2M plans and the L2P evaluators:
+39 configurations are byte identical across all nine geometry pairs, both
+layouts, irregular bodies, exact and point far-field models, FP32 and FP64,
+orders 4, 6 and 8, the Cartesian basis, and periodic evaluation. A new
+`tests/test_p2p_exact_reuse.cpp` pins the reuse contract itself, including
+inputs one ULP apart that must not alias.
+
+Two things were deliberately not done and are recorded with their evidence.
+The production prism tensor keeps its `long double` arithmetic: after reuse
+the exact evaluation is a small fraction of a near-field stage that is itself
+under a tenth of construction, so the 2.7x Phase 3B.5b measured for `double`
+no longer justifies changing a numerical contract. Skipping the canonical
+near-field build for point plans is real and unblocked in process, but the
+geometry cache serialises the operator unconditionally under a key that
+distinguishes neither packing nor backend, so a skipped build would silently
+hand a later `CanonicalAos` or CUDA plan an empty near field; that is a
+persistent-cache change this phase is not authorised to make.
+
+Left in tree for Article1: `benchmarks/run_construction_matrix.py`, a
+resumable cold-construction matrix recording per-phase timings, plan bytes,
+peak resident set and an evaluation median, and the benchmark's new
+`--far-field-model exact`, without which the exact finite endpoint operators
+were never exercised at all. `StaticPlanStatistics` gained four timers that
+decompose the near-field stage and the precision conversion. No cache format,
+cache key, C ABI, Python API or Fortran interface changed. Full record in
+`agent_docs/performance_optimization.md`. **Phase 3D, the final cross-backend
+review, is NEXT.**
+
 ## Exact finite-geometry procedural vs precomputed operators (Phase 3B.5b): COMPLETE — 2026-09-17
 
 Starting HEAD `551c790`. The finite counterpart of Phase 3B.5, and the answer

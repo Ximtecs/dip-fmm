@@ -240,6 +240,24 @@ device upload out of repeated evaluation wherever practical. Evaluation paths
 reuse plans and persistent resources. Mutable coefficients, result buffers,
 and scratch are state, not plans.
 
+Construction builds each distinct operator once. An exact near-field pair
+tensor is a pure function of the displacement and the participating body
+records, with any periodic image shift folded into the displacement, and a
+finite P2M or L2P operator is a pure function of the expansion basis, the
+body's shape record and its displacement from its leaf centre. Normalisation
+puts body centres on a canonical grid, so equivalent interactions agree
+*bitwise* rather than approximately; construction therefore classifies by
+those exact bit patterns, builds one operator per class in parallel, and
+scatters it. The key is raw bit patterns and is never compared with a
+tolerance, because the exact corner formulas have no continuity that would
+justify one; classes are numbered in first-seen order, so a plan does not
+depend on thread count or on hash iteration order. Classification is abandoned
+when an initial sample shows too few duplicates to repay it, which is purely a
+performance decision. A regular lattice reaches only a few hundred distinct
+near-field operators however many bodies it holds, which is what makes cold
+construction of exact finite geometry affordable (see Phase 3C in
+`agent_docs/performance_optimization.md`).
+
 At the FMM level, execution should eventually be readable as:
 
 ```text
