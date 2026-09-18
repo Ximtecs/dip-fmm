@@ -443,9 +443,10 @@ void UniformFmm::build_static_plan() {
       // releases it again when positions replace the stored tensors.
       p2p_execution_packing_ = resolve_cpu_p2p_packing();
     }
+    // Only the derived-packing timer runs here.  The construction timers,
+    // `p2p_tensor_plan` among them, stay at zero calls on a cache hit: that is
+    // how a warm plan is distinguished from a rebuilt one.
     static_plan_statistics_.p2p_derived_packing.add(
-        elapsed_seconds(warm_stage_start));
-    static_plan_statistics_.p2p_tensor_plan.add(
         elapsed_seconds(warm_stage_start));
     if (precision_ == StaticPrecision::Float32) {
       warm_stage_start = Clock::now();
