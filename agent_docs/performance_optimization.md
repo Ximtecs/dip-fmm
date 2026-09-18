@@ -3514,6 +3514,12 @@ holds.
 Cold construction, eight P-cores, baseline binary against final binary in one
 session. Every row is bit-identical between the two.
 
+Every figure below was re-measured on a quiet machine after the validation
+trees finished, and agrees with the first sweep to within a percent -- except
+the first row, whose *baseline* varies between 3.07 s and 3.72 s from run to
+run while the final build stays at 0.0457-0.0458 s. Its speedup is therefore
+67-82x depending on the baseline sample; the conservative end is quoted.
+
 | case | baseline | final | speedup |
 |---|---|---|---|
 | prism->prism lattice 512^2 FP32 | 3.069 s | 0.0458 s | 67.0x |
@@ -3658,6 +3664,48 @@ Writing those tests found that an unmapped point target may not sit on a
 source — a point source has no self field, so that is a singular pair rather
 than an omitted one, and the constructor correctly rejects it. The test says
 so explicitly rather than encoding the mistake.
+
+### Tests, sanitizers and validation
+
+Four fresh pinned trees at the accepted HEAD, all with g++ 15.3.0 as the C++
+and `nvcc` host compiler:
+
+| tree | result |
+|---|---|
+| portable CPU (`dev`) | 242/242 pass, 4 skipped for the absent optional backends |
+| CUDA (`cuda`) | 242/242 pass, 1 skipped (the oneMKL comparison) |
+| oneMKL without CUDA | 242/242 pass, 3 skipped (the CUDA-only tests) |
+| CUDA plus oneMKL (`notebooks`) | 242/242 pass, nothing skipped |
+
+Python suite against the just-built portable module (`PYTHONPATH=build-dev`,
+no install): 140 passed, 8 skipped. `git diff --check` is clean across the
+whole series.
+
+`compute-sanitizer` over the CUDA dense plan, because its setup path changed
+(the upload's stream synchronisation moved inside each precision branch so it
+could be timed; it still executes exactly once): `memcheck` clean on eight
+configurations covering both precisions, the classified and unclassified
+builds, and an asymmetric plan with no identity map; `racecheck` clean on
+setup plus evaluation in both precisions; `initcheck` and `synccheck` clean.
+
+Compatibility. `include/cdfmm/`, `python/` and `fortran/` are untouched by the
+entire series, and the fourteen `extern "C"` ABI symbols are identical between
+the baseline and final shared libraries. The library gains two exported
+symbols, `cdfmm::detail::prepare_tetrahedron_point_field` and
+`cdfmm::detail::tetrahedron_point_tensor_prepared`; both are internal C++
+`detail` functions that appear only because the library has no visibility map,
+and `src/AGENTS.md` places files under `src/` outside any downstream
+compatibility obligation. The C ABI itself is unchanged.
+
+Cache format and keys. Nothing under `src/cache/` was touched, but
+`tetrahedron.cpp` is shared with the FMM near field, so the persisted plans
+were compared rather than assumed: the geometry and universal cache files are
+**byte identical** between the baseline and final trees for all nine FMM
+geometry configurations, including irregular tetrahedra and both far-field
+models, and for the cache-initialisation benchmark on the portable and oneMKL
+backends. A geometry plan serialises the canonical P2P blocks, the P2M plans
+and the L2P evaluators, so identical files mean the shared change altered no
+FMM operator and no cache content or key.
 
 ### Remaining bottlenecks
 
