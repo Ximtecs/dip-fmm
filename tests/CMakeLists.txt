@@ -11,6 +11,7 @@ add_executable(cdfmm_tests
   test_multi_index.cpp
   test_p2p.cpp
   test_p2p_exact_reuse.cpp
+  test_dense_direct_exact_reuse.cpp
   test_p2p_geometry_matrix.cpp
   test_taylor_jet.cpp
   test_laplace_derivatives.cpp
