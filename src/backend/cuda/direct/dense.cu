@@ -4,11 +4,13 @@
 
 #include "../common/error.hpp"
 #include "../common/runtime.hpp"
+#include "dense_construction_statistics.hpp"
 
 #include <cuda_runtime.h>
 #include <cublas_v2.h>
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -18,6 +20,12 @@ namespace cdfmm {
 namespace {
 
 using cuda_detail::check_cuda;
+
+using Clock = std::chrono::steady_clock;
+
+double elapsed_seconds(const Clock::time_point start) {
+  return std::chrono::duration<double>(Clock::now() - start).count();
+}
 
 void check_cublas(const cublasStatus_t status, const char *operation) {
   if (status != CUBLAS_STATUS_SUCCESS) {
@@ -67,6 +75,16 @@ struct CudaDenseDirectPlan::Implementation {
   }
 };
 
+namespace detail::cuda_dense_direct {
+
+CudaConstructionStatistics &cuda_construction_statistics() noexcept {
+  // One record per thread, overwritten by that thread's next setup.
+  static thread_local CudaConstructionStatistics statistics{};
+  return statistics;
+}
+
+} // namespace detail::cuda_dense_direct
+
 bool cuda_dense_direct_available() noexcept {
   return cuda_runtime_available();
 }
@@ -85,6 +103,9 @@ CudaDenseDirectPlan::CudaDenseDirectPlan(
     const SourceModel source_model,
     const TargetModel target_model)
     : implementation_(new Implementation{}) {
+  auto &statistics = detail::cuda_dense_direct::cuda_construction_statistics();
+  statistics = {};
+  const auto total_start = Clock::now();
   try {
     if (!cuda_runtime_available()) {
       throw std::runtime_error(
@@ -119,21 +140,26 @@ CudaDenseDirectPlan::CudaDenseDirectPlan(
 
     // Build the exact six-component geometry tensor using the common CPU
     // implementation, then retain only its device copy after construction.
+    const auto host_start = Clock::now();
     const DenseDirectPlan host_plan(
         source_positions, target_positions, source_geometry, target_geometry,
         source_sizes, target_sizes, target_source_indices, static_precision,
         source_tetrahedra, target_tetrahedra, source_model, target_model);
+    statistics.host_construction.add(elapsed_seconds(host_start));
 
+    const auto context_start = Clock::now();
     check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
                "create CUDA dense direct stream");
     check_cublas(cublasCreate(&plan.cublas_handle),
                  "create CUDA dense direct cuBLAS handle");
     check_cublas(cublasSetStream(plan.cublas_handle, plan.stream),
                  "set CUDA dense direct cuBLAS stream");
+    statistics.context_creation.add(elapsed_seconds(context_start));
 
     const std::size_t tensor_bytes = tensor_memory_bytes();
     const std::size_t moment_bytes = 3 * plan.source_count * scalar_bytes;
     const std::size_t field_bytes = 3 * plan.target_count * scalar_bytes;
+    const auto allocation_start = Clock::now();
     if (static_precision == StaticPrecision::Float32) {
       check_cuda(cudaMalloc(&plan.device_matrices_f32,
                             std::max(tensor_bytes, sizeof(float))),
@@ -150,6 +176,8 @@ CudaDenseDirectPlan::CudaDenseDirectPlan(
       check_cuda(cudaMallocHost(&plan.pinned_fields_f32,
                                 std::max(field_bytes, sizeof(float))),
                  "allocate pinned FP32 CUDA dense direct fields");
+      statistics.allocation.add(elapsed_seconds(allocation_start));
+      const auto upload_start = Clock::now();
       const std::size_t matrix_bytes = plan.matrix_value_count * sizeof(float);
       for (std::size_t component = 0; component < 6; ++component) {
         check_cuda(cudaMemcpyAsync(
@@ -159,6 +187,9 @@ CudaDenseDirectPlan::CudaDenseDirectPlan(
                        matrix_bytes, cudaMemcpyHostToDevice, plan.stream),
                    "upload FP32 CUDA dense direct tensor component");
       }
+      check_cuda(cudaStreamSynchronize(plan.stream),
+                 "complete CUDA dense direct tensor upload");
+      statistics.upload.add(elapsed_seconds(upload_start));
     } else {
       check_cuda(cudaMalloc(&plan.device_matrices,
                             std::max(tensor_bytes, sizeof(double))),
@@ -175,6 +206,8 @@ CudaDenseDirectPlan::CudaDenseDirectPlan(
       check_cuda(cudaMallocHost(&plan.pinned_fields,
                                 std::max(field_bytes, sizeof(double))),
                  "allocate pinned FP64 CUDA dense direct fields");
+      statistics.allocation.add(elapsed_seconds(allocation_start));
+      const auto upload_start = Clock::now();
       const std::size_t matrix_bytes = plan.matrix_value_count * sizeof(double);
       for (std::size_t component = 0; component < 6; ++component) {
         check_cuda(cudaMemcpyAsync(
@@ -183,9 +216,14 @@ CudaDenseDirectPlan::CudaDenseDirectPlan(
                        cudaMemcpyHostToDevice, plan.stream),
                    "upload FP64 CUDA dense direct tensor component");
       }
+      check_cuda(cudaStreamSynchronize(plan.stream),
+                 "complete CUDA dense direct tensor upload");
+      statistics.upload.add(elapsed_seconds(upload_start));
     }
-    check_cuda(cudaStreamSynchronize(plan.stream),
-               "complete CUDA dense direct tensor upload");
+    statistics.upload_bytes = tensor_bytes;
+    statistics.persistent_device_bytes = persistent_device_bytes();
+    statistics.pinned_host_bytes = moment_bytes + field_bytes;
+    statistics.total.add(elapsed_seconds(total_start));
   } catch (...) {
     delete implementation_;
     implementation_ = nullptr;

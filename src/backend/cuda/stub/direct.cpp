@@ -3,9 +3,21 @@
 #include "cdfmm/backend/cuda/direct.hpp"
 #include "cdfmm/backend/cuda/dense_direct.hpp"
 
+#include "backend/cuda/direct/dense_construction_statistics.hpp"
+
 #include <stdexcept>
 
 namespace cdfmm {
+
+namespace detail::cuda_dense_direct {
+
+CudaConstructionStatistics &cuda_construction_statistics() noexcept {
+  // No CUDA setup ever runs in this build, so the record stays at zero.
+  static thread_local CudaConstructionStatistics statistics{};
+  return statistics;
+}
+
+} // namespace detail::cuda_dense_direct
 
 bool cuda_direct_available() noexcept { return false; }
 

@@ -6,7 +6,9 @@
 #include "backend/cpu/direct/dense.hpp"
 #include "backend/direct/dense_workspace.hpp"
 #include "backend/mkl/direct/dense.hpp"
+#include "plan/direct/construction_statistics.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <exception>
 #include <limits>
@@ -19,6 +21,13 @@
 namespace cdfmm {
 namespace {
 
+using Clock = std::chrono::steady_clock;
+
+double elapsed_seconds(const Clock::time_point start)
+{
+    return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
 void validate_size(const CuboidSize& h, const char* name)
 {
     if (!(std::isfinite(h.hx) && std::isfinite(h.hy) &&
@@ -29,6 +38,17 @@ void validate_size(const CuboidSize& h, const char* name)
 }
 
 } // namespace
+
+namespace detail::dense_direct {
+
+ConstructionStatistics& construction_statistics() noexcept
+{
+    // One record per thread, overwritten by that thread's next construction.
+    static thread_local ConstructionStatistics statistics{};
+    return statistics;
+}
+
+} // namespace detail::dense_direct
 
 struct DenseDirectPlan::Impl {
     detail::dense_direct::DenseDirectWorkspace workspace;
@@ -87,6 +107,12 @@ DenseDirectPlan::DenseDirectPlan(
     : ns_(source_positions.size()), nt_(target_positions.size()),
       static_precision_(static_precision), impl_(std::make_unique<Impl>())
 {
+    detail::dense_direct::ConstructionStatistics& statistics =
+        detail::dense_direct::construction_statistics();
+    statistics = {};
+    const auto total_start = Clock::now();
+    const auto validation_start = total_start;
+
     const SourceGeometry effective_source_geometry =
         source_model == SourceModel::ExactGeometry
             ? source_geometry : SourceGeometry::PointDipole;
@@ -197,15 +223,22 @@ DenseDirectPlan::DenseDirectPlan(
     if (ns_ != 0 && nt_ > std::numeric_limits<std::size_t>::max() / ns_) {
         throw std::overflow_error("dense direct tensor size overflow");
     }
+    statistics.validation.add(elapsed_seconds(validation_start));
+
+    const auto allocation_start = Clock::now();
     std::visit([&](auto& matrices) {
         for (auto& matrix : matrices) {
             matrix.resize(ns_ * nt_);
         }
     }, matrices_);
+    statistics.allocation.add(elapsed_seconds(allocation_start));
+    statistics.pair_count = ns_ * nt_;
+    statistics.matrix_bytes = tensor_memory_bytes();
 
     // Every source-target tensor owns one fixed matrix entry. Constructing
     // those entries in parallel preserves the target-major storage order and
     // introduces no floating-point reductions.
+    const auto build_start = Clock::now();
     std::exception_ptr construction_error;
     std::visit([&](auto& matrices) {
         using Scalar = typename std::decay_t<
@@ -286,6 +319,11 @@ DenseDirectPlan::DenseDirectPlan(
     if (construction_error) {
         std::rethrow_exception(construction_error);
     }
+    // The build and the scatter are one fused loop here, so the whole of it
+    // is attributed to the tensor build and `materialisation` stays zero.
+    statistics.tensor_build.add(elapsed_seconds(build_start));
+    statistics.built_tensor_count = statistics.pair_count;
+    statistics.total.add(elapsed_seconds(total_start));
 }
 
 std::vector<Vec3> DenseDirectPlan::evaluate(
