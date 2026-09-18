@@ -904,6 +904,16 @@ void expand_axis(const int power, const double offset,
     if (power < 0) {
         throw std::invalid_argument("monomial exponents must be non-negative");
     }
+    // The loops below enumerate every 4-tuple of non-negative integers summing
+    // to at most `power`, so the term count is exactly C(power + 4, 4).
+    // Reserving it removes the repeated reallocation of a buffer whose size is
+    // known before the first term is written.
+    const std::size_t term_count =
+        static_cast<std::size_t>(power + 1) *
+        static_cast<std::size_t>(power + 2) *
+        static_cast<std::size_t>(power + 3) *
+        static_cast<std::size_t>(power + 4) / 24;
+    terms.reserve(terms.size() + term_count);
     for (int n0 = 0; n0 <= power; ++n0) {
         for (int n1 = 0; n1 <= power - n0; ++n1) {
             for (int n2 = 0; n2 <= power - n0 - n1; ++n2) {

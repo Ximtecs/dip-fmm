@@ -3,10 +3,16 @@
 #include "cdfmm/uniform_fmm.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <bit>
 #include <chrono>
+#include <cstdint>
+#include <exception>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <tuple>
+#include <unordered_map>
 
 #include "cdfmm/operators/operators.hpp"
 #include "cdfmm/operators/operators.hpp"
@@ -22,6 +28,137 @@ using Clock = std::chrono::steady_clock;
 
 double elapsed_seconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+/// @brief The failure a parallel endpoint-operator loop reports.
+///
+/// The lowest failing index wins, because that is the leaf or target a serial
+/// build would have reached first, so the reported cause does not depend on
+/// how the iterations were scheduled.  Work above a known failure is skipped:
+/// it can no longer win that comparison.
+class FirstConstructionFailure {
+public:
+  [[nodiscard]] bool superseded(const std::size_t index) const noexcept {
+    return index > index_.load(std::memory_order_relaxed);
+  }
+
+  /// @brief Record the exception currently being handled for @p index.
+  void record(const std::size_t index) {
+    std::size_t previous = index_.load(std::memory_order_relaxed);
+    while (index < previous &&
+           !index_.compare_exchange_weak(previous, index,
+                                         std::memory_order_relaxed)) {
+    }
+#pragma omp critical(cdfmm_endpoint_operator_exception)
+    {
+      if (index_.load(std::memory_order_relaxed) == index) {
+        exception_ = std::current_exception();
+      }
+    }
+  }
+
+  void rethrow_any() const {
+    if (exception_) {
+      std::rethrow_exception(exception_);
+    }
+  }
+
+private:
+  std::atomic<std::size_t> index_{std::numeric_limits<std::size_t>::max()};
+  std::exception_ptr exception_{};
+};
+
+// Exact endpoint operator reuse.
+//
+// A finite P2M or L2P operator is a pure function of the expansion basis, the
+// body's shape record and its displacement from its leaf centre.  The basis is
+// fixed for a whole plan, so the key holds the geometry alone.  Leaf P2M
+// entries are indexed by leaf-local source, so two leaves whose bodies sit at
+// the same offsets with the same shapes produce identical entries, and a
+// target's L2P rows depend on nothing but its own displacement and shape.
+//
+// Repeated geometry makes this decisive in the same way it does for the near
+// field: every leaf of a regular lattice has the same internal layout.  The
+// key holds raw bit patterns and is never compared with a tolerance.
+using EndpointOperatorKey = std::vector<std::uint64_t>;
+
+struct EndpointOperatorKeyHash {
+  [[nodiscard]] std::size_t operator()(
+      const EndpointOperatorKey& key) const noexcept {
+    std::uint64_t hash = 0x9e3779b97f4a7c15ULL ^ key.size();
+    for (const std::uint64_t word : key) {
+      hash ^= word;
+      hash *= 0x00000100000001b3ULL;
+      hash ^= hash >> 29;
+    }
+    return static_cast<std::size_t>(hash);
+  }
+};
+
+void push_bits(EndpointOperatorKey& key, const double value) {
+  key.push_back(std::bit_cast<std::uint64_t>(value));
+}
+
+void push_bits(EndpointOperatorKey& key, const Vec3& value) {
+  push_bits(key, value.x);
+  push_bits(key, value.y);
+  push_bits(key, value.z);
+}
+
+void push_bits(EndpointOperatorKey& key, const CuboidSize& size) {
+  push_bits(key, size.hx);
+  push_bits(key, size.hy);
+  push_bits(key, size.hz);
+}
+
+void push_bits(EndpointOperatorKey& key, const Tetrahedron& tetrahedron) {
+  for (const Vec3& vertex : tetrahedron.vertices) {
+    push_bits(key, vertex);
+  }
+}
+
+/// @brief Items grouped by bitwise-identical endpoint operator inputs.
+struct EndpointOperatorClasses {
+  std::vector<std::uint32_t> class_of_item;
+  std::vector<std::uint32_t> representative;
+  bool classified{false};
+};
+
+/// @brief Group items whose endpoint operator inputs agree bit for bit.
+///
+/// Classes are numbered in first-seen order, so the classification and every
+/// built value are independent of thread count and of hash iteration order.
+/// Classification stops when an initial sample shows too few duplicates to
+/// repay it, which only ever changes performance: the caller builds the same
+/// operators either way.
+template <typename KeyOfItem>
+[[nodiscard]] EndpointOperatorClasses classify_endpoint_operators(
+    const std::size_t item_count, const KeyOfItem& key_of_item) {
+  constexpr std::size_t sample_items = 4096;
+  constexpr std::size_t sample_reuse_factor = 2;
+
+  EndpointOperatorClasses result;
+  result.class_of_item.resize(item_count);
+  std::unordered_map<EndpointOperatorKey, std::uint32_t,
+                     EndpointOperatorKeyHash>
+      classes;
+  for (std::size_t item = 0; item < item_count; ++item) {
+    const auto [entry, inserted] = classes.try_emplace(
+        key_of_item(item),
+        static_cast<std::uint32_t>(result.representative.size()));
+    if (inserted) {
+      result.representative.push_back(static_cast<std::uint32_t>(item));
+    }
+    result.class_of_item[item] = entry->second;
+
+    const std::size_t sampled = item + 1;
+    if (sampled == sample_items && sampled < item_count &&
+        result.representative.size() * sample_reuse_factor > sampled) {
+      return {};
+    }
+  }
+  result.classified = true;
+  return result;
 }
 
 template <typename Operator>
@@ -331,14 +468,10 @@ void UniformFmm::build_static_plan() {
   const std::span<const Vec3> sorted_targets = topology_->sorted_target_positions;
   const std::span<const CuboidSize> source_sizes = sorted_source_sizes_;
   const std::span<const CuboidSize> target_sizes = sorted_target_sizes_;
-  p2m_plans_.reserve(topology_->source_leaves.size());
-  for (const StaticLeafRange& leaf_range : topology_->source_leaves) {
-    const int leaf_index = leaf_range.node;
-    const auto &leaf = topology_->nodes[static_cast<std::size_t>(leaf_index)];
-    P2MPlan plan;
-    plan.leaf = leaf_index;
-    plan.begin = leaf_range.begin;
-    plan.count = leaf_range.count;
+  // One leaf's P2M operator, resolved from the source geometry and the
+  // far-field model.
+  const auto build_leaf_operator =
+      [&](const StaticLeafRange& leaf_range, const Vec3& centre) {
     const auto leaf_positions =
         sorted_positions.subspan(leaf_range.begin, leaf_range.count);
     if (source_geometry_ == SourceGeometry::RectangularPrism &&
@@ -347,37 +480,127 @@ void UniformFmm::build_static_plan() {
           source_sizes.size() == 1
               ? source_sizes
               : source_sizes.subspan(leaf_range.begin, leaf_range.count);
-      plan.operator_map = expansion_basis_ == ExpansionBasis::Spherical
+      return expansion_basis_ == ExpansionBasis::Spherical
           ? build_static_cuboid_p2m_operator(
-                spherical_basis_, leaf.centre,
-                leaf_positions, leaf_sizes)
+                spherical_basis_, centre, leaf_positions, leaf_sizes)
           : build_static_cuboid_p2m_operator(
-                basis_, leaf.centre, leaf_positions, leaf_sizes);
-    } else if (source_geometry_ == SourceGeometry::Tetrahedron &&
-               far_field_source_model_ == SourceModel::ExactGeometry) {
+                basis_, centre, leaf_positions, leaf_sizes);
+    }
+    if (source_geometry_ == SourceGeometry::Tetrahedron &&
+        far_field_source_model_ == SourceModel::ExactGeometry) {
       const std::span<const Tetrahedron> leaf_tetrahedra =
           sorted_source_tetrahedra_.size() == 1
               ? std::span<const Tetrahedron>(sorted_source_tetrahedra_)
               : std::span<const Tetrahedron>(sorted_source_tetrahedra_)
                     .subspan(leaf_range.begin, leaf_range.count);
-      plan.operator_map = expansion_basis_ == ExpansionBasis::Spherical
+      return expansion_basis_ == ExpansionBasis::Spherical
           ? build_static_tetrahedron_p2m_operator(
-                spherical_basis_, leaf.centre, leaf_positions,
-                leaf_tetrahedra)
+                spherical_basis_, centre, leaf_positions, leaf_tetrahedra)
           : build_static_tetrahedron_p2m_operator(
-                basis_, leaf.centre, leaf_positions, leaf_tetrahedra);
-    } else if (expansion_basis_ == ExpansionBasis::Spherical) {
-      plan.operator_map = build_static_p2m_operator(
-          spherical_basis_, leaf.centre, leaf_positions);
-    } else {
-      plan.operator_map = build_static_p2m_operator(
-          basis_, leaf.centre, leaf_positions);
+                basis_, centre, leaf_positions, leaf_tetrahedra);
     }
+    return expansion_basis_ == ExpansionBasis::Spherical
+        ? build_static_p2m_operator(spherical_basis_, centre, leaf_positions)
+        : build_static_p2m_operator(basis_, centre, leaf_positions);
+  };
+
+  // Everything the leaf operator depends on, in bits: each body's offset from
+  // the leaf centre and its shape record, in leaf-local order.
+  const auto leaf_operator_key =
+      [&](const std::size_t slot) -> EndpointOperatorKey {
+    const StaticLeafRange& leaf_range = topology_->source_leaves[slot];
+    const auto& leaf =
+        topology_->nodes[static_cast<std::size_t>(leaf_range.node)];
+    const bool exact_prism =
+        source_geometry_ == SourceGeometry::RectangularPrism &&
+        far_field_source_model_ == SourceModel::ExactGeometry;
+    const bool exact_tetrahedron =
+        source_geometry_ == SourceGeometry::Tetrahedron &&
+        far_field_source_model_ == SourceModel::ExactGeometry;
+    EndpointOperatorKey key;
+    key.reserve(leaf_range.count * (exact_tetrahedron ? 15 : 6));
+    for (std::size_t body = 0; body < leaf_range.count; ++body) {
+      const std::size_t source = leaf_range.begin + body;
+      push_bits(key, sorted_positions[source] - leaf.centre);
+      if (exact_prism) {
+        push_bits(key, source_sizes[source_sizes.size() == 1 ? 0 : source]);
+      } else if (exact_tetrahedron) {
+        push_bits(key, sorted_source_tetrahedra_[
+            sorted_source_tetrahedra_.size() == 1 ? 0 : source]);
+      }
+    }
+    return key;
+  };
+
+  // Leaf P2M operators are independent of one another, so each distinct one is
+  // built once and in parallel.  The byte accounting is summed afterwards
+  // instead of from inside the loop, which is what previously tied the loop to
+  // one thread.  Exact finite sources make each leaf expensive and unequal, so
+  // the schedule is dynamic.
+  p2m_plans_.assign(topology_->source_leaves.size(), P2MPlan{});
+  {
+    const std::size_t leaf_total = topology_->source_leaves.size();
+    const EndpointOperatorClasses classes =
+        classify_endpoint_operators(leaf_total, leaf_operator_key);
+    const std::size_t build_total =
+        classes.classified ? classes.representative.size() : leaf_total;
+
+    FirstConstructionFailure failure;
+    for (std::size_t slot = 0; slot < leaf_total; ++slot) {
+      const StaticLeafRange& leaf_range = topology_->source_leaves[slot];
+      P2MPlan& plan = p2m_plans_[slot];
+      plan.leaf = leaf_range.node;
+      plan.begin = leaf_range.begin;
+      plan.count = leaf_range.count;
+    }
+
+    // Without reuse there is nothing to hold aside, so the operators are built
+    // straight into their plans rather than through a second full-size buffer.
+    const std::ptrdiff_t build_count =
+        static_cast<std::ptrdiff_t>(build_total);
+    std::vector<StaticCoefficientOperator> built(
+        classes.classified ? build_total : 0);
+#pragma omp parallel for schedule(dynamic, 1) if (build_count >= 4)
+    for (std::ptrdiff_t raw_build = 0; raw_build < build_count; ++raw_build) {
+      const std::size_t entry = static_cast<std::size_t>(raw_build);
+      const std::size_t slot = classes.classified
+          ? static_cast<std::size_t>(classes.representative[entry])
+          : entry;
+      if (failure.superseded(slot)) {
+        continue;
+      }
+      try {
+        const StaticLeafRange& leaf_range = topology_->source_leaves[slot];
+        const auto& leaf =
+            topology_->nodes[static_cast<std::size_t>(leaf_range.node)];
+        StaticCoefficientOperator operator_map =
+            build_leaf_operator(leaf_range, leaf.centre);
+        if (classes.classified) {
+          built[entry] = std::move(operator_map);
+        } else {
+          p2m_plans_[slot].operator_map = std::move(operator_map);
+        }
+      } catch (...) {
+        failure.record(slot);
+      }
+    }
+    failure.rethrow_any();
+
+    if (classes.classified) {
+      const std::ptrdiff_t scatter_count =
+          static_cast<std::ptrdiff_t>(leaf_total);
+#pragma omp parallel for schedule(static) if (scatter_count >= 64)
+      for (std::ptrdiff_t raw_slot = 0; raw_slot < scatter_count; ++raw_slot) {
+        const std::size_t slot = static_cast<std::size_t>(raw_slot);
+        p2m_plans_[slot].operator_map = built[classes.class_of_item[slot]];
+      }
+    }
+  }
+  for (const P2MPlan& plan : p2m_plans_) {
     const std::size_t bytes =
         plan.operator_map.entries.size() * sizeof(StaticOperatorEntry);
     static_plan_statistics_.operator_bytes += bytes;
     static_plan_statistics_.p2m_operator_bytes += bytes;
-    p2m_plans_.push_back(std::move(plan));
   }
   static_plan_statistics_.p2m_plan.add(elapsed_seconds(phase_start));
 
@@ -700,51 +923,149 @@ void UniformFmm::build_static_plan() {
       static_cast<std::size_t>(m2l_plan_.matrix_count);
   static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
   phase_start = Clock::now();
-  l2p_evaluators_.resize(sorted_targets.size());
+  // Target evaluators are independent, so the leaves are built in parallel.
+  // The per-target byte accounting is a closed form, so it no longer has to be
+  // summed from inside the loop.
+  // One evaluator per target, resolved from the target's geometry and the
+  // far-field model.  Naming the choice keeps the parallel loop below readable.
+  const auto build_target_evaluator =
+      [&](const Vec3& centre, const std::size_t target) {
+    const bool exact_prism =
+        target_geometry_ == TargetGeometry::RectangularPrism &&
+        far_field_target_model_ == TargetModel::ExactGeometry;
+    const bool exact_tetrahedron =
+        target_geometry_ == TargetGeometry::Tetrahedron &&
+        far_field_target_model_ == TargetModel::ExactGeometry;
+    const Vec3& position = sorted_targets[target];
+    if (expansion_basis_ == ExpansionBasis::Spherical) {
+      if (exact_prism) {
+        return build_static_cuboid_l2p_evaluator(
+            spherical_basis_, centre, position,
+            target_sizes[target_sizes.size() == 1 ? 0 : target]);
+      }
+      if (exact_tetrahedron) {
+        return build_static_tetrahedron_l2p_evaluator(
+            spherical_basis_, centre, position,
+            sorted_target_tetrahedra_[
+                sorted_target_tetrahedra_.size() == 1 ? 0 : target]);
+      }
+      return build_static_l2p_evaluator(spherical_basis_, centre, position);
+    }
+    if (exact_prism) {
+      return build_static_cuboid_l2p_evaluator(
+          basis_, centre, position,
+          target_sizes[target_sizes.size() == 1 ? 0 : target]);
+    }
+    if (exact_tetrahedron) {
+      return build_static_tetrahedron_l2p_evaluator(
+          basis_, centre, position,
+          sorted_target_tetrahedra_[
+              sorted_target_tetrahedra_.size() == 1 ? 0 : target]);
+    }
+    return build_static_l2p_evaluator(basis_, centre, position);
+  };
+
+  // The targets an occupied leaf covers, and each one's leaf centre, so the
+  // evaluator and its reuse key are both resolved from the flat target index.
+  // Only covered targets get an evaluator, exactly as before.
+  std::vector<Vec3> target_leaf_centre(sorted_targets.size());
+  std::vector<std::uint32_t> evaluated_targets;
+  evaluated_targets.reserve(sorted_targets.size());
   for (const StaticLeafRange& leaf_range : topology_->target_leaves) {
-    const int leaf_index = leaf_range.node;
-    const auto &leaf = topology_->nodes[static_cast<std::size_t>(leaf_index)];
+    const auto& leaf =
+        topology_->nodes[static_cast<std::size_t>(leaf_range.node)];
     for (std::size_t target = leaf_range.begin;
          target < leaf_range.begin + leaf_range.count; ++target) {
-      l2p_evaluators_[target] =
-          expansion_basis_ == ExpansionBasis::Spherical
-              ? (target_geometry_ == TargetGeometry::RectangularPrism &&
-                 far_field_target_model_ == TargetModel::ExactGeometry)
-                    ? build_static_cuboid_l2p_evaluator(
-                          spherical_basis_, leaf.centre,
-                          sorted_targets[target],
-                          target_sizes[target_sizes.size() == 1 ? 0 : target])
-                    : target_geometry_ == TargetGeometry::Tetrahedron &&
-                          far_field_target_model_ == TargetModel::ExactGeometry
-                        ? build_static_tetrahedron_l2p_evaluator(
-                              spherical_basis_, leaf.centre,
-                              sorted_targets[target],
-                              sorted_target_tetrahedra_[
-                                  sorted_target_tetrahedra_.size() == 1
-                                      ? 0
-                                      : target])
-                        : build_static_l2p_evaluator(
-                          spherical_basis_, leaf.centre,
-                          sorted_targets[target])
-              : (target_geometry_ == TargetGeometry::RectangularPrism &&
-                 far_field_target_model_ == TargetModel::ExactGeometry)
-              ? build_static_cuboid_l2p_evaluator(
-                    basis_, leaf.centre,
-                    sorted_targets[target],
-                    target_sizes[target_sizes.size() == 1 ? 0 : target])
-              : target_geometry_ == TargetGeometry::Tetrahedron &&
-                    far_field_target_model_ == TargetModel::ExactGeometry
-                  ? build_static_tetrahedron_l2p_evaluator(
-                        basis_, leaf.centre, sorted_targets[target],
-                        sorted_target_tetrahedra_[
-                            sorted_target_tetrahedra_.size() == 1 ? 0 : target])
-                  : build_static_l2p_evaluator(basis_, leaf.centre,
-                                               sorted_targets[target]);
-      const std::size_t bytes =
-          4 * static_cast<std::size_t>(coefficient_count) * sizeof(double);
-      static_plan_statistics_.operator_bytes += bytes;
-      static_plan_statistics_.l2p_operator_bytes += bytes;
+      target_leaf_centre[target] = leaf.centre;
+      evaluated_targets.push_back(static_cast<std::uint32_t>(target));
     }
+  }
+
+  // Everything one target's evaluator depends on, in bits: its offset from the
+  // leaf centre and its shape record.
+  const auto target_operator_key =
+      [&](const std::size_t slot) -> EndpointOperatorKey {
+    const std::size_t target =
+        static_cast<std::size_t>(evaluated_targets[slot]);
+    const bool exact_prism =
+        target_geometry_ == TargetGeometry::RectangularPrism &&
+        far_field_target_model_ == TargetModel::ExactGeometry;
+    const bool exact_tetrahedron =
+        target_geometry_ == TargetGeometry::Tetrahedron &&
+        far_field_target_model_ == TargetModel::ExactGeometry;
+    EndpointOperatorKey key;
+    key.reserve(exact_tetrahedron ? 15 : 6);
+    push_bits(key, sorted_targets[target] - target_leaf_centre[target]);
+    if (exact_prism) {
+      push_bits(key, target_sizes[target_sizes.size() == 1 ? 0 : target]);
+    } else if (exact_tetrahedron) {
+      push_bits(key, sorted_target_tetrahedra_[
+          sorted_target_tetrahedra_.size() == 1 ? 0 : target]);
+    }
+    return key;
+  };
+
+  // Target evaluators are independent of one another, so each distinct one is
+  // built once and in parallel and then copied to the targets that share it.
+  // The byte accounting is a closed form, so it no longer has to be summed
+  // from inside the loop.  An exact finite target makes each evaluator
+  // expensive and unequal, so the schedule is dynamic.
+  l2p_evaluators_.resize(sorted_targets.size());
+  {
+    const std::size_t evaluator_count = evaluated_targets.size();
+    const EndpointOperatorClasses classes =
+        classify_endpoint_operators(evaluator_count, target_operator_key);
+    const std::size_t build_total = classes.classified
+        ? classes.representative.size() : evaluator_count;
+
+    FirstConstructionFailure failure;
+    // Without reuse there is nothing to hold aside, so the evaluators are
+    // built straight into their slots rather than through a second full-size
+    // buffer.
+    std::vector<StaticL2PEvaluator> built(
+        classes.classified ? build_total : 0);
+    const std::ptrdiff_t build_count =
+        static_cast<std::ptrdiff_t>(build_total);
+#pragma omp parallel for schedule(dynamic, 64) if (build_count >= 64)
+    for (std::ptrdiff_t raw_build = 0; raw_build < build_count; ++raw_build) {
+      const std::size_t entry = static_cast<std::size_t>(raw_build);
+      const std::size_t slot = classes.classified
+          ? static_cast<std::size_t>(classes.representative[entry])
+          : entry;
+      if (failure.superseded(slot)) {
+        continue;
+      }
+      try {
+        const std::size_t target =
+            static_cast<std::size_t>(evaluated_targets[slot]);
+        StaticL2PEvaluator evaluator =
+            build_target_evaluator(target_leaf_centre[target], target);
+        if (classes.classified) {
+          built[entry] = std::move(evaluator);
+        } else {
+          l2p_evaluators_[target] = std::move(evaluator);
+        }
+      } catch (...) {
+        failure.record(slot);
+      }
+    }
+    failure.rethrow_any();
+
+    if (classes.classified) {
+      const std::ptrdiff_t scatter_count =
+          static_cast<std::ptrdiff_t>(evaluator_count);
+#pragma omp parallel for schedule(static) if (scatter_count >= 256)
+      for (std::ptrdiff_t raw_slot = 0; raw_slot < scatter_count; ++raw_slot) {
+        const std::size_t slot = static_cast<std::size_t>(raw_slot);
+        l2p_evaluators_[static_cast<std::size_t>(evaluated_targets[slot])] =
+            built[classes.class_of_item[slot]];
+      }
+    }
+
+    const std::size_t bytes = 4 * static_cast<std::size_t>(coefficient_count) *
+        sizeof(double) * evaluator_count;
+    static_plan_statistics_.operator_bytes += bytes;
+    static_plan_statistics_.l2p_operator_bytes += bytes;
   }
   static_plan_statistics_.l2p_plan.add(elapsed_seconds(phase_start));
 
