@@ -126,6 +126,10 @@ struct ExactReuseGate {
     std::size_t sample_pairs{65536};
     /// @brief Minimum duplicates per distinct operator worth classifying for.
     std::size_t sample_reuse_factor{2};
+    /// @brief Hard cap on distinct operators, for a caller that must bound
+    ///        the transient storage its representatives will occupy.  The
+    ///        sample is an estimate; this is a guarantee.
+    std::size_t max_classes{std::numeric_limits<std::size_t>::max()};
 };
 
 /// @brief Group pairs whose exact operator inputs agree bit for bit.
@@ -154,6 +158,9 @@ template <typename KeyOfPair>
             key_of_pair(index),
             static_cast<std::uint32_t>(result.representative.size()));
         if (inserted) {
+            if (result.representative.size() >= gate.max_classes) {
+                return {};
+            }
             result.representative.push_back(static_cast<std::uint32_t>(index));
         }
         result.class_of_pair[index] = entry->second;
