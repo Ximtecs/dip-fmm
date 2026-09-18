@@ -37,6 +37,7 @@ struct CudaConstructionStatistics {
 };
 
 /// @brief Returns the calling thread's record of its most recent CUDA setup.
-[[nodiscard]] CudaConstructionStatistics& cuda_construction_statistics() noexcept;
+[[nodiscard]] CudaConstructionStatistics&
+cuda_construction_statistics() noexcept;
 
 } // namespace cdfmm::detail::cuda_dense_direct

@@ -37,7 +37,7 @@ struct ConstructionStatistics {
     std::size_t pair_count{0};
     /// @brief Exact tensors actually evaluated.
     std::size_t built_tensor_count{0};
-    /// @brief Distinct bodies prepared, i.e. distinct source plus target records.
+    /// @brief Distinct bodies prepared: distinct source plus target records.
     std::size_t prepared_body_count{0};
     /// @brief Whether exact classification was kept rather than abandoned.
     bool classified{false};

@@ -3470,12 +3470,33 @@ point-to-point, whose entire setup is 17 ms. Buying a few milliseconds there
 would cost either a 96 MB pinned staging buffer or a chunked upload, against
 Phase M's instruction not to grow an already-large plan's peak memory.
 
-**Reciprocity between the triangular halves.** Not pursued. The dense plan
-admits independently generated source and target sets with different counts
-and different geometry families, so the symmetric case is a special case of
-the general one rather than the other way round; exploiting it would add a
-branch on the general path to help one configuration, and exact reuse already
-collapses the symmetric lattice cases by 38-80x without any symmetry argument.
+**Reciprocity between the triangular halves.** Measured, not assumed, and
+rejected on the measurement. Exact-class reuse keys on the displacement
+vector, so `d` and `-d` are separate classes; if the pair tensor were even in
+the displacement, half of every classified build would be redundant. Sampling
+400 random displacements per geometry and comparing `T(-d)` against `T(d)`:
+
+| pair | bitwise equal | equal to 1e-12 | worst relative difference |
+|---|---|---|---|
+| point -> point | 400/400 | 400/400 | 0 |
+| prism -> point | 12/400 | 400/400 | 9.9e-15 |
+| prism -> prism, equal records | 1/400 | 158/400 | 7.2e-11 |
+| prism -> prism, unequal records | 1/400 | 232/400 | 8.6e-11 |
+| tetra -> tetra, equal records | 0/400 | 27/400 | 2.8e-9 |
+| tetra -> point | 0/400 | 0/400 | 3.2 |
+| prism -> tetra | 0/400 | 0/400 | 8.7e-1 |
+
+Three different answers, and none of them helps. The symmetry is exact and
+bitwise only for point-to-point — precisely the case that deliberately never
+classifies, because its arithmetic is cheaper than a key lookup. For the
+centrosymmetric prism geometries it holds mathematically but *not* bitwise:
+the `long double` corner sums round differently under `d -> -d`, so
+exploiting it would trade this phase's bitwise contract for a factor of two on
+a build that exact reuse has already reduced 67x. And for any tetrahedron it
+does not hold at all — a tetrahedron is not centrosymmetric, so its field at
+`-d` is a genuinely different tensor, by a relative 3.2 for the point case.
+The one place a halving would still have been worth real time, the
+prism-tetrahedron combinations, is the place the symmetry does not exist.
 
 **Splitting build from scatter when classification is abandoned.** It would
 need a complete `PairTensor` array, forty-eight bytes a pair, larger than the

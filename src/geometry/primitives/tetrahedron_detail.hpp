@@ -130,7 +130,7 @@ struct PreparedTetrahedronPointField {
 [[nodiscard]] PreparedTetrahedronPointField prepare_tetrahedron_point_field(
     const Tetrahedron& tetrahedron);
 
-/// @brief Exact point-field tensor of a prepared uniformly magnetised tetrahedron.
+/// @brief Exact point field of a prepared uniformly magnetised tetrahedron.
 [[nodiscard]] PairTensor tetrahedron_point_tensor_prepared(
     const Vec3& target_minus_source_representative,
     const PreparedTetrahedronPointField& source);
