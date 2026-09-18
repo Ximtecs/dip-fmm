@@ -219,15 +219,7 @@ double triangle_solid_angle_column(const Vec3& r, const double x_first,
     return static_cast<double>(-solid_angle / four_pi);
 }
 
-struct FaceFrame {
-    Vec3 e1{};
-    Vec3 e2{};
-    Vec3 normal{};
-    Vec3 origin{};
-    double x_first{0.0};
-    double x_third{0.0};
-    double height{0.0};
-};
+using detail::FaceFrame;
 
 FaceFrame make_face_frame(std::array<Vec3, 4> face)
 {
@@ -301,10 +293,10 @@ FaceFrame make_face_frame(std::array<Vec3, 4> face)
     return frame;
 }
 
-Matrix3 face_tensor(const std::array<Vec3, 4>& face,
-                    const Vec3& target_relative_position)
+/// @brief The face's contribution at one point, given its constant frame.
+Matrix3 face_tensor_prepared(const FaceFrame& frame,
+                             const Vec3& target_relative_position)
 {
-    const FaceFrame frame = make_face_frame(face);
     const Vec3 local_position = target_relative_position - frame.origin;
     Vec3 r{
         dot(local_position, frame.e1),
@@ -341,24 +333,16 @@ Matrix3 face_tensor(const std::array<Vec3, 4>& face,
     return result;
 }
 
-Matrix3 tetrahedron_magnetisation_tensor(
-    const Vec3& target_relative_position, const Tetrahedron& source)
+Matrix3 tetrahedron_magnetisation_tensor_prepared(
+    const Vec3& target_relative_position,
+    const detail::PreparedTetrahedronPointField& source)
 {
-    const double volume = tetrahedron_volume(source);
-    double geometry_scale = 0.0;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = i + 1; j < 4; ++j) {
-            geometry_scale = std::max(
-                geometry_scale,
-                norm(source.vertices[static_cast<std::size_t>(i)] -
-                     source.vertices[static_cast<std::size_t>(j)]));
-        }
-    }
+    const std::array<Vec3, 4>& vertices = source.vertices;
     const double singular_tolerance =
-        256.0 * std::numeric_limits<double>::epsilon() * geometry_scale;
+        256.0 * std::numeric_limits<double>::epsilon() * source.geometry_scale;
     for (int i = 0; i < 4; ++i) {
         if (norm(target_relative_position -
-                 source.vertices[static_cast<std::size_t>(i)]) <=
+                 vertices[static_cast<std::size_t>(i)]) <=
             singular_tolerance) {
             throw std::domain_error(
                 "tetrahedron-to-point tensor is singular at a vertex");
@@ -366,15 +350,15 @@ Matrix3 tetrahedron_magnetisation_tensor(
     }
     for (int i = 0; i < 4; ++i) {
         for (int j = i + 1; j < 4; ++j) {
-            const Vec3 edge = source.vertices[static_cast<std::size_t>(j)] -
-                source.vertices[static_cast<std::size_t>(i)];
+            const Vec3 edge = vertices[static_cast<std::size_t>(j)] -
+                vertices[static_cast<std::size_t>(i)];
             const double edge_length_squared = dot(edge, edge);
             const double parameter = dot(
                 target_relative_position -
-                    source.vertices[static_cast<std::size_t>(i)], edge) /
+                    vertices[static_cast<std::size_t>(i)], edge) /
                 edge_length_squared;
             if (parameter >= 0.0 && parameter <= 1.0) {
-                const Vec3 closest = source.vertices[static_cast<std::size_t>(i)] +
+                const Vec3 closest = vertices[static_cast<std::size_t>(i)] +
                     scale(edge, parameter);
                 if (norm(target_relative_position - closest) <=
                     singular_tolerance) {
@@ -386,16 +370,9 @@ Matrix3 tetrahedron_magnetisation_tensor(
     }
     Matrix3 result;
     for (int missing_vertex = 0; missing_vertex < 4; ++missing_vertex) {
-        std::array<Vec3, 4> face{};
-        int output = 0;
-        for (int vertex = 0; vertex < 4; ++vertex) {
-            if (vertex != missing_vertex) {
-                face[static_cast<std::size_t>(output++)] =
-                    source.vertices[static_cast<std::size_t>(vertex)];
-            }
-        }
-        face[3] = source.vertices[static_cast<std::size_t>(missing_vertex)];
-        const Matrix3 contribution = face_tensor(face, target_relative_position);
+        const Matrix3 contribution = face_tensor_prepared(
+            source.faces[static_cast<std::size_t>(missing_vertex)],
+            target_relative_position);
         for (int row = 0; row < 3; ++row) {
             for (int column = 0; column < 3; ++column) {
                 result.value[row][column] += contribution.value[row][column];
@@ -426,10 +403,18 @@ Matrix3 tetrahedron_magnetisation_tensor(
     }
     for (int row = 0; row < 3; ++row) {
         for (int column = 0; column < 3; ++column) {
-            result.value[row][column] /= volume;
+            result.value[row][column] /= source.volume;
         }
     }
     return result;
+}
+
+Matrix3 tetrahedron_magnetisation_tensor(
+    const Vec3& target_relative_position, const Tetrahedron& source)
+{
+    return tetrahedron_magnetisation_tensor_prepared(
+        target_relative_position,
+        detail::prepare_tetrahedron_point_field(source));
 }
 
 PairTensor to_pair_tensor(const Matrix3& matrix)
@@ -947,6 +932,46 @@ double triangle_triangle_laplace_integral(
     return triangle_triangle_integral(first, second);
 }
 
+PreparedTetrahedronPointField prepare_tetrahedron_point_field(
+    const Tetrahedron& tetrahedron)
+{
+    PreparedTetrahedronPointField prepared;
+    prepared.volume = tetrahedron_volume(tetrahedron);
+    prepared.vertices = tetrahedron.vertices;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = i + 1; j < 4; ++j) {
+            prepared.geometry_scale = std::max(
+                prepared.geometry_scale,
+                norm(prepared.vertices[static_cast<std::size_t>(i)] -
+                     prepared.vertices[static_cast<std::size_t>(j)]));
+        }
+    }
+    // One frame per omitted vertex, in the order the surface sum visits the
+    // faces, with the omitted vertex kept last for the orientation test.
+    for (int missing_vertex = 0; missing_vertex < 4; ++missing_vertex) {
+        std::array<Vec3, 4> face{};
+        int output = 0;
+        for (int vertex = 0; vertex < 4; ++vertex) {
+            if (vertex != missing_vertex) {
+                face[static_cast<std::size_t>(output++)] =
+                    prepared.vertices[static_cast<std::size_t>(vertex)];
+            }
+        }
+        face[3] = prepared.vertices[static_cast<std::size_t>(missing_vertex)];
+        prepared.faces[static_cast<std::size_t>(missing_vertex)] =
+            make_face_frame(face);
+    }
+    return prepared;
+}
+
+PairTensor tetrahedron_point_tensor_prepared(
+    const Vec3& target_minus_source_representative,
+    const PreparedTetrahedronPointField& source)
+{
+    return to_pair_tensor(tetrahedron_magnetisation_tensor_prepared(
+        target_minus_source_representative, source));
+}
+
 PreparedTetrahedron prepare_tetrahedron(const Tetrahedron& tetrahedron)
 {
     PreparedTetrahedron prepared;
@@ -1155,6 +1180,39 @@ PairTensor body_point_tensor(const PolyhedronBody& body, const Vec3& point)
         body.record);
 }
 
+/**
+ * @brief The source's exact point field, with its geometry derived once.
+ *
+ * The quadrature below evaluates one source at 216 nodes.  A tetrahedron
+ * source's volume, extent and four face frames are constant across all of
+ * them, so deriving them per node -- which the record-level entry point does
+ * -- is 216 times more work than the mathematics needs.  A prism source has
+ * no such derived geometry: its formula reads the half-sizes directly.
+ */
+class SourcePointField {
+public:
+    explicit SourcePointField(const PolyhedronBody& source)
+        : prism_(std::get_if<RectangularPrism>(&source.record))
+    {
+        if (prism_ == nullptr) {
+            tetrahedron_ = prepare_tetrahedron_point_field(
+                std::get<Tetrahedron>(source.record));
+        }
+    }
+
+    [[nodiscard]] PairTensor operator()(const Vec3& point) const
+    {
+        if (prism_ != nullptr) {
+            return rectangular_prism_point_tensor(point, *prism_);
+        }
+        return tetrahedron_point_tensor_prepared(point, tetrahedron_);
+    }
+
+private:
+    const RectangularPrism* prism_{nullptr};
+    PreparedTetrahedronPointField tetrahedron_{};
+};
+
 // Volume average of the source point tensor over the target body, using a
 // collapsed-cube (Duffy) map for a tetrahedron and a tensor-product rule for
 // a prism.  Only used when the separation makes the integrand smooth.
@@ -1165,6 +1223,7 @@ PairTensor average_source_tensor_over_target(
 {
     PairTensor result{};
     const Vec3& d = target_minus_source_representative;
+    const SourcePointField source_field(source);
     if (const auto* prism = std::get_if<RectangularPrism>(&target.record)) {
         for (std::size_t i = 0; i < 6; ++i) {
             const double x = (gauss6_node[i] - 0.5) * prism->hx;
@@ -1174,7 +1233,7 @@ PairTensor average_source_tensor_over_target(
                     const double z = (gauss6_node[k] - 0.5) * prism->hz;
                     accumulate_scaled(
                         result,
-                        body_point_tensor(source, d + Vec3{x, y, z}),
+                        source_field(d + Vec3{x, y, z}),
                         gauss6_weight[i] * gauss6_weight[j] * gauss6_weight[k]);
                 }
             }
@@ -1199,7 +1258,7 @@ PairTensor average_source_tensor_over_target(
                 const double weight = 6.0 * gauss6_weight[i] *
                     gauss6_weight[j] * gauss6_weight[k] * (1.0 - u) *
                     (1.0 - u) * (1.0 - v);
-                accumulate_scaled(result, body_point_tensor(source, d + offset),
+                accumulate_scaled(result, source_field(d + offset),
                                   weight);
             }
         }

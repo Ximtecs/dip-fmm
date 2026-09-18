@@ -93,6 +93,48 @@ inline constexpr double polyhedron_far_separation_factor = 8.0;
     std::span<const Vec3> target_outward_normals,
     double target_volume);
 
+/**
+ * @brief Local orthonormal frame and in-plane extents of one oriented face.
+ *
+ * The frame depends only on the face's vertices, so it is constant for a
+ * given body while the evaluation point varies.
+ */
+struct FaceFrame {
+    Vec3 e1{};
+    Vec3 e2{};
+    Vec3 normal{};
+    Vec3 origin{};
+    double x_first{0.0};
+    double x_third{0.0};
+    double height{0.0};
+};
+
+/**
+ * @brief A tetrahedron's point-field geometry, derived once per record.
+ *
+ * `tetrahedron_magnetisation_tensor` re-derives the volume, the largest edge
+ * length and all four face frames on every evaluation, although every one of
+ * them is a pure function of the record.  That is wasteful wherever one body
+ * is evaluated at many points -- most of all in the far-separation
+ * quadrature, which evaluates a single source at 216 nodes.
+ */
+struct PreparedTetrahedronPointField {
+    double volume{0.0};
+    /// Largest edge length, which sets the singularity tolerance.
+    double geometry_scale{0.0};
+    std::array<Vec3, 4> vertices{};
+    /// One frame per face, in the order the surface sum visits them.
+    std::array<FaceFrame, 4> faces{};
+};
+
+[[nodiscard]] PreparedTetrahedronPointField prepare_tetrahedron_point_field(
+    const Tetrahedron& tetrahedron);
+
+/// @brief Exact point-field tensor of a prepared uniformly magnetised tetrahedron.
+[[nodiscard]] PairTensor tetrahedron_point_tensor_prepared(
+    const Vec3& target_minus_source_representative,
+    const PreparedTetrahedronPointField& source);
+
 struct PreparedTetrahedron {
     double volume{0.0};
 
