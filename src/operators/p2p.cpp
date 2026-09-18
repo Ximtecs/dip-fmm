@@ -2,6 +2,7 @@
 
 #include "cdfmm/operators/p2p.hpp"
 
+#include "operators/exact_operator_reuse.hpp"
 #include "operators/p2p_point_kernel.hpp"
 
 #include "../geometry/primitives/tetrahedron_detail.hpp"
@@ -48,177 +49,14 @@ namespace {
     return true;
 }
 
-// Exact operator classification.
-//
-// Every pair tensor built below is a pure function of the displacement and of
-// the participating body records; a periodic image shift is already folded
-// into the displacement before any tensor call.  Pairs whose inputs agree bit
-// for bit therefore describe one and the same operator exactly, so the
-// expensive exact evaluation can run once per distinct input and be scattered
-// to the pairs that share it.  Repeated geometry makes this decisive: a
-// regular lattice reaches only a few hundred distinct displacements however
-// many bodies it holds.
-//
-// The key stores raw bit patterns and is never compared with a tolerance.
-// `-0.0` stays distinct from `+0.0`, which can at worst repeat one build,
-// whereas merging them would assume a continuity the exact corner formulas do
-// not have.
-
-/// @brief Widest exact key a pair loop needs: a displacement, two tetrahedron
-///        records, and the tetrahedron pair's coincident-geometry selector.
-inline constexpr std::size_t exact_operator_key_capacity = 3 + 12 + 12 + 1;
-
-/// @brief Bitwise description of everything one exact pair tensor depends on.
-struct ExactOperatorKey {
-    std::array<std::uint64_t, exact_operator_key_capacity> words{};
-    std::size_t used{0};
-
-    void push(const double value) noexcept
-    {
-        assert(used < exact_operator_key_capacity);
-        words[used] = std::bit_cast<std::uint64_t>(value);
-        ++used;
-    }
-
-    void push(const Vec3& value) noexcept
-    {
-        push(value.x);
-        push(value.y);
-        push(value.z);
-    }
-
-    void push(const RectangularPrism& prism) noexcept
-    {
-        push(prism.hx);
-        push(prism.hy);
-        push(prism.hz);
-    }
-
-    void push(const Tetrahedron& tetrahedron) noexcept
-    {
-        for (const Vec3& vertex : tetrahedron.vertices) {
-            push(vertex);
-        }
-    }
-
-    [[nodiscard]] bool operator==(const ExactOperatorKey& other) const noexcept
-    {
-        return used == other.used &&
-            std::equal(words.begin(),
-                       words.begin() + static_cast<std::ptrdiff_t>(used),
-                       other.words.begin());
-    }
-};
-
-struct ExactOperatorKeyHash {
-    [[nodiscard]] std::size_t operator()(
-        const ExactOperatorKey& key) const noexcept
-    {
-        std::uint64_t hash = 0x9e3779b97f4a7c15ULL ^ key.used;
-        for (std::size_t word = 0; word < key.used; ++word) {
-            hash ^= key.words[word];
-            hash *= 0x00000100000001b3ULL;
-            hash ^= hash >> 29;
-        }
-        return static_cast<std::size_t>(hash);
-    }
-};
-
-/// @brief Pairs grouped by bitwise-identical exact operator inputs.
-struct ExactOperatorClasses {
-    /// @brief Class of each pair; empty when classification was abandoned.
-    std::vector<std::uint32_t> class_of_pair;
-    /// @brief Lowest pair index in each class, which is the pair that builds
-    ///        it.  Serial construction would have reached that pair first, so
-    ///        selecting it keeps a failure's reported cause unchanged.
-    std::vector<std::uint32_t> representative;
-    /// @brief False when the inputs were too diverse to repay classification.
-    bool classified{false};
-};
-
-/// @brief Group pairs whose exact operator inputs agree bit for bit.
-///
-/// `key_of_pair(index)` returns the complete set of values the tensor of that
-/// pair depends on.  Classes are numbered in first-seen order, so the classes,
-/// their representatives, and therefore every built value are independent of
-/// thread count and of hash iteration order.
-///
-/// Classification stops when an initial sample shows too few duplicates to
-/// repay it, which bounds both the table and the wasted lookups on irregular
-/// geometry.  That is only ever a performance decision: the caller builds the
-/// same operators either way.
-template <typename KeyOfPair>
-[[nodiscard]] ExactOperatorClasses classify_exact_operators(
-    const std::size_t pair_count, const KeyOfPair& key_of_pair)
-{
-    // The sample reaches across several target rows, because a lattice repeats
-    // a displacement between rows rather than inside one.
-    constexpr std::size_t sample_pairs = 65536;
-    constexpr std::size_t sample_reuse_factor = 2;
-
-    ExactOperatorClasses result;
-    result.class_of_pair.resize(pair_count);
-    std::unordered_map<ExactOperatorKey, std::uint32_t, ExactOperatorKeyHash>
-        classes;
-    for (std::size_t index = 0; index < pair_count; ++index) {
-        const auto [entry, inserted] = classes.try_emplace(
-            key_of_pair(index),
-            static_cast<std::uint32_t>(result.representative.size()));
-        if (inserted) {
-            result.representative.push_back(static_cast<std::uint32_t>(index));
-        }
-        result.class_of_pair[index] = entry->second;
-
-        const std::size_t sampled = index + 1;
-        if (sampled == sample_pairs && sampled < pair_count &&
-            result.representative.size() * sample_reuse_factor > sampled) {
-            return {};
-        }
-    }
-    result.classified = true;
-    return result;
-}
-
-/// @brief The failure a parallel pair loop reports.
-///
-/// The lowest failing pair index wins, because that is the pair a serial build
-/// would have reached first, so the reported cause does not depend on how the
-/// iterations were scheduled.  Work above a known failure is skipped: it can no
-/// longer win that comparison.
-class FirstPairFailure {
-public:
-    [[nodiscard]] bool superseded(const std::size_t index) const noexcept
-    {
-        return index > index_.load(std::memory_order_relaxed);
-    }
-
-    /// @brief Record the exception currently being handled for @p index.
-    void record(const std::size_t index)
-    {
-        std::size_t previous = index_.load(std::memory_order_relaxed);
-        while (index < previous &&
-               !index_.compare_exchange_weak(previous, index,
-                                             std::memory_order_relaxed)) {
-        }
-#pragma omp critical(cdfmm_p2p_setup_exception)
-        {
-            if (index_.load(std::memory_order_relaxed) == index) {
-                exception_ = std::current_exception();
-            }
-        }
-    }
-
-    void rethrow_any() const
-    {
-        if (exception_) {
-            std::rethrow_exception(exception_);
-        }
-    }
-
-private:
-    std::atomic<std::size_t> index_{std::numeric_limits<std::size_t>::max()};
-    std::exception_ptr exception_{};
-};
+// The exact-operator equivalence, its classification and the parallel
+// failure report are shared with the dense all-to-all builder; see
+// `src/operators/exact_operator_reuse.hpp` for what makes two pairs the
+// same operator and why the comparison is bitwise.
+using detail::exact_reuse::classify_exact_operators;
+using detail::exact_reuse::ExactOperatorClasses;
+using detail::exact_reuse::ExactOperatorKey;
+using FirstPairFailure = detail::exact_reuse::FirstFailure;
 
 struct RowInteractionKey {
     int source{0};
