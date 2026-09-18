@@ -3078,6 +3078,15 @@ and L2P 486x (measured against the same tree carrying the accepted near-field
 change but serial endpoint loops, because the baseline benchmark could not
 select exact far-field models at all).
 
+The baseline was measured at the primary comparison point the phase specified
+-- p = 6, 4096 bodies, FP32, CpuStatic, all six geometries -- and not extended
+to the secondary rows (the order sweep, the backend spot checks and FP64).
+The final matrix covers all of those, so those rows have a final number but no
+baseline twin. Nothing in the conclusions rests on them: the near-field stage
+is geometry work shared by every backend and is almost independent of the
+expansion order, as the final matrix shows directly (the prism lattice P2P
+stage is 0.121 s at p = 4, 6 and 8 alike).
+
 What this does and does not change. The *cold* path improved by up to 44x; the
 *warm* path is unchanged, because a geometry-cache hit returns before any of
 these builders runs and loads the operators instead. That is visible in the
