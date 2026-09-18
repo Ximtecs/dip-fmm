@@ -7,15 +7,20 @@
 #include "../geometry/primitives/tetrahedron_detail.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <exception>
 #include <limits>
 #include <numeric>
 #include <numbers>
 #include <stdexcept>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 namespace cdfmm {
@@ -42,6 +47,178 @@ namespace {
     }
     return true;
 }
+
+// Exact operator classification.
+//
+// Every pair tensor built below is a pure function of the displacement and of
+// the participating body records; a periodic image shift is already folded
+// into the displacement before any tensor call.  Pairs whose inputs agree bit
+// for bit therefore describe one and the same operator exactly, so the
+// expensive exact evaluation can run once per distinct input and be scattered
+// to the pairs that share it.  Repeated geometry makes this decisive: a
+// regular lattice reaches only a few hundred distinct displacements however
+// many bodies it holds.
+//
+// The key stores raw bit patterns and is never compared with a tolerance.
+// `-0.0` stays distinct from `+0.0`, which can at worst repeat one build,
+// whereas merging them would assume a continuity the exact corner formulas do
+// not have.
+
+/// @brief Widest exact key a pair loop needs: a displacement, two tetrahedron
+///        records, and the tetrahedron pair's coincident-geometry selector.
+inline constexpr std::size_t exact_operator_key_capacity = 3 + 12 + 12 + 1;
+
+/// @brief Bitwise description of everything one exact pair tensor depends on.
+struct ExactOperatorKey {
+    std::array<std::uint64_t, exact_operator_key_capacity> words{};
+    std::size_t used{0};
+
+    void push(const double value) noexcept
+    {
+        assert(used < exact_operator_key_capacity);
+        words[used] = std::bit_cast<std::uint64_t>(value);
+        ++used;
+    }
+
+    void push(const Vec3& value) noexcept
+    {
+        push(value.x);
+        push(value.y);
+        push(value.z);
+    }
+
+    void push(const RectangularPrism& prism) noexcept
+    {
+        push(prism.hx);
+        push(prism.hy);
+        push(prism.hz);
+    }
+
+    void push(const Tetrahedron& tetrahedron) noexcept
+    {
+        for (const Vec3& vertex : tetrahedron.vertices) {
+            push(vertex);
+        }
+    }
+
+    [[nodiscard]] bool operator==(const ExactOperatorKey& other) const noexcept
+    {
+        return used == other.used &&
+            std::equal(words.begin(),
+                       words.begin() + static_cast<std::ptrdiff_t>(used),
+                       other.words.begin());
+    }
+};
+
+struct ExactOperatorKeyHash {
+    [[nodiscard]] std::size_t operator()(
+        const ExactOperatorKey& key) const noexcept
+    {
+        std::uint64_t hash = 0x9e3779b97f4a7c15ULL ^ key.used;
+        for (std::size_t word = 0; word < key.used; ++word) {
+            hash ^= key.words[word];
+            hash *= 0x00000100000001b3ULL;
+            hash ^= hash >> 29;
+        }
+        return static_cast<std::size_t>(hash);
+    }
+};
+
+/// @brief Pairs grouped by bitwise-identical exact operator inputs.
+struct ExactOperatorClasses {
+    /// @brief Class of each pair; empty when classification was abandoned.
+    std::vector<std::uint32_t> class_of_pair;
+    /// @brief Lowest pair index in each class, which is the pair that builds
+    ///        it.  Serial construction would have reached that pair first, so
+    ///        selecting it keeps a failure's reported cause unchanged.
+    std::vector<std::uint32_t> representative;
+    /// @brief False when the inputs were too diverse to repay classification.
+    bool classified{false};
+};
+
+/// @brief Group pairs whose exact operator inputs agree bit for bit.
+///
+/// `key_of_pair(index)` returns the complete set of values the tensor of that
+/// pair depends on.  Classes are numbered in first-seen order, so the classes,
+/// their representatives, and therefore every built value are independent of
+/// thread count and of hash iteration order.
+///
+/// Classification stops when an initial sample shows too few duplicates to
+/// repay it, which bounds both the table and the wasted lookups on irregular
+/// geometry.  That is only ever a performance decision: the caller builds the
+/// same operators either way.
+template <typename KeyOfPair>
+[[nodiscard]] ExactOperatorClasses classify_exact_operators(
+    const std::size_t pair_count, const KeyOfPair& key_of_pair)
+{
+    // The sample reaches across several target rows, because a lattice repeats
+    // a displacement between rows rather than inside one.
+    constexpr std::size_t sample_pairs = 65536;
+    constexpr std::size_t sample_reuse_factor = 2;
+
+    ExactOperatorClasses result;
+    result.class_of_pair.resize(pair_count);
+    std::unordered_map<ExactOperatorKey, std::uint32_t, ExactOperatorKeyHash>
+        classes;
+    for (std::size_t index = 0; index < pair_count; ++index) {
+        const auto [entry, inserted] = classes.try_emplace(
+            key_of_pair(index),
+            static_cast<std::uint32_t>(result.representative.size()));
+        if (inserted) {
+            result.representative.push_back(static_cast<std::uint32_t>(index));
+        }
+        result.class_of_pair[index] = entry->second;
+
+        const std::size_t sampled = index + 1;
+        if (sampled == sample_pairs && sampled < pair_count &&
+            result.representative.size() * sample_reuse_factor > sampled) {
+            return {};
+        }
+    }
+    result.classified = true;
+    return result;
+}
+
+/// @brief The failure a parallel pair loop reports.
+///
+/// The lowest failing pair index wins, because that is the pair a serial build
+/// would have reached first, so the reported cause does not depend on how the
+/// iterations were scheduled.  Work above a known failure is skipped: it can no
+/// longer win that comparison.
+class FirstPairFailure {
+public:
+    [[nodiscard]] bool superseded(const std::size_t index) const noexcept
+    {
+        return index > index_.load(std::memory_order_relaxed);
+    }
+
+    /// @brief Record the exception currently being handled for @p index.
+    void record(const std::size_t index)
+    {
+        std::size_t previous = index_.load(std::memory_order_relaxed);
+        while (index < previous &&
+               !index_.compare_exchange_weak(previous, index,
+                                             std::memory_order_relaxed)) {
+        }
+#pragma omp critical(cdfmm_p2p_setup_exception)
+        {
+            if (index_.load(std::memory_order_relaxed) == index) {
+                exception_ = std::current_exception();
+            }
+        }
+    }
+
+    void rethrow_any() const
+    {
+        if (exception_) {
+            std::rethrow_exception(exception_);
+        }
+    }
+
+private:
+    std::atomic<std::size_t> index_{std::numeric_limits<std::size_t>::max()};
+    std::exception_ptr exception_{};
+};
 
 struct RowInteractionKey {
     int source{0};
@@ -189,6 +366,25 @@ StaticP2POperator build_static_p2p_operator_impl(
 
     result.blocks.resize(sorted.size());
 
+    // The displacement every pair loop below works from.  A periodic image
+    // shift is folded in here, so nothing downstream sees it separately and
+    // two images that reach the same displacement are the same interaction.
+    const auto displacement_at = [&](const std::size_t index) -> Vec3 {
+        const StaticP2PInteraction& interaction = sorted[index];
+        const Vec3 shifted_source =
+            source_positions[static_cast<std::size_t>(interaction.source)] +
+            interaction.source_shift;
+        return target_positions[static_cast<std::size_t>(interaction.target)] -
+            shifted_source;
+    };
+    const auto potential_scale_at = [](const Vec3& displacement) -> double {
+        const double radius_squared = dot(displacement, displacement);
+        return radius_squared == 0.0
+            ? 0.0
+            : 1.0 / (4.0 * std::numbers::pi * radius_squared *
+                     std::sqrt(radius_squared));
+    };
+
     if ((source_is_prism && target_is_tetrahedron) ||
         (source_is_tetrahedron && target_is_prism)) {
         // Mixed prism/tetrahedron pairs use the exact polyhedron surface
@@ -232,53 +428,113 @@ StaticP2POperator build_static_p2p_operator_impl(
                 target_bodies.size() == 1 ? 0 : static_cast<std::size_t>(target)];
         };
 
-        std::exception_ptr first_exception;
-        std::atomic<bool> failed{false};
+        // The face-pair integral is a pure function of the displacement and the
+        // two body records, so pairs whose inputs agree bit for bit share one
+        // tensor.  It is by far the most expensive tensor the builder has, so
+        // classifying first pays for itself many times over on repeated
+        // geometry and costs one hash lookup per pair otherwise.
+        const auto exact_operator_key =
+            [&](const std::size_t index) -> ExactOperatorKey {
+            const StaticP2PInteraction& interaction = sorted[index];
+            ExactOperatorKey key;
+            key.push(displacement_at(index));
+            if (source_is_prism) {
+                key.push(source_prisms[source_prisms.size() == 1
+                                           ? 0
+                                           : static_cast<std::size_t>(
+                                                 interaction.source)]);
+            } else {
+                key.push(source_tetrahedra[source_tetrahedra.size() == 1
+                                               ? 0
+                                               : static_cast<std::size_t>(
+                                                     interaction.source)]);
+            }
+            if (target_is_prism) {
+                key.push(target_prisms[target_prisms.size() == 1
+                                           ? 0
+                                           : static_cast<std::size_t>(
+                                                 interaction.target)]);
+            } else {
+                key.push(target_tetrahedra[target_tetrahedra.size() == 1
+                                               ? 0
+                                               : static_cast<std::size_t>(
+                                                     interaction.target)]);
+            }
+            return key;
+        };
+
+        const ExactOperatorClasses classes =
+            classify_exact_operators(sorted.size(), exact_operator_key);
+
+        FirstPairFailure failure;
         const std::ptrdiff_t interaction_count =
             static_cast<std::ptrdiff_t>(sorted.size());
+
+        // Finite sources never carry the point identity marker: their
+        // coincident self field is physical.
+        const auto store_block = [&](const std::size_t index,
+                                     const PairTensor& tensor) {
+            const StaticP2PInteraction& interaction = sorted[index];
+            const Vec3 displacement = displacement_at(index);
+            const double potential_scale = potential_scale_at(displacement);
+            result.blocks[index] = {
+                interaction.target, interaction.source,
+                potential_scale * displacement.x,
+                potential_scale * displacement.y,
+                potential_scale * displacement.z, tensor.xx, tensor.xy,
+                tensor.xz, tensor.yy, tensor.yz, tensor.zz, 0};
+        };
+        const auto build_tensor = [&](const std::size_t index) -> PairTensor {
+            const StaticP2PInteraction& interaction = sorted[index];
+            return detail::polyhedron_pair_tensor(
+                displacement_at(index), source_body_at(interaction.source),
+                target_body_at(interaction.target));
+        };
+
+        if (classes.classified) {
+            const std::ptrdiff_t class_count =
+                static_cast<std::ptrdiff_t>(classes.representative.size());
+            std::vector<PairTensor> tensors(classes.representative.size());
+#pragma omp parallel for schedule(dynamic, 1) if (class_count >= 8)
+            for (std::ptrdiff_t raw_class = 0; raw_class < class_count;
+                 ++raw_class) {
+                const std::size_t entry = static_cast<std::size_t>(raw_class);
+                const std::size_t index =
+                    static_cast<std::size_t>(classes.representative[entry]);
+                if (failure.superseded(index)) {
+                    continue;
+                }
+                try {
+                    tensors[entry] = build_tensor(index);
+                } catch (...) {
+                    failure.record(index);
+                }
+            }
+            failure.rethrow_any();
+
+#pragma omp parallel for schedule(static) if (interaction_count >= 256)
+            for (std::ptrdiff_t raw_index = 0; raw_index < interaction_count;
+                 ++raw_index) {
+                const std::size_t index = static_cast<std::size_t>(raw_index);
+                store_block(index, tensors[classes.class_of_pair[index]]);
+            }
+            return result;
+        }
+
 #pragma omp parallel for schedule(dynamic, 16) if (interaction_count >= 64)
         for (std::ptrdiff_t raw_index = 0; raw_index < interaction_count;
              ++raw_index) {
             const std::size_t index = static_cast<std::size_t>(raw_index);
-            if (failed.load(std::memory_order_relaxed)) {
+            if (failure.superseded(index)) {
                 continue;
             }
             try {
-                const StaticP2PInteraction& interaction = sorted[index];
-                const int target = interaction.target;
-                const int source = interaction.source;
-                const Vec3 displacement =
-                    target_positions[static_cast<std::size_t>(target)] -
-                    (source_positions[static_cast<std::size_t>(source)] +
-                     interaction.source_shift);
-                const double radius_squared = dot(displacement, displacement);
-                const double potential_scale = radius_squared == 0.0
-                    ? 0.0
-                    : 1.0 / (4.0 * std::numbers::pi * radius_squared *
-                             std::sqrt(radius_squared));
-                const PairTensor tensor = detail::polyhedron_pair_tensor(
-                    displacement, source_body_at(source),
-                    target_body_at(target));
-                // Finite sources never carry the point identity marker: their
-                // coincident self field is physical.
-                result.blocks[index] = {
-                    target, source, potential_scale * displacement.x,
-                    potential_scale * displacement.y,
-                    potential_scale * displacement.z, tensor.xx, tensor.xy,
-                    tensor.xz, tensor.yy, tensor.yz, tensor.zz, 0};
+                store_block(index, build_tensor(index));
             } catch (...) {
-                failed.store(true, std::memory_order_relaxed);
-#pragma omp critical(cdfmm_polyhedron_setup_exception)
-                {
-                    if (!first_exception) {
-                        first_exception = std::current_exception();
-                    }
-                }
+                failure.record(index);
             }
         }
-        if (first_exception) {
-            std::rethrow_exception(first_exception);
-        }
+        failure.rethrow_any();
         return result;
     }
 
@@ -320,23 +576,18 @@ StaticP2POperator build_static_p2p_operator_impl(
                     target_tetrahedron_at(static_cast<int>(index)));
         }
 
-        for (std::size_t index = 0; index < sorted.size(); ++index) {
+        const std::ptrdiff_t block_count =
+            static_cast<std::ptrdiff_t>(sorted.size());
+#pragma omp parallel for schedule(static) if (block_count >= 256)
+        for (std::ptrdiff_t raw_index = 0; raw_index < block_count;
+             ++raw_index) {
+            const std::size_t index = static_cast<std::size_t>(raw_index);
             const StaticP2PInteraction& interaction = sorted[index];
-            const int target = interaction.target;
-            const int source = interaction.source;
-            const Vec3 shifted_source =
-                source_positions[static_cast<std::size_t>(source)] +
-                interaction.source_shift;
-            const Vec3 displacement =
-                target_positions[static_cast<std::size_t>(target)] -
-                shifted_source;
-            const double radius_squared = dot(displacement, displacement);
-            const double potential_scale = radius_squared == 0.0
-                ? 0.0
-                : 1.0 / (4.0 * std::numbers::pi * radius_squared *
-                         std::sqrt(radius_squared));
+            const Vec3 displacement = displacement_at(index);
+            const double potential_scale = potential_scale_at(displacement);
             result.blocks[index] = {
-                target, source, potential_scale * displacement.x,
+                interaction.target, interaction.source,
+                potential_scale * displacement.x,
                 potential_scale * displacement.y,
                 potential_scale * displacement.z, 0.0, 0.0, 0.0, 0.0, 0.0,
                 0.0, 0};
@@ -381,56 +632,119 @@ StaticP2POperator build_static_p2p_operator_impl(
             }
         }
 
-        std::exception_ptr first_exception;
-        std::atomic<bool> failed{false};
-        const std::ptrdiff_t interaction_count =
-            static_cast<std::ptrdiff_t>(sorted.size());
-#pragma omp parallel for schedule(static) if (interaction_count >= 256)
-        for (std::ptrdiff_t raw_index = 0; raw_index < interaction_count;
-             ++raw_index) {
-            const std::size_t index = static_cast<std::size_t>(raw_index);
-            if (tensor_owner[index] != index ||
-                failed.load(std::memory_order_relaxed)) {
-                continue;
+        const auto coincident_same_geometry_at =
+            [&](const std::size_t index) -> bool {
+            const StaticP2PInteraction& interaction = sorted[index];
+            return reciprocal_tetrahedron_layout &&
+                interaction.target == interaction.source &&
+                interaction.source_shift.x == 0.0 &&
+                interaction.source_shift.y == 0.0 &&
+                interaction.source_shift.z == 0.0;
+        };
+
+        // Only the reciprocity owners are built; the rest copy their partner's
+        // tensor.  Classification therefore runs over the owners alone, which
+        // keeps the reciprocal pair sharing one set of bits exactly as before.
+        //
+        // The coincident flag belongs in the key because it selects the
+        // symmetrised coincident algorithm rather than the general one.
+        std::vector<std::uint32_t> owners;
+        owners.reserve(sorted.size());
+        for (std::size_t index = 0; index < sorted.size(); ++index) {
+            if (tensor_owner[index] == index) {
+                owners.push_back(static_cast<std::uint32_t>(index));
             }
-            try {
-                const StaticP2PInteraction& interaction = sorted[index];
-                const int target = interaction.target;
-                const int source = interaction.source;
-                const Vec3 displacement =
-                    target_positions[static_cast<std::size_t>(target)] -
-                    (source_positions[static_cast<std::size_t>(source)] +
-                     interaction.source_shift);
-                const bool coincident_same_geometry =
-                    reciprocal_tetrahedron_layout && target == source &&
-                    interaction.source_shift.x == 0.0 &&
-                    interaction.source_shift.y == 0.0 &&
-                    interaction.source_shift.z == 0.0;
-                const PairTensor tensor =
-                    detail::tetrahedron_tetrahedron_tensor_prepared(
-                        displacement, prepared_source_at(source),
-                        prepared_target_at(target), coincident_same_geometry);
-                result.blocks[index].xx = tensor.xx;
-                result.blocks[index].xy = tensor.xy;
-                result.blocks[index].xz = tensor.xz;
-                result.blocks[index].yy = tensor.yy;
-                result.blocks[index].yz = tensor.yz;
-                result.blocks[index].zz = tensor.zz;
-            } catch (...) {
-                failed.store(true, std::memory_order_relaxed);
-#pragma omp critical(cdfmm_tetrahedron_setup_exception)
-                {
-                    if (!first_exception) {
-                        first_exception = std::current_exception();
-                    }
-                }
-            }
-        }
-        if (first_exception) {
-            std::rethrow_exception(first_exception);
         }
 
-        for (std::size_t index = 0; index < sorted.size(); ++index) {
+        const auto exact_operator_key =
+            [&](const std::size_t owner) -> ExactOperatorKey {
+            const std::size_t index = static_cast<std::size_t>(owners[owner]);
+            const StaticP2PInteraction& interaction = sorted[index];
+            ExactOperatorKey key;
+            key.push(displacement_at(index));
+            key.push(source_tetrahedron_at(interaction.source));
+            key.push(target_tetrahedron_at(interaction.target));
+            key.push(coincident_same_geometry_at(index) ? 1.0 : 0.0);
+            return key;
+        };
+
+        const ExactOperatorClasses classes =
+            classify_exact_operators(owners.size(), exact_operator_key);
+
+        FirstPairFailure failure;
+        const std::ptrdiff_t owner_count =
+            static_cast<std::ptrdiff_t>(owners.size());
+
+        const auto store_tensor = [&](const std::size_t index,
+                                      const PairTensor& tensor) {
+            result.blocks[index].xx = tensor.xx;
+            result.blocks[index].xy = tensor.xy;
+            result.blocks[index].xz = tensor.xz;
+            result.blocks[index].yy = tensor.yy;
+            result.blocks[index].yz = tensor.yz;
+            result.blocks[index].zz = tensor.zz;
+        };
+        const auto build_tensor = [&](const std::size_t index) -> PairTensor {
+            const StaticP2PInteraction& interaction = sorted[index];
+            return detail::tetrahedron_tetrahedron_tensor_prepared(
+                displacement_at(index),
+                prepared_source_at(interaction.source),
+                prepared_target_at(interaction.target),
+                coincident_same_geometry_at(index));
+        };
+
+        if (classes.classified) {
+            const std::ptrdiff_t class_count =
+                static_cast<std::ptrdiff_t>(classes.representative.size());
+            std::vector<PairTensor> tensors(classes.representative.size());
+#pragma omp parallel for schedule(dynamic, 1) if (class_count >= 8)
+            for (std::ptrdiff_t raw_class = 0; raw_class < class_count;
+                 ++raw_class) {
+                const std::size_t entry = static_cast<std::size_t>(raw_class);
+                const std::size_t index = static_cast<std::size_t>(
+                    owners[classes.representative[entry]]);
+                if (failure.superseded(index)) {
+                    continue;
+                }
+                try {
+                    tensors[entry] = build_tensor(index);
+                } catch (...) {
+                    failure.record(index);
+                }
+            }
+            failure.rethrow_any();
+
+#pragma omp parallel for schedule(static) if (owner_count >= 256)
+            for (std::ptrdiff_t raw_owner = 0; raw_owner < owner_count;
+                 ++raw_owner) {
+                const std::size_t owner = static_cast<std::size_t>(raw_owner);
+                store_tensor(static_cast<std::size_t>(owners[owner]),
+                             tensors[classes.class_of_pair[owner]]);
+            }
+        } else {
+#pragma omp parallel for schedule(dynamic, 1) if (owner_count >= 8)
+            for (std::ptrdiff_t raw_owner = 0; raw_owner < owner_count;
+                 ++raw_owner) {
+                const std::size_t index = static_cast<std::size_t>(
+                    owners[static_cast<std::size_t>(raw_owner)]);
+                if (failure.superseded(index)) {
+                    continue;
+                }
+                try {
+                    store_tensor(index, build_tensor(index));
+                } catch (...) {
+                    failure.record(index);
+                }
+            }
+            failure.rethrow_any();
+        }
+
+        const std::ptrdiff_t copy_count =
+            static_cast<std::ptrdiff_t>(sorted.size());
+#pragma omp parallel for schedule(static) if (copy_count >= 256)
+        for (std::ptrdiff_t raw_index = 0; raw_index < copy_count;
+             ++raw_index) {
+            const std::size_t index = static_cast<std::size_t>(raw_index);
             const std::size_t owner = tensor_owner[index];
             if (owner == index) {
                 continue;
@@ -445,78 +759,195 @@ StaticP2POperator build_static_p2p_operator_impl(
         return result;
     }
 
-    for (std::size_t index = 0; index < sorted.size(); ++index) {
-        const StaticP2PInteraction& interaction = sorted[index];
-        const int target = interaction.target;
-        const int source = interaction.source;
-        const Vec3 shifted_source =
-            source_positions[static_cast<std::size_t>(source)] +
-            interaction.source_shift;
-        const Vec3 displacement =
-            target_positions[static_cast<std::size_t>(target)] -
-            shifted_source;
-        const double radius_squared = dot(displacement, displacement);
+    // The generic loop serves the point/prism combinations and both
+    // point/tetrahedron directions.  Its iterations are independent: the block
+    // vector is already sized and ordered above and each iteration writes one
+    // distinct entry, so the loop runs in parallel with the same first-failure
+    // handling as the polyhedron loops.
+    //
+    // When either body is finite the loop also classifies first and builds
+    // each distinct exact operator once.  The classification costs one hash
+    // lookup per pair against an exact tensor that costs orders of magnitude
+    // more, whereas a point pair is cheaper to evaluate than to look up and a
+    // point cloud has no duplicates to find, so point pairs build directly.
+    const bool reuse_exact_operators = source_is_prism || target_is_prism ||
+        source_is_tetrahedron || target_is_tetrahedron;
 
-        if (effective_source_geometry == SourceGeometry::PointDipole &&
+    const auto source_prism_at = [&](const int source) -> RectangularPrism {
+        if (!source_is_prism) {
+            return RectangularPrism{};
+        }
+        return source_prisms[source_prisms.size() == 1
+                                 ? 0 : static_cast<std::size_t>(source)];
+    };
+    const auto target_prism_at = [&](const int target) -> RectangularPrism {
+        if (!target_is_prism) {
+            return RectangularPrism{};
+        }
+        return target_prisms[target_prisms.size() == 1
+                                 ? 0 : static_cast<std::size_t>(target)];
+    };
+    const auto source_tetrahedron_at =
+        [&](const int source) -> const Tetrahedron* {
+        if (!source_is_tetrahedron) {
+            return nullptr;
+        }
+        return &source_tetrahedra[source_tetrahedra.size() == 1
+                                      ? 0
+                                      : static_cast<std::size_t>(source)];
+    };
+    const auto target_tetrahedron_at =
+        [&](const int target) -> const Tetrahedron* {
+        if (!target_is_tetrahedron) {
+            return nullptr;
+        }
+        return &target_tetrahedra[target_tetrahedra.size() == 1
+                                      ? 0
+                                      : static_cast<std::size_t>(target)];
+    };
+    // A point source exactly on a point target has no field; the block records
+    // that explicitly and only the identity flag says whether it was excluded
+    // or genuinely singular.  Finite geometry never reaches this: its
+    // coincident field is the physical self limit.
+    const auto singular_point_pair = [&](const Vec3& displacement) -> bool {
+        return effective_source_geometry == SourceGeometry::PointDipole &&
             effective_target_geometry == TargetGeometry::Point &&
-            radius_squared == 0.0) {
-            const double undefined =
-                std::numeric_limits<double>::quiet_NaN();
-            result.blocks[index] = {
-                target, source, undefined, undefined, undefined,
-                undefined, undefined, undefined, undefined, undefined,
-                undefined,
-                (interaction.skip_for_identity &&
-                 effective_source_geometry == SourceGeometry::PointDipole)
-                    ? 1 : 0};
-            continue;
+            dot(displacement, displacement) == 0.0;
+    };
+
+    const auto exact_operator_key =
+        [&](const std::size_t index) -> ExactOperatorKey {
+        const StaticP2PInteraction& interaction = sorted[index];
+        ExactOperatorKey key;
+        key.push(displacement_at(index));
+        if (source_is_prism) {
+            key.push(source_prism_at(interaction.source));
         }
+        if (target_is_prism) {
+            key.push(target_prism_at(interaction.target));
+        }
+        if (source_is_tetrahedron) {
+            key.push(*source_tetrahedron_at(interaction.source));
+        }
+        if (target_is_tetrahedron) {
+            key.push(*target_tetrahedron_at(interaction.target));
+        }
+        return key;
+    };
 
-        const RectangularPrism source_prism = source_is_prism
-            ? source_prisms[source_prisms.size() == 1 ? 0 : source]
-            : RectangularPrism{};
-        const RectangularPrism target_prism = target_is_prism
-            ? target_prisms[target_prisms.size() == 1 ? 0 : target]
-            : RectangularPrism{};
-        const Tetrahedron* source_tetrahedron = source_is_tetrahedron
-            ? &source_tetrahedra[
-                  source_tetrahedra.size() == 1 ? 0 : source]
-            : nullptr;
-        const Tetrahedron* target_tetrahedron = target_is_tetrahedron
-            ? &target_tetrahedra[
-                  target_tetrahedra.size() == 1 ? 0 : target]
-            : nullptr;
-
-        PairTensor tensor;
+    // `build_pair` uses only the difference of its two position arguments, so
+    // evaluating the displacement against the origin reproduces what the
+    // pair's own positions give, bit for bit.
+    const auto build_pair_tensor =
+        [&](const std::size_t index) -> PairTensor {
+        const StaticP2PInteraction& interaction = sorted[index];
+        const Vec3 displacement = displacement_at(index);
         if (source_is_tetrahedron && target_is_tetrahedron) {
-            tensor = tetrahedron_tetrahedron_tensor(
-                displacement, *source_tetrahedron, *target_tetrahedron);
-        } else if (source_is_tetrahedron) {
-            tensor = tetrahedron_point_tensor(
-                displacement, *source_tetrahedron);
-        } else if (target_is_tetrahedron) {
-            tensor = point_tetrahedron_tensor(
-                displacement, *target_tetrahedron);
-        } else {
-            tensor = operators::p2p::build_pair(
-                target_positions[static_cast<std::size_t>(target)],
-                shifted_source, effective_source_geometry,
-                effective_target_geometry, source_prism, target_prism);
+            return tetrahedron_tetrahedron_tensor(
+                displacement, *source_tetrahedron_at(interaction.source),
+                *target_tetrahedron_at(interaction.target));
         }
+        if (source_is_tetrahedron) {
+            return tetrahedron_point_tensor(
+                displacement, *source_tetrahedron_at(interaction.source));
+        }
+        if (target_is_tetrahedron) {
+            return point_tetrahedron_tensor(
+                displacement, *target_tetrahedron_at(interaction.target));
+        }
+        return operators::p2p::build_pair(
+            displacement, Vec3{0.0, 0.0, 0.0}, effective_source_geometry,
+            effective_target_geometry, source_prism_at(interaction.source),
+            target_prism_at(interaction.target));
+    };
 
-        const double potential_scale = radius_squared == 0.0
-            ? 0.0
-            : 1.0 / (4.0 * std::numbers::pi * radius_squared *
-                     std::sqrt(radius_squared));
+    const auto store_block = [&](const std::size_t index,
+                                 const PairTensor& tensor) {
+        const StaticP2PInteraction& interaction = sorted[index];
+        const Vec3 displacement = displacement_at(index);
+        const double potential_scale = potential_scale_at(displacement);
         result.blocks[index] = {
-            target, source, potential_scale * displacement.x,
+            interaction.target, interaction.source,
+            potential_scale * displacement.x,
             potential_scale * displacement.y,
-            potential_scale * displacement.z, tensor.xx, tensor.xy,
-            tensor.xz, tensor.yy, tensor.yz, tensor.zz,
+            potential_scale * displacement.z, tensor.xx, tensor.xy, tensor.xz,
+            tensor.yy, tensor.yz, tensor.zz,
             (interaction.skip_for_identity &&
              effective_source_geometry == SourceGeometry::PointDipole)
                 ? 1 : 0};
+    };
+
+    const auto store_singular_block = [&](const std::size_t index) {
+        const StaticP2PInteraction& interaction = sorted[index];
+        const double undefined = std::numeric_limits<double>::quiet_NaN();
+        result.blocks[index] = {
+            interaction.target, interaction.source, undefined, undefined,
+            undefined, undefined, undefined, undefined, undefined, undefined,
+            undefined,
+            (interaction.skip_for_identity &&
+             effective_source_geometry == SourceGeometry::PointDipole)
+                ? 1 : 0};
+    };
+
+    const ExactOperatorClasses classes = reuse_exact_operators
+        ? classify_exact_operators(sorted.size(), exact_operator_key)
+        : ExactOperatorClasses{};
+
+    FirstPairFailure failure;
+
+    if (classes.classified) {
+        // Build one tensor per distinct set of inputs, then scatter.
+        const std::ptrdiff_t class_count =
+            static_cast<std::ptrdiff_t>(classes.representative.size());
+        std::vector<PairTensor> tensors(classes.representative.size());
+#pragma omp parallel for schedule(dynamic, 1) if (class_count >= 8)
+        for (std::ptrdiff_t raw_class = 0; raw_class < class_count;
+             ++raw_class) {
+            const std::size_t index = static_cast<std::size_t>(
+                classes.representative[static_cast<std::size_t>(raw_class)]);
+            if (failure.superseded(index)) {
+                continue;
+            }
+            try {
+                tensors[static_cast<std::size_t>(raw_class)] =
+                    build_pair_tensor(index);
+            } catch (...) {
+                failure.record(index);
+            }
+        }
+        failure.rethrow_any();
+
+        const std::ptrdiff_t pair_count =
+            static_cast<std::ptrdiff_t>(sorted.size());
+#pragma omp parallel for schedule(static) if (pair_count >= 256)
+        for (std::ptrdiff_t raw_index = 0; raw_index < pair_count;
+             ++raw_index) {
+            const std::size_t index = static_cast<std::size_t>(raw_index);
+            store_block(index, tensors[classes.class_of_pair[index]]);
+        }
+        return result;
     }
+
+    const std::ptrdiff_t pair_count =
+        static_cast<std::ptrdiff_t>(sorted.size());
+#pragma omp parallel for schedule(static) if (pair_count >= 256)
+    for (std::ptrdiff_t raw_index = 0; raw_index < pair_count; ++raw_index) {
+        const std::size_t index = static_cast<std::size_t>(raw_index);
+        if (failure.superseded(index)) {
+            continue;
+        }
+        try {
+            const Vec3 displacement = displacement_at(index);
+            if (singular_point_pair(displacement)) {
+                store_singular_block(index);
+                continue;
+            }
+            store_block(index, build_pair_tensor(index));
+        } catch (...) {
+            failure.record(index);
+        }
+    }
+    failure.rethrow_any();
     return result;
 }
 
