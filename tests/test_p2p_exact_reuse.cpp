@@ -23,7 +23,6 @@
 #include <cmath>
 #include <cstdint>
 #include <span>
-#include <utility>
 #include <vector>
 
 #include "cdfmm/operators/p2p.hpp"
