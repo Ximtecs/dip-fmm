@@ -133,7 +133,19 @@ struct StaticPlanStatistics {
     /// @brief Time spent constructing target L2P rows.
     PhaseTiming l2p_plan{};
     /// @brief Time spent constructing the compact list1 dipole tensors.
+    ///
+    /// This is the whole near-field stage.  The three timings below decompose
+    /// it into materialising the interaction list, building the exact
+    /// canonical operator, and deriving the execution packings from it.
     PhaseTiming p2p_tensor_plan{};
+    /// @brief Time spent expanding leaf records into near-field interactions.
+    PhaseTiming p2p_interaction_setup{};
+    /// @brief Time spent building the exact canonical near-field operator.
+    PhaseTiming p2p_canonical_operator{};
+    /// @brief Time spent deriving compact, dictionary and packing forms.
+    PhaseTiming p2p_derived_packing{};
+    /// @brief Time spent converting the FP64 static plan to FP32.
+    PhaseTiming precision_conversion{};
     /// @brief Time spent identifying unique integer M2L displacement classes.
     PhaseTiming transfer_discovery{};
     /// @brief Time spent generating retained numerical operator values.

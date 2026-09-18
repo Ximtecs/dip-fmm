@@ -266,6 +266,9 @@ void UniformFmm::build_static_plan() {
       static_plan_statistics_.near_field_operator_bytes = near_field_bytes;
       record_m2l_metadata(m2l_plan_);
     }
+    // A cache hit still derives every execution packing, so the same timers
+    // account for it as on a cold build.
+    auto warm_stage_start = Clock::now();
     try {
       build_reduced_symmetry_p2p_packing();
     } catch (const std::invalid_argument &error) {
@@ -303,8 +306,15 @@ void UniformFmm::build_static_plan() {
       // releases it again when positions replace the stored tensors.
       p2p_execution_packing_ = resolve_cpu_p2p_packing();
     }
+    static_plan_statistics_.p2p_derived_packing.add(
+        elapsed_seconds(warm_stage_start));
+    static_plan_statistics_.p2p_tensor_plan.add(
+        elapsed_seconds(warm_stage_start));
     if (precision_ == StaticPrecision::Float32) {
+      warm_stage_start = Clock::now();
       quantise_static_plan_to_float();
+      static_plan_statistics_.precision_conversion.add(
+          elapsed_seconds(warm_stage_start));
     }
     build_backend_packing();
     static_plan_statistics_.total.add(elapsed_seconds(total_start));
@@ -739,6 +749,7 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.l2p_plan.add(elapsed_seconds(phase_start));
 
   phase_start = Clock::now();
+  auto p2p_stage_start = Clock::now();
   if (periodic_.enabled) {
     std::vector<StaticP2PInteraction> near_interactions;
     for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
@@ -753,6 +764,9 @@ void UniformFmm::build_static_plan() {
         }
       }
     }
+    static_plan_statistics_.p2p_interaction_setup.add(
+        elapsed_seconds(p2p_stage_start));
+    p2p_stage_start = Clock::now();
     p2p_operator_ = build_static_p2p_operator(
         sorted_targets, sorted_positions, near_interactions,
         source_geometry_, source_sizes, sorted_source_tetrahedra_,
@@ -771,12 +785,18 @@ void UniformFmm::build_static_plan() {
         }
       }
     }
+    static_plan_statistics_.p2p_interaction_setup.add(
+        elapsed_seconds(p2p_stage_start));
+    p2p_stage_start = Clock::now();
     p2p_operator_ = build_static_p2p_operator(
         sorted_targets, sorted_positions, near_interactions,
         source_geometry_, source_sizes, sorted_source_tetrahedra_,
         target_geometry_, target_sizes, sorted_target_tetrahedra_,
         near_field_source_model_, near_field_target_model_);
   }
+  static_plan_statistics_.p2p_canonical_operator.add(
+      elapsed_seconds(p2p_stage_start));
+  p2p_stage_start = Clock::now();
   const bool point_geometry_p2p =
       backend_ == ExecutionBackend::CpuStatic && selects_point_geometry_p2p();
   if (!point_geometry_p2p) {
@@ -792,6 +812,8 @@ void UniformFmm::build_static_plan() {
   if (backend_ == ExecutionBackend::CpuStatic) {
     p2p_execution_packing_ = resolve_cpu_p2p_packing();
   }
+  static_plan_statistics_.p2p_derived_packing.add(
+      elapsed_seconds(p2p_stage_start));
   static_plan_statistics_.p2p_interactions = p2p_operator_.blocks.size();
   static_plan_statistics_.p2p_value_bytes =
       p2p_operator_.blocks.size() * 6 * sizeof(double);
@@ -829,7 +851,10 @@ void UniformFmm::build_static_plan() {
       m2l_plan_, l2p_evaluators_, p2p_operator_, static_plan_statistics_);
 
   if (precision_ == StaticPrecision::Float32) {
+    const auto conversion_start = Clock::now();
     quantise_static_plan_to_float();
+    static_plan_statistics_.precision_conversion.add(
+        elapsed_seconds(conversion_start));
   }
   // oneMKL derives execution-only gather/GEMM/scatter packing from the same
   // canonical target-row metadata used by portable CPU and CUDA.

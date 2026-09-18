@@ -385,6 +385,16 @@ void UniformFmm::print_initialisation_summary(
          << static_plan_statistics_.l2p_plan.total_seconds << '\n';
   stream << "  setup.p2p_seconds: "
          << static_plan_statistics_.p2p_tensor_plan.total_seconds << '\n';
+  stream << "  setup.p2p_interaction_setup_seconds: "
+         << static_plan_statistics_.p2p_interaction_setup.total_seconds
+         << '\n';
+  stream << "  setup.p2p_canonical_operator_seconds: "
+         << static_plan_statistics_.p2p_canonical_operator.total_seconds
+         << '\n';
+  stream << "  setup.p2p_derived_packing_seconds: "
+         << static_plan_statistics_.p2p_derived_packing.total_seconds << '\n';
+  stream << "  setup.precision_conversion_seconds: "
+         << static_plan_statistics_.precision_conversion.total_seconds << '\n';
   stream << "  setup.backend_packing_seconds: "
          << static_plan_statistics_.backend_packing.total_seconds << '\n';
   stream << "  setup.far_field_packing_seconds: "

@@ -375,6 +375,14 @@ void bind_fmm(py::module_& module)
         result["l2l_construction_seconds"] = statistics.l2l_plan.total_seconds;
         result["l2p_construction_seconds"] = statistics.l2p_plan.total_seconds;
         result["p2p_construction_seconds"] = statistics.p2p_tensor_plan.total_seconds;
+        result["p2p_interaction_setup_seconds"] =
+            statistics.p2p_interaction_setup.total_seconds;
+        result["p2p_canonical_operator_seconds"] =
+            statistics.p2p_canonical_operator.total_seconds;
+        result["p2p_derived_packing_seconds"] =
+            statistics.p2p_derived_packing.total_seconds;
+        result["precision_conversion_seconds"] =
+            statistics.precision_conversion.total_seconds;
         result["backend_packing_seconds"] = statistics.backend_packing.total_seconds;
         result["far_field_packing_seconds"] =
             statistics.far_field_packing.total_seconds;
