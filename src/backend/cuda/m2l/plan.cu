@@ -792,6 +792,14 @@ CudaM2LPlan::CudaM2LPlan(const FloatStaticM2LPlan &data)
                             std::max(coefficient_values * sizeof(float),
                                      std::size_t{1})),
              "allocate pinned FP32 M2L locals");
+  // NOTE(cdfmm): the hybrid's M2L stream takes the greatest priority
+  // unconditionally, unlike `CudaFull`'s far-field stream, which consults
+  // `CudaExecutionPolicy::far_field_stream_priority`. The asymmetry is
+  // measured, not an oversight: here the host blocks on exactly this stream
+  // before it can run L2L/L2P, so raising it is a pure win (Phase-3 P2P
+  // unification: the M2L wait fell from 892/1750/2980 us to 690/1372/2379 us
+  // at 64/96/128 targets per leaf). `CudaFull` has no such host wait, so an
+  // unconditional priority there cost 3 % on far-field-dominated plans.
   cuda_detail::create_priority_stream(plan.stream,
                                       "create canonical FP32 M2L stream");
   check_cuda(cudaEventCreate(&plan.start), "create M2L event");
@@ -835,6 +843,14 @@ CudaM2LPlan::CudaM2LPlan(const StaticM2LPlan& data)
                             std::max(coefficient_values * sizeof(double),
                                      std::size_t{1})),
              "allocate pinned M2L locals");
+  // NOTE(cdfmm): the hybrid's M2L stream takes the greatest priority
+  // unconditionally, unlike `CudaFull`'s far-field stream, which consults
+  // `CudaExecutionPolicy::far_field_stream_priority`. The asymmetry is
+  // measured, not an oversight: here the host blocks on exactly this stream
+  // before it can run L2L/L2P, so raising it is a pure win (Phase-3 P2P
+  // unification: the M2L wait fell from 892/1750/2980 us to 690/1372/2379 us
+  // at 64/96/128 targets per leaf). `CudaFull` has no such host wait, so an
+  // unconditional priority there cost 3 % on far-field-dominated plans.
   cuda_detail::create_priority_stream(plan.stream,
                                       "create canonical M2L stream");
   check_cuda(cudaEventCreate(&plan.start), "create M2L event");
