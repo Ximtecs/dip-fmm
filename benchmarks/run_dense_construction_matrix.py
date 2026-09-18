@@ -39,7 +39,13 @@ import subprocess
 import sys
 
 GEOMETRIES: tuple[str, ...] = ("point", "prism", "tetrahedron")
-WORKLOADS: tuple[str, ...] = ("lattice", "lattice-irregular", "random")
+WORKLOADS: tuple[str, ...] = (
+    "lattice",
+    "lattice-irregular",
+    "random",
+    "anisotropic",
+    "anisotropic-irregular",
+)
 
 # The nine source -> target combinations the dense plan supports.  They are
 # enumerated rather than inferred from one another, because the production
@@ -124,6 +130,16 @@ def build_matrix(preset: str, backends: list[str], threads: int) -> list[Row]:
         for source, target in GEOMETRY_PAIRS:
             for workload in WORKLOADS:
                 add(source, target, workload, 1024, 1024)
+        return rows
+
+    if preset == "anisotropy":
+        # The same geometries on a stretched lattice of elongated bodies,
+        # which moves the far-separation boundary and the distinct-
+        # displacement count away from the cubic case.
+        for source, target in GEOMETRY_PAIRS:
+            for workload in ("lattice", "anisotropic",
+                             "lattice-irregular", "anisotropic-irregular"):
+                add(source, target, workload, 512, 512, precisions=("fp32",))
         return rows
 
     if preset == "sizes":
@@ -257,7 +273,14 @@ def main() -> int:
     parser.add_argument(
         "--preset",
         default="quick",
-        choices=("quick", "geometry-matrix", "sizes", "asymmetric", "threads"),
+        choices=(
+            "quick",
+            "geometry-matrix",
+            "sizes",
+            "asymmetric",
+            "threads",
+            "anisotropy",
+        ),
     )
     parser.add_argument(
         "--backends",

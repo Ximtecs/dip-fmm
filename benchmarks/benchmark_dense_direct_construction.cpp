@@ -20,12 +20,21 @@
 // host build, context creation, device allocation and upload.
 //
 // Every source-target geometry combination the dense plan supports is
-// reachable, over three workloads chosen to bracket exact redundancy:
-// `lattice` (regular positions, one shared body record) has a great deal,
+// reachable, over workloads chosen to bracket exact redundancy: `lattice`
+// (regular positions, one shared body record) has a great deal,
 // `lattice-irregular` (regular positions, per-body records) isolates what
 // displacement repetition alone is worth, and `random` is the negative
 // control where there is essentially none.  Sources and targets are generated
 // independently, so `--targets` may differ from `--sources`.
+//
+// The lattices fill all three axes rather than forming a slab, and the
+// `anisotropic` pair of workloads stretches both the spacing and the bodies.
+// That is not cosmetic: a cube lattice of cubes is the most symmetric input
+// these kernels accept, the far-separation switch keys on a body's
+// circumradius, and elongating a body therefore moves the boundary between
+// the analytical surface integrals and the 216-node quadrature.  What
+// construction costs is measured on stretched geometry rather than inferred
+// from the cubic case.
 //
 // `--probe-redundancy` counts the true number of distinct exact operator
 // inputs with the production key and no sampling gate.  That is a measurement
@@ -97,8 +106,61 @@ enum class Workload {
     /// Regular positions and per-body records: displacement repetition only.
     LatticeIrregular,
     /// Random positions and per-body records: the negative control.
-    Random
+    Random,
+    /// As `Lattice`, but with anisotropic spacing and elongated bodies.
+    Anisotropic,
+    /// As `LatticeIrregular`, with anisotropic spacing and elongated bodies.
+    AnisotropicIrregular,
+    /// A regular grid with one octant refined: two commensurate sublattices
+    /// and one shared body record per refinement level.
+    Refined,
+    /// As `Refined`, with anisotropic spacing and elongated bodies.
+    RefinedAnisotropic
 };
+
+/// @brief Whether a workload refines part of its grid.
+///
+/// A uniformly discretised block and a set of independently shaped bodies are
+/// the two extremes of exact redundancy.  Real discretisations usually sit
+/// between them: a regular grid with a region resolved more finely, which has
+/// a handful of distinct body records rather than one or N.  That is the
+/// regime in which the classification gate has to decide correctly, so it is
+/// measured rather than interpolated between the two extremes.
+[[nodiscard]] bool is_refined(const Workload workload)
+{
+    return workload == Workload::Refined ||
+        workload == Workload::RefinedAnisotropic;
+}
+
+/// @brief Whether a workload places its bodies on a regular lattice.
+[[nodiscard]] bool is_lattice(const Workload workload)
+{
+    return workload != Workload::Random;
+}
+
+/// @brief Whether every body carries its own independently drawn record.
+[[nodiscard]] bool has_per_body_records(const Workload workload)
+{
+    return workload == Workload::LatticeIrregular ||
+        workload == Workload::Random ||
+        workload == Workload::AnisotropicIrregular;
+}
+
+/// @brief Whether a workload stretches the lattice and the bodies.
+///
+/// An isotropic cube lattice of cubes is the most symmetric input the exact
+/// kernels accept, and symmetry is not neutral here: the far-separation
+/// switch keys on a body's circumradius, so elongating a body moves the
+/// boundary between the analytical surface integrals and the 216-node
+/// quadrature, and anisotropic spacing changes how many distinct
+/// displacements a lattice has.  Both change what construction costs, so
+/// both are measured rather than assumed to behave like the cubic case.
+[[nodiscard]] bool is_anisotropic(const Workload workload)
+{
+    return workload == Workload::Anisotropic ||
+        workload == Workload::AnisotropicIrregular ||
+        workload == Workload::RefinedAnisotropic;
+}
 
 enum class Backend { CpuPortable, OneMkl, Cuda };
 
@@ -162,8 +224,21 @@ struct Options {
     if (value == "random") {
         return Workload::Random;
     }
+    if (value == "anisotropic") {
+        return Workload::Anisotropic;
+    }
+    if (value == "anisotropic-irregular") {
+        return Workload::AnisotropicIrregular;
+    }
+    if (value == "refined") {
+        return Workload::Refined;
+    }
+    if (value == "refined-anisotropic") {
+        return Workload::RefinedAnisotropic;
+    }
     throw std::invalid_argument(
-        "--workload must be lattice, lattice-irregular or random");
+        "--workload must be lattice, lattice-irregular, random, anisotropic, "
+        "anisotropic-irregular, refined or refined-anisotropic");
 }
 
 [[nodiscard]] const char* workload_name(const Workload workload)
@@ -175,6 +250,14 @@ struct Options {
         return "lattice-irregular";
     case Workload::Random:
         return "random";
+    case Workload::Anisotropic:
+        return "anisotropic";
+    case Workload::AnisotropicIrregular:
+        return "anisotropic-irregular";
+    case Workload::Refined:
+        return "refined";
+    case Workload::RefinedAnisotropic:
+        return "refined-anisotropic";
     }
     return "unknown";
 }
@@ -216,7 +299,8 @@ void print_usage()
         "benchmark_dense_direct_construction options:\n"
         "  --source point|prism|tetrahedron    source geometry (default point)\n"
         "  --target point|prism|tetrahedron    target geometry (default point)\n"
-        "  --workload lattice|lattice-irregular|random\n"
+        "  --workload lattice|lattice-irregular|random|anisotropic|\n"
+        "             anisotropic-irregular|refined|refined-anisotropic\n"
         "                                      geometry regime (default lattice)\n"
         "  --sources N                         source count (default 1024)\n"
         "  --targets N                         target count (default = sources)\n"
@@ -333,6 +417,8 @@ struct BodySet {
     std::vector<Vec3> positions;
     std::vector<CuboidSize> sizes;
     std::vector<Tetrahedron> tetrahedra;
+    /// Refinement level of each body; empty when the grid is uniform.
+    std::vector<int> levels;
 };
 
 /// @brief Lattice spacing, fixed so that neighbouring bodies never overlap.
@@ -341,15 +427,31 @@ constexpr double lattice_spacing = 1.0;
 /// @brief A body's half-extent as a fraction of the lattice spacing.
 constexpr double body_fill = 0.35;
 
-/// @brief Returns `count` positions on a cube lattice of unit spacing.
+/// @brief Per-axis stretch of an anisotropic workload's spacing and bodies.
+///
+/// Chosen to be a genuinely flattened, elongated cell rather than a nearly
+/// cubic one, while leaving every body strictly inside its cell.
+const Vec3 anisotropy{1.0, 0.4, 2.2};
+
+/// @brief Returns the per-axis lattice spacing of a workload.
+[[nodiscard]] Vec3 spacing_of(const Workload workload)
+{
+    if (!is_anisotropic(workload)) {
+        return {lattice_spacing, lattice_spacing, lattice_spacing};
+    }
+    return {lattice_spacing * anisotropy.x, lattice_spacing * anisotropy.y,
+            lattice_spacing * anisotropy.z};
+}
+
+/// @brief Returns `count` positions on a lattice of the given spacing.
 ///
 /// A lattice is the regular case the exact reuse mechanism exists for: the
 /// displacement between two bodies takes only a few hundred distinct values
 /// however many bodies there are, and every one of them is an exact multiple
 /// of the spacing, so equal displacements agree bit for bit rather than
-/// approximately.
+/// approximately.  The lattice fills all three axes; it is never a slab.
 [[nodiscard]] std::vector<Vec3> lattice_positions(
-    const std::size_t count, const Vec3 origin)
+    const std::size_t count, const Vec3 origin, const Vec3 spacing)
 {
     std::size_t side = 1;
     while (side * side * side < count) {
@@ -362,9 +464,65 @@ constexpr double body_fill = 0.35;
         const std::size_t y = (index / side) % side;
         const std::size_t z = index / (side * side);
         positions.push_back(
-            {origin.x + lattice_spacing * static_cast<double>(x),
-             origin.y + lattice_spacing * static_cast<double>(y),
-             origin.z + lattice_spacing * static_cast<double>(z)});
+            {origin.x + spacing.x * static_cast<double>(x),
+             origin.y + spacing.y * static_cast<double>(y),
+             origin.z + spacing.z * static_cast<double>(z)});
+    }
+    return positions;
+}
+
+/// @brief Returns positions on a regular grid with one octant refined.
+///
+/// Each cell of the refined octant is replaced by its eight children, so the
+/// result is the union of two commensurate sublattices.  Every offset is a
+/// multiple of a quarter of the spacing and every refined extent is an exact
+/// halving, so on an isotropic grid equal index differences still produce
+/// bitwise-equal displacements: the workload varies the number of distinct
+/// body records without also giving up exact displacement agreement.
+[[nodiscard]] std::vector<Vec3> refined_positions(
+    const std::size_t count, const Vec3 origin, const Vec3 spacing,
+    std::vector<int>& levels)
+{
+    // Grow the coarse grid until its refined yield covers the request.
+    std::size_t side = 1;
+    const auto yield_of = [](const std::size_t s) {
+        const std::size_t refined = s / 2;
+        return s * s * s - refined * refined * refined +
+            8 * refined * refined * refined;
+    };
+    while (yield_of(side) < count) {
+        ++side;
+    }
+
+    std::vector<Vec3> positions;
+    positions.reserve(count);
+    levels.clear();
+    levels.reserve(count);
+    const std::size_t refined_side = side / 2;
+    for (std::size_t index = 0; index < side * side * side &&
+             positions.size() < count; ++index) {
+        const std::size_t x = index % side;
+        const std::size_t y = (index / side) % side;
+        const std::size_t z = index / (side * side);
+        const Vec3 centre{origin.x + spacing.x * static_cast<double>(x),
+                          origin.y + spacing.y * static_cast<double>(y),
+                          origin.z + spacing.z * static_cast<double>(z)};
+        const bool refine =
+            x < refined_side && y < refined_side && z < refined_side;
+        if (!refine) {
+            positions.push_back(centre);
+            levels.push_back(0);
+            continue;
+        }
+        for (int child = 0; child < 8 && positions.size() < count; ++child) {
+            const double sx = (child & 1) != 0 ? 0.25 : -0.25;
+            const double sy = (child & 2) != 0 ? 0.25 : -0.25;
+            const double sz = (child & 4) != 0 ? 0.25 : -0.25;
+            positions.push_back({centre.x + spacing.x * sx,
+                                 centre.y + spacing.y * sy,
+                                 centre.z + spacing.z * sz});
+            levels.push_back(1);
+        }
     }
     return positions;
 }
@@ -392,13 +550,18 @@ constexpr double body_fill = 0.35;
 /// body record, so a record's vertices are relative to that point.  Identical
 /// records at lattice positions therefore describe genuinely identical
 /// operators up to the displacement.
-[[nodiscard]] Tetrahedron centred_tetrahedron(const double scale)
+[[nodiscard]] Tetrahedron centred_tetrahedron(const double scale,
+                                              const Vec3 stretch)
 {
     Tetrahedron tetrahedron{};
-    tetrahedron.vertices[0] = {-0.5 * scale, -0.5 * scale, -0.35 * scale};
-    tetrahedron.vertices[1] = {0.6 * scale, -0.4 * scale, -0.3 * scale};
-    tetrahedron.vertices[2] = {-0.1 * scale, 0.7 * scale, -0.25 * scale};
-    tetrahedron.vertices[3] = {0.0, -0.05 * scale, 0.6 * scale};
+    const auto vertex = [&](const double x, const double y, const double z) {
+        return Vec3{x * scale * stretch.x, y * scale * stretch.y,
+                    z * scale * stretch.z};
+    };
+    tetrahedron.vertices[0] = vertex(-0.5, -0.5, -0.35);
+    tetrahedron.vertices[1] = vertex(0.6, -0.4, -0.3);
+    tetrahedron.vertices[2] = vertex(-0.1, 0.7, -0.25);
+    tetrahedron.vertices[3] = vertex(0.0, -0.05, 0.6);
     return tetrahedron;
 }
 
@@ -407,36 +570,67 @@ constexpr double body_fill = 0.35;
     const Vec3 origin, std::mt19937& engine)
 {
     BodySet set;
-    set.positions = workload == Workload::Random
-        ? random_positions(count, engine)
-        : lattice_positions(count, origin);
+    const Vec3 spacing = spacing_of(workload);
+    if (is_refined(workload)) {
+        set.positions = refined_positions(count, origin, spacing, set.levels);
+    } else if (is_lattice(workload)) {
+        set.positions = lattice_positions(count, origin, spacing);
+    } else {
+        set.positions = random_positions(count, engine);
+    }
 
-    const bool shared_record = workload == Workload::Lattice;
-    // A varying record must stay well inside the lattice cell so that the
-    // irregular workload differs from the regular one only in the records.
+    const bool shared_record = !has_per_body_records(workload) &&
+        !is_refined(workload);
+    // A body is stretched with its cell, so an anisotropic workload keeps the
+    // same fill fraction and stays strictly inside its cell on every axis.
+    const Vec3 stretch = is_anisotropic(workload)
+        ? anisotropy : Vec3{1.0, 1.0, 1.0};
+    // A varying record must stay well inside the cell so that an irregular
+    // workload differs from its regular counterpart only in the records.
     std::uniform_real_distribution<double> jitter(0.72, 1.0);
+
+    // A refined body is its parent halved, which is exact in binary, so a
+    // refined grid has exactly one distinct record per refinement level.
+    const auto level_scale = [&](const std::size_t index) {
+        return set.levels.empty() || set.levels[index] == 0 ? 1.0 : 0.5;
+    };
 
     if (geometry == Geometry::Prism) {
         const double half = body_fill * lattice_spacing;
         if (shared_record) {
-            set.sizes.push_back({half, half, half});
+            set.sizes.push_back({half * stretch.x, half * stretch.y,
+                                 half * stretch.z});
+        } else if (is_refined(workload)) {
+            set.sizes.reserve(count);
+            for (std::size_t index = 0; index < count; ++index) {
+                const double s = level_scale(index);
+                set.sizes.push_back({half * stretch.x * s,
+                                     half * stretch.y * s,
+                                     half * stretch.z * s});
+            }
         } else {
             set.sizes.reserve(count);
             for (std::size_t index = 0; index < count; ++index) {
-                set.sizes.push_back({half * jitter(engine),
-                                     half * jitter(engine),
-                                     half * jitter(engine)});
+                set.sizes.push_back({half * stretch.x * jitter(engine),
+                                     half * stretch.y * jitter(engine),
+                                     half * stretch.z * jitter(engine)});
             }
         }
     } else if (geometry == Geometry::Tetrahedron) {
         const double scale = body_fill * lattice_spacing;
         if (shared_record) {
-            set.tetrahedra.push_back(centred_tetrahedron(scale));
+            set.tetrahedra.push_back(centred_tetrahedron(scale, stretch));
+        } else if (is_refined(workload)) {
+            set.tetrahedra.reserve(count);
+            for (std::size_t index = 0; index < count; ++index) {
+                set.tetrahedra.push_back(centred_tetrahedron(
+                    scale * level_scale(index), stretch));
+            }
         } else {
             set.tetrahedra.reserve(count);
             for (std::size_t index = 0; index < count; ++index) {
                 set.tetrahedra.push_back(
-                    centred_tetrahedron(scale * jitter(engine)));
+                    centred_tetrahedron(scale * jitter(engine), stretch));
             }
         }
     }
@@ -530,8 +724,11 @@ template <typename Scalar>
          ++target_index) {
         for (std::size_t source_index = 0; source_index < source_count;
              ++source_index) {
-            const bool identity = !identities.empty() &&
-                identities[target_index] == static_cast<int>(source_index);
+            // Only a point source has its self interaction omitted, so that,
+            // and not the raw identity, is what the tensor depends on.
+            const bool omits_identity = !identities.empty() &&
+                identities[target_index] == static_cast<int>(source_index) &&
+                source == Geometry::Point;
             ExactOperatorKey key;
             key.push(targets.positions[target_index] -
                      sources.positions[source_index]);
@@ -549,7 +746,7 @@ template <typename Scalar>
                 key.push(targets.tetrahedra[targets.tetrahedra.size() == 1
                                                 ? 0 : target_index]);
             }
-            key.push(identity ? 1.0 : 0.0);
+            key.push(omits_identity ? 1.0 : 0.0);
             distinct.insert(key);
         }
     }
@@ -866,21 +1063,30 @@ int main(int argc, char** argv)
         const int threads = 1;
 #endif
 
+        // The identity map marks physical self interactions.  It is never
+        // inferred from coordinate equality, so it is only meaningful when
+        // the two sets describe the same bodies, which is also the only case
+        // in which they may share positions: a point source has no self
+        // field, and without the map a coincident point pair is an error
+        // rather than a measurement.  Independently generated sets therefore
+        // sit half a cell apart, which is what distinct sources and distinct
+        // field-evaluation targets look like in practice.
+        const bool same_bodies =
+            options.identity_map && options.sources == options.targets;
+        const Vec3 target_origin = same_bodies
+            ? Vec3{0.0, 0.0, 0.0}
+            : Vec3{0.5 * spacing_of(options.workload).x, 0.0, 0.0};
+
         std::mt19937 engine(options.seed);
         const BodySet sources = make_body_set(
             options.source, options.sources, options.workload,
             Vec3{0.0, 0.0, 0.0}, engine);
-        // Targets are generated independently, so an asymmetric plan is an
-        // ordinary configuration rather than a special case.
         const BodySet targets = make_body_set(
             options.target, options.targets, options.workload,
-            Vec3{0.0, 0.0, 0.0}, engine);
+            target_origin, engine);
 
-        // The identity map marks physical self interactions.  It is never
-        // inferred from coordinate equality, so it is only meaningful when
-        // the two sets describe the same bodies.
         std::vector<int> identities;
-        if (options.identity_map && options.sources == options.targets) {
+        if (same_bodies) {
             identities.resize(options.targets);
             for (std::size_t index = 0; index < identities.size(); ++index) {
                 identities[index] = static_cast<int>(index);
