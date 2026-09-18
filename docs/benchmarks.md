@@ -631,6 +631,64 @@ so the cost it still pays is attributable rather than visible only in the
 total; the construction timers themselves stay at zero calls on a hit, which
 is how a warm plan is distinguished from a rebuilt one.
 
+### Dense all-to-all construction matrix
+
+`DenseDirectPlan` is the exact dense baseline, and
+`benchmarks/benchmark_dense_direct_construction` measures its setup and its
+repeated evaluation as separate quantities. `CudaDenseDirectPlan` builds the
+same host plan and retains only its device copy, so the two share one
+construction path; the portable CPU and oneMKL backends share it as well and
+differ only in `evaluate()`. Construction is therefore measured once per
+geometry, not once per backend.
+
+Setup is decomposed with the internal construction records into validation,
+matrix allocation, prepared finite geometry, exact classification, tensor
+build and materialisation, and on CUDA additionally host build, context
+creation, device allocation and upload. The CSV also carries retained matrix
+bytes, transient class-map and unique-tensor bytes, persistent device bytes
+and the process peak resident set, with ns per pair for both halves so a setup
+cost can be amortised over K evaluations.
+
+`precision_conversion_seconds` is always zero and is kept as a column to say
+so: an FP32 plan quantises each tensor at the point of store, so no complete
+FP64 matrix is ever materialised and there is no separate conversion pass.
+When classification is abandoned the build and the scatter are one fused loop,
+reported entirely under `tensor_build_seconds` with `materialisation_seconds`
+zero; a row is fused exactly when `classified` is 0. Separating them there
+would need a complete `PairTensor` array, which at forty-eight bytes a pair is
+larger than the matrices themselves.
+
+Seven workloads bracket exact redundancy, and the choice matters more than it
+looks. `lattice` shares one body record on a uniform grid and reaches
+thirty- to eightyfold reuse; `lattice-irregular` and `random` give every body
+its own record and reach none at all, because in an all-to-all plan every pair
+holds a unique pair of records. `refined` replaces one octant's cells by their
+eight children, and `anisotropic` stretches the spacing and the bodies; both
+land between the extremes, and `refined-anisotropic` at about fivefold.
+Anisotropy is not cosmetic: the far-separation switch keys on a body's
+circumradius, so elongating a body moves the boundary between the analytical
+surface integrals and the quadrature, and a spacing that is not exactly
+representable makes equal index differences round to different displacement
+bits, which raises the distinct-operator count severalfold. A measurement
+taken only on an isotropic unit lattice overstates what exact reuse is worth.
+
+`--probe-redundancy` counts distinct exact operator inputs with the production
+key and no sampling gate, so a geometry's redundancy is measured rather than
+assumed. `--checksum` hashes the six matrices, which is how a construction
+change is held to bitwise equality rather than to a tolerance.
+
+`benchmarks/run_dense_construction_matrix.py --binary <binary> --output <csv>
+--preset {quick,geometry-matrix,sizes,asymmetric,threads,anisotropy}` drives
+the sweep one process per row, so a row's peak resident set belongs to that
+row alone and a row that exhausts memory cannot take the sweep with it. It
+resumes an existing CSV and refuses a row whose matrices exceed
+`--max-matrix-bytes`, because dense storage is `6 * Ns * Nt * scalar_bytes`
+and reaches 1.6 GB at `Ns = Nt = 4096` in FP64. Sources and targets are
+generated independently, so `--targets` differing from `--sources` is an
+ordinary row; without an identity map the two sets are placed half a cell
+apart, since a point source has no self field and an unmapped coincident
+point pair is a singular configuration rather than a measurement.
+
 ## Reproducible optimisation configuration
 
 Release builds enable LTO and native CPU instruction selection by default:

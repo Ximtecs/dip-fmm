@@ -524,6 +524,20 @@ availability query. The private dense-direct workspace keeps reusable staging
 arrays beside execution while the public `DenseDirectPlan` remains a
 source-compatible façade with value semantics.
 
+Dense construction prepares each distinct finite record once, groups pairs by
+exact operator inputs, builds one tensor per group and scatters it into the
+entry each pair already owned. The equivalence it groups by is owned by
+`src/operators/exact_operator_reuse.hpp`, shared with the canonical near-field
+builder so the two cannot drift apart on what "the same operator" means; that
+header owns no mathematics and no storage layout, so which values enter a key
+and where a built tensor is written stay with each caller. `CudaDenseDirectPlan`
+builds a complete host `DenseDirectPlan` and retains only its device copy, so
+host construction serves the portable CPU, oneMKL and CUDA backends alike.
+Per-phase construction timings are recorded in internal records under
+`src/plan/direct/` and `src/backend/cuda/direct/`, which the in-tree benchmark
+reads through `src/`; they are deliberately not part of the public plan
+interface.
+
 CUDA direct execution follows the same boundary. The canonical public headers
 are `include/cdfmm/backend/cuda/direct.hpp` and
 `include/cdfmm/backend/cuda/dense_direct.hpp`; the legacy

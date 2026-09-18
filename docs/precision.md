@@ -56,7 +56,10 @@ Those mathematical conventions are defined in
 `DenseDirectPlan` applies the same selected storage/execution scalar to its six
 immutable pair-tensor matrices and private reusable component staging. The
 portable CPU GEMV and oneMKL SGEMV/DGEMV backends are alternative executors
-over those same matrices.
+over those same matrices. An FP32 dense plan quantises each analytically
+constructed tensor at the point of store; it never materialises a complete
+FP64 matrix and then converts it, so there is no separate conversion pass and
+no transient FP64 copy of the plan.
 Analytical cuboid construction remains FP64 because its logarithm, inverse
 hyperbolic sine, arctangent, square-root, and cancellation-sensitive formulas
 need that setup precision.

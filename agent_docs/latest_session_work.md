@@ -1,5 +1,77 @@
 # Latest session work
 
+## 2026-09-18 — Dense/all-to-all construction optimization (Phase 3C.5)
+
+Starting HEAD `cefc975` on the worktree branch `phase3c-construction`, a
+fast-forward descendant of `refactor/architecture-v0.2` carrying the nine
+Phase-3C commits; work was done on `phase3c5-dense-construction`. Question
+answered with measurements: how quickly can the exact dense all-to-all plan be
+built, and how much of Phase 3C's construction strategy transfers to it?
+
+Answer: most of it, with one sharper limit and one caveat Phase 3C did not
+have. The audit found that `CudaDenseDirectPlan` builds a complete host
+`DenseDirectPlan` and uploads it, and that portable CPU and oneMKL share that
+same constructor, so there is one construction path for all three backends;
+that FP32 quantises at the point of store and never materialises an FP64
+matrix, so there is no conversion pass to optimise; and that the pair loop was
+already parallel, so parallelism was not the missing piece. What was missing
+was reuse: the constructor evaluated one exact tensor per pair although a pair
+tensor is a pure function of the displacement, the two body records and
+whether the pair is an omitted point self interaction. It now classifies by
+those bits, builds each distinct operator once in parallel, and scatters.
+
+Cold construction, eight P-cores, bit-identical output throughout: prism
+lattice 512² 3.07 s -> 0.046 s (67x), asymmetric 1024x512 6.07 s -> 0.072 s
+(85x), tetrahedron-prism lattice 256² 7.42 s -> 0.128 s (58x), tetrahedron
+lattice 256² 3.30 s -> 0.087 s (38x), prism-to-point 1024² 0.34 s -> 0.024 s
+(14x). CUDA inherits the same figures because it delegates to the host plan.
+Repeated evaluation is unchanged at 0.94-1.02x across portable CPU, oneMKL and
+CUDA in both precisions.
+
+Two limits are honest rather than incidental. Point-to-point never classifies:
+a point pair costs about 4 ns against 260 ns for the cheapest finite pair, so
+the lookup would cost more than the arithmetic, and 77x redundancy is left
+unexploited deliberately. Irregular geometry has no reuse *at all*, because in
+an all-to-all plan every pair holds a unique combination of records — a
+sharper limit than the FMM near field, where a neighbourhood list still left
+19.7x on irregular prisms.
+
+Two findings came from widening the workloads mid-phase rather than from the
+original plan. Anisotropic spacing costs reuse through floating-point rounding
+alone: `spacing * a - spacing * b` rounds differently with magnitude once the
+spacing is not exactly representable, so fifteen index differences become
+thirty-three distinct displacement bit patterns and a point plan's distinct
+count rises 4.5x. Reuse stays exact, it simply finds less, and `DenseDirectPlan`
+has no canonical-grid normalisation to hide it. And a locally refined grid —
+one octant subdivided, which is what a real discretisation looks like — sits
+at about 5.5x reuse, in the band between the two extremes. The classification
+gate was first written as a fixed eightfold reuse requirement justified by the
+two extremes alone, and it discarded exactly that case: an exact
+prism-to-tetrahedron build stayed at 5.11 s when 0.91 s was available. The gate
+is now a byte budget on transient tensor storage, half the matrix bytes the
+plan retains anyway, which keeps those cases and still bounds the memory.
+
+Also accepted: the Phase-3C exact-equivalence machinery moved to a shared
+internal header so the near-field and dense builders cannot drift apart on
+what "the same operator" means, and a tetrahedron's point-field geometry is now
+derived once per record rather than at each of the 216 quadrature nodes. The
+latter was predicted to dominate tetrahedron-source far pairs and is worth
+about 9%; it is bit-identical and free so it stays, but the measurement, not
+the prediction, decided it.
+
+Correctness is bitwise against the pinned starting-SHA build over 150
+configurations, including asymmetric counts, partial identity maps and
+throwing configurations compared on their message.
+`tests/test_dense_direct_exact_reuse.cpp` pins the same contract at the lowest
+layer. No public API, C ABI, Python API, Fortran interface or cache format
+changed; the construction diagnostics the benchmark reads are internal to
+`src/`.
+
+Full detail, including rejected options and the CUDA setup decomposition, is in
+`agent_docs/performance_optimization.md` under "Dense/all-to-all construction
+optimization (Phase 3C.5)".
+
+
 ## 2026-09-18 — Static-plan construction and plan preparation (Phase 3C)
 
 Starting HEAD `a2af367` on `refactor/architecture-v0.2`, which

@@ -83,7 +83,27 @@ operators by two orders of magnitude, with byte-identical persisted plans
 throughout. No cache format, cache key, C ABI, Python API or Fortran
 interface changed; the canonical near-field build for point plans was
 deliberately left in place, because skipping it would change cache contents
-under a key that distinguishes neither packing nor backend. 3D the final
+under a key that distinguishes neither packing nor backend. **Phase 3C.5
+(dense/all-to-all construction) is also COMPLETE.** The same invariant carries
+to the exact dense baseline, which Phase 3C had not touched: a dense pair
+tensor is a pure function of the displacement, the two body records and
+whether the pair is an omitted point self interaction, so `DenseDirectPlan`
+now prepares each distinct finite record once, groups pairs by those exact
+bits, builds one tensor per group in parallel and scatters. The equivalence
+itself moved to `src/operators/exact_operator_reuse.hpp`, shared with the
+canonical near-field builder. Cold dense construction falls 38-85x on regular
+geometry and 5-13x on locally refined geometry, bit-identically, with repeated
+evaluation unchanged at 0.94-1.02x on portable CPU, oneMKL and CUDA; CUDA
+inherits the gain because it builds a host plan and uploads it. Two limits are
+structural and are recorded rather than worked around: point-to-point plans
+never classify, because a point pair costs about 4 ns against about 260 ns for
+the cheapest finite pair, and irregular geometry has no exact reuse at all,
+because every pair of an all-to-all plan holds a unique combination of
+records. Exact reuse also finds less on a lattice whose spacing is not exactly
+representable, since equal index differences then round to different
+displacement bits; dense plans have no canonical-grid normalisation, so that
+rests on the caller's geometry. No public API, C ABI, Python API, Fortran
+interface or cache format changed. 3D the final
 cross-backend review is NEXT, and Phase 4 repository pruning follows. Do not
 begin benchmark redesign or repository pruning as a side effect of another
 change.

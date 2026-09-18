@@ -1,5 +1,75 @@
 # Project progress
 
+## Dense/all-to-all construction optimization (Phase 3C.5): COMPLETE — 2026-09-18
+
+Starting HEAD `cefc975`. Phase 3C optimised the FMM hierarchy's construction
+and left `DenseDirectPlan`, the exact dense all-to-all baseline, untouched.
+The audit found one construction path serving all three backends —
+`CudaDenseDirectPlan` builds a complete host plan and uploads it, and portable
+CPU and oneMKL differ only in `evaluate()` — an FP32 path that quantises at
+the point of store and so has no conversion pass to optimise, and a pair loop
+that was already parallel. What was missing was reuse: one exact tensor was
+evaluated per pair, although a pair tensor is a pure function of the
+displacement, the two body records and whether the pair is an omitted point
+self interaction. Construction now prepares each distinct finite record once,
+classifies pairs by those exact bits, builds one tensor per class in parallel
+and scatters into the entries each pair already owned.
+
+Cold construction, eight P-cores, output bit-identical throughout: prism
+lattice 512² 3.07 s -> 0.046 s (67x), asymmetric 1024x512 6.07 s -> 0.072 s
+(85x), tetrahedron-prism lattice 256² 7.42 s -> 0.128 s (58x), tetrahedron
+lattice 256² 3.30 s -> 0.087 s (38x), prism-to-point 1024² 0.34 s -> 0.024 s
+(14x). A locally refined grid reaches 10-13x and a refined anisotropic one
+5.4-5.7x. CUDA inherits these because it delegates to the host plan; its
+context creation and device allocation are a fraction of a millisecond and the
+upload is 1% or less of setup for every finite geometry. Repeated evaluation
+is unchanged at 0.94-1.02x across portable CPU, oneMKL and CUDA in both
+precisions. Where reuse cannot help the parallel build scales 7.9-8.0x on
+eight cores.
+
+Two limits are structural rather than incidental, and both are recorded with
+their numbers. Point-to-point plans never classify: a point pair costs about
+4 ns against 260 ns for the cheapest finite pair, so the key lookup would cost
+more than the arithmetic it saves, and 77x redundancy is deliberately left
+unexploited. Irregular geometry has no exact reuse at all, because in an
+all-to-all plan every pair holds a unique combination of source and target
+record — a sharper limit than the FMM near field, where a neighbourhood list
+still left 19.7x on irregular prisms.
+
+Widening the workloads mid-phase changed two conclusions. Anisotropic spacing
+costs reuse through floating-point rounding alone: once the spacing is not
+exactly representable, equal index differences no longer produce equal
+displacement bits, and a point plan's distinct-input count rises 4.5x. Reuse
+stays exact and results stay bit-identical; it simply finds less, and unlike
+the FMM path `DenseDirectPlan` has no canonical-grid normalisation to hide it,
+so bitwise agreement rests on how the caller generated its positions. And a
+locally refined grid sits at about 5.5x reuse, between the two extremes the
+original workloads reported. The classification gate had been written as a
+fixed eightfold reuse requirement justified by those extremes alone, and it
+discarded exactly that case: an exact prism-to-tetrahedron build stayed at
+5.11 s when 0.91 s was available. The gate is now a byte budget on transient
+tensor storage — half the matrix bytes the plan retains anyway — which keeps
+the intermediate cases and still bounds the memory; the worst measured
+transient ratio is 0.35 against a cap of 0.5.
+
+Correctness is bitwise against the pinned starting-SHA build over 150
+configurations: nine geometry pairs, seven workloads, both precisions,
+asymmetric counts, and plans with and without an identity map, with throwing
+configurations compared on their exception message.
+`tests/test_dense_direct_exact_reuse.cpp` pins the contract at the lowest
+layer, including one-ULP inputs that must not alias and the identity semantics
+that must come from the map rather than from coordinates. No public API, C
+ABI, Python API, Fortran interface or cache format changed; the construction
+diagnostics the benchmark reads are internal to `src/`.
+
+`benchmarks/benchmark_dense_direct_construction` and
+`run_dense_construction_matrix.py` remain in tree for Article1: they report
+setup and repeated evaluation separately, decomposed by phase, with host and
+device bytes and ns per pair for both halves.
+
+**Phase 3D, the final cross-backend review, is NEXT.**
+
+
 ## Static-plan construction and plan preparation (Phase 3C): COMPLETE — 2026-09-18
 
 Starting HEAD `a2af367`. Cold plan construction was dominated by building the

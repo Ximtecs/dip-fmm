@@ -3280,3 +3280,385 @@ In rough order of what a user would notice.
    there would shorten the key from nine words to three for a common-size
    prism plan. Worth a small part of the canonical stage and not taken,
    because the stage is no longer dominated by the classification.
+
+## Dense/all-to-all construction optimization (Phase 3C.5)
+
+### Question, starting point and method
+
+Phase 3C optimised static-plan construction for the FMM hierarchy. It did not
+touch `DenseDirectPlan`, the exact dense all-to-all baseline, which builds six
+immutable `Nt x Ns` matrices from the analytical pair tensors and applies them
+with nine GEMVs per evaluation. This phase asks how quickly that plan can be
+made, and how much of the Phase-3C construction strategy actually transfers to
+it.
+
+Starting HEAD `cefc975` ("docs(perf): state what the Phase 3C baseline does
+and does not cover"), a fast-forward descendant of
+`refactor/architecture-v0.2` carrying the nine Phase-3C commits. Work was done
+on the worktree branch `phase3c5-dense-construction`.
+
+Hardware: Intel i9-14900KF, eight P-cores for every controlled measurement
+(`OMP_NUM_THREADS=8`, `OMP_PLACES={0},{2},{4},{6},{8},{10},{12},{14}`,
+`OMP_PROC_BIND=close`); NVIDIA RTX 5090 (sm_120, 32 GB). Toolchain pinned
+rather than inherited: g++ 15.3.0 from the `cdfmm` conda environment for C++
+and as the `nvcc` host compiler, CUDA 13.2/13.3, oneMKL 2026.1, with the
+environment's `icpx`/`icx`/`NVCC_PREPEND_FLAGS` defaults unset for every build
+tree.
+
+Method. A pinned worktree at the pre-change commit was built in the same
+session and with the same benchmark source, so every baseline number here was
+measured rather than remembered, and the comparison is baseline binary against
+final binary on an otherwise idle machine. Correctness is bitwise: the
+benchmark hashes the raw bytes of the six matrices, so a construction change
+that reorders the work must leave that hash unchanged.
+
+### Constructor architecture (the audit that decided the work)
+
+Ten questions were asked of the baseline before anything was changed.
+
+1. The six components are computed inline in the constructor, one `PairTensor`
+   per `(target, source)` pair, dispatched by geometry to
+   `operators::p2p::build_pair` or one of the five tetrahedron entry points.
+2. **CPU and CUDA share host construction.** `CudaDenseDirectPlan` constructs a
+   complete host `DenseDirectPlan` and retains only its device copy. The
+   portable CPU and oneMKL backends share it too and differ only in
+   `evaluate()`. There is therefore one construction path for all three
+   backends, and construction is measured once per geometry rather than once
+   per backend.
+3. **FP32 does not build FP64 first.** Each tensor is quantised at the point of
+   store with `static_cast<Scalar>`; no complete FP64 matrix is ever
+   materialised and there is no separate conversion pass to optimise. The
+   benchmark keeps a `precision_conversion_seconds` column, always zero, to
+   record that.
+4. Self and identity semantics: a pair is an omitted self interaction only when
+   the explicit identity map names it *and* the effective source geometry is a
+   point dipole. Finite self interactions keep their physical tensor. Nothing
+   is inferred from coordinate equality.
+5. **Geometry was prepared per pair, not per body.** A tetrahedron pair called
+   `prepare_tetrahedron` on both bodies every time; a mixed prism/tetrahedron
+   pair called `prepare_polyhedron_body` on both, which heap-allocates four
+   vectors. All of it is a pure function of the record.
+6. The pair loop was already OpenMP-parallel, `schedule(static)` above 256
+   pairs. Parallelism was not the missing piece.
+7. Storage is six separate target-major vectors, entry `target * Ns + source`.
+8. Temporaries were one stack `PairTensor` per pair plus the per-pair heap
+   allocations of item 5.
+9. CUDA uploads exactly the final dense representation, six `cudaMemcpyAsync`
+   calls from pageable host memory.
+10. oneMKL and portable CPU do not differ in construction at all.
+
+### Exact redundancy
+
+An exact dense pair tensor is a pure function of the displacement, the two
+body records, and whether the pair is an omitted point self interaction.
+Counted with the production key and no sampling gate:
+
+| workload | pairs | distinct exact inputs | reuse |
+|---|---|---|---|
+| lattice, point->point 512^2 | 262,144 | 3,375 | 77.7x |
+| lattice, prism->prism 256^2 | 65,536 | 1,723 | 38.0x |
+| lattice, tetra->tetra 192^2 | 36,864 | 1,243 | 29.7x |
+| anisotropic, prism->prism 256^2 | 65,536 | 4,595 | 14.3x |
+| refined, prism->prism 256^2 | 65,536 | 5,418 | 12.1x |
+| refined, tetra->tetra 192^2 | 36,864 | 3,646 | 10.1x |
+| refined-anisotropic, prism->prism 256^2 | 65,536 | 11,614 | 5.6x |
+| refined-anisotropic, tetra->tetra 192^2 | 36,864 | 6,734 | 5.5x |
+| lattice-irregular, any pair | 65,536 | 65,536 | 1.0x |
+| random, any pair | 65,536 | 65,536 | 1.0x |
+
+Two rows of that table matter more than the headline ones.
+
+**Irregular geometry has no reuse at all, and that is arithmetic rather than a
+defect.** In an all-to-all plan every pair holds a unique combination of source
+record and target record, so a per-body record makes every key unique by
+construction. This differs from the FMM near field, where Phase 3C still found
+19.7x on irregular prisms, because a near-field list pairs only nearby bodies.
+The mechanism's limit here is sharper than it was there.
+
+**Anisotropy costs reuse, through floating-point rounding rather than
+geometry.** Stretching the lattice raises the distinct-input count of a point
+plan 4.5x. The cause is exact: on a unit lattice, integer coordinates subtract
+exactly, so fifteen index differences give fifteen distinct displacement bit
+patterns; with a spacing of 0.4 or 2.2, `spacing * a - spacing * b` rounds
+differently with magnitude, and the same fifteen index differences give
+thirty-three and thirty-one distinct patterns. The measured 15,345 distinct
+displacements is exactly `15 * 33 * 31`. Reuse stays exact and the results stay
+bit-identical; it simply finds less. `DenseDirectPlan` has no coordinate
+normalisation to hide this — the FMM path's canonical grid is a property of
+tree construction, not of the dense plan — so bitwise agreement for a dense
+plan rests entirely on how the caller generated its positions. A measurement
+taken only on an isotropic unit lattice overstates what exact reuse is worth,
+and this study would have reported such a number had the anisotropic workloads
+not been added.
+
+### Accepted: `perf(direct): build each exact dense pair tensor once`
+
+The constructor now prepares each distinct finite record once, classifies
+pairs by exact operator inputs, builds one tensor per class in parallel with a
+`dynamic` schedule, and scatters with a `static` one into the entries each
+pair already owned. Both paths share a single tensor-valued lambda, so the
+classified and unclassified builds cannot drift apart.
+
+Two policy decisions, both measured.
+
+**Point-to-point plans never classify.** A point pair costs about 4 ns; the
+cheapest finite pair — point-to-prism or point-to-tetrahedron — costs about
+260 ns; a key lookup costs tens of nanoseconds. Classification would be most
+of a point plan's build and is negligible beside any finite one. The supported
+geometries separate by two orders of magnitude with nothing in between, so
+"some side is finite" is a measured predicate rather than an arbitrary rule
+about geometry. Point plans keep 77x redundancy unexploited on purpose: taking
+it would cost more than the arithmetic it saves.
+
+**The gate caps transient tensor storage in bytes, not as a reuse ratio.** The
+distinct tensors are held until they are scattered, so what must be bounded is
+their storage; the cap is half the matrix bytes the plan retains anyway, which
+is `pairs/4` classes in FP32 and `pairs/2` in FP64.
+
+That distinction was not cosmetic, and getting it wrong was this phase's one
+substantive design error. The gate was first written as a fixed eightfold
+reuse requirement, justified by the observation that the then-available
+workloads sat either at no reuse or above thirtyfold, "never in between". The
+locally refined anisotropic grid — a regular grid with one octant subdivided,
+which is what a real discretisation looks like — sits at 5.5x, and the
+eightfold gate discarded it: an exact prism-to-tetrahedron build stayed at
+5.11 s when 0.91 s was available. The byte budget keeps those cases and still
+provides the bound the ratio was there to provide. The lesson is recorded
+because the failure mode is general: a threshold interpolated between two
+extremes is a guess about the middle, and the middle is where real geometry
+lives.
+
+### Accepted: `perf(geometry): derive a tetrahedron's point field once per record`
+
+`tetrahedron_magnetisation_tensor` re-derived the volume, the largest edge
+length and all four face frames on every evaluation, although each is a pure
+function of the record, and the far-separation quadrature evaluates one source
+at 216 nodes. The derivation is now split from the evaluation
+(`PreparedTetrahedronPointField`, `prepare_tetrahedron_point_field`,
+`tetrahedron_point_tensor_prepared`), the quadrature prepares its source once,
+and the record-level entry point is the two composed, so its cost and its
+result are unchanged.
+
+This was predicted to be the dominant remaining cost for tetrahedron sources
+and it is not: it is worth about 9% of a tetrahedron-source far pair. The
+216-node quadrature is dominated by the target-dependent edge and solid-angle
+primitives, not by the frame construction. It is pure code motion, bit-
+identical and free, so it stays, but the prediction was wrong and the
+measurement is what settled it. The prepared-body hoisting in the dense
+constructor is similarly worth 0-4% on its own.
+
+### Accepted: `refactor(operators): share the exact operator classification`
+
+The exact-equivalence key, its first-seen classification, its sampling gate
+and the lowest-index failure report moved from the anonymous namespace of
+`src/operators/p2p.cpp` to `src/operators/exact_operator_reuse.hpp`, so the
+near-field and dense builders cannot drift apart on what "the same operator"
+means. The header owns the equivalence and owns no mathematics and no storage
+layout. The gate's sample size, reuse factor and class cap became parameters,
+because the right values depend on the caller's per-pair cost. The
+endpoint-operator copy in `src/fmm/plan_preparation.cpp` is keyed on a
+leaf-relative offset and was deliberately left alone: folding it in would be
+an abstraction refactor beyond this phase.
+
+### Rejected
+
+**Pinned staging for the CUDA upload.** The upload runs from pageable host
+memory at about 14.5 GB/s; pinned staging would reach roughly 25 GB/s. It is
+not worth it. Measured below, the upload is 1% or less of setup for every
+finite geometry, where setup actually costs something, and 38% only for
+point-to-point, whose entire setup is 17 ms. Buying a few milliseconds there
+would cost either a 96 MB pinned staging buffer or a chunked upload, against
+Phase M's instruction not to grow an already-large plan's peak memory.
+
+**Reciprocity between the triangular halves.** Not pursued. The dense plan
+admits independently generated source and target sets with different counts
+and different geometry families, so the symmetric case is a special case of
+the general one rather than the other way round; exploiting it would add a
+branch on the general path to help one configuration, and exact reuse already
+collapses the symmetric lattice cases by 38-80x without any symmetry argument.
+
+**Splitting build from scatter when classification is abandoned.** It would
+need a complete `PairTensor` array, forty-eight bytes a pair, larger than the
+FP32 matrices themselves. Those rows stay a fused loop and the benchmark says
+so rather than reporting a zero.
+
+**Changing the prism `long double` policy.** Out of scope and unnecessary: for
+the same reason Phase 3C gave, the exact prism arithmetic now runs once per
+distinct operator on regular geometry, and on irregular geometry the phase's
+rule against buying construction speed with a numerical-contract change still
+holds.
+
+### CPU results
+
+Cold construction, eight P-cores, baseline binary against final binary in one
+session. Every row is bit-identical between the two.
+
+| case | baseline | final | speedup |
+|---|---|---|---|
+| prism->prism lattice 512^2 FP32 | 3.069 s | 0.0458 s | 67.0x |
+| prism->prism lattice 512^2 FP64 | 3.071 s | 0.0458 s | 67.0x |
+| prism->prism asymmetric 1024x512 FP32 | 6.066 s | 0.0715 s | 84.8x |
+| tetra->prism lattice 256^2 FP32 | 7.423 s | 0.1283 s | 57.9x |
+| prism->tetra lattice 256^2 FP32 | 7.791 s | 0.1586 s | 49.1x |
+| tetra->tetra lattice 256^2 FP32 | 3.296 s | 0.0873 s | 37.8x |
+| tetra->tetra lattice 256^2 FP64 | 3.298 s | 0.0876 s | 37.6x |
+| prism->point lattice 1024^2 FP32 | 0.3378 s | 0.0245 s | 13.8x |
+| point->prism lattice 512^2 FP32 | 0.0816 s | 0.0065 s | 12.5x |
+| tetra->point lattice 512^2 FP32 | 0.0677 s | 0.0088 s | 7.7x |
+| point->tetra lattice 512^2 FP32 | 0.0676 s | 0.0094 s | 7.2x |
+| point->point lattice 1024^2 FP32 | 0.0060 s | 0.0060 s | 1.0x |
+| point->point lattice 1024^2 FP64 | 0.0123 s | 0.0121 s | 1.0x |
+
+Intermediate redundancy, which is where real discretisations sit:
+
+| case | baseline | final | speedup |
+|---|---|---|---|
+| prism->tetra refined 384x192 FP64, no identity map | 8.448 s | 0.6353 s | 13.3x |
+| prism->prism refined 256^2 FP32 | 0.7753 s | 0.0658 s | 11.8x |
+| prism->tetra refined 192^2 FP32 | 4.566 s | 0.3798 s | 12.0x |
+| tetra->tetra refined 192^2 FP32 | 1.800 s | 0.1755 s | 10.3x |
+| tetra->prism refined-anisotropic 192^2 FP64 | 5.104 s | 0.8910 s | 5.7x |
+| prism->tetra refined-anisotropic 192^2 FP32 | 5.111 s | 0.9055 s | 5.6x |
+| prism->prism refined-anisotropic 256^2 FP32 | 0.7620 s | 0.1375 s | 5.5x |
+| tetra->tetra refined-anisotropic 192^2 FP32 | 1.579 s | 0.2935 s | 5.4x |
+| prism->point refined-anisotropic 384^2 FP32 | 0.0479 s | 0.0126 s | 3.8x |
+
+No reuse available, where the gate abandons and only the schedule and the
+prepared geometry remain:
+
+| case | baseline | final | speedup |
+|---|---|---|---|
+| prism->prism lattice-irregular 512^2 FP32 | 3.032 s | 3.035 s | 1.0x |
+| prism->prism random 512^2 FP32 | 3.043 s | 3.041 s | 1.0x |
+| tetra->tetra lattice-irregular 256^2 FP32 | 3.429 s | 3.118 s | 1.1x |
+| prism->tetra lattice-irregular 256^2 FP32 | 7.165 s | 6.879 s | 1.0x |
+
+### CUDA results
+
+`CudaDenseDirectPlan` delegates its exact tensors to a host plan, so it
+inherits the host speedup exactly: prism->prism lattice 512^2 FP32 falls from
+3.070 s to 0.0467 s (65.8x), tetra->tetra lattice 256^2 FP32 from 3.302 s to
+0.0882 s (37.4x), prism->point lattice 1024^2 FP32 from 0.3353 s to 0.0266 s
+(12.6x), and point->point is unchanged. Setup decomposition at the final HEAD:
+
+| configuration | total | host build | context | allocation | H2D | device |
+|---|---|---|---|---|---|---|
+| point->point lattice 2048^2 FP32 | 0.0173 s | 0.0098 s | 0.0003 s | 0.0006 s | 0.0066 s | 96.0 MiB |
+| point->point lattice 2048^2 FP64 | 0.0790 s | 0.0590 s | 0.0002 s | 0.0005 s | 0.0135 s | 192.1 MiB |
+| prism->prism lattice 1024^2 FP32 | 0.1124 s | 0.1104 s | 0.0002 s | 0.0005 s | 0.0013 s | 24.0 MiB |
+| prism->prism lattice 1024^2 FP64 | 0.1167 s | 0.1129 s | 0.0002 s | 0.0006 s | 0.0031 s | 48.0 MiB |
+| tetra->tetra lattice 512^2 FP32 | 0.1800 s | 0.1790 s | 0.0001 s | 0.0005 s | 0.0003 s | 6.0 MiB |
+| tetra->tetra lattice 512^2 FP64 | 0.1803 s | 0.1791 s | 0.0001 s | 0.0004 s | 0.0006 s | 12.0 MiB |
+
+Phase J's instruction was to optimise host construction first and then measure
+the upload, and the table confirms that was the right order: context creation
+and device allocation are a fraction of a millisecond throughout, and the
+upload only becomes visible for point-to-point, whose host build is trivial.
+No CUDA evaluation kernel changed. The only CUDA construction change is that
+the upload's stream synchronisation moved inside each precision branch so it
+can be timed; it still executes exactly once.
+
+### Thread scaling
+
+Cold construction on one, two, four and eight pinned P-cores, final HEAD:
+
+| builder | 1 | 2 | 4 | 8 | 8-thread |
+|---|---|---|---|---|---|
+| prism->prism lattice-irregular 512^2, fused | 24.303 s | 12.111 s | 6.062 s | 3.036 s | 8.00x |
+| tetra->tetra lattice-irregular 256^2, fused | 24.472 s | 12.193 s | 6.094 s | 3.113 s | 7.86x |
+| prism->tetra refined-anisotropic 192^2, classified | 7.124 s | 3.547 s | 1.774 s | 0.901 s | 7.90x |
+| prism->prism lattice 512^2, classified | 0.3204 s | 0.1635 s | 0.0855 s | 0.0460 s | 6.97x |
+| point->point random 2048^2, fused and cheap | 0.0609 s | 0.0420 s | 0.0323 s | 0.0282 s | 2.16x |
+
+The two mechanisms divide the work as intended. Where reuse cannot help, the
+parallel build carries the case and scales essentially linearly. Where reuse
+has already collapsed the build, what is left is the serial classification
+pass, which caps the classified lattice row at 7.0x — on a build that is
+already 67x faster, so the scaling loss costs nothing absolute. The cheap
+point row is memory-bandwidth bound: it writes 96 MB of matrices and there is
+almost no arithmetic to overlap with that, which is a property of the problem
+rather than of the schedule.
+
+### Memory
+
+Retained and transient bytes at the final HEAD. Transient is the class map
+plus the distinct built tensors plus the prepared bodies.
+
+| configuration | matrices | class map | tensors | transient | transient/matrices |
+|---|---|---|---|---|---|
+| prism->prism lattice 2048^2 FP32 | 96.0 MB | 16.06 MB | 0.69 MB | 16.75 MB | 0.17 |
+| prism->prism lattice 2048^2 FP64 | 192.0 MB | 16.06 MB | 0.69 MB | 16.75 MB | 0.09 |
+| prism->prism refined-anisotropic 1024^2 FP32 | 24.0 MB | 4.33 MB | 3.99 MB | 8.32 MB | 0.35 |
+| tetra->tetra lattice 1024^2 FP32 | 24.0 MB | 4.03 MB | 0.33 MB | 4.36 MB | 0.18 |
+| prism->prism lattice-irregular 1024^2 FP32 | 24.0 MB | 0 | 0 | 0 | 0.00 |
+| point->point lattice 4096^2 FP32 | 384.0 MB | 0 | 0 | 0 | 0.00 |
+| point->point lattice 4096^2 FP64 | 768.0 MB | 0 | 0 | 0 | 0.00 |
+
+The byte budget holds with margin: the worst measured ratio is 0.35 against a
+cap of 0.5, and the unclassified paths hold nothing transient at all. Peak
+resident set tracks the matrices plus a constant ~215 MB of loaded vendor
+runtime in the combined CPU/CUDA/oneMKL benchmark binary, so the meaningful
+quantity is the delta rather than the absolute figure.
+
+### Repeated-evaluation regression gate
+
+Repeated evaluation must not pay for setup. Baseline against final, same
+session, for point->point, prism->point, prism->prism and tetra->tetra on
+portable CPU, oneMKL and CUDA in both precisions: every ratio lies in
+0.94-1.02x, which is run-to-run variance on this machine.
+
+One row first read 0.40x, which would have been a 2.5x evaluation speedup that
+no change in this phase could explain. Repeating it with more warmups showed
+baseline and final agreeing at about 0.13 ms; the original figure was a
+first-call oneMKL warm-up inside that one process. It is recorded here because
+the correct response to an implausibly good number is to re-measure it, not to
+report it.
+
+### Correctness
+
+The six matrices are compared **bit for bit** against the pinned starting-SHA
+build, over 150 configurations: nine geometry combinations x seven workloads x
+FP32 and FP64, plus asymmetric counts, plans with and without an identity map,
+and both precisions of each. All identical. Configurations that throw are
+compared on their exception message rather than skipped, so the failure paths
+are held to the same standard as the successful ones.
+
+`tests/test_dense_direct_exact_reuse.cpp` pins the contract at the lowest
+layer: every geometry combination reproduces the per-pair geometry function
+bitwise; a one-ULP prism half-size, displacement or tetrahedron vertex still
+reaches the tensor so near-equal inputs are never merged; a mapped point self
+interaction is omitted while a mapped finite one keeps its physical tensor;
+two bodies at one place with different identities are an ordinary coincident
+interaction; a partial identity map omits exactly the pairs it names;
+asymmetric counts with no identity map behave as the general case; and
+repeated construction is bit-identical.
+
+Writing those tests found that an unmapped point target may not sit on a
+source — a point source has no self field, so that is a singular pair rather
+than an omitted one, and the constructor correctly rejects it. The test says
+so explicitly rather than encoding the mistake.
+
+### Remaining bottlenecks
+
+1. **Irregular and random geometry.** 3-7 s at the sizes measured, with no
+   exact duplicate to find, because every pair of an all-to-all plan holds a
+   unique pair of records. The build is parallel and scales 7.9-8.0x on eight
+   cores, so the only levers left are in the exact tensor mathematics itself —
+   principally the 216-node far-separation quadrature and the recursive
+   triangle-pair integrals.
+2. **Caller-dependent bitwise agreement.** Dense reuse finds less on a lattice
+   whose spacing is not exactly representable, purely through rounding. A
+   canonical-grid normalisation like the FMM path's would recover it, but that
+   changes what a dense plan computes from what the caller supplied and is not
+   a construction optimisation; it needs its own decision.
+3. **The serial classification pass** caps classified builds at about 7x on
+   eight cores. It is a single pass over the pairs building a hash table, and
+   it is only visible once the build it enables has become 40-80x faster.
+4. **Matrix allocation** is 62% of a point-to-point plan's construction: the
+   six `resize` calls zero 96-768 MB that the build then overwrites entirely.
+   A non-zeroing allocation would remove it, but `std::vector` cannot express
+   that without a custom allocator.
+5. **Point plans leave 77x redundancy unexploited**, correctly, because the
+   arithmetic is cheaper than the lookup. A cheaper key — the displacement
+   alone, three words, when the whole plan shares one record — might change
+   that balance, and was not attempted.

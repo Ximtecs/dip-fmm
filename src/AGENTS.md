@@ -37,8 +37,16 @@ src/
 |-- operators/point_expansion_kernel.hpp    procedural point P2M/L2P kernels and
 |                                          their per-mode factor tables, shared
 |                                          by the CPU and CUDA executors
+|-- operators/exact_operator_reuse.hpp      bitwise exact-operator equivalence,
+|                                          its first-seen classification and
+|                                          gate, shared by the canonical
+|                                          near-field and dense builders
 |-- plan/precision.cpp                       FP64-to-FP32 static conversion
-|-- plan/direct/dense.cpp                   dense-direct plan preparation
+|-- plan/direct/dense.cpp                   dense-direct plan preparation:
+|                                          prepared records, exact grouping,
+|                                          one build per class, scatter
+|-- plan/direct/construction_statistics.hpp internal per-phase construction
+|                                          record read by the benchmark
 |-- plan/p2p/                               canonical and derived P2P packings
 |-- periodic.cpp                            periodic support code
 |-- fmm/construction.cpp                    geometry normalisation/construction
@@ -73,6 +81,9 @@ src/
 |-- backend/cuda/common/error.hpp           shared CUDA error helpers
 |-- backend/cuda/common/runtime.{hpp,cu}    CUDA runtime helpers
 |-- backend/cuda/direct/{direct,dense}.cu   CUDA point/dense direct execution
+|-- backend/cuda/direct/dense_construction_statistics.hpp
+|                                          internal CUDA setup record: host
+|                                          build, context, allocation, upload
 |-- backend/cuda/stub/direct.cpp            non-CUDA direct stubs
 |-- backend/cuda/p2p/{internal.hpp,plan.cu} CUDA P2P plans, kernels (stored
 |                                          packings and the position-based
