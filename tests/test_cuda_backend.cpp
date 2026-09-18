@@ -5,6 +5,7 @@
 #include <catch2/matchers/catch_matchers.hpp>
 
 #include <array>
+#include <algorithm>
 #include <cmath>
 #include <numeric>
 #include <vector>
@@ -1463,6 +1464,67 @@ TEST_CASE("CUDA BSR memory budget selects the canonical fallback",
   UniformFmm point_fp64(positions, positions, point_options);
   REQUIRE(point_fp64.p2p_execution_packing() ==
           P2PExecutionPacking::LeafBlock);
+}
+
+TEST_CASE("an explicit BSR request is honoured under a lowered memory budget",
+          "[cuda][manual]") {
+  if (!cuda_m2l_p2p_available()) {
+    SUCCEED("CUDA M2L/P2P is unavailable");
+    return;
+  }
+
+  // `cuda_p2p_bsr_max_bytes` bounds the speculative FP32 prebuild, not the
+  // packing: BSR(3) is explicit-only, so a request for it must execute the
+  // near field whatever the budget says.  The budget used to decide whether
+  // the FP32 plan was built at all while the executor consumed it
+  // unconditionally, so a lowered budget left construction reporting CudaBsr3
+  // and then failed the evaluation with "CUDA FP32 P2P dimensions are
+  // inconsistent".  FP32 is the default precision, so only the budget had to
+  // be lowered to reach that; the FP64 branch always rebuilt and was never
+  // affected.  A single level keeps every pair in the near field, so the two
+  // budgets must agree on a field that is actually there.
+  const std::vector<Vec3> positions{
+      {-0.5, 0.0, 0.0}, {0.25, 0.1, -0.2}, {0.4, -0.3, 0.2}};
+  const std::vector<Vec3> moments{
+      {0.7, -0.4, 0.2}, {-0.3, 0.5, -0.1}, {0.2, 0.3, -0.6}};
+
+  UniformFmmOptions options;
+  options.expansion_basis = ExpansionBasis::Cartesian;
+  options.expansion_order = 2;
+  options.backend = ExecutionBackend::CudaPartial;
+  options.tree.max_level = 0;
+  options.source_geometry = SourceGeometry::RectangularPrism;
+  options.source_sizes = {CuboidSize{0.05, 0.04, 0.03}};
+  options.p2p_packing = P2PExecutionPacking::CudaBsr3;
+
+  options.cuda_p2p_bsr_max_bytes = 20ULL * 1024ULL * 1024ULL * 1024ULL;
+  UniformFmm within_budget(positions, positions, options);
+  options.cuda_p2p_bsr_max_bytes = 0;
+  UniformFmm below_budget(positions, positions, options);
+
+  REQUIRE(within_budget.p2p_execution_packing() ==
+          P2PExecutionPacking::CudaBsr3);
+  REQUIRE(below_budget.p2p_execution_packing() ==
+          P2PExecutionPacking::CudaBsr3);
+
+  const auto expected = within_budget.evaluate(moments, OutputFlags::Field);
+  const auto actual = below_budget.evaluate(moments, OutputFlags::Field);
+  REQUIRE(actual.size() == expected.size());
+
+  // The reference must itself carry a near field, so that agreeing on zero
+  // cannot pass for agreeing.
+  double largest = 0.0;
+  for (const auto& entry : expected) {
+    largest = std::max({largest, std::abs(entry.H.x), std::abs(entry.H.y),
+                        std::abs(entry.H.z)});
+  }
+  REQUIRE(largest > 1.0e-6);
+
+  for (std::size_t index = 0; index < actual.size(); ++index) {
+    REQUIRE(actual[index].H.x == Catch::Approx(expected[index].H.x));
+    REQUIRE(actual[index].H.y == Catch::Approx(expected[index].H.y));
+    REQUIRE(actual[index].H.z == Catch::Approx(expected[index].H.z));
+  }
 }
 
 TEST_CASE("CUDA BSR supports finite cuboid point and cuboid self fields",

@@ -816,6 +816,17 @@ void UniformFmm::build_cuda_p2p_plan() {
   }
   if (policy.p2p_packing == CudaP2PPacking::Bsr3) {
     if (precision_ == StaticPrecision::Float32) {
+      // `cuda_p2p_bsr_max_bytes` bounds the speculative FP32 prebuild in
+      // `quantise_static_plan_to_float()`, not the packing itself: BSR(3) is
+      // explicit-only, so reaching here means the caller asked for it. Build
+      // it now when the budget skipped the prebuild, exactly as the FP64
+      // branch below always does; otherwise a lowered budget leaves this a
+      // default-constructed plan and the evaluation fails with inconsistent
+      // P2P dimensions.
+      if (p2p_bsr_plan_float_.row_offsets.empty()) {
+        p2p_bsr_plan_float_ =
+            build_static_p2p_bsr_plan(p2p_operator_float_, fixed_identities);
+      }
       cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
           std::make_unique<CudaP2PPlan>(p2p_bsr_plan_float_));
     } else {
