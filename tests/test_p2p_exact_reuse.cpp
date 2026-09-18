@@ -22,10 +22,12 @@
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
 #include "cdfmm/operators/p2p.hpp"
+#include "operators/exact_operator_reuse.hpp"
 #include "cdfmm/rectangular_prism.hpp"
 #include "cdfmm/tetrahedron.hpp"
 
@@ -420,4 +422,54 @@ TEST_CASE("Per-body prism sizes build their own operators")
     REQUIRE(any_nonzero(first));
     REQUIRE_FALSE(same_tensor(first, second));
     REQUIRE(same_tensor(first, third));
+}
+
+// The class map and the representative list number pairs in 32-bit words, so a
+// plan whose pair indices do not fit them must abandon classification rather
+// than wrap silently.  A dense all-to-all plan reaches that at roughly 65536
+// bodies per side, which only a large-memory machine can hold; the guard is
+// therefore checked directly on the classifier, where it costs no memory,
+// instead of by building such a plan.
+TEST_CASE("exact classification abandons unrepresentable pair counts",
+          "[p2p][exact_reuse]")
+{
+    using cdfmm::detail::exact_reuse::classify_exact_operators;
+    using cdfmm::detail::exact_reuse::ExactOperatorKey;
+
+    // The guard returns before the per-pair allocation and before the first
+    // lookup, so a counting key proves that neither happened.
+    std::size_t keys_requested = 0;
+    const auto key_of_pair = [&](const std::size_t index) {
+        ++keys_requested;
+        ExactOperatorKey key;
+        key.push(static_cast<double>(index));
+        return key;
+    };
+
+    SECTION("a pair count past the 32-bit index range is not classified")
+    {
+        const std::size_t unrepresentable =
+            static_cast<std::size_t>(
+                std::numeric_limits<std::uint32_t>::max()) + 2U;
+        const auto classes =
+            classify_exact_operators(unrepresentable, key_of_pair);
+
+        REQUIRE_FALSE(classes.classified);
+        REQUIRE(classes.class_of_pair.empty());
+        REQUIRE(classes.representative.empty());
+        REQUIRE(classes.transient_bytes() == 0);
+        REQUIRE(keys_requested == 0);
+    }
+
+    SECTION("a representable pair count still classifies")
+    {
+        // Four distinct keys, so every pair becomes its own class and each
+        // index is stored in `representative`.
+        const auto classes = classify_exact_operators(4U, key_of_pair);
+
+        REQUIRE(classes.classified);
+        REQUIRE(classes.class_of_pair.size() == 4U);
+        REQUIRE(classes.representative.size() == 4U);
+        REQUIRE(keys_requested == 4U);
+    }
 }

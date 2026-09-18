@@ -122,8 +122,13 @@ void require_same_bits(const std::array<double, 6>& left,
 TEST_CASE("dense reuse reproduces the per-pair tensor for every geometry pair",
           "[dense_direct][exact_reuse]")
 {
-    // The plan is large enough to classify, so every entry checked here is a
-    // scattered copy of one representative build rather than its own build.
+    // Every finite section below is large enough to classify, so its entries
+    // are scattered copies of one representative build rather than their own
+    // builds.  The point-to-point section is the deliberate exception: a point
+    // pair is far cheaper than the lookup that would find its duplicate, so
+    // production never classifies those plans and the section exercises the
+    // unclassified loop.  Both paths must agree bit for bit, which is what
+    // makes the same expectation correct for all of them.
     const std::size_t count = 64;
     const std::vector<Vec3> positions = lattice(count);
     const std::vector<int> identities = identity_map(count);

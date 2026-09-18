@@ -129,13 +129,24 @@ struct EndpointOperatorClasses {
 /// Classes are numbered in first-seen order, so the classification and every
 /// built value are independent of thread count and of hash iteration order.
 /// Classification stops when an initial sample shows too few duplicates to
-/// repay it, which only ever changes performance: the caller builds the same
-/// operators either way.
+/// repay it, or when the item indices do not fit the 32-bit words the class
+/// map and the representative list store.  Either only ever changes
+/// performance: the caller builds the same operators either way.
 template <typename KeyOfItem>
 [[nodiscard]] EndpointOperatorClasses classify_endpoint_operators(
     const std::size_t item_count, const KeyOfItem& key_of_item) {
   constexpr std::size_t sample_items = 4096;
   constexpr std::size_t sample_reuse_factor = 2;
+
+  // Both vectors hold `std::uint32_t`, and the largest value either can carry
+  // is `item_count - 1`.  Abandon rather than narrow silently.  Endpoint items
+  // are leaves or targets, so this is bounded by the body count rather than by
+  // its square and is far out of reach in practice; the guard keeps the
+  // narrowing contract the same as the shared pair classifier's.
+  if (item_count != 0 &&
+      item_count - 1 > std::numeric_limits<std::uint32_t>::max()) {
+    return {};
+  }
 
   EndpointOperatorClasses result;
   result.class_of_item.resize(item_count);

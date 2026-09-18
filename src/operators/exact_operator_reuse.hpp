@@ -144,11 +144,25 @@ struct ExactReuseGate {
 /// geometry.  That is only ever a performance decision: the caller builds the
 /// same operators either way.  A caller whose per-pair tensor is cheap enough
 /// that the lookup itself would dominate should not call this at all.
+///
+/// It also stops when the pair indices do not fit the 32-bit words the class
+/// map and the representative list store, which a dense all-to-all plan can
+/// reach on a large-memory machine at roughly 65536 bodies per side.
 template <typename KeyOfPair>
 [[nodiscard]] ExactOperatorClasses classify_exact_operators(
     const std::size_t pair_count, const KeyOfPair& key_of_pair,
     const ExactReuseGate gate = {})
 {
+    // `representative` stores pair indices and `class_of_pair` stores class
+    // numbers, both as `std::uint32_t`; the largest value either can hold is
+    // `pair_count - 1`.  Abandon rather than narrow: widening the vectors
+    // instead would double `class_of_pair`, which holds one entry per pair
+    // and is already the largest transient allocation of a big build.
+    if (pair_count != 0 &&
+        pair_count - 1 > std::numeric_limits<std::uint32_t>::max()) {
+        return {};
+    }
+
     ExactOperatorClasses result;
     result.class_of_pair.resize(pair_count);
     std::unordered_map<ExactOperatorKey, std::uint32_t, ExactOperatorKeyHash>
