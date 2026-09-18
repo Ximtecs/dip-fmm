@@ -46,3 +46,6 @@ profiling_results/
 build-bench/
 build-check/
 build-perf/
+
+# Phase-3D scratch results; the retained baseline lives under benchmarks/baselines/.
+/results/
