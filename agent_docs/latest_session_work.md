@@ -54,6 +54,10 @@ repository rights, the workflow was first taught to re-publish its own
 diagnostics as annotations, and every later fix was read from the runner's
 output rather than guessed.
 
+Both CI jobs are green on the closure head `bbe3926` -- the first green run
+on this repository since 2026-09-07 -- with wider coverage than before, since
+the benchmarks are now compiled and the two notebook tests actually run.
+
 Clean `-Werror` builds pass in portable CPU, CPU + oneMKL, CUDA, CUDA +
 oneMKL and `Debug` under g++ 15.3.0, and in portable CPU under conda g++
 13.4.0. The **Fortran interface could not be built — no Fortran compiler is

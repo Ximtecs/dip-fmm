@@ -4420,6 +4420,13 @@ failure below was then read from the runner's own output.
 - **Introduced and fixed here:** warnings-as-errors turned the five by-value
   structured bindings into errors under the runner's compiler.
 
+Both jobs are **green** on the closure head `bbe3926` (run 35468228726):
+`first-party warning surface` and `portable CPU build and tests` each
+succeeded, which is the first green run on this repository since 2026-09-07.
+No job was skipped and no coverage was removed to get there; the run is
+strictly wider than the one it replaces, because it now also compiles the
+benchmarks and runs the two notebook tests that previously failed collection.
+
 The workflow also moved off the deprecated Node 20 actions
 (`actions/checkout@v4` → `@v5`, `actions/setup-python@v5` → `@v6`), pinned
 `runs-on` to `ubuntu-24.04` rather than `ubuntu-latest` so an image bump

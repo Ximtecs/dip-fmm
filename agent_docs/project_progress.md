@@ -34,6 +34,9 @@ and in portable CPU under conda g++ 13.4.0.
 compiled — no Fortran compiler is installed in this environment — and MSVC and
 Windows were not exercised. `fortran/` is byte-identical to `51b2434`.
 
+Both GitHub Actions jobs are green on the closure head `bbe3926`, the first
+green run since 2026-09-07, with wider coverage than the workflow it replaces.
+
 Validation on the final tree: `ctest` 244/244, `pytest python_tests` 171
 passed and 1 skipped, a clean `git diff --check`, and a representative CUDA
 sanitizer matrix with no errors or hazards.
