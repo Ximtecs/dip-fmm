@@ -15,7 +15,6 @@
 #include <unordered_map>
 
 #include "cdfmm/operators/operators.hpp"
-#include "cdfmm/operators/operators.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 
 #include "cache/internal.hpp"
