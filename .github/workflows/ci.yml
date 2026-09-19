@@ -19,9 +19,9 @@ jobs:
     # any commit to point at.
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -43,10 +43,27 @@ jobs:
           -DCDFMM_WARNINGS_AS_ERRORS=ON
 
       - name: Build
-        run: cmake --build build -j
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cmake --build build -j 2>&1 | tee build.log; then
+            # Republish the diagnostics as annotations. A failed build is
+            # then legible from the run summary, which matters because the
+            # full log needs repository rights the reader may not have.
+            grep -E ': (error|warning):' build.log | head -40 |
+              while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          fi
 
       - name: C++ tests
-        run: ctest --test-dir build --output-on-failure
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! ctest --test-dir build --output-on-failure 2>&1 | tee ctest.log; then
+            grep -E '(Failed|\*\*\*|FAILED)' ctest.log | head -40 |
+              while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          fi
 
       - name: Install the Python extension
         run: python -m pip install .
@@ -59,7 +76,14 @@ jobs:
         run: python -c "import cdfmm, sys; print(cdfmm.__file__); print(sys.version)"
 
       - name: Python tests
-        run: python -m pytest python_tests -v
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! python -m pytest python_tests -v -rf 2>&1 | tee pytest.log; then
+            grep -E '^(FAILED|ERROR)' pytest.log | head -40 |
+              while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          fi
 
   # Every first-party target, including the benchmarks the test job does not
   # build. Without this they are the one part of the tree that no automated
@@ -68,9 +92,9 @@ jobs:
     name: first-party warning surface
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
@@ -92,4 +116,11 @@ jobs:
           -DCDFMM_WARNINGS_AS_ERRORS=ON
 
       - name: Build
-        run: cmake --build build -j
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cmake --build build -j 2>&1 | tee build.log; then
+            grep -E ': (error|warning):' build.log | head -40 |
+              while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          fi

@@ -25,6 +25,55 @@ python benchmarks/analyse_phase3d_regression.py \
     --input benchmarks/baselines/phase3d/phase3d_regression.csv --view both
 ```
 
+## How the driver behaves
+
+These rules exist because each one was a review finding against the driver
+that produced this baseline.
+
+- **A failed case fails the run.** An invocation that cannot run, or that
+  produces no data row, raises, names the case and exits non-zero. The driver
+  also checks the number of rows against the number of cases the selected
+  suite and backend matrix define. A baseline that silently drops rows cannot
+  be told apart from a complete one, which is why `--allow-failures` -- the
+  opt-in that restores skipping -- is for exploration only and must never
+  produce a retained baseline.
+- **A run is fresh by default.** `--resume` reuses the per-case CSVs of an
+  interrupted run, but only when `session.json` in the scratch directory
+  matches: the revision, the binary's path and SHA-256 (with size and mtime
+  recorded beside it), the suite and filter, the evaluation, warm-up, sample
+  and thread counts, backend availability, and the column set. Any mismatch
+  is refused and the differing field is printed. Reuse used to depend on a
+  file merely existing, which quietly mixed commits and binaries into
+  something that looked like one session.
+- **Comparison groups are data, not parsed names.** Every row records
+  `comparison_group` -- everything two rows must share before a ratio between
+  them means anything -- and `comparison_variant`, the single axis under
+  review. The analyser groups on those columns. The retained CSVs below
+  predate them, so the analyser reconstructs their groups from the driver's
+  own case generators; a case neither source recognises is printed alone
+  rather than compared against a guess.
+
+## Regenerating it safely
+
+The retained CSVs are kept as they were measured. Their case names, their
+order and every number in them are unchanged by the closure pass, so
+regeneration was not needed and was not done. If a schema change ever forces
+it:
+
+```bash
+OMP_NUM_THREADS=8 OMP_PROC_BIND=close \
+OMP_PLACES='{0},{2},{4},{6},{8},{10},{12},{14}' \
+python benchmarks/run_phase3d_regression.py \
+    --binary build-bench-all/benchmarks/benchmark_uniform_fmm \
+    --output benchmarks/baselines/phase3d/phase3d_regression.csv \
+    --suite all
+```
+
+Rerun only this internal matrix, from one `benchmark-all` tree, on an
+otherwise idle machine. Do not widen it: expanding the workload set turns it
+into a publication campaign, which is a separate exercise against a frozen
+implementation after Phase-4 pruning.
+
 ## Conditions
 
 Intel i9-14900KF with 8 P-cores pinned (`OMP_NUM_THREADS=8`,
