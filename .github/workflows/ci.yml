@@ -1,19 +1,95 @@
 name: ci
+
 on: [push, pull_request]
+
+# A newer push to the same ref supersedes an in-flight run; the older one is
+# cancelled rather than left to finish against code nobody is waiting on.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # Portable CPU: the configuration AGENTS.md documents as the CI baseline.
+  # CUDA, oneMKL and the Fortran interface need a toolkit, a device or a
+  # library that a hosted runner does not have, and stay local-only.
   build:
-    runs-on: ubuntu-latest
+    name: portable CPU build and tests
+    # Pinned rather than ubuntu-latest: the image carries the compiler, so a
+    # silent image bump would change what warnings-as-errors means without
+    # any commit to point at.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-      - run: python -m pip install --upgrade pip
-      # Benchmark-runner tests import the plotting module, so matplotlib is a
-      # required part of the Python test environment rather than an optional
-      # runtime discovery.
-      - run: python -m pip install pytest numpy matplotlib pybind11 scikit-build-core
-      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCDFMM_BUILD_TESTS=ON -DCDFMM_BUILD_PYTHON=ON -DCDFMM_ENABLE_CUDA=OFF
-      - run: cmake --build build -j
-      - run: ctest --test-dir build --output-on-failure
-      - run: python -m pip install .
-      - run: python -m pytest python_tests -v
+        with:
+          python-version: '3.11'
+
+      - name: Install Python build and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # The benchmark-runner tests import the plotting module, so
+          # matplotlib is a required part of the Python test environment
+          # rather than an optional runtime discovery.
+          python -m pip install pytest numpy matplotlib pybind11 scikit-build-core
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCDFMM_BUILD_TESTS=ON
+          -DCDFMM_BUILD_PYTHON=ON
+          -DCDFMM_ENABLE_CUDA=OFF
+          -DCDFMM_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: C++ tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Install the Python extension
+        run: python -m pip install .
+
+      - name: Report which extension the tests will import
+        # A wrong module is the failure mode that looks like a code bug, so
+        # the path being imported is printed before anything runs. The
+        # runner starts clean, so this records the fact rather than fixing
+        # a conflict.
+        run: python -c "import cdfmm, sys; print(cdfmm.__file__); print(sys.version)"
+
+      - name: Python tests
+        run: python -m pytest python_tests -v
+
+  # Every first-party target, including the benchmarks the test job does not
+  # build. Without this they are the one part of the tree that no automated
+  # build compiles, so a warning could be introduced there unnoticed.
+  warnings:
+    name: first-party warning surface
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pybind11
+
+      - name: Configure every first-party target
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCDFMM_BUILD_TESTS=ON
+          -DCDFMM_BUILD_EXAMPLES=ON
+          -DCDFMM_BUILD_BENCHMARKS=ON
+          -DCDFMM_BUILD_TOOLS=ON
+          -DCDFMM_BUILD_PYTHON=ON
+          -DCDFMM_ENABLE_CUDA=OFF
+          -DCDFMM_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build -j
