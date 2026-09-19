@@ -1,5 +1,45 @@
 # Project progress
 
+## Pre-pruning closure after Phase 3D: COMPLETE — 2026-09-19
+
+Starting HEAD `51b2434`. Not Phase 4: nothing was pruned. This pass closes the
+four review findings against the Phase-3D drivers, makes every first-party
+compilation path warning-clean, and repairs a GitHub Actions workflow that had
+been failing on every branch since 2026-09-07 — including the integration
+branch and the Phase-3D head.
+
+**No production policy changed.** All fourteen automatic policies stand as
+Phase 3D measured them; the only behavioural line added to `src/` is a `break`
+after a call that already throws.
+
+The Phase-3D driver now records `comparison_group` and `comparison_variant`
+instead of letting the analyser guess a group from the display name, which had
+merged a regular prism lattice with an irregular prism cloud; it fails the run
+on a case that cannot run instead of writing a short CSV and exiting zero; and
+it resumes only against a scratch manifest of the revision, the binary's
+SHA-256 and the sampling settings. The retained baseline was **not**
+regenerated: its 158 case names, their order and its numbers are unchanged,
+and the analyser reconstructs the legacy grouping from the driver's own
+generators. A stale claim about the integration branch's state was corrected.
+
+The project previously set no compiler warning flags at all.
+`cdfmm_enable_warnings()` now applies `-Wall -Wextra` per first-party target,
+with `CDFMM_WARNINGS_AS_ERRORS` off by default and on in CI. Thirty-three
+diagnostics were found and all were fixed at the source; no suppression was
+added and no warning level was lowered. Clean `-Werror` builds pass in
+portable CPU, CPU + oneMKL, CUDA, CUDA + oneMKL and `Debug` under g++ 15.3.0,
+and in portable CPU under conda g++ 13.4.0.
+
+**Not validated, and recorded as such:** the Fortran interface could not be
+compiled — no Fortran compiler is installed in this environment — and MSVC and
+Windows were not exercised. `fortran/` is byte-identical to `51b2434`.
+
+No public C++ API, C ABI, Python API, Fortran interface, cache format or cache
+key changed; `git diff 51b2434..HEAD` over `include/`, `src/bindings/`,
+`src/cache/`, `python/` and `fortran/` is empty.
+
+**Next: Phase 4 repository pruning and documentation cleanup.**
+
 ## Final cross-backend integration and production policy (Phase 3D): COMPLETE — 2026-09-18
 
 Starting HEAD `49b5fe3`. The last optimisation phase before repository

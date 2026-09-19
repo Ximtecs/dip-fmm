@@ -4265,3 +4265,194 @@ that is an argument rather than a build, and it is recorded as such.
 `src/fmm/plan_preparation.cpp` (+15, of which 5 are comment) and
 `src/fmm/execution_setup.cpp` (+11), plus a comment-only change to
 `src/backend/cuda/m2l/plan.cu`.
+
+## Pre-pruning closure after Phase 3D
+
+Starting HEAD `51b2434` ("docs(perf): close the Phase 3D cross-backend
+integration review"), the tip of `phase3d-final-integration`, on the branch
+`phase3d-pre-pruning-closure`. This is not Phase 4: nothing was pruned and no
+obsolete file was deleted. It closes the four review findings against Phase
+3D, makes every first-party compilation path warning-clean, and repairs a
+GitHub Actions workflow that had been failing on every branch for twelve days.
+
+**No production policy changed.** All fourteen automatic policies stand
+exactly as Phase 3D measured them. The only behavioural change in `src/` is a
+`break` after a call that already threw, and it is unreachable either way.
+
+### The four review findings
+
+**Comparison groups were guessed from a display name.**
+`analyse_phase3d_regression.py` derived a group by keeping the first, second
+and last slash-separated tokens of `case`. Every
+`P-cuda-finite/<kind>/{regular,irregular}/...` case shares those three, so a
+regular lattice and an irregular cloud were one group of six, divided by
+whichever automatic row the file happened to list first. `layout_hint` could
+not break the tie: it records only whether `--spatial-layout` was passed, so
+an irregular case and an unhinted lattice both read `general`. Each case now
+carries `comparison_group` and `comparison_variant` as recorded data — the
+group is everything two rows must share before a ratio means anything, the
+variant is the single axis under review. On the retained baseline this splits
+21 groups into 23, the two six-member `P-cuda-finite` groups becoming four
+regular and two irregular rows.
+
+The retained CSVs predate the columns, so the analyser reconstructs their
+groups from the driver's own case generators rather than from a second
+parsing rule; a case neither source recognises is printed alone. The
+generated case list was checked against the baseline: 158 names, identical
+and in the same order, so **no regeneration was needed and none was done.**
+
+**A failed case did not fail the run.** `run_case` returned `None` on a
+non-zero exit or an empty result file, and the driver filtered those out and
+exited zero, writing a short CSV. A baseline that drops rows silently cannot
+be distinguished from a complete one. A failure now raises, names the case
+and fails the run, and the row count is checked against the number of cases
+the selected suite and backend matrix define. `--allow-failures` restores
+skipping for exploration only.
+
+**Resume could mix sessions.** A per-case CSV was reused because the file
+existed and was non-empty, which silently mixes commits, binaries and sample
+counts into something that looks like one session. A run is now fresh by
+default; `--resume` reuses files only when `session.json` matches — revision,
+binary path and SHA-256 with size and mtime beside it, suite and filter,
+evaluation, warm-up, sample and thread counts, backend availability, and the
+column set. A mismatch is refused and names the differing field.
+
+**The integration history was stated wrongly.** Both Phase-3D records said
+`refactor/architecture-v0.2` still pointed at `a2af367` when the phase began,
+which reads as a claim about the branch. It described this checkout's local
+ref. The remote branch had already been advanced through Phase 3C/3C.5 to
+`49b5fe3`, and the reflog shows the local ref catching up by fast-forward
+pull, not a push. Corrected in both files; no performance result was touched.
+
+Twenty-three new checks in `python_tests/test_phase3d_regression_matrix.py`
+pin all three driver properties at the lowest layer that can hold them: the
+generators, the analyser's grouping and the driver's exit behaviour are pure
+Python, so none of it needs the extension or a device.
+
+### Warning cleanliness
+
+The project set **no warning flags at all**, so roughly 115 `.cpp` and 8 `.cu`
+files had never been read by `-Wall -Wextra`. `cdfmm_enable_warnings()` now
+applies the project warning set per first-party target at the same twelve call
+sites as `cdfmm_enable_ipo()`, which keeps it off Catch2 and pybind11 by
+construction — they are never passed to it. Host warnings reach nvcc
+translation units through `-Xcompiler`; device diagnostics stay at nvcc's own
+default level.
+
+`CDFMM_WARNINGS_AS_ERRORS` is **off by default and on in CI**. That split is
+deliberate: a downstream build uses a compiler this project has not seen, and
+a future release may add a diagnostic that is not a defect here, so failing
+that build would serve nobody; CI runs the one toolchain the project does
+support, which is where a new warning should stop a change.
+
+Thirty-three diagnostics were found, all first-party, all fixed at the source.
+No `-w`, no blanket `/wd`, no nvcc suppression, no `#pragma` was added, and
+the warning level was not lowered anywhere.
+
+- `src/math/solid_harmonic_recurrence.hpp` keyed its unroll hint on
+  `__CUDACC__`, which nvcc leaves defined while handing the host half of a
+  `.cu` to the host compiler, so g++ parsed a pragma it does not know. It is
+  now keyed on `__CUDA_ARCH__`: the device pass keeps `#pragma unroll` and the
+  host half takes the same host spelling a `.cpp` already took. Device codegen
+  is unchanged.
+- `src/fmm/execution_setup.cpp` fell through from the `ParticleRowSoa`
+  rejection into the `PointGeometry` case. `reject()` always throws, so the
+  path was already unreachable; the `break` states that for the compiler.
+- `src/geometry/primitives/tetrahedron.cpp` formed two triangle edges it never
+  used and kept a `body_point_tensor` helper with no remaining caller,
+  superseded by `SourcePointField`.
+- `src/backend/cpu/p2p/near_field.cpp` bound a leaf node and the node array
+  without reading either.
+- Five by-value structured bindings over pairs now bind by reference
+  (`src/fmm/plan_preparation.cpp`, `src/plan/p2p/leaf.cpp` and three tests).
+  Only the runner's g++ reported these; neither g++ 15.3 nor a conda g++ 13.4
+  emits `-Wrange-loop-construct` for them.
+- Benchmarks and tests: an aggregate-initialised `GeometryPlan` gained an
+  explicit constructor, the dense-direct volatile checksum sink moved to
+  namespace scope because nothing reads it back, `run_p2m_precision` lost a
+  parameter it never used, and three tests dropped unused locals, used the
+  constants they had declared, and stopped copying an `initializer_list`
+  element.
+
+### Warning-clean build matrix
+
+Every tree below is **fresh** (`rm -rf` then configure), built with
+`CDFMM_WARNINGS_AS_ERRORS=ON`, tests, examples, benchmarks, tools and the
+Python extension all enabled, and reports **0 warnings and 0 errors**:
+
+| Configuration | Compiler | Result |
+|---|---|---|
+| portable CPU | g++ 15.3.0 | 0 / 0 |
+| CPU + oneMKL | g++ 15.3.0 | 0 / 0 |
+| CUDA | g++ 15.3.0 + nvcc 13.3.73 | 0 / 0 |
+| CUDA + oneMKL | g++ 15.3.0 + nvcc 13.3.73 | 0 / 0 |
+| portable CPU, `Debug` | g++ 15.3.0 | 0 / 0 |
+| portable CPU | conda g++ 13.4.0 | 0 / 0 |
+| portable CPU (GitHub runner) | ubuntu-24.04 g++ | see CI below |
+
+The **Fortran interface could not be built**: no Fortran compiler exists in
+this environment. `cdfmm_enable_warnings()` emits only `CXX` and `CUDA`
+generator expressions, so it cannot affect a Fortran target, and
+`fortran/` is byte-identical to `51b2434`; the interface is therefore
+unchanged by construction. That is an argument, not a build, and is recorded
+as such. MSVC was likewise not exercised — no Windows machine and no Windows
+CI job exists.
+
+### GitHub Actions
+
+CI had been failing on **every** branch since 2026-09-07, including
+`refactor/architecture-v0.2` and the Phase-3D head `51b2434`; this was
+pre-existing and not caused by the closure. At `51b2434` the build and CTest
+steps passed and **pytest failed**. Downloading a run log needs repository
+rights, so the workflow was first changed to re-publish its diagnostics as
+`::error::` annotations, which are part of the public run summary; every
+failure below was then read from the runner's own output.
+
+- **Pre-existing:** `test_adaptive_notebook.py` and
+  `test_geometry_magtense_all_to_all_notebook.py` import `nbformat` at module
+  scope, and the workflow's hand-written dependency list never included it, so
+  pytest failed at *collection* rather than skipping. The list had drifted
+  from what the tests import, so `nbformat` joined the `test` extra in
+  `pyproject.toml` and the workflow installs `.[test]`. Reproduced in a clean
+  interpreter carrying only the workflow's packages: the collection error
+  becomes **163 passed, 8 skipped**, matching the local build, and those two
+  tests run in CI for the first time.
+- **Introduced and fixed here:** warnings-as-errors turned the five by-value
+  structured bindings into errors under the runner's compiler.
+
+The workflow also moved off the deprecated Node 20 actions
+(`actions/checkout@v4` → `@v5`, `actions/setup-python@v5` → `@v6`), pinned
+`runs-on` to `ubuntu-24.04` rather than `ubuntu-latest` so an image bump
+cannot silently change what warnings-as-errors means, gained a `concurrency`
+group, builds with `-k` so one run reports every diagnostic, prints the path
+of the `cdfmm` extension it is about to import, and gained a second job that
+compiles **every** first-party target — including the benchmarks, which no
+automated build had ever compiled.
+
+### API, ABI, cache and baseline
+
+`git diff 51b2434..HEAD -- include/ src/bindings/ src/cache/ python/ fortran/`
+is **empty**. No public C++ API, C ABI, Python API or Fortran interface
+changed, `CDFMM_ABI_VERSION` stays 1, and no cache format or cache key
+changed. `git diff --check` is clean. The whole `src/` change is 44 lines
+across six files.
+
+The retained baseline under `benchmarks/baselines/phase3d/` is **unchanged**:
+158 rows, the same case names in the same order, the same numbers. Its README
+now records the driver's contract and how to regenerate it safely, and keeps
+its ENGINEERING REGRESSION BASELINE — NOT ARTICLE1 status.
+
+### Remaining Phase-4 inventory
+
+Carried forward, untouched here and explicitly not started:
+
+- flat public compatibility façades under `include/cdfmm/`, retained
+  deliberately and removable only by an approved API change;
+- `src/operators.cpp` as thin compatibility delegation, and the
+  `DenseDirectPlan::evaluate()` compatibility dispatch;
+- `benchmarks/AGENTS.md`'s file tree, which is stale with respect to the
+  Phase-3D drivers and `baselines/phase3d/`;
+- geometry packing, grain generation/discretisation and prism/tetrahedron
+  refinement, all still future work;
+- no Windows, MSVC, CUDA, oneMKL or Fortran CI coverage, each needing a
+  runner, toolkit, device or compiler that is not available today.

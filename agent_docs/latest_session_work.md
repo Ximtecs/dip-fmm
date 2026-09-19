@@ -1,5 +1,73 @@
 # Latest session work
 
+## 2026-09-19 — Pre-pruning closure after Phase 3D
+
+Starting HEAD `51b2434` on `phase3d-final-integration`; work on
+`phase3d-pre-pruning-closure`, based exactly on it. **Not Phase 4**: nothing
+was pruned, no obsolete file was deleted and no benchmark was redesigned.
+
+Question answered: is the refactored implementation clean and mechanically
+trustworthy enough that Phase-4 pruning can start from it?
+
+Answer: it is now, but two things had to be repaired that the Phase-3D review
+did not cover. The project set **no compiler warning flags at all**, so ~115
+`.cpp` and 8 `.cu` files had never been read by `-Wall -Wextra`; and GitHub
+Actions had been failing on **every** branch since 2026-09-07, including the
+integration branch and the Phase-3D head.
+
+**No production policy changed.** All fourteen automatic policies stand as
+Phase 3D measured them. The only behavioural line added to `src/` is a `break`
+after a call that already throws.
+
+**The four review findings.** The analyser derived its comparison group by
+position from the display name, which put a regular prism lattice and an
+irregular prism cloud in one group and divided them by whichever automatic row
+came first; cases now record `comparison_group` and `comparison_variant`, and
+the retained baseline regroups 21 into 23 without being regenerated, because
+the analyser reconstructs legacy groups from the driver's own generators. A
+failed case returned `None` and the driver exited zero with a short CSV; it
+now raises, names the case, checks the row count against the defined matrix
+and fails. Resume reused any non-empty file, silently mixing commits and
+binaries; it is now fresh by default and guarded by a scratch manifest of the
+revision, the binary's SHA-256 and the sampling settings. And both Phase-3D
+records claimed the integration *branch* still pointed at a pre-3C SHA, when
+it was this checkout's local ref that lagged — the remote had already been
+advanced, and the reflog shows a fast-forward pull.
+
+**Warnings.** `cdfmm_enable_warnings()` applies the project warning set per
+first-party target at the same twelve call sites as `cdfmm_enable_ipo()`, so
+Catch2 and pybind11 are excluded by construction. Thirty-three diagnostics,
+all first-party, all fixed at the source; no suppression of any kind was
+added and no warning level was lowered. The substantive ones were an unroll
+pragma keyed on `__CUDACC__` (so the host half of every `.cu` parsed a pragma
+g++ does not know), an unreachable switch fall-through after a throwing
+`reject()`, a dead helper and two dead edge vectors in the tetrahedron
+primitive, and five by-value structured bindings that only the CI compiler
+flagged.
+
+**CI.** The pre-existing failure was `pytest` failing at *collection*: two
+notebook tests import `nbformat` and the workflow's hand-written dependency
+list had drifted away from what the tests import. `nbformat` now sits in the
+`test` extra and CI installs `.[test]`; in a CI-faithful interpreter that
+turns the collection error into 163 passed and 8 skipped. Since run logs need
+repository rights, the workflow was first taught to re-publish its own
+diagnostics as annotations, and every later fix was read from the runner's
+output rather than guessed.
+
+Clean `-Werror` builds pass in portable CPU, CPU + oneMKL, CUDA, CUDA +
+oneMKL and `Debug` under g++ 15.3.0, and in portable CPU under conda g++
+13.4.0. The **Fortran interface could not be built — no Fortran compiler is
+installed here** — and MSVC was not exercised; `fortran/` is byte-identical to
+`51b2434` and the warning helper cannot reach a Fortran target, so the
+interface is unchanged by construction rather than by test.
+
+`git diff 51b2434..HEAD -- include/ src/bindings/ src/cache/ python/ fortran/`
+is empty: no public API, C ABI, Python API, Fortran interface, cache format or
+cache key changed. The retained Phase-3D baseline is unchanged at 158 rows.
+
+Full detail, including the build matrix and the Phase-4 inventory, is under
+"Pre-pruning closure after Phase 3D" in `performance_optimization.md`.
+
 ## 2026-09-18 — Final cross-backend integration and production policy (Phase 3D)
 
 Starting HEAD `49b5fe3` on `phase3c5-dense-construction`; work on
