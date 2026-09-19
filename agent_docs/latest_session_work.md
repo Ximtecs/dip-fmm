@@ -61,6 +61,12 @@ installed here** — and MSVC was not exercised; `fortran/` is byte-identical to
 `51b2434` and the warning helper cannot reach a Fortran target, so the
 interface is unchanged by construction rather than by test.
 
+On the final tree: `ctest` 244/244, `pytest python_tests` 171 passed and 1
+skipped, `git diff --check` clean. A representative CUDA sanitizer matrix
+(memcheck over six cases, plus racecheck, initcheck and synccheck) reports no
+errors and no hazards; this closure changes no device code, since the device
+pass still expands `#pragma unroll` exactly as before.
+
 `git diff 51b2434..HEAD -- include/ src/bindings/ src/cache/ python/ fortran/`
 is empty: no public API, C ABI, Python API, Fortran interface, cache format or
 cache key changed. The retained Phase-3D baseline is unchanged at 158 rows.

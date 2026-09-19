@@ -4429,6 +4429,50 @@ of the `cdfmm` extension it is about to import, and gained a second job that
 compiles **every** first-party target — including the benchmarks, which no
 automated build had ever compiled.
 
+### Test and sanitizer matrix
+
+Run on the final tree (CUDA + oneMKL, `-Werror`, built from the closure
+sources):
+
+| Check | Result |
+|---|---|
+| `ctest` (CUDA + oneMKL) | **244/244 passed**, 1102 s |
+| `pytest python_tests` (build tree) | **171 passed, 1 skipped** |
+| `pytest python_tests` (portable CPU tree) | 163 passed, 8 skipped |
+| `pytest` in a CI-faithful interpreter | 163 passed, 8 skipped |
+| `git diff --check` | clean |
+
+The module the tests import was recorded rather than assumed. An older
+`cdfmm` extension *is* installed in this machine's conda environment, and
+`PYTHONPATH=<build>` was verified to override it. The extension links
+`cdfmm_core` statically and carries no `libcdfmm_c.so` dependency, so the
+stale `libcdfmm_c.so` in the same environment cannot be picked up either.
+CI prints the path it is about to import for the same reason.
+
+Two pre-existing tests dominate the suite: `procedural point P2M and L2P
+reproduce the precomputed rows` at 1102 s and `procedural point expansion
+requests are validated` at 364 s, together about 96% of the wall time.
+Neither file is touched by this closure; they are recorded for Phase 4
+rather than changed here.
+
+Sanitizers, on the same tree. This closure changes no device code -- the only
+edit reaching a `.cu` is the unroll-pragma guard, and the device pass still
+expands `#pragma unroll` exactly as before -- so a representative matrix was
+run rather than a full sweep:
+
+| Tool | Cases | Result |
+|---|---|---|
+| `memcheck` | six representative CUDA cases: both backends, both precisions, point and finite geometry, stored packings and the position-based kernel | 0 errors each |
+| `racecheck` | full-FMM device residency, stored P2P packings | 0 hazards, 0 errors, 0 warnings |
+| `initcheck` | the same two | 0 errors |
+| `synccheck` | the same two | 0 errors |
+
+The driver was also exercised end to end against the real
+`benchmark_uniform_fmm`: a fresh run reported "6 of 6 rows" and populated
+both comparison columns, the manifest recorded the revision and the binary's
+SHA-256, a matching `--resume` reused every per-case file, and a run with
+`--samples` changed was refused with the differing field named.
+
 ### API, ABI, cache and baseline
 
 `git diff 51b2434..HEAD -- include/ src/bindings/ src/cache/ python/ fortran/`
@@ -4455,4 +4499,8 @@ Carried forward, untouched here and explicitly not started:
 - geometry packing, grain generation/discretisation and prism/tetrahedron
   refinement, all still future work;
 - no Windows, MSVC, CUDA, oneMKL or Fortran CI coverage, each needing a
-  runner, toolkit, device or compiler that is not available today.
+  runner, toolkit, device or compiler that is not available today; and
+- two pre-existing tests take about 96% of the C++ suite's wall time
+  (`procedural point P2M and L2P reproduce the precomputed rows` at 1102 s
+  and `procedural point expansion requests are validated` at 364 s), which is
+  what makes the CI test step slow. Neither was touched here.

@@ -34,6 +34,10 @@ and in portable CPU under conda g++ 13.4.0.
 compiled — no Fortran compiler is installed in this environment — and MSVC and
 Windows were not exercised. `fortran/` is byte-identical to `51b2434`.
 
+Validation on the final tree: `ctest` 244/244, `pytest python_tests` 171
+passed and 1 skipped, a clean `git diff --check`, and a representative CUDA
+sanitizer matrix with no errors or hazards.
+
 No public C++ API, C ABI, Python API, Fortran interface, cache format or cache
 key changed; `git diff 51b2434..HEAD` over `include/`, `src/bindings/`,
 `src/cache/`, `python/` and `fortran/` is empty.
