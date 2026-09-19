@@ -41,5 +41,6 @@ add_executable(cdfmm_tests
 target_link_libraries(cdfmm_tests PRIVATE cdfmm_core cdfmm_c Catch2::Catch2WithMain)
 target_include_directories(cdfmm_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 cdfmm_enable_ipo(cdfmm_tests)
+cdfmm_enable_warnings(cdfmm_tests)
 include(Catch)
 catch_discover_tests(cdfmm_tests PROPERTIES SKIP_RETURN_CODE 4)

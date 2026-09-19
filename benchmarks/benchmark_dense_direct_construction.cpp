@@ -1047,6 +1047,11 @@ void write_row(std::ostream& stream, const Options& options, const Row& row,
            << row.checksum << '\n';
 }
 
+// A volatile sink keeps every measured evaluation observable, so the optimiser
+// cannot delete the loop whose time is being reported. It lives at namespace
+// scope because nothing ever reads it back.
+volatile double checksum_sink_storage = 0.0;
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -1116,9 +1121,6 @@ int main(int argc, char** argv)
             *stream << csv_header << '\n';
         }
 
-        // A volatile sink keeps every measured evaluation observable, so the
-        // optimiser cannot delete the loop whose time is being reported.
-        static volatile double checksum_sink_storage = 0.0;
         double checksum_sink = 0.0;
         for (const StaticPrecision precision : options.precisions) {
             for (const Backend backend : options.backends) {

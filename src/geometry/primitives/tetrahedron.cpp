@@ -772,11 +772,12 @@ double triangle_triangle_integral_core(
     const std::array<Vec3, 3>& first,
     const std::array<Vec3, 3>& second)
 {
+    // Only the two edges meeting at each triangle's first vertex enter the
+    // expansion basis and the area; the third edge of each triangle is
+    // implied by them and is not formed.
     const Vec3 first_edge_1 = first[1] - first[0];
-    const Vec3 first_edge_2 = first[2] - first[1];
     const Vec3 first_edge_3 = first[0] - first[2];
     const Vec3 second_edge_1 = second[1] - second[0];
-    const Vec3 second_edge_2 = second[2] - second[1];
     const Vec3 second_edge_3 = second[0] - second[2];
     const Vec3 first_cross = cross(first_edge_1, -1.0 * first_edge_3);
     const Vec3 second_cross = cross(second_edge_1, -1.0 * second_edge_3);
@@ -1163,21 +1164,6 @@ void accumulate_scaled(PairTensor& sum, const PairTensor& value,
     sum.yy += weight * value.yy;
     sum.yz += weight * value.yz;
     sum.zz += weight * value.zz;
-}
-
-// Exact field tensor of a finite body at a point relative to its representative.
-PairTensor body_point_tensor(const PolyhedronBody& body, const Vec3& point)
-{
-    return std::visit(
-        [&](const auto& record) -> PairTensor {
-            using Record = std::decay_t<decltype(record)>;
-            if constexpr (std::is_same_v<Record, RectangularPrism>) {
-                return rectangular_prism_point_tensor(point, record);
-            } else {
-                return tetrahedron_point_tensor(point, record);
-            }
-        },
-        body.record);
 }
 
 /**

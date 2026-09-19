@@ -27,6 +27,10 @@ option(CDFMM_ENABLE_FAST_MATH
        "Enable non-IEEE fast floating-point transformations" OFF)
 set(CDFMM_EXTRA_COMPILE_OPTIONS "" CACHE STRING
     "Additional semicolon-separated C++ compile options")
+option(CDFMM_ENABLE_WARNINGS
+       "Compile first-party targets with the project warning set" ON)
+option(CDFMM_WARNINGS_AS_ERRORS
+       "Promote first-party warnings to errors" OFF)
 option(CDFMM_ENABLE_MKL
        "Include runtime-selectable oneMKL dense operator backends" OFF)
 option(CDFMM_ENABLE_CUDA "Enable optional NVIDIA CUDA execution backends" OFF)
@@ -255,7 +259,42 @@ function(cdfmm_enable_ipo target_name)
   endif()
 endfunction()
 
+# The project warning set is applied per first-party target, never globally, so
+# that Catch2 and pybind11 -- which are never passed to this function -- keep
+# their own diagnostics.  Host warnings reach nvcc-compiled translation units
+# through -Xcompiler; device-side diagnostics stay at nvcc's own default level.
+#
+# CDFMM_WARNINGS_AS_ERRORS is deliberately OFF by default.  A downstream build
+# uses a compiler version this project has not seen, and a future release may
+# add a diagnostic that is not a defect here; failing that build would serve
+# nobody.  CI turns it on for the one toolchain the project does support, which
+# is where regressions are actually caught.
+function(cdfmm_enable_warnings target_name)
+  if(NOT CDFMM_ENABLE_WARNINGS)
+    return()
+  endif()
+  if(MSVC)
+    set(host_warnings /W4)
+    if(CDFMM_WARNINGS_AS_ERRORS)
+      list(APPEND host_warnings /WX)
+    endif()
+  else()
+    set(host_warnings -Wall -Wextra)
+    if(CDFMM_WARNINGS_AS_ERRORS)
+      list(APPEND host_warnings -Werror)
+    endif()
+  endif()
+  target_compile_options(${target_name} PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:${host_warnings}>)
+  if(CDFMM_ENABLE_CUDA)
+    list(JOIN host_warnings "," cuda_host_warnings)
+    target_compile_options(${target_name} PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${cuda_host_warnings}>)
+  endif()
+endfunction()
+
 cdfmm_enable_ipo(cdfmm_core)
+cdfmm_enable_warnings(cdfmm_core)
 
 # The shared integration boundary contains only plain C symbols.  Its C++
 # implementation and all backend resources remain private behind an opaque plan.
@@ -267,6 +306,7 @@ target_include_directories(cdfmm_c PUBLIC
   $<INSTALL_INTERFACE:include>)
 target_compile_definitions(cdfmm_c PRIVATE CDFMM_C_EXPORTS=1)
 cdfmm_enable_ipo(cdfmm_c)
+cdfmm_enable_warnings(cdfmm_c)
 
 if(CDFMM_BUILD_TESTS)
   include(FetchContent)
@@ -311,6 +351,7 @@ if(CDFMM_BUILD_TOOLS)
   add_executable(cdfmm-precompute tools/cdfmm_precompute.cpp)
   target_link_libraries(cdfmm-precompute PRIVATE cdfmm_core)
   cdfmm_enable_ipo(cdfmm-precompute)
+  cdfmm_enable_warnings(cdfmm-precompute)
 endif()
 
 if(CDFMM_BUILD_PYTHON)
@@ -335,6 +376,7 @@ if(CDFMM_BUILD_PYTHON)
   target_link_libraries(cdfmm PRIVATE cdfmm_core)
   target_include_directories(cdfmm PRIVATE include)
   cdfmm_enable_ipo(cdfmm)
+  cdfmm_enable_warnings(cdfmm)
   if(CDFMM_INSTALL_PYTHON_TO_ENV)
     execute_process(
       COMMAND "${PYTHON_EXECUTABLE}" -c

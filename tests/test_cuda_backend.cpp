@@ -268,7 +268,6 @@ TEST_CASE("CUDA static P2P packings agree with canonical CPU rows",
 
   std::vector<Vec3> positions;
   for (int index = 0; index < 24; ++index) {
-    const double value = static_cast<double>(index);
     positions.push_back(
         {-0.9 + 1.8 * static_cast<double>((index * 17) % 29) / 28.0,
          -0.9 + 1.8 * static_cast<double>((index * 11) % 31) / 30.0,

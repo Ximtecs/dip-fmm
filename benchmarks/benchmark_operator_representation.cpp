@@ -2118,8 +2118,7 @@ void run_p2m_precision(const Options& options, RowSink& sink,
                        const cdfmm::SphericalHarmonicBasis& basis,
                        const std::vector<cdfmm::P2MPlan>& plans,
                        const double build_seconds, const Row& base,
-                       const std::vector<double>& reference_multipoles,
-                       const int final_update) {
+                       const std::vector<double>& reference_multipoles) {
   using Buffers = ExpansionBuffers<Scalar>;
   using Moment = typename Buffers::Moment;
   const int C = basis.size();
@@ -2359,11 +2358,11 @@ void run_p2m(const Options& options, RowSink& sink) {
     }
     if (options.fp64) {
       run_p2m_precision<double>(options, sink, scene, basis, plans,
-                                build_seconds, base, reference, final_update);
+                                build_seconds, base, reference);
     }
     if (options.fp32) {
       run_p2m_precision<float>(options, sink, scene, basis, plans,
-                               build_seconds, base, reference, final_update);
+                               build_seconds, base, reference);
     }
   }
 #if defined(CDFMM_USE_OPENMP)

@@ -567,6 +567,9 @@ void UniformFmm::apply_p2p_packing_request(
     reject("ParticleRowSoa is the CPU row packing; CUDA backends execute "
            "CanonicalAos, LeafBlock, CudaBsr3, TensorDictionary or "
            "PointGeometry");
+    // NOTE(cdfmm): reject() always throws, so control never reaches the next
+    // label; the break states that for the compiler.
+    break;
   case P2PExecutionPacking::PointGeometry:
     // The CUDA position-based kernel; explicit_packing_rejection checks the
     // point-source / point-target requirement.

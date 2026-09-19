@@ -1,15 +1,18 @@
 add_executable(benchmark_p2p benchmark_p2p.cpp)
 target_link_libraries(benchmark_p2p PRIVATE cdfmm_core)
 cdfmm_enable_ipo(benchmark_p2p)
+cdfmm_enable_warnings(benchmark_p2p)
 
 add_executable(benchmark_uniform_fmm benchmark_uniform_fmm.cpp)
 target_link_libraries(benchmark_uniform_fmm PRIVATE cdfmm_core)
 target_include_directories(benchmark_uniform_fmm PRIVATE ${PROJECT_SOURCE_DIR}/src)
 cdfmm_enable_ipo(benchmark_uniform_fmm)
+cdfmm_enable_warnings(benchmark_uniform_fmm)
 
 add_executable(benchmark_cache_initialisation benchmark_cache_initialisation.cpp)
 target_link_libraries(benchmark_cache_initialisation PRIVATE cdfmm_core)
 cdfmm_enable_ipo(benchmark_cache_initialisation)
+cdfmm_enable_warnings(benchmark_cache_initialisation)
 
 add_executable(benchmark_operator_representation
                benchmark_operator_representation.cpp)
@@ -25,6 +28,7 @@ if(CDFMM_ENABLE_CUDA)
     CUDA_STANDARD_REQUIRED ON)
 endif()
 cdfmm_enable_ipo(benchmark_operator_representation)
+cdfmm_enable_warnings(benchmark_operator_representation)
 
 add_executable(benchmark_dense_direct_construction
                benchmark_dense_direct_construction.cpp)
@@ -32,3 +36,4 @@ target_link_libraries(benchmark_dense_direct_construction PRIVATE cdfmm_core)
 target_include_directories(benchmark_dense_direct_construction
                            PRIVATE ${PROJECT_SOURCE_DIR}/src)
 cdfmm_enable_ipo(benchmark_dense_direct_construction)
+cdfmm_enable_warnings(benchmark_dense_direct_construction)

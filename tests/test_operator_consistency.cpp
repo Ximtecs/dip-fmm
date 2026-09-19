@@ -169,9 +169,10 @@ TEST_CASE("M2P far-field accuracy improves with order")
 
   std::vector<Vec3> source_positions;
   std::vector<Vec3> dipole_moments;
-  generate_random_sources(400, 1337u, source_positions, dipole_moments);
+  generate_random_sources(n_sources, 1337u, source_positions, dipole_moments);
 
-  const std::vector<Vec3> target_positions = generate_far_targets(16, 4242u);
+  const std::vector<Vec3> target_positions =
+      generate_far_targets(n_targets, 4242u);
   const std::vector<PotentialField> direct = direct_p2p_reference(
       target_positions, source_positions, dipole_moments, OutputFlags::Field);
 

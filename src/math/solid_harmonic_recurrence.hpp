@@ -39,12 +39,21 @@
 
 #if defined(__CUDACC__)
 #define CDFMM_SOLID_HARMONIC_HOST_DEVICE __host__ __device__
-#define CDFMM_SOLID_HARMONIC_UNROLL _Pragma("unroll")
-#elif defined(__GNUC__) && !defined(__clang__)
-#define CDFMM_SOLID_HARMONIC_HOST_DEVICE
-#define CDFMM_SOLID_HARMONIC_UNROLL _Pragma("GCC unroll 32")
 #else
 #define CDFMM_SOLID_HARMONIC_HOST_DEVICE
+#endif
+
+// NOTE(cdfmm): `#pragma unroll` is nvcc's device-pass spelling.  nvcc leaves
+// __CUDACC__ defined while it hands the host half of a .cu to the host
+// compiler, so keying the hint on __CUDACC__ makes the host compiler parse a
+// pragma it does not know.  __CUDA_ARCH__ is defined only in the device pass,
+// which is the pass that understands it; the host half of a .cu then takes the
+// same host spelling a .cpp translation unit already takes.
+#if defined(__CUDA_ARCH__)
+#define CDFMM_SOLID_HARMONIC_UNROLL _Pragma("unroll")
+#elif defined(__GNUC__) && !defined(__clang__)
+#define CDFMM_SOLID_HARMONIC_UNROLL _Pragma("GCC unroll 32")
+#else
 #define CDFMM_SOLID_HARMONIC_UNROLL
 #endif
 

@@ -107,7 +107,7 @@ TEST_CASE("FP32 M2M L2L and M2L use quantised coefficient arithmetic") {
     input[index] = 0.03 * static_cast<double>(index + 1);
   }
   const std::vector<float> input_float(input.begin(), input.end());
-  for (const StaticCoefficientOperator operator_map : {
+  for (const StaticCoefficientOperator &operator_map : {
            build_static_m2m_operator(basis, {0.1, -0.2, 0.3}),
            build_static_l2l_operator(basis, {-0.15, 0.05, 0.25})}) {
     const auto operator_float = quantise_static_operator(operator_map);

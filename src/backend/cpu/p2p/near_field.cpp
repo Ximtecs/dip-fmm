@@ -31,7 +31,6 @@ void evaluate_reference_near_field(
     const StaticFmmTopology &topology, const std::span<const Vec3> sorted_dipole_moments,
     const std::span<const int> sorted_self_indices, const OutputFlags output,
     const std::span<PotentialField> sorted_results) {
-  const auto &nodes = topology.nodes;
   const auto &targets = topology.sorted_target_positions;
   const std::span<const Vec3> sources = topology.sorted_source_positions;
   const auto &occupied_leaves = topology.target_leaves;
@@ -42,8 +41,6 @@ void evaluate_reference_near_field(
        ++occupied_index) {
     const StaticLeafRange &leaf_range =
         occupied_leaves[static_cast<std::size_t>(occupied_index)];
-    const int leaf_index = leaf_range.node;
-    const StaticFmmTopology::Node &leaf = nodes[static_cast<std::size_t>(leaf_index)];
 
     // A target is written by exactly one occupied leaf.  Neighbours are kept in
     // canonical list1 order so this parallel loop changes neither summation

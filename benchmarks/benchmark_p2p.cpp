@@ -22,6 +22,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #if defined(CDFMM_USE_OPENMP)
@@ -116,6 +117,12 @@ private:
 #endif
 
 struct GeometryPlan {
+  // The tree is the only member built by the caller; every derived packing
+  // below is filled in by the steps that follow, so they start empty. The
+  // constructor says that, which aggregate initialisation cannot.
+  explicit GeometryPlan(cdfmm::UniformTree built_tree)
+      : tree(std::move(built_tree)) {}
+
   cdfmm::UniformTree tree;
   cdfmm::StaticP2POperator canonical;
   cdfmm::StaticP2PCompactPlan compact;
