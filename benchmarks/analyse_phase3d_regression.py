@@ -16,6 +16,12 @@ a production policy is chosen on; construction and memory are printed beside
 it so that a policy that wins evaluation while losing setup or footprint is
 visible rather than hidden.
 
+Rows are grouped by the `comparison_group` and `comparison_variant` columns
+the runner records, not by parsing the display name. A file written before
+those columns existed is grouped through the runner's own case generators; a
+case neither source recognises is printed alone rather than compared against
+something it does not match.
+
 Usage:
     python benchmarks/analyse_phase3d_regression.py \
         --input results/phase3d_regression.csv --view policy
@@ -25,8 +31,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
+import sys
 from collections import defaultdict
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def number(value: str) -> float | None:
@@ -37,20 +47,52 @@ def number(value: str) -> float | None:
     return parsed if parsed == parsed else None  # drop NaN
 
 
+@functools.lru_cache(maxsize=1)
+def generated_comparisons() -> dict[str, tuple[str, str]]:
+    """`case` -> (group, variant) as the runner's own generators define it.
+
+    A CSV written before the comparison columns existed carries only the
+    display name. Rather than guess the group back out of that name -- which
+    is what previously merged a regular lattice with an irregular cloud --
+    the mapping is taken from the generators that produced the names, so a
+    legacy file is grouped by the same definition a current one records.
+    """
+    try:
+        import run_phase3d_regression as runner
+    except ImportError:
+        return {}
+    mapping: dict[str, tuple[str, str]] = {}
+    for cuda in (True, False):
+        for mkl in (True, False):
+            for case in runner.cases("all", cuda=cuda, mkl=mkl):
+                mapping[case.name] = (case.comparison_group,
+                                      case.comparison_variant)
+    return mapping
+
+
+def comparison(row: dict) -> tuple[str, str]:
+    """The row's (group, variant), from the CSV or the generator mapping.
+
+    An unrecognised case becomes a group of its own. That prints it without a
+    ratio, which is the safe failure: a missing comparison is obvious, while
+    a wrong one looks exactly like a real measurement.
+    """
+    group = row.get("comparison_group", "") or ""
+    variant_name = row.get("comparison_variant", "") or ""
+    if group and variant_name:
+        return group, variant_name
+    generated = generated_comparisons().get(row["case"])
+    if generated is not None:
+        return generated
+    return row["case"], row["case"]
+
+
 def group_key(row: dict) -> str:
-    """The comparison group: everything but the forced alternative."""
-    case = row["case"]
-    parts = case.split("/")
-    # Case names are <group>/<shape>/<variant...>/<precision>; the variant is
-    # what is being compared, so it is dropped from the key.
-    if len(parts) < 3:
-        return case
-    return "/".join([parts[0], parts[1], parts[-1]])
+    return comparison(row)[0]
 
 
 def variant(row: dict) -> str:
-    parts = row["case"].split("/")
-    return "/".join(parts[2:-1]) if len(parts) >= 4 else parts[-1]
+    return comparison(row)[1]
 
 
 def policy_view(rows: list[dict]) -> None:
@@ -64,15 +106,22 @@ def policy_view(rows: list[dict]) -> None:
         automatic = [r for r in members
                      if r.get("p2p_packing_requested", "") in ("auto", "")
                      and r.get("point_expansion_requested", "") in ("auto", "")]
-        # An `auto` row measured under both layouts yields two baselines; the
+        # The variant names the forced alternative, so an automatic row is the
+        # one whose variant is `auto`. Where the compared axis is the backend
+        # itself no variant is named `auto` and every row is automatic, which
+        # is why the requested-column filter above still decides membership.
+        named_auto = [r for r in automatic
+                      if variant(r).split("/")[0] == "auto"]
+        preferred = named_auto or automatic
+        # An `auto` row measured under both layouts yields two candidates; the
         # general-layout one is the default a caller gets.
         baseline = None
-        for row in automatic:
+        for row in preferred:
             if row.get("layout_hint") == "general":
                 baseline = row
                 break
-        if baseline is None and automatic:
-            baseline = automatic[0]
+        if baseline is None and preferred:
+            baseline = preferred[0]
         if baseline is None:
             continue
 
@@ -83,7 +132,7 @@ def policy_view(rows: list[dict]) -> None:
         print(f"\n== {name}")
         print(f"   {'variant':<34} {'resolved':<18} {'eval [ms]':>10} "
               f"{'ratio':>7} {'setup [s]':>10} {'host MB':>9} {'dev MB':>8}")
-        for row in sorted(members, key=lambda r: r["case"]):
+        for row in sorted(members, key=lambda r: (variant(r), r["case"])):
             evaluation = number(row["evaluation_median"])
             if evaluation is None:
                 continue
