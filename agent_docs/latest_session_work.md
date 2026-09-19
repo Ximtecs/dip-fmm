@@ -3,12 +3,14 @@
 ## 2026-09-18 — Final cross-backend integration and production policy (Phase 3D)
 
 Starting HEAD `49b5fe3` on `phase3c5-dense-construction`; work on
-`phase3d-final-integration`, based exactly on it. Note that
-`refactor/architecture-v0.2` still pointed at `a2af367` when this phase began.
-`49b5fe3` is a linear descendant, so the integration branch had simply not
-been fast-forwarded after Phase 3C/3C.5; nothing had diverged and no history
-was rewritten. Fast-forwarding it is a separate, deliberate step and was left
-to the maintainer.
+`phase3d-final-integration`, based exactly on it. A note recorded here at the
+time said `refactor/architecture-v0.2` still pointed at `a2af367`. That was a
+stale *local* observation rather than the state of the branch: the remote
+integration branch had already been advanced through Phase 3C/3C.5 to
+`49b5fe3`, and only this checkout's own ref lagged behind. The reflog records
+the local ref catching up by fast-forward pull, not by a push. `a2af367` is an
+ancestor of `49b5fe3` either way, so nothing had diverged and no history was
+rewritten.
 
 Question answered: does the combined implementation, after 3A, 3B, 3B.5,
 3B.5b, 3C and 3C.5, still make the production decisions its measurements

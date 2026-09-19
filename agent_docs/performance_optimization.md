@@ -3735,11 +3735,14 @@ FMM operator and no cache content or key.
 ## Final cross-backend integration and production policy (Phase 3D)
 
 Starting HEAD `49b5fe3` ("docs(perf): record the Phase 3C.5 validation
-evidence"), the tip of `phase3c5-dense-construction`. Note that
-`refactor/architecture-v0.2` still pointed at `a2af367` when this phase began:
-`49b5fe3` is a linear descendant of it, so the integration branch had simply
-not been fast-forwarded after Phase 3C/3C.5. Work happened on
-`phase3d-final-integration`, based exactly on `49b5fe3`.
+evidence"), the tip of `phase3c5-dense-construction`. An earlier note here
+said `refactor/architecture-v0.2` still pointed at `a2af367` when this phase
+began. That described this checkout's local ref, not the integration branch
+itself: the remote branch had already been advanced through Phase 3C/3C.5 to
+`49b5fe3`, and the local ref caught up by fast-forward pull. `a2af367` is an
+ancestor of `49b5fe3` in either reading, so nothing had diverged and no
+history was rewritten. Work happened on `phase3d-final-integration`, based
+exactly on `49b5fe3`.
 
 This phase reconciles the measured history of Phase 3 with what the code
 actually does. It is an internal regression and policy-validation matrix, not
