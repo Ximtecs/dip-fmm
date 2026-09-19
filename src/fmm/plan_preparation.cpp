@@ -882,7 +882,7 @@ void UniformFmm::build_static_plan() {
   std::vector<int> row_cursors = m2l_plan_.target_row_offsets;
   for (const ClassEntry* entry : ordered_classes) {
     const int matrix_id = universal_class_ids.at(entry->first);
-    for (const auto [source, target] : entry->second) {
+    for (const auto &[source, target] : entry->second) {
       const int slot = row_cursors[static_cast<std::size_t>(target)]++;
       m2l_plan_.source_nodes[static_cast<std::size_t>(slot)] = source;
       m2l_plan_.matrix_ids[static_cast<std::size_t>(slot)] = matrix_id;

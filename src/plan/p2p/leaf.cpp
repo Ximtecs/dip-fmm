@@ -130,7 +130,7 @@ StaticP2PLeafPlan build_static_p2p_leaf_plan(
     std::size_t occupancy_sum = 0;
     result.minimum_occupancy = std::numeric_limits<int>::max();
     const auto record_occupancies = [&](const auto& ranges) {
-        for (const auto [begin, count] : ranges) {
+        for (const auto& [begin, count] : ranges) {
             static_cast<void>(begin);
             result.minimum_occupancy =
                 std::min(result.minimum_occupancy, count);

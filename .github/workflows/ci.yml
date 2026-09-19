@@ -25,13 +25,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Python build and test dependencies
+      - name: Install Python build dependencies
         run: |
           python -m pip install --upgrade pip
-          # The benchmark-runner tests import the plotting module, so
-          # matplotlib is a required part of the Python test environment
-          # rather than an optional runtime discovery.
-          python -m pip install pytest numpy matplotlib pybind11 scikit-build-core
+          python -m pip install pybind11 scikit-build-core
 
       - name: Configure
         run: >
@@ -46,7 +43,9 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if ! cmake --build build -j 2>&1 | tee build.log; then
+          # -k keeps make going past a failing translation unit, so one
+          # run reports every diagnostic instead of only the first.
+          if ! cmake --build build -j -- -k 2>&1 | tee build.log; then
             # Republish the diagnostics as annotations. A failed build is
             # then legible from the run summary, which matters because the
             # full log needs repository rights the reader may not have.
@@ -65,8 +64,11 @@ jobs:
             exit 1
           fi
 
-      - name: Install the Python extension
-        run: python -m pip install .
+      - name: Install the Python extension and its declared test extras
+        # `.[test]` rather than a hand-written list: the workflow's list had
+        # drifted from what the tests import, and a missing module made
+        # pytest fail at collection rather than skip.
+        run: python -m pip install ".[test]"
 
       - name: Report which extension the tests will import
         # A wrong module is the failure mode that looks like a code bug, so
@@ -119,7 +121,9 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          if ! cmake --build build -j 2>&1 | tee build.log; then
+          # -k keeps make going past a failing translation unit, so one
+          # run reports every diagnostic instead of only the first.
+          if ! cmake --build build -j -- -k 2>&1 | tee build.log; then
             grep -E ': (error|warning):' build.log | head -40 |
               while IFS= read -r line; do echo "::error::${line}"; done
             exit 1

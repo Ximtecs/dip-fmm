@@ -220,7 +220,7 @@ TEST_CASE("FMM precision controls state output and convergence") {
             ? std::vector<std::array<int, 2>>{{4, 3}}
             : std::vector<std::array<int, 2>>{
                   {2, 2}, {4, 3}, {6, 4}};
-    for (const auto [order, depth] : configurations) {
+    for (const auto& [order, depth] : configurations) {
         UniformFmmOptions fp64_options;
         fp64_options.expansion_basis = ExpansionBasis::Cartesian;
         fp64_options.expansion_order = order;

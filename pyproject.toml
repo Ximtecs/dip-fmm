@@ -12,6 +12,8 @@ dependencies = ["numpy"]
 test = [
     "pytest",
     "matplotlib",
+    # The notebook contract tests parse .ipynb files with nbformat.
+    "nbformat",
 ]
 examples = [
     "matplotlib",

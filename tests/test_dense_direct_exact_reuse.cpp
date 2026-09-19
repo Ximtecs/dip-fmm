@@ -158,7 +158,7 @@ TEST_CASE("dense reuse reproduces the per-pair tensor for every geometry pair",
 
         // Several distinct (target, source) pairs, including ones that share
         // a displacement with an earlier pair and therefore reuse its tensor.
-        for (const auto [target, source] : std::array<
+        for (const auto& [target, source] : std::array<
                  std::pair<std::size_t, std::size_t>, 5>{{
                  {1, 0}, {2, 1}, {5, 4}, {20, 3}, {63, 7}}}) {
             const Vec3 displacement = positions[target] - positions[source];
@@ -434,7 +434,7 @@ TEST_CASE("dense reuse handles asymmetric source and target counts",
     REQUIRE(plan.tensor_memory_bytes() ==
             6 * sources.size() * targets.size() * sizeof(double));
 
-    for (const auto [target, source] :
+    for (const auto& [target, source] :
          std::array<std::pair<std::size_t, std::size_t>, 4>{{
              {0, 0}, {3, 11}, {19, 47}, {7, 25}}}) {
         require_same_bits(

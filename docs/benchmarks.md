@@ -703,9 +703,28 @@ finite control -- under the automatic policy on every available backend; the
 alternatives. Each row records the resolved representation (`p2p_packing`,
 `p2m_execution`, `l2p_execution`, `static_multiply_backend`) beside repeated
 evaluation, its phases, and the retained host and device bytes, so a stale
-production rule is visible without reading the source. Completed cases are
-cached per case file, so the matrix resumes and every comparison inside a
-suite stays same-session.
+production rule is visible without reading the source.
+
+Each row also records `comparison_group` and `comparison_variant`. The group
+is everything two rows must share before a ratio between them means anything
+-- workload class, geometry, lattice or irregular placement, size and
+precision -- and the variant is the single axis under review. The analyser
+groups on those columns rather than on the display name, whose token
+positions shift whenever a case family gains or loses a dimension; for a CSV
+written before the columns existed it reconstructs the grouping from the
+driver's own case generators, and prints a case neither source recognises
+alone rather than comparing it against a guess.
+
+A run is fresh by default and strict: a case that cannot run, or that yields
+no data row, names itself and fails the run with a non-zero exit, and the row
+count is checked against the number of cases the selected suite and backend
+matrix define. `--allow-failures` restores skipping for exploration and must
+not produce a retained baseline. `--resume` reuses the per-case CSVs of an
+interrupted run only when the scratch directory's `session.json` matches --
+revision, binary path and SHA-256, suite and filter, evaluation, warm-up,
+sample and thread counts, backend availability and the column set -- so
+"same-session, same-binary" is a checked property rather than a convention.
+A mismatch is refused and names the differing field.
 
 Two rules for reading it. The comparison number for a rule that governs one
 stage is **that stage**, not the total: a P2M/L2P rule is invisible inside an
