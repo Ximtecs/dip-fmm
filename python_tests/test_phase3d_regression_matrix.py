@@ -210,6 +210,28 @@ def test_driver_exits_non_zero_when_a_case_cannot_run(tmp_path):
     assert "FAILED" in completed.stderr
 
 
+def test_allow_failures_keeps_going_but_still_reports_incomplete(tmp_path):
+    """The opt-in changes where the run stops, not whether it admits a gap.
+
+    Skipping a case and then exiting zero would be the original defect in a
+    new costume, so an incomplete matrix is still a non-zero exit.
+    """
+    completed = subprocess.run(
+        [sys.executable, str(REPOSITORY / "benchmarks/run_phase3d_regression.py"),
+         "--binary", sys.executable,
+         "--output", str(tmp_path / "out.csv"),
+         "--suite", "policy", "--no-cuda", "--no-mkl",
+         "--filter", "P-cpu-expansion/M/auto",
+         "--evaluations", "1", "--warmups", "0", "--samples", "1",
+         "--allow-failures"],
+        capture_output=True, text=True, cwd=REPOSITORY)
+    assert completed.returncode != 0
+    assert "SKIPPED" in completed.stderr
+    assert "INCOMPLETE" in completed.stderr
+    # Both filtered cases were attempted rather than only the first.
+    assert completed.stderr.count("SKIPPED") == 2
+
+
 def test_a_missing_binary_is_reported(tmp_path):
     completed = subprocess.run(
         [sys.executable, str(REPOSITORY / "benchmarks/run_phase3d_regression.py"),

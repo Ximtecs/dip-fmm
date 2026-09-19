@@ -578,9 +578,11 @@ def main() -> int:
                              "the same session; refused unless the scratch "
                              "manifest matches this run exactly")
     parser.add_argument("--allow-failures", action="store_true",
-                        help="continue past a case that cannot run and write "
-                             "an incomplete matrix; exploratory only, never "
-                             "for a retained baseline")
+                        help="run every remaining case after one fails, "
+                             "instead of stopping at the first; the run "
+                             "still exits non-zero because the matrix is "
+                             "incomplete. Exploratory only, never for a "
+                             "retained baseline")
     arguments = parser.parse_args()
 
     binary = Path(arguments.binary)

@@ -718,8 +718,10 @@ alone rather than comparing it against a guess.
 A run is fresh by default and strict: a case that cannot run, or that yields
 no data row, names itself and fails the run with a non-zero exit, and the row
 count is checked against the number of cases the selected suite and backend
-matrix define. `--allow-failures` restores skipping for exploration and must
-not produce a retained baseline. `--resume` reuses the per-case CSVs of an
+matrix define. `--allow-failures` only moves where the run stops -- it
+attempts the remaining cases rather than aborting at the first -- and still
+exits non-zero on an incomplete matrix; it is for exploration and must not
+produce a retained baseline. `--resume` reuses the per-case CSVs of an
 interrupted run only when the scratch directory's `session.json` matches --
 revision, binary path and SHA-256, suite and filter, evaluation, warm-up,
 sample and thread counts, backend availability and the column set -- so

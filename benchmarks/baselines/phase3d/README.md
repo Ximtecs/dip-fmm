@@ -34,9 +34,10 @@ that produced this baseline.
   produces no data row, raises, names the case and exits non-zero. The driver
   also checks the number of rows against the number of cases the selected
   suite and backend matrix define. A baseline that silently drops rows cannot
-  be told apart from a complete one, which is why `--allow-failures` -- the
-  opt-in that restores skipping -- is for exploration only and must never
-  produce a retained baseline.
+  be told apart from a complete one. `--allow-failures` only changes *where*
+  the run stops -- it attempts the remaining cases instead of aborting at the
+  first -- and still exits non-zero, because the matrix is still incomplete.
+  It is for exploration only and must never produce a retained baseline.
 - **A run is fresh by default.** `--resume` reuses the per-case CSVs of an
   interrupted run, but only when `session.json` in the scratch directory
   matches: the revision, the binary's path and SHA-256 (with size and mtime
