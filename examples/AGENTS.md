@@ -1,47 +1,52 @@
 # Example guidance
 
 Inherit `../AGENTS.md`. Examples are readable, user-facing demonstrations and
-research validation aids. They are not substitutes for automated tests.
+validation aids. They are not substitutes for automated tests.
 
 ## Current structure
 
 ```text
 examples/
 |-- CMakeLists.txt
-|-- single_box_demo.cpp
-|-- operator_convergence_demo.cpp
-|-- plot_uniform_tree.py
-|-- fortran/                 optional C/Fortran integration example
-|-- notebooks/               numbered operator-to-FMM learning sequence
-|-- simple_notebooks/        focused comparison/reuse notebooks
-`-- matrix_notebooks/        interaction-matrix visualisation
+|-- single_box_demo.cpp              P2M + M2L + L2P against direct P2P (C++)
+|-- operator_convergence_demo.cpp    P2M + M2P convergence over orders (C++)
+|-- fortran/                         optional C/Fortran integration example
+|-- tutorials/                       the six canonical Python tutorials,
+|                                    tutorial_utils.py, adaptive_showcase.py
+`-- validation/                      MagTense comparison notebooks (separate
+                                     environment; not tutorials)
 ```
 
-`examples/notebooks/` also contains shared Python helpers and optional FMM3D
-installation/comparison support. MagTense and FMM3D comparisons are external
+`examples/tutorials/README.md` lists the tutorials and what each covers. The
+FMM3D comparison material is benchmark raw material under
+`benchmarks/external/fmm3d/`, not an example. MagTense and FMM3D are external
 validation paths, not runtime dip-fmm backends.
 
 ## Rules
 
+- One tutorial per supported user workflow; extend an existing tutorial
+  before adding a notebook, and do not add exploratory or development
+  notebooks here (use a scratch location that is not committed).
+- Every tutorial is CPU-executable on the portable build in well under a
+  minute, guards CUDA and oneMKL cells with the availability queries, uses only
+  the public `cdfmm` API, states units and array shapes, explains options
+  before non-trivial code, and is committed without outputs.
 - Optimise for clarity: descriptive names, deterministic small setups, explicit
   units/conventions, and no dense one-line code.
-- Keep heavyweight output, local kernels, caches, and generated datasets out of
-  version control unless deliberately curated.
-- A notebook change should preserve reproducibility and avoid unrelated output
-  churn. Do not rewrite user-modified notebooks while changing architecture.
 - New behaviour demonstrated here also needs an automated C++ or Python test.
 
 ## Validation
 
-The `dev` preset builds both C++ examples. Shared notebook scripts and selected
-notebooks are exercised by `python_tests/`. The full notebook environment uses:
+The `dev` preset builds both C++ examples. Every tutorial is executed by
+`python_tests/test_tutorial_notebooks.py` (structure and headless execution on
+a generic `python3` kernel):
 
 ```bash
-cmake --fresh --preset notebooks
-cmake --build --preset notebooks -j
-ctest --preset notebooks
-PYTHONPATH=build-notebooks python -m pytest python_tests -v
+cmake --fresh --preset dev
+cmake --build --preset dev -j
+PYTHONPATH=build python -m pytest python_tests/test_tutorial_notebooks.py -v
 ```
 
-Run MagTense/FMM3D-specific checks only when their separate environments are
-available, and report otherwise rather than weakening the comparison.
+Run the MagTense validation notebooks only when their environment is available
+(`examples/validation/README.md`), and report otherwise rather than weakening
+the comparison.

@@ -11,6 +11,8 @@ benchmarks/
 |-- benchmark_p2p.cpp                 P2P representations/backends
 |-- benchmark_uniform_fmm.cpp         setup and repeated FMM evaluation
 |-- benchmark_cache_initialisation.cpp cache construction/reuse
+|-- benchmark_dense_direct_construction.cpp
+|                                     dense all-to-all construction phases
 |-- benchmark_operator_representation.cpp
 |                                     precomputed versus procedural exact
 |                                     operators (P2P/P2M/L2P, hot and
@@ -21,17 +23,30 @@ benchmarks/
 |-- run_construction_matrix.py        cold static-plan construction matrix
 |                                     (per-phase timings, plan bytes, peak
 |                                     resident set; resumable)
+|-- run_dense_construction_matrix.py  dense construction matrix, one process
+|                                     per row
 |-- run_p2p_sweep.py                  representation sweep
 |-- run_p2p_packing_matrix.py         geometry/backend/packing matrix
 |-- run_operator_representation.py    representation matrix (resumable)
 |-- analyse_operator_representation.py
 |                                     ratios, retained bytes and the
 |                                     amortisation break-even
-`-- run_high_occupancy_p2p.py         dense-leaf CUDA study
+|-- run_high_occupancy_p2p.py         dense-leaf CUDA study
+|-- run_phase3d_regression.py,        internal cross-backend regression and
+|   run_phase3d_startup.py,           policy matrix, startup decomposition,
+|   analyse_phase3d_regression.py     and their analyser
+|-- baselines/phase3d/                retained engineering baseline of the
+|                                     three Phase-3D drivers (not an Article1
+|                                     benchmark; see its README)
+`-- external/fmm3d/                   FMM3D adapters, pinned installer and the
+                                      exploratory comparison notebook
 ```
 
-Future benchmark directories are `direct/`, `p2p/`, `far_field/`, and `fmm/`
-once there are enough cohesive drivers to justify them.
+Every driver, runner and forceable alternative here is retained for the
+Article1 benchmark campaign that follows the implementation freeze; prune
+benchmark code only after that campaign. Future benchmark directories are
+`direct/`, `p2p/`, `far_field/`, and `fmm/` once there are enough cohesive
+drivers to justify them.
 
 ## Rules
 

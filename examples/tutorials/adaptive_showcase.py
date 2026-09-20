@@ -1,4 +1,4 @@
-"""Geometry, plotting and measurement helpers for notebook 15.
+"""Geometry, plotting and measurement helpers for the adaptive-tree tutorial.
 
 Material subdivision and FMM subdivision are independent. The same material
 cells can be evaluated as point dipoles or finite uniformly magnetised
@@ -10,9 +10,9 @@ import numpy as np
 import cdfmm
 
 try:
-    from example_utils import draw_box_3d, finish_3d_axes, vec3_to_array
+    from tutorial_utils import draw_box_3d, finish_3d_axes, vec3_to_array
 except ModuleNotFoundError:
-    from examples.notebooks.example_utils import draw_box_3d, finish_3d_axes, vec3_to_array
+    from examples.tutorials.tutorial_utils import draw_box_3d, finish_3d_axes, vec3_to_array
 
 
 def generate_material(n_particles=15000, seed=42, base_grid=4):
