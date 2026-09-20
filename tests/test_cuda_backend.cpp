@@ -841,7 +841,6 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
   inputs.target_count = 4096;
   inputs.occupied_target_leaf_count = 512;
   inputs.mean_leaf_occupancy = 8.0;
-  inputs.bsr_budget_bytes = 1ULL << 40;
   // The stored-tensor rules below are exercised on FP64 plans; FP32 point
   // pairs have their own rule (first section).
   inputs.precision = StaticPrecision::Float64;
@@ -925,8 +924,9 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
   }
   SECTION("periodicity does not restrict any stored-tensor packing") {
     // Image records are ordinary dense leaf pairs or merged sparse blocks,
-    // so periodic plans follow the free-space rules.
-    inputs.periodic = true;
+    // so periodic plans follow the free-space rules: the policy inputs carry
+    // no periodicity flag at all, and every stored-tensor packing is accepted
+    // for a finite source whatever the identity map.
     REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
             CudaP2PPacking::LeafBlock);
     inputs.spatial_layout = SpatialLayout::RegularGrid;
@@ -934,7 +934,6 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
             CudaP2PPacking::SignedDictionary);
     inputs.spatial_layout = SpatialLayout::General;
     inputs.effective_point_source = false;
-    inputs.bsr_estimate_bytes = 1024;
     REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
             CudaP2PPacking::LeafBlock);
     for (const CudaP2PPacking packing :
@@ -953,14 +952,10 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
   SECTION("finite sources follow the same rules as points") {
     // Leaf blocks are the general default for every geometry (measured
     // faster than BSR(3) on finite bodies once the leaf packing carried the
-    // identity metadata); the BSR budget no longer steers the policy, and the
-    // lattice hint selects the dictionary for finite bodies too.
+    // identity metadata); the BSR budget is not a policy input at all, and
+    // the lattice hint selects the dictionary for finite bodies too.
     inputs.effective_point_source = false;
     inputs.fixed_identity_available = false;
-    inputs.bsr_estimate_bytes = 1024;
-    REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
-            CudaP2PPacking::LeafBlock);
-    inputs.bsr_budget_bytes = 0;
     REQUIRE(resolve_cuda_execution_policy(inputs).p2p_packing ==
             CudaP2PPacking::LeafBlock);
     inputs.spatial_layout = SpatialLayout::RegularGrid;
@@ -1010,14 +1005,21 @@ TEST_CASE("CUDA execution policy resolves the P2P packing from layout and option
     REQUIRE(cdfmm::cuda_policy::far_field_stream_priority(
         192000000, 40000, 49, CudaP2PPacking::PointGeometry,
         StaticPrecision::Float32));
-    // M-like plan (640k translations of 49 coefficients, 16.3M pairs):
+    // The stored FP32 leaf blocks are the calibration the rule was measured
+    // with. M-like plan (640k translations of 49 coefficients, 16.3M pairs):
     // far field about 340 us versus P2P about 290 us -> prioritise.
-    REQUIRE(cdfmm::cuda_policy::far_field_stream_priority(16300000, 640000, 49));
+    REQUIRE(cdfmm::cuda_policy::far_field_stream_priority(
+        16300000, 640000, 49, CudaP2PPacking::LeafBlock,
+        StaticPrecision::Float32));
     // 128 points per leaf: P2P dominates outright.
-    REQUIRE(cdfmm::cuda_policy::far_field_stream_priority(192000000, 40000, 49));
+    REQUIRE(cdfmm::cuda_policy::far_field_stream_priority(
+        192000000, 40000, 49, CudaP2PPacking::LeafBlock,
+        StaticPrecision::Float32));
     // Deep tree (200k points, depth 5): 4.9M translations, 35.8M pairs ->
     // the far field is more than three times the P2P kernel -> equal.
-    REQUIRE(!cdfmm::cuda_policy::far_field_stream_priority(35800000, 4900000, 49));
+    REQUIRE(!cdfmm::cuda_policy::far_field_stream_priority(
+        35800000, 4900000, 49, CudaP2PPacking::LeafBlock,
+        StaticPrecision::Float32));
     // Through the resolver the cost follows the resolved packing: an FP32
     // point plan recomputes its pairs cheaply, so the deep tree keeps equal
     // priority and the 128-per-leaf plan prioritises the far field.

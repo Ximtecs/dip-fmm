@@ -34,10 +34,9 @@ target leaf, and the list-1 pair and M2L translation counts — together with
 the options. Nothing is measured at run time, and the choice never changes the
 mathematical result.
 
-Periodicity and the BSR(3) size estimate and budget are carried on the policy
-inputs for diagnostics only: no rule reads them. Periodic image records pack
-like any other pair, and the automatic policy has not selected BSR(3) since
-leaf blocks became the general default.
+Neither periodicity nor the BSR(3) memory budget is a policy input: periodic
+image records pack like any other pair, and the automatic policy has not
+selected BSR(3) since leaf blocks became the general default.
 
 | Situation | List-1 P2P packing | Dictionary executor |
 |---|---|---|

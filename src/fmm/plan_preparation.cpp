@@ -18,6 +18,7 @@
 #include "cdfmm/plan/static_plan.hpp"
 
 #include "cache/internal.hpp"
+#include "operators/exact_operator_reuse.hpp"
 
 namespace cdfmm {
 
@@ -28,44 +29,6 @@ using Clock = std::chrono::steady_clock;
 double elapsed_seconds(const Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
-
-/// @brief The failure a parallel endpoint-operator loop reports.
-///
-/// The lowest failing index wins, because that is the leaf or target a serial
-/// build would have reached first, so the reported cause does not depend on
-/// how the iterations were scheduled.  Work above a known failure is skipped:
-/// it can no longer win that comparison.
-class FirstConstructionFailure {
-public:
-  [[nodiscard]] bool superseded(const std::size_t index) const noexcept {
-    return index > index_.load(std::memory_order_relaxed);
-  }
-
-  /// @brief Record the exception currently being handled for @p index.
-  void record(const std::size_t index) {
-    std::size_t previous = index_.load(std::memory_order_relaxed);
-    while (index < previous &&
-           !index_.compare_exchange_weak(previous, index,
-                                         std::memory_order_relaxed)) {
-    }
-#pragma omp critical(cdfmm_endpoint_operator_exception)
-    {
-      if (index_.load(std::memory_order_relaxed) == index) {
-        exception_ = std::current_exception();
-      }
-    }
-  }
-
-  void rethrow_any() const {
-    if (exception_) {
-      std::rethrow_exception(exception_);
-    }
-  }
-
-private:
-  std::atomic<std::size_t> index_{std::numeric_limits<std::size_t>::max()};
-  std::exception_ptr exception_{};
-};
 
 // Exact endpoint operator reuse.
 //
@@ -78,98 +41,18 @@ private:
 //
 // Repeated geometry makes this decisive in the same way it does for the near
 // field: every leaf of a regular lattice has the same internal layout.  The
-// key holds raw bit patterns and is never compared with a tolerance.
-using EndpointOperatorKey = std::vector<std::uint64_t>;
+// equivalence, the first-seen class numbering and the abandonment guard are
+// the shared ones in `operators/exact_operator_reuse.hpp`; only the sampling
+// gate differs, because the items here are leaves or targets rather than
+// pairs and are far fewer.
+using detail::exact_reuse::ExactOperatorClasses;
+using detail::exact_reuse::ExactReuseGate;
+using detail::exact_reuse::FirstFailure;
+using detail::exact_reuse::GrowableExactOperatorKey;
+using detail::exact_reuse::classify_exact_operators;
 
-struct EndpointOperatorKeyHash {
-  [[nodiscard]] std::size_t operator()(
-      const EndpointOperatorKey& key) const noexcept {
-    std::uint64_t hash = 0x9e3779b97f4a7c15ULL ^ key.size();
-    for (const std::uint64_t word : key) {
-      hash ^= word;
-      hash *= 0x00000100000001b3ULL;
-      hash ^= hash >> 29;
-    }
-    return static_cast<std::size_t>(hash);
-  }
-};
-
-void push_bits(EndpointOperatorKey& key, const double value) {
-  key.push_back(std::bit_cast<std::uint64_t>(value));
-}
-
-void push_bits(EndpointOperatorKey& key, const Vec3& value) {
-  push_bits(key, value.x);
-  push_bits(key, value.y);
-  push_bits(key, value.z);
-}
-
-void push_bits(EndpointOperatorKey& key, const CuboidSize& size) {
-  push_bits(key, size.hx);
-  push_bits(key, size.hy);
-  push_bits(key, size.hz);
-}
-
-void push_bits(EndpointOperatorKey& key, const Tetrahedron& tetrahedron) {
-  for (const Vec3& vertex : tetrahedron.vertices) {
-    push_bits(key, vertex);
-  }
-}
-
-/// @brief Items grouped by bitwise-identical endpoint operator inputs.
-struct EndpointOperatorClasses {
-  std::vector<std::uint32_t> class_of_item;
-  std::vector<std::uint32_t> representative;
-  bool classified{false};
-};
-
-/// @brief Group items whose endpoint operator inputs agree bit for bit.
-///
-/// Classes are numbered in first-seen order, so the classification and every
-/// built value are independent of thread count and of hash iteration order.
-/// Classification stops when an initial sample shows too few duplicates to
-/// repay it, or when the item indices do not fit the 32-bit words the class
-/// map and the representative list store.  Either only ever changes
-/// performance: the caller builds the same operators either way.
-template <typename KeyOfItem>
-[[nodiscard]] EndpointOperatorClasses classify_endpoint_operators(
-    const std::size_t item_count, const KeyOfItem& key_of_item) {
-  constexpr std::size_t sample_items = 4096;
-  constexpr std::size_t sample_reuse_factor = 2;
-
-  // Both vectors hold `std::uint32_t`, and the largest value either can carry
-  // is `item_count - 1`.  Abandon rather than narrow silently.  Endpoint items
-  // are leaves or targets, so this is bounded by the body count rather than by
-  // its square and is far out of reach in practice; the guard keeps the
-  // narrowing contract the same as the shared pair classifier's.
-  if (item_count != 0 &&
-      item_count - 1 > std::numeric_limits<std::uint32_t>::max()) {
-    return {};
-  }
-
-  EndpointOperatorClasses result;
-  result.class_of_item.resize(item_count);
-  std::unordered_map<EndpointOperatorKey, std::uint32_t,
-                     EndpointOperatorKeyHash>
-      classes;
-  for (std::size_t item = 0; item < item_count; ++item) {
-    const auto [entry, inserted] = classes.try_emplace(
-        key_of_item(item),
-        static_cast<std::uint32_t>(result.representative.size()));
-    if (inserted) {
-      result.representative.push_back(static_cast<std::uint32_t>(item));
-    }
-    result.class_of_item[item] = entry->second;
-
-    const std::size_t sampled = item + 1;
-    if (sampled == sample_items && sampled < item_count &&
-        result.representative.size() * sample_reuse_factor > sampled) {
-      return {};
-    }
-  }
-  result.classified = true;
-  return result;
-}
+constexpr ExactReuseGate endpoint_reuse_gate{
+    .sample_items = 4096, .sample_reuse_factor = 2};
 
 template <typename Operator>
 std::size_t estimate_bsr_bytes(const Operator& p2p,
@@ -518,7 +401,7 @@ void UniformFmm::build_static_plan() {
   // Everything the leaf operator depends on, in bits: each body's offset from
   // the leaf centre and its shape record, in leaf-local order.
   const auto leaf_operator_key =
-      [&](const std::size_t slot) -> EndpointOperatorKey {
+      [&](const std::size_t slot) -> GrowableExactOperatorKey {
     const StaticLeafRange& leaf_range = topology_->source_leaves[slot];
     const auto& leaf =
         topology_->nodes[static_cast<std::size_t>(leaf_range.node)];
@@ -528,15 +411,15 @@ void UniformFmm::build_static_plan() {
     const bool exact_tetrahedron =
         source_geometry_ == SourceGeometry::Tetrahedron &&
         far_field_source_model_ == SourceModel::ExactGeometry;
-    EndpointOperatorKey key;
+    GrowableExactOperatorKey key;
     key.reserve(leaf_range.count * (exact_tetrahedron ? 15 : 6));
     for (std::size_t body = 0; body < leaf_range.count; ++body) {
       const std::size_t source = leaf_range.begin + body;
-      push_bits(key, sorted_positions[source] - leaf.centre);
+      key.push(sorted_positions[source] - leaf.centre);
       if (exact_prism) {
-        push_bits(key, source_sizes[source_sizes.size() == 1 ? 0 : source]);
+        key.push(source_sizes[source_sizes.size() == 1 ? 0 : source]);
       } else if (exact_tetrahedron) {
-        push_bits(key, sorted_source_tetrahedra_[
+        key.push(sorted_source_tetrahedra_[
             sorted_source_tetrahedra_.size() == 1 ? 0 : source]);
       }
     }
@@ -551,12 +434,13 @@ void UniformFmm::build_static_plan() {
   p2m_plans_.assign(topology_->source_leaves.size(), P2MPlan{});
   {
     const std::size_t leaf_total = topology_->source_leaves.size();
-    const EndpointOperatorClasses classes =
-        classify_endpoint_operators(leaf_total, leaf_operator_key);
+    const ExactOperatorClasses classes =
+        classify_exact_operators(leaf_total, leaf_operator_key,
+                                 endpoint_reuse_gate);
     const std::size_t build_total =
         classes.classified ? classes.representative.size() : leaf_total;
 
-    FirstConstructionFailure failure;
+    FirstFailure failure;
     for (std::size_t slot = 0; slot < leaf_total; ++slot) {
       const StaticLeafRange& leaf_range = topology_->source_leaves[slot];
       P2MPlan& plan = p2m_plans_[slot];
@@ -995,7 +879,7 @@ void UniformFmm::build_static_plan() {
   // Everything one target's evaluator depends on, in bits: its offset from the
   // leaf centre and its shape record.
   const auto target_operator_key =
-      [&](const std::size_t slot) -> EndpointOperatorKey {
+      [&](const std::size_t slot) -> GrowableExactOperatorKey {
     const std::size_t target =
         static_cast<std::size_t>(evaluated_targets[slot]);
     const bool exact_prism =
@@ -1004,13 +888,13 @@ void UniformFmm::build_static_plan() {
     const bool exact_tetrahedron =
         target_geometry_ == TargetGeometry::Tetrahedron &&
         far_field_target_model_ == TargetModel::ExactGeometry;
-    EndpointOperatorKey key;
+    GrowableExactOperatorKey key;
     key.reserve(exact_tetrahedron ? 15 : 6);
-    push_bits(key, sorted_targets[target] - target_leaf_centre[target]);
+    key.push(sorted_targets[target] - target_leaf_centre[target]);
     if (exact_prism) {
-      push_bits(key, target_sizes[target_sizes.size() == 1 ? 0 : target]);
+      key.push(target_sizes[target_sizes.size() == 1 ? 0 : target]);
     } else if (exact_tetrahedron) {
-      push_bits(key, sorted_target_tetrahedra_[
+      key.push(sorted_target_tetrahedra_[
           sorted_target_tetrahedra_.size() == 1 ? 0 : target]);
     }
     return key;
@@ -1024,12 +908,13 @@ void UniformFmm::build_static_plan() {
   l2p_evaluators_.resize(sorted_targets.size());
   {
     const std::size_t evaluator_count = evaluated_targets.size();
-    const EndpointOperatorClasses classes =
-        classify_endpoint_operators(evaluator_count, target_operator_key);
+    const ExactOperatorClasses classes =
+        classify_exact_operators(evaluator_count, target_operator_key,
+                                 endpoint_reuse_gate);
     const std::size_t build_total = classes.classified
         ? classes.representative.size() : evaluator_count;
 
-    FirstConstructionFailure failure;
+    FirstFailure failure;
     // Without reuse there is nothing to hold aside, so the evaluators are
     // built straight into their slots rather than through a second full-size
     // buffer.

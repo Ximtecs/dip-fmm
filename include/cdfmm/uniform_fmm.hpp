@@ -597,9 +597,6 @@ private:
   TargetModel near_field_target_model_{TargetModel::Point};
   SourceModel far_field_source_model_{SourceModel::PointDipole};
   TargetModel far_field_target_model_{TargetModel::Point};
-  // Compatibility/cache metadata derived from the far-field model selectors.
-  bool use_cuboid_p2m_{false};
-  bool use_cuboid_l2p_{false};
   std::vector<CuboidSize> sorted_source_sizes_{};
   std::vector<Tetrahedron> sorted_source_tetrahedra_{};
   std::vector<CuboidSize> sorted_target_sizes_{};

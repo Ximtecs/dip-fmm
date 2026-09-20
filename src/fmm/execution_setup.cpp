@@ -319,6 +319,12 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
   }
   if (m2l_backend_ == M2LBackend::Static ||
       precision_ == StaticPrecision::Float32) {
+    // Every input of the point P2M/L2P execution choice is an option or
+    // geometry fact, so it is resolved here, before the universal operator
+    // bank is built: an explicit request the plan cannot honour is then
+    // rejected without first paying for an order-11 M2L bank. The static
+    // plan and the persistent cache never read the resolved flags.
+    resolve_point_expansion_execution();
     build_static_plan();
   }
   static_plan_statistics_.state_bytes =
@@ -442,7 +448,6 @@ void UniformFmm::resolve_cuda_execution_policy() {
   inputs.effective_point_target =
       target_geometry_ == TargetGeometry::Point ||
       near_field_target_model_ == TargetModel::Point;
-  inputs.periodic = periodic_.enabled;
   inputs.fixed_identity_available = fixed_target_source_indices_.has_value();
   inputs.explicit_reduced_symmetry = use_reduced_symmetry_p2p_;
   inputs.explicit_dictionary_target_owned = cuda_dictionary_target_owned_;
@@ -465,13 +470,6 @@ void UniformFmm::resolve_cuda_execution_policy() {
   }
   inputs.p2p_pair_count = pairs;
   inputs.m2l_translation_count = topology_->m2l_interactions.size();
-  // BSR(3) stores nine values and one index per pair plus row metadata.
-  inputs.bsr_estimate_bytes =
-      pairs * (9 * (precision_ == StaticPrecision::Float32 ? sizeof(float)
-                                                            : sizeof(double)) +
-               sizeof(int)) +
-      (inputs.target_count * 2 + 1) * sizeof(int);
-  inputs.bsr_budget_bytes = cuda_p2p_bsr_max_bytes_;
   apply_p2p_packing_request(inputs);
   cuda_policy_ = std::make_unique<CudaExecutionPolicyOwner>();
   cuda_policy_->inputs = inputs;
@@ -676,7 +674,6 @@ void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
       for (const Tetrahedron& tetrahedron : sorted_source_tetrahedra_) {
         static_cast<void>(tetrahedron_volume(tetrahedron));
       }
-      use_cuboid_p2m_ = false;
       return;
     }
     throw std::invalid_argument("unsupported source geometry");
@@ -692,7 +689,6 @@ void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
   }
   if (options.source_sizes.size() == 1) {
     sorted_source_sizes_ = options.source_sizes;
-    use_cuboid_p2m_ = far_field_source_model_ == SourceModel::ExactGeometry;
     return;
   }
   sorted_source_sizes_.resize(count);
@@ -700,7 +696,6 @@ void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
   for (std::size_t sorted = 0; sorted < count; ++sorted) {
     sorted_source_sizes_[sorted] = options.source_sizes[permutation[sorted]];
   }
-  use_cuboid_p2m_ = far_field_source_model_ == SourceModel::ExactGeometry;
 }
 
 void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
@@ -752,7 +747,6 @@ void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
   }
   if (options.target_sizes.size() == 1) {
     sorted_target_sizes_ = options.target_sizes;
-    use_cuboid_l2p_ = far_field_target_model_ == TargetModel::ExactGeometry;
     return;
   }
   sorted_target_sizes_.resize(count);
@@ -760,7 +754,6 @@ void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
   for (std::size_t sorted = 0; sorted < count; ++sorted) {
     sorted_target_sizes_[sorted] = options.target_sizes[permutation[sorted]];
   }
-  use_cuboid_l2p_ = far_field_target_model_ == TargetModel::ExactGeometry;
 }
 
 void UniformFmm::build_cuda_p2p_plan() {
@@ -924,7 +917,6 @@ void UniformFmm::resolve_point_expansion_execution() {
 }
 
 void UniformFmm::build_backend_packing() {
-  resolve_point_expansion_execution();
   if (backend_ != ExecutionBackend::CudaFull) {
     build_cpu_far_field_packing();
   }

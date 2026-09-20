@@ -40,7 +40,6 @@ struct CudaExecutionPolicyInputs {
   bool effective_point_source{true};
   /// Point near-field targets (geometry or near-field model).
   bool effective_point_target{true};
-  bool periodic{false};
   /// A fixed target-to-source identity map is available in sorted order.
   bool fixed_identity_available{false};
   /// Explicit user options; they take precedence over the layout hint.
@@ -60,10 +59,6 @@ struct CudaExecutionPolicyInputs {
   double mean_leaf_occupancy{0.0};
   std::size_t p2p_pair_count{0};
   std::size_t m2l_translation_count{0};
-  /// Estimated persistent bytes of a BSR(3) plan and the configured budget
-  /// (diagnostic only since leaf blocks became the general default).
-  std::size_t bsr_estimate_bytes{0};
-  std::size_t bsr_budget_bytes{0};
 };
 
 /** @brief Concrete CUDA execution choices for one plan. */
@@ -120,22 +115,13 @@ explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
                                               StaticPrecision precision) noexcept;
 
 /**
- * @brief Stream-priority rule for a plan whose P2P packing and precision are
- *        known (see the three-argument overload for the rule itself).
- */
-[[nodiscard]] bool far_field_stream_priority(std::size_t p2p_pair_count,
-                                             std::size_t m2l_translation_count,
-                                             int coefficient_count,
-                                             CudaP2PPacking packing,
-                                             StaticPrecision precision) noexcept;
-
-/**
  * @brief Whether the full backend's far-field stream should outrank its P2P
  * stream, from the estimated device costs of the two branches.
  *
- * This overload assumes the FP32 leaf-block kernel cost (the Phase-3 P2P
- * unification calibration); the packing-aware overload above is what the
- * resolved policy uses.
+ * The P2P cost is `p2p_picoseconds_per_pair(packing, precision)` times the
+ * list-1 pair count; the far-field cost is the M2L multiply-add count
+ * (translations x coefficient_count^2) at the measured rate. The far field is
+ * prioritised while it is estimated shorter than three times the P2P kernel.
  *
  * Measured on the RTX 5090 (Phase-3 P2P unification): with the far field
  * prioritised, evaluations were 4-10 % faster wherever the far field is
@@ -147,7 +133,9 @@ explicit_packing_rejection(const CudaExecutionPolicyInputs &inputs,
  */
 [[nodiscard]] bool far_field_stream_priority(std::size_t p2p_pair_count,
                                              std::size_t m2l_translation_count,
-                                             int coefficient_count) noexcept;
+                                             int coefficient_count,
+                                             CudaP2PPacking packing,
+                                             StaticPrecision precision) noexcept;
 
 /** @brief Leaf occupancy below which the power-of-two microtile executor is chosen. */
 [[nodiscard]] double dictionary_microtile_occupancy_limit();

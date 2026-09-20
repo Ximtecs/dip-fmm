@@ -81,18 +81,6 @@ bool far_field_stream_priority(const std::size_t p2p_pair_count,
   return far_field_picoseconds < far_field_dominance_ratio * p2p_picoseconds;
 }
 
-bool far_field_stream_priority(const std::size_t p2p_pair_count,
-                               const std::size_t m2l_translation_count,
-                               const int coefficient_count) noexcept {
-  const double p2p_picoseconds =
-      leaf_block_picoseconds_per_pair * static_cast<double>(p2p_pair_count);
-  const double far_field_picoseconds =
-      m2l_picoseconds_per_flop * static_cast<double>(m2l_translation_count) *
-      static_cast<double>(coefficient_count) *
-      static_cast<double>(coefficient_count);
-  return far_field_picoseconds < far_field_dominance_ratio * p2p_picoseconds;
-}
-
 int m2l_pairs_per_thread(const StaticPrecision precision,
                          const std::size_t m2l_translation_count) {
   return (precision == StaticPrecision::Float32 &&
