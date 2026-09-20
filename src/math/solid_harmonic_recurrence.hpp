@@ -4,7 +4,7 @@
 // Allocation-free recurrence for the real regular solid harmonics and their
 // Cartesian gradients, shared by the CPU and CUDA procedural point P2M/L2P
 // executors.  It reproduces the convention of `regular_solid_harmonics`
-// (docs/math.md, docs/spherical-expansions.md) without the per-mode polynomial
+// (docs/math/conventions.md, docs/math/spherical-expansions.md) without the per-mode polynomial
 // tables: the recurrence runs in the factorial normalisation
 //
 //     Q_l^m(r) = r^l P_l^m(cos theta) e^{i m phi} / (l + m)!,   0 <= m <= l,

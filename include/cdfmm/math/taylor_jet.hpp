@@ -23,7 +23,7 @@ namespace cdfmm {
  * generate high-order derivatives of G(r)=1/(4*pi*|r|) for FMM translations,
  * avoiding hand-coded derivative tables and finite-difference noise.
  *
- * See docs/math.md for the operator formulas that consume these derivatives.
+ * See docs/math/conventions.md for the operator formulas that consume these derivatives.
  * The referenced MultiIndexSet must outlive the jet and every jet derived
  * from it.
  */

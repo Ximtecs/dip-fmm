@@ -161,7 +161,7 @@ void UniformFmm::build_missing_universal_operators(
 void UniformFmm::build_static_plan() {
   // This is the geometry-dependent half of the evaluator. None of the data
   // built here depends on dipole moments, so it remains valid for every later
-  // evaluate() call; see docs/static-architecture.md.
+  // evaluate() call; see docs/architecture.md.
   const auto total_start = Clock::now();
   static_plan_statistics_.expansion_order = expansion_order();
   static_plan_statistics_.coefficient_count =
@@ -650,7 +650,7 @@ void UniformFmm::build_static_plan() {
         static_cast<std::size_t>(level) * coefficient_count;
     // The matrices below are dimensionless and level independent. These two
     // degree-dependent factors restore physical box width; see the M2L
-    // normalisation section in docs/math.md.
+    // normalisation section in docs/math/conventions.md.
     inverse_width_powers[0] = 1.0;
     for (int degree = 1; degree <= expansion_order() + 1; ++degree) {
       inverse_width_powers[static_cast<std::size_t>(degree)] =

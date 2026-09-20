@@ -91,4 +91,4 @@ python benchmarks/run_operator_representation.py --help
 ```
 
 Use `profile-all` for NVTX-enabled profiling. See `docs/benchmarks.md` and
-`docs/profiling.md` before producing or interpreting result artefacts.
+the profiling section of `docs/benchmarks.md` before producing or interpreting result artefacts.

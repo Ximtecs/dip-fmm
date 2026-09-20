@@ -30,7 +30,7 @@ struct SolidHarmonicTerm {
  *
  * Modes are ordered by increasing degree and then by `m=-l,...,+l`, giving
  * `(p+1)^2` real coefficients. The normalisation is documented in
- * `docs/spherical-expansions.md`.
+ * `docs/math/spherical-expansions.md`.
  */
 class SphericalHarmonicBasis {
 public:

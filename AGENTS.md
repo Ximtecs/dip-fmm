@@ -28,7 +28,7 @@ Verified current capabilities include:
 - C++/Python regression tests, examples, notebooks, and benchmarks.
 
 The precise support matrix and limitations remain authoritative in
-`docs/overview.md`, `docs/geometry-models.md`, `docs/backends.md`, and the
+`docs/index.md`, `docs/geometry.md`, `docs/backends.md`, and the
 tests. Do not infer support from names alone.
 
 ## Current refactor stage
@@ -46,13 +46,13 @@ audited and closed as their own explicit task; see "Phase 2 handoff" in
 in progress: 3A GPU evaluation, 3B CPU / oneMKL evaluation, and the Phase-3
 P2P execution unification / geometry-backend coverage / CudaPartial crossover
 follow-up are COMPLETE (see `agent_docs/performance_optimization.md` and
-`docs/static-p2p.md`: geometry builds tensors, executors apply tensors; all
+`docs/architecture.md`: geometry builds tensors, executors apply tensors; all
 nine point/prism/tetrahedron pairs run on every production backend through
 every stored-tensor packing, `UniformFmmOptions::p2p_packing` forces a
 packing, and `P2PExecutionPacking::PointGeometry` is the one deliberate
 geometry-specific executor). The Phase-3B.5 study of procedural versus
 precomputed point operators is also COMPLETE: precomputation is an execution
-choice, not a mathematical requirement (`docs/static-p2p.md`, "Precomputed
+choice, not a mathematical requirement (`docs/architecture.md`, "Precomputed
 and procedural representations"); the position-based `PointGeometry` P2P now
 runs on the CUDA backends too and is the FP32 default for point pairs, and
 the point-source P2M / point-target L2P have a procedural representation
@@ -76,7 +76,7 @@ equivalent interactions agree *bitwise* rather than approximately. All three
 canonical pair loops and both finite endpoint loops now classify by those
 exact bit patterns, build each distinct operator once, and do so in parallel
 (`src/operators/p2p.cpp`, `src/fmm/plan_preparation.cpp`,
-`docs/architecture.md`, `docs/static-p2p.md`). Cold construction of a
+`docs/architecture.md`). Cold construction of a
 4096-body regular prism lattice falls from 66.8 s to 1.5 s, the tetrahedron
 lattice from 15.9 s to 1.5 s, and the exact finite tetrahedron endpoint
 operators by two orders of magnitude, with byte-identical persisted plans
@@ -417,7 +417,7 @@ H = -grad(phi)
 
 `H` is the primary result; scalar potential is optional on supported paths.
 Source-point evaluation excludes self-interaction using explicit identity,
-not coordinate equality. Keep full notation consistent with `docs/math.md`.
+not coordinate equality. Keep full notation consistent with `docs/math/conventions.md`.
 
 ## Code and documentation style
 

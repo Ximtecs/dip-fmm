@@ -1,13 +1,13 @@
-# Mathematical formulation
+# Mathematical conventions
 
-This page is the normative statement of the signs, displacement directions,
-and coefficient normalisation used by the implementation.
-
-Real spherical harmonics are the default `UniformFmm` basis; the complete
-Cartesian formulation remains an explicit independent option. Both conventions
-are defined here. [Real spherical-harmonic expansions](spherical-expansions.md)
-describes how the spherical operators are constructed and retained by the
-static plan.
+This page is the normative statement of the kernel, the signs, the
+displacement directions, the coefficient normalisation and the definition of
+every operator used by the implementation. Real spherical harmonics are the
+default `UniformFmm` basis; the complete Cartesian formulation is an explicit
+independent option. The Cartesian definitions are given first because the
+static spherical operators are constructed from them
+([Real spherical-harmonic expansions](spherical-expansions.md)); finite
+sources and targets are in [Finite geometry](finite-geometry.md).
 
 ## Kernel, dipole potential, and field
 
@@ -16,7 +16,7 @@ The Laplace Green function is
 $$G(r)=\frac{1}{4\pi |r|}.$$
 
 For source position $x_j$, dipole moment $m_j$, and target $x$, let
-$r_j=x-x_j$.  The scalar potential and magnetic field are
+$r_j=x-x_j$. The scalar potential and magnetic field are
 
 $$\phi(x)=\sum_j\frac{m_j\cdot r_j}{4\pi |r_j|^3},
 \qquad H(x)=-\nabla\phi(x).$$
@@ -28,275 +28,148 @@ $$H_{ij}=\frac{1}{4\pi}\left[
 -\frac{m_j}{|r_{ij}|^3}\right],
 \qquad r_{ij}=x_i-x_j.$$
 
-The kernel is singular at zero separation.  A source-point evaluation must
-explicitly skip its self-interaction.
+The kernel is singular at zero separation. A source-point evaluation must
+explicitly skip its self-interaction; the library does this only through an
+explicit identity map, never through coordinate equality.
 
-## Real spherical-harmonic convention
+## Displacement conventions
 
-Let $Y_l^m$ be an orthonormal complex spherical harmonic whose associated
-Legendre function includes the Condon--Shortley phase. For $m>0$, define the
-real tesseral harmonics by
+| Operator | Displacement | Direction |
+|---|---|---|
+| P2P | $r_{ij}=x_i-x_j$ | from source to target |
+| P2M | $d_j=x_j-c_s$ | from the source-box centre to the source |
+| M2M | $d=c_{\mathrm{parent}}-c_{\mathrm{child}}$ | from child centre to parent centre |
+| M2L | $R=c_{\mathrm{target}}-c_{\mathrm{source}}$ | from source centre to target centre |
+| L2L | $d=c_{\mathrm{child}}-c_{\mathrm{parent}}$ | from parent centre to child centre |
+| L2P | $dx=x-c_t$ | from the target-box centre to the target |
+| M2P | $R=x-c_s$ | from the source centre to the target |
 
-$$Y^R_{l0}=Y_l^0,$$
-
-$$Y^R_{lm}=\sqrt{2}(-1)^m\operatorname{Re}Y_l^m,
-\qquad
-Y^R_{l,-m}=\sqrt{2}(-1)^m\operatorname{Im}Y_l^m.$$
-
-The regular and irregular real solid harmonics are
-
-$$R_{lm}(r)=\sqrt{\frac{4\pi}{2l+1}}r^lY^R_{lm}(\hat r),$$
-
-$$I_{lm}(r)=\sqrt{\frac{4\pi}{2l+1}}
-\frac{Y^R_{lm}(\hat r)}{r^{l+1}}.$$
-
-This convention gives $R_{00}=1$. Degree-one modes in $m=(-1,0,1)$ order are
-$(y,z,x)$. Coefficients are ordered by increasing degree and then
-$m=-l,\ldots,+l$; the zero-based index is $l^2+m+l$, and an order-$p$
-expansion stores $(p+1)^2$ real coefficients.
-
-The corresponding addition theorem is
-
-$$\frac{1}{|x-d|}=\sum_{l=0}^{\infty}\sum_{m=-l}^{l}
-R_{lm}(d)I_{lm}(x),\qquad |d|<|x|.$$
-
-For source centre $c_s$ and $d_j=x_j-c_s$, point-dipole P2M stores
-
-$$M_{lm}(c_s)=\frac{1}{4\pi}\sum_j
-m_j\mathbin{\cdot}\nabla R_{lm}(d_j).$$
-
-The multipole potential is
-
-$$\phi(x)=\sum_{l,m}M_{lm}I_{lm}(x-c_s),
-\qquad H(x)=-\nabla\phi(x).$$
-
-Spherical M2M shifts from child to parent with
-$d=c_{\mathrm{parent}}-c_{\mathrm{child}}$. M2L uses
-$R=c_{\mathrm{target}}-c_{\mathrm{source}}$ and maps source $M_{lm}$ values to
-target local coefficients. L2L shifts from parent to child with
-$d=c_{\mathrm{child}}-c_{\mathrm{parent}}$. These operators are defined by
-preserving the represented potential under the stated centre changes; their
-completed real matrices are constructed once for the static plan.
-
-A spherical local expansion is
-
-$$\phi(x)=\sum_{l,m}L_{lm}R_{lm}(x-c_t),
-\qquad H(x)=-\sum_{l,m}L_{lm}\nabla R_{lm}(x-c_t).$$
-
-Thus L2P uses analytic regular-harmonic values and gradients and the same
-$H=-\nabla\phi$ sign as direct evaluation. No field samples or numerical
-differentiation are used to construct these rows.
-
-For same-level M2L, write the physical separation as $R=h_\ell t$, where
-$h_\ell$ is the box width and $t$ is an integer displacement class. A matrix
-entry mapping source degree $l$ to target degree $\lambda$ scales as
-
-$$T^{(\ell)}_{\lambda\mu,lm}(t)=
-h_\ell^{-(l+\lambda+1)}\widehat T_{\lambda\mu,lm}(t).$$
-
-The implementation therefore retains one dense real matrix $\widehat T(t)$
-per used displacement class and applies degree-dependent multipole and local
-scalings for each level. `SphericalM2LBackend::StaticDense` names this
-implemented strategy.
-
-## Normalisation terminology
-
-Four distinct ideas appear in this documentation:
-
-1. Cartesian Taylor monomials use the factorial factor $r^\alpha/\alpha!$.
-2. The real spherical basis uses the orthonormal-harmonic and
-   $\sqrt{4\pi/(2l+1)}$ solid-harmonic factors above.
-3. Cartesian and spherical M2L plans factor degree-dependent powers of box
-   width out of each physical-level matrix so displacement classes are reused.
-4. FP32 FMM plans additionally scale physical coordinates by the root-box
-   width internally for numerical range. This is automatic, not an optional
-   public coordinate transform; see [Numerical precision](precision.md).
-
-## Finite cuboid geometry
-
-An axis-aligned uniformly magnetised cuboid has side lengths
-$h=(h_x,h_y,h_z)$ and volume $V=h_xh_yh_z$. Runtime data always remains the
-**total magnetic moment** $m=VM$; geometry plans absorb source-volume
-normalisation, so every direct evaluation has the common form $H=Km$.
-
-For $\beta\in\mathbb N_0^3$, define the factorial-normalised cuboid average
-
-$$J_\beta(d,h)=\frac1V\int_V\frac{(d+u)^\beta}{\beta!}\,du.$$
-
-Its exact finite sum contains only component-wise even $\gamma\le\beta$:
-
-$$J_\beta=\sum_\gamma\frac{d^{\beta-\gamma}}{(\beta-\gamma)!}
-\prod_q\frac{h_q^{\gamma_q}}{2^{\gamma_q}(\gamma_q+1)!}.$$
-
-At the lower operator and dense-direct layers, source and target geometries are
-selected independently. Cuboid P2M replaces each point monomial in the P2M equation by
-$J_{\alpha-e_k}$. Volume-averaged L2P similarly replaces its potential row by
-$J_\beta$ and field row by $-J_{\beta-e_k}$. M2M, M2L and L2L are unchanged
-because translations act on the resulting Cartesian expansion coefficients.
-
-End-to-end Cartesian `UniformFmm` supports rectangular-prism sources to point
-or analytically volume-averaged rectangular-prism targets. A point target
-evaluates the finite source at the receiving representative; a prism target
-uses the exact receiving-volume average through the target-geometry operators.
-It also supports tetrahedron sources and targets: tetrahedral P2M and
-volume-averaged L2P use exact simplex moments, while tetrahedron-to-tetrahedron
-list1 pairs use the analytical face-integral tensor.
-
-Direct geometry stores exactly the six symmetric Cartesian components
-$K_{xx},K_{xy},K_{xz},K_{yy},K_{yz},K_{zz}$, each an $N_t\times N_s$ matrix.
-Nine GEMVs apply these six matrices to the three packed moment components.
-Point self interactions are zeroed only through explicit identity; finite
-cuboid self interactions are included (a cube gives $H=-M/3$). The prism
-corner formulas and finite-volume Newell primitives are direct adaptations of
-MagTense's `getN_prism_3D` and `getAvgN_prism_3D`/`F1`/`F2` analytical formulas,
-without copying GPL source code. In that demagnetization notation the
-source-volume operator is $K=N/V_s$; because callers provide the total moment
-$m=V_sM$, the stored tensor maps $m$ directly to the field. CUDA consumes the
-precomputed tensors and performs no prism integration at runtime.
-
-For point/prism endpoint pairs, `DenseDirectPlan` and FMM `list1` construction
-share the canonical `cdfmm::operators::p2p::build_pair` implementation, whose
-flat compatibility spelling is `build_pair_tensor`. Tetrahedron endpoint
-pairs dispatch through tetrahedron-specific analytical operators. Finite
-tetrahedron-to-tetrahedron, prism-to-tetrahedron, and tetrahedron-to-prism
-pairs are evaluated exactly during DenseDirect or static P2P plan construction
-from the same polyhedron surface formulation: applying the divergence theorem
-to both uniformly magnetised bodies gives
-$K=-\frac{1}{4\pi V_sV_t}\sum_{f_t}\sum_{f_s}\hat n_t\hat n_s^{T}
-\iint\frac{dS_t\,dS_s}{|x_t-x_s|}$, where the prism contributes its twelve
-boundary triangles and the tetrahedron its four. Two numerical safeguards keep
-these analytical kernels well conditioned: the point-field edge primitives use
-the closed form of the atanh difference in which the logarithms of the
-perpendicular edge distance cancel, and the normal component is the signed
-solid angle of the face (Van Oosterom-Strackee), so evaluation points on the
-line through an edge outside the body are regular; and beyond eight summed
-circumradii of separation a body pair averages the exact source point tensor
-over the target with a six-point Gauss rule instead of cancelling large face
-integrals (the surface form loses about five digits at fifty body sizes and
-all of them at one hundred). Dense direct is exact all-to-all for its supported geometries,
-while FMM combines the same exact near-field physics with a truncated
-multipole/local far field. MagTense stores its demagnetisation tensor
-and applies the physical minus sign during the matrix-vector operation;
-dip-fmm's tensor maps total moments directly to the signed field
-$H=-\nabla\phi$ with $1/(4\pi)$ normalisation.
-
-For a centred cube the degree-three correction is proportional to
-$D_x^2+D_y^2+D_z^2=\nabla^2$ and vanishes outside the source. The first
-physical shape correction is therefore multipole degree five, with relative
-scale $O((h/R)^4)$; a general non-cubic cuboid does not have this cancellation.
-
-## Cartesian multi-indices
+## Cartesian multi-indices and coefficient storage
 
 For $\alpha=(\alpha_x,\alpha_y,\alpha_z)\in\mathbb N_0^3$,
 
 $$|\alpha|=\alpha_x+\alpha_y+\alpha_z,\quad
 \alpha!=\alpha_x!\alpha_y!\alpha_z!,\quad
-r^\alpha=r_x^{\alpha_x}r_y^{\alpha_y}r_z^{\alpha_z}.$$
+r^\alpha=r_x^{\alpha_x}r_y^{\alpha_y}r_z^{\alpha_z},$$
 
-$e_x,e_y,e_z$ denote the Cartesian unit multi-indices.  Expansions use every
-$|\alpha|\le p$ in the [linear order defined by `MultiIndexSet`](cartesian-expansions.md).
-Taylor monomials are factorial normalised as $r^\alpha/\alpha!$.
+and $e_x,e_y,e_z$ denote the Cartesian unit multi-indices. `MultiIndexSet(p)`
+contains every non-negative $\alpha$ with $|\alpha|\le p$; its size is
 
-## Taylor jets and derivatives
+$$N_p=\binom{p+3}{3}=\frac{(p+1)(p+2)(p+3)}{6}.$$
+
+Entries are grouped by total degree. At fixed degree the implementation loops
+over $\alpha_x$ and then $\alpha_y$ in ascending order; $\alpha_z$ is the
+remaining degree. `index(alpha)` maps a mathematical index to linear storage
+and `operator[](i)` performs the reverse lookup. `CoeffVector` uses precisely
+this basis order for both multipole and local coefficients.
+
+Taylor monomials are factorial normalised as $r^\alpha/\alpha!$. This makes
+Taylor translations and jet products free of explicit multinomial factors.
+Multipole coefficients are paired with **raw** derivatives $D_\alpha G$,
+whereas local coefficients are raw potential derivatives paired with these
+normalised monomials.
+
+For dipoles, $M_{(0,0,0)}=0$: P2M requires a term $\alpha-e_k$ for a dipole
+component $m_k$, and no coordinate direction is valid when $\alpha=0$. This
+expresses the absence of net monopole charge; it does not mean local
+expansions omit their degree-zero potential coefficient.
+
+## Taylor jets and Laplace derivatives
 
 A jet coefficient is $c_\alpha=D_\alpha f(r_0)/\alpha!$, so
 
 $$f(r_0+h)=\sum_{|\alpha|\le p}c_\alpha h^\alpha.$$
 
-`laplace_derivatives_raw` converts the normalised jet back to
-$D_\alpha G(r)$ before returning it.  The derivation is described in
-[Laplace derivative generation](laplace-derivatives.md).
+M2L and M2P require raw derivatives $D_\alpha G(R)$ at orders beyond those
+stored in the source expansion. `laplace_derivatives_raw` obtains them through
+truncated Cartesian Taylor algebra rather than finite differences. Coordinate
+jets represent $x=r_x+h_x$, $y=r_y+h_y$, and $z=r_z+h_z$; the implementation
+composes
 
-## P2M
+$$\rho^2=x^2+y^2+z^2,\qquad G=\frac{1}{4\pi}(\rho^2)^{-1/2}.$$
 
-**Purpose.** P2M replaces all dipoles in a leaf by one multipole expansion
-about the leaf centre. It is the first stage of the upward pass.
+Products use the multi-index Cauchy product. The inverse square root is solved
+coefficient by coefficient from $y^2\rho^2=1$ in increasing total degree, so
+each unknown depends only on coefficients already found. Finally the jet
+coefficient is multiplied by $\alpha!$ to return the raw derivative expected
+by the operators. This is analytic/algebraic to the requested truncation
+order: it avoids finite-difference step-size selection and cancellation
+noise, and a hand-maintained table of high-order Cartesian derivatives. The
+evaluation point must be away from the kernel singularity at $R=0$.
 
-For source expansion centre $c_s$ and $d_j=x_j-c_s$,
+## The operators
+
+Every operator is an exact linear map on coefficients; only the truncation at
+order $p$ introduces error.
+
+### P2M: particle to multipole
+
+P2M replaces all dipoles in a leaf by one multipole expansion about the leaf
+centre; it is the first stage of the upward pass. For source expansion centre
+$c_s$ and $d_j=x_j-c_s$,
 
 $$M_\alpha(c_s)=(-1)^{|\alpha|}
 \sum_j\sum_{k\in\{x,y,z\}\atop \alpha_k>0}
 m_{j,k}\frac{d_j^{\alpha-e_k}}{(\alpha-e_k)!}.$$
 
-The excluded negative-index terms make $M_0=0$ for pure dipoles. Here $c_s$
-is the source-box centre, $x_j$ and $m_j$ are the position and moment of source
-$j$, $d_j$ points **from the centre to the source**, $k$ is a Cartesian
-component, and $M_\alpha$ is the output multipole coefficient. For fixed
-sources, $d_j$ is fixed and this is the sparse map $M=P m$ described below.
+The excluded negative-index terms make $M_0=0$ for pure dipoles. For fixed
+sources $d_j$ is fixed and this is the sparse map $M=Pm$ below.
 
-## M2M
+### M2M: multipole to multipole
 
-**Purpose.** M2M shifts a child's multipole expansion to its parent so that
-the parent represents every source in its subtree. Levels are processed from
-the leaves towards the root.
-
-For $d=c_{\mathrm{parent}}-c_{\mathrm{child}}$,
+M2M shifts a child's multipole expansion to its parent so that the parent
+represents every source in its subtree; levels are processed from the leaves
+towards the root. For $d=c_{\mathrm{parent}}-c_{\mathrm{child}}$,
 
 $$M_\alpha(c_{\mathrm{parent}})\mathrel{+}=
 \sum_{\gamma\le\alpha}\frac{d^\gamma}{\gamma!}
-M_{\alpha-\gamma}(c_{\mathrm{child}}).$$
+M_{\alpha-\gamma}(c_{\mathrm{child}}),$$
 
-The additive form permits accumulation from all eight children. Here $d$
-points **from child centre to parent centre**, $\gamma\leq\alpha$ means
-component-wise inequality, and the input and output are the child and parent
-$M$ coefficients. A uniform tree has eight child-offset classes. One canonical
-level-one bank plus exact power-of-two degree scaling serves every depth.
+where $\gamma\le\alpha$ is component-wise. The additive form permits
+accumulation from all eight children. A uniform tree has eight child-offset
+classes: one canonical level-one bank plus exact power-of-two degree scaling
+serves every depth.
 
-## M2L
+### M2L: multipole to local
 
-**Purpose.** M2L converts the multipole expansion of a separated source box
-into a local expansion about a target box. Applying every target's `list2`
-interactions produces that level's far-field local contribution.
-
-For $R=c_{\mathrm{target}}-c_{\mathrm{source}}$,
+M2L converts the multipole expansion of a separated source box into a local
+expansion about a target box. For $R=c_{\mathrm{target}}-c_{\mathrm{source}}$,
 
 $$L_\beta(c_{\mathrm{target}})\mathrel{+}=
 \sum_{|\alpha|\le p}M_\alpha(c_{\mathrm{source}})
 D_{\alpha+\beta}G(R).$$
 
-Terms reach derivative degree $2p$.  M2L is valid only for separated boxes;
-near boxes are handled by P2P. Here $M_\alpha$ is a source multipole
-coefficient, $L_\beta$ is a target local coefficient, $\alpha$ and $\beta$
-are Cartesian multi-indices, and $D^{\alpha+\beta}G$ is the corresponding
-Cartesian derivative of $G(R)=1/(4\pi|R|)$. Crucially, $R$ points **from the
-source centre to the target centre**. Fixed centres make these derivatives a
-reusable dense matrix $T(R)$.
+Terms reach derivative degree $2p$. M2L is valid only for separated boxes
+(calling it at $R=0$ is invalid); near boxes are handled by P2P. Fixed centres
+make these derivatives a reusable dense matrix $T(R)$.
 
-## L2L
+### L2L: local to local
 
-**Purpose.** L2L shifts an accumulated parent local expansion to a child.
-Levels are processed from root towards leaves; a child retains its own M2L
-contribution while inheriting its parent field.
-
-For $d=c_{\mathrm{child}}-c_{\mathrm{parent}}$,
+L2L shifts an accumulated parent local expansion to a child; levels are
+processed from the root towards the leaves, and a child retains its own M2L
+contribution while inheriting its parent field. For
+$d=c_{\mathrm{child}}-c_{\mathrm{parent}}$,
 
 $$L_\beta(c_{\mathrm{child}})\mathrel{+}=
 \sum_{\gamma:\,|\beta+\gamma|\le p}
 \frac{d^\gamma}{\gamma!}L_{\beta+\gamma}(c_{\mathrm{parent}}).$$
 
-Here $d$ points **from parent centre to child centre**, the higher-degree local
-is the parent input, and $L_\beta$ is the child output. The degree bound
-prevents coefficients outside order $p$. Fixed uniform geometry again reduces
-the shifts to eight universal templates plus level degree scaling.
+The degree bound prevents coefficients outside order $p$; only
+$|\beta+\gamma|\le p$ terms survive truncation.
 
-## L2P
+### L2P: local to particle
 
-**Purpose.** L2P evaluates a leaf local expansion at each target and produces
-the far-field potential and/or field.
+L2P evaluates a leaf local expansion at each target and produces the
+far-field potential and/or field. With $dx=x-c_t$,
 
-With $dx=x-c_t$,
-
-$$\phi(x)=\sum_\beta L_\beta\frac{dx^\beta}{\beta!},$$
-
-$$H_k(x)=-\sum_{\beta_k>0}L_\beta
+$$\phi(x)=\sum_\beta L_\beta\frac{dx^\beta}{\beta!},\qquad
+H_k(x)=-\sum_{\beta_k>0}L_\beta
 \frac{dx^{\beta-e_k}}{(\beta-e_k)!}.$$
 
-Here $c_t$ is the target leaf centre, $dx$ points **from that centre to the
-target**, $L_\beta$ is the input local coefficient, and $k$ selects a field
-component. The minus sign implements $H=-\nabla\phi$. Fixed targets yield one
-immutable potential row and three immutable field rows.
+The minus sign implements $H=-\nabla\phi$. Fixed targets yield one immutable
+potential row and three immutable field rows.
 
-## M2P
+### M2P: multipole to particle
 
 M2P directly evaluates a source multipole at $R=x-c_s$:
 
@@ -305,12 +178,23 @@ $$\phi_{\mathrm{far}}(x)=\sum_\alpha M_\alpha D_\alpha G(R),
 H_k(x)=-\sum_\alpha M_\alpha D_{\alpha+e_k}G(R).$$
 
 Field evaluation therefore generates kernel derivatives through order $p+1$.
+M2P is not a stage of the FMM (targets receive the far field through local
+expansions), but it validates P2M and M2M without introducing local
+expansions.
+
+### P2P: particle to particle
+
+P2P applies the pair formula of the first section and sums it without
+approximation. It supplies the near-field contribution over `list1` and the
+reference answer used by the validation tests. For fixed geometry the field is
+the reusable tensor map $H_{\mathrm{near}}=D_{\mathrm{near}}m$ below;
+potential retains the direct scalar calculation.
 
 ## Static geometry-dependent linear maps
 
 Every far-field stage is linear in the changing moments or in the expansion
-coefficients.  For P2M, concatenate the moment components as
-$m=(m_{1x},m_{1y},m_{1z},m_{2x},\ldots)^T$.  The P2M equation above then gives
+coefficients. For P2M, concatenate the moment components as
+$m=(m_{1x},m_{1y},m_{1z},m_{2x},\ldots)^T$; the P2M equation then gives
 
 $$M=P m,\qquad
 P_{\alpha,(j,k)}=(-1)^{|\alpha|}
@@ -351,135 +235,137 @@ $$E_{\phi,\beta}=dx^\beta/\beta!,\qquad
 0,&\beta_k=0.
 \end{cases}$$
 
-> When positions, expansion centres, tree structure and expansion order are
-> fixed, all of these matrices/operators depend only on geometry. Therefore
-> they can be constructed once and reused for every new dipole-moment state.
-
-The implementation stores compact non-zero entry lists for the triangular and
-sparse maps even though matrix notation is convenient mathematically.  M2L
-retains its grouped dense representation.
+When positions, expansion centres, tree structure and expansion order are
+fixed, all of these operators depend only on geometry, so they are constructed
+once and reused for every new dipole-moment state:
 
 ```text
 changing quantities:
     dipole moments
-        ↓ static P2M
+        | static P2M
     multipoles
-        ↓ static M2M
+        | static M2M
     coarser multipoles
-        ↓ static M2L
+        | static M2L
     local expansions
-        ↓ static L2L
+        | static L2L
     leaf locals
-        ↓ static L2P
+        | static L2P
     far-field H
 ```
 
-Operator setup occurs once per geometry; operator application occurs once per
-moment state.
+The implementation stores compact non-zero entry lists for the triangular and
+sparse maps even though matrix notation is convenient mathematically; M2L
+retains its grouped dense representation. Explicitly composing all stages is
+avoided because the fill-in would approach an all-to-all operator and discard
+the FMM hierarchy and scaling.
 
-## P2P
+### Static near-field tensor
 
-**Purpose.** P2P applies the pair formulas in the first section and sums them
-without approximation. It supplies the near-field contribution in an FMM and the
-reference answer used by current validation tests. Its input is each source
-moment $m_j$ and its output is a target contribution $(\phi_i,H_i)$;
-$r_{ij}=x_i-x_j$ points **from source to target**. `list1` selects near boxes.
-An explicit identity map excludes $i=j$ rather than treating coincident
-coordinates as identity. For fixed geometry the field is the reusable tensor
-map $H_{\mathrm{near}}=D_{\mathrm{near}}m$ below; potential retains the direct
-scalar calculation.
+For fixed geometry each `list1` pair can be written as
 
-## Static near-field tensor
-
-For fixed geometry, each list1 pair can be written as
-
-\[
-\mathbf H_{ij}=D_{ij}\mathbf m_j,\qquad
+$$\mathbf H_{ij}=D_{ij}\mathbf m_j,\qquad
 D_{ij}=\frac{1}{4\pi}\left(
 \frac{3\mathbf r_{ij}\mathbf r_{ij}^{T}}{|\mathbf r_{ij}|^5}
--\frac{I}{|\mathbf r_{ij}|^3}\right).
-\]
+-\frac{I}{|\mathbf r_{ij}|^3}\right).$$
 
 The tensor is symmetric, so the static plan stores only `Dxx`, `Dxy`, `Dxz`,
-`Dyy`, `Dyz`, and `Dzz`. The three output rows still require all appropriate
-products with the moment components; symmetry reduces storage, not the apply
-to six scalar products. Collecting only list1 blocks gives
-`H_near = D_near m`. It is not an all-to-all demagnetisation matrix.
-The compact tensor accelerates field output. Potential-only work, and the
-potential part of combined output, deliberately continues to use the
-independent list1 reference calculation.
+`Dyy`, `Dyz`, and `Dzz`; symmetry reduces storage, not the apply to six scalar
+products. Collecting only `list1` blocks gives `H_near = D_near m`, which is
+not an all-to-all demagnetisation matrix. The compact tensor accelerates field
+output; potential-only work, and the potential part of combined output,
+deliberately continues to use the independent `list1` reference calculation.
+Finite sources replace $D_{ij}$ by the exact body tensors of
+[Finite geometry](finite-geometry.md).
 
-## Stage-level static linear forms
+## Normalisation terminology
 
-Fixed geometry also permits the hierarchical forms `M_leaf = P m`,
-`M_parent = A_level M_child`, `L_raw = T M`,
-`L_child = B_level L_parent`, and `H_far = E L_leaf`. P2M and L2P are natural
-global sparse candidates, while M2M and L2L retain one dependency-ordered
-application per level. M2L currently benefits from transfer-class matrix reuse;
-a conventional global sparse matrix would duplicate those dense values.
-Consequently these alternatives require benchmarks before adoption. Explicitly
-composing all stages is avoided because fill-in would approach an all-to-all
-operator and discard the FMM hierarchy and scaling.
+Four distinct ideas appear in this documentation:
 
-## Global root normalisation
+1. Cartesian Taylor monomials use the factorial factor $r^\alpha/\alpha!$.
+2. The real spherical basis uses the orthonormal-harmonic and
+   $\sqrt{4\pi/(2l+1)}$ solid-harmonic factors of
+   [Real spherical-harmonic expansions](spherical-expansions.md).
+3. Cartesian and spherical M2L plans factor degree-dependent powers of box
+   width out of each physical-level matrix so displacement classes are reused
+   (below).
+4. FP32 FMM plans additionally scale physical coordinates by the root-box
+   width internally for numerical range (below).
+
+### Global root normalisation
 
 Public coordinates remain physical. Internally the physical root centre $c$
 and side length $L$ define
 
-\[
-r'=(r-c)/L,\qquad h'=h/L,\qquad m'=m/L^3.
-\]
+$$r'=(r-c)/L,\qquad h'=h/L,\qquad m'=m/L^3.$$
 
 Every internal tree therefore has centre zero and half-width $1/2$. For a
-free-space cuboid problem, the bounds used to determine $c$ and $L$ include
+free-space cuboid problem the bounds used to determine $c$ and $L$ include
 each full interval $r_i-h_i/2$ through $r_i+h_i/2$; for a periodic problem the
 explicit cubic cell supplies both values. The magnetic dipole tensor obeys
 $T(Lr')=T(r')/L^3$, so evaluating $m'$ in canonical coordinates returns the
-physical field directly: $H_{physical}=H_{internal}$. No field post-scaling is
-applied. Scalar potential has one fewer inverse power of length and is returned
-as $\phi_{physical}=L\phi_{internal}$.
+physical field directly: $H_{\mathrm{physical}}=H_{\mathrm{internal}}$, with
+no field post-scaling. Scalar potential has one fewer inverse power of length
+and is returned as $\phi_{\mathrm{physical}}=L\phi_{\mathrm{internal}}$.
 
-## M2L normalisation and cross-level reuse
+Normalised coordinates are further canonicalised to a $10^{-9}$ grid of the
+root side before operators are built, which is what lets translated or
+uniformly scaled copies of one geometry share a cache key and what makes
+equivalent exact operators agree bit for bit
+([Architecture](../architecture.md)).
+
+### Root-width scaling in FP32 plans
+
+FP32 `UniformFmm` operators use coordinates divided by the physical root-box
+width and moments divided by the cube of that width during boundary
+conversion. This paired scaling keeps high-order coefficients and inverse-box
+M2L factors representable for physical scales such as nanometres without
+introducing FP64 expansion state. The field is invariant under the scaling;
+potential is restored with one root-width factor at the output boundary. This
+is mandatory internal behaviour of FP32 FMM plans, not a public optional
+coordinate transform; FP64 plans retain physical-coordinate operator
+construction, and both paths accept and return physical coordinates, moments,
+potential and field.
+
+### M2L normalisation and cross-level reuse
 
 For a same-level M2L interaction, let the physical box width be $h_\ell$ and
 write $R=h_\ell t$, where $\ell$ is the **interaction level** and the integer
 transfer vector $t$ identifies a uniform-octree translation class. The Laplace
 Green function is homogeneous, $G(h r)=h^{-1}G(r)$, and hence
 
-\[
-D^\gamma G(h r)=h^{-(|\gamma|+1)}D^\gamma G(r).
-\]
+$$D^\gamma G(h r)=h^{-(|\gamma|+1)}D^\gamma G(r).$$
 
-Since the Cartesian M2L entry is
-(T_{\beta,\alpha}(R)=D^{\alpha+\beta}G(R)), it follows exactly that
+Since the Cartesian M2L entry is $T_{\beta,\alpha}(R)=D^{\alpha+\beta}G(R)$,
+it follows exactly that
 
-\[
-T^{(\ell)}_{\beta,\alpha}(t)=
+$$T^{(\ell)}_{\beta,\alpha}(t)=
  h_\ell^{-(|\alpha|+|\beta|+1)}
  \widehat T_{\beta,\alpha}(t), \qquad
-\widehat T_{\beta,\alpha}(t)=D^{\alpha+\beta}G(t).
-\]
+\widehat T_{\beta,\alpha}(t)=D^{\alpha+\beta}G(t).$$
 
 Thus $T^{(\ell)}=D_L(h_\ell)\widehat T D_M(h_\ell)$, with
 $D_M[\alpha,\alpha]=h_\ell^{-|\alpha|}$ and
-$D_L[\beta,\beta]=h_\ell^{-(|\beta|+1)}$. The **normalised transfer
-matrix** $\widehat T(t)$ is level independent. **Multipole scaling** $D_M$
-converts physical multipoles before multiplication; **local scaling** $D_L$
-restores the units and degree of local coefficients. The degree scalings are
-precomputed once per level and applied while gathering and scattering.  Raw
-Cartesian M2L matrices at two levels are not numerically identical because the
-physical box width changes.  The Laplace kernel and all of its derivatives are
-homogeneous, allowing the level dependence to be factored into diagonal degree
-scalings.  Consequently one normalised M2L matrix per integer transfer vector is
-sufficient for all levels. Each interaction stores a **transfer class ID**
+$D_L[\beta,\beta]=h_\ell^{-(|\beta|+1)}$. The **normalised transfer matrix**
+$\widehat T(t)$ is level independent; **multipole scaling** $D_M$ converts
+physical multipoles before multiplication and **local scaling** $D_L$ restores
+the units and degree of local coefficients. The degree scalings are
+precomputed once per level and applied while gathering and scattering.
+Consequently one normalised M2L matrix per integer transfer vector is
+sufficient for all levels; each interaction stores a **transfer class ID**
 selecting $\widehat T(t)$ and its interaction level selecting the scaling
-rows. A standard octree list2 displacement lies in the $7\times7\times7$
-parent-neighbour stencil but outside the $3\times3\times3$ near stencil. It
-therefore has at most $7^3-3^3=316$ transfer classes, irrespective of depth.
+rows. A standard octree `list2` displacement lies in the $7\times7\times7$
+parent-neighbour stencil but outside the $3\times3\times3$ near stencil, so
+there are at most $7^3-3^3=316$ transfer classes irrespective of depth.
 
 For M2M and L2L, a child centre differs from its parent centre by
-$d=h\delta$, where $h$ is the child box width and every component of
-$\delta$ is either $-1/2$ or $+1/2$. There are therefore only eight
-child-offset classes. Static plans store eight level-one templates and apply
-exact powers of two derived from coefficient degree at later levels. The
-stored M2M, M2L, and L2L mathematical banks are independent of tree depth.
+$d=h\delta$, where $h$ is the child box width and every component of $\delta$
+is $-1/2$ or $+1/2$. There are therefore only eight child-offset classes;
+static plans store eight level-one templates and apply exact powers of two
+derived from coefficient degree at later levels. The stored M2M, M2L, and L2L
+banks are independent of tree depth, which is why they are cached
+independently of any geometry
+([Caching and periodicity](../caching-and-periodicity.md)).
+
+The periodic root operator and the zero-$k$ convention are defined with the
+periodic API in [Caching and periodicity](../caching-and-periodicity.md).

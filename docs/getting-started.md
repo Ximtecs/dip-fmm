@@ -1,77 +1,125 @@
 # Getting started
 
-## C++ direct evaluation
+This page is the shortest complete path from an installed library
+([Installation](installation.md)) to a repeated field evaluation. Tutorial 1
+under `examples/tutorials/` covers the same ground interactively with timings
+and an exact reference.
 
-The umbrella header exposes the public interface.  This example evaluates one
-target from two dipoles and requests both supported quantities:
+## Units and shapes
 
-```cpp
-#include <iostream>
-#include <vector>
+| Quantity | Symbol | Unit | Shape |
+|---|---|---|---|
+| positions of sources and targets | $x$ | m | `(N, 3)` |
+| total dipole moment per source | $m = V M$ | A m$^2$ | `(N, 3)` |
+| magnetic field | $H = -\nabla\phi$ | A/m | `(N, 3)`, in the plan's precision |
+| scalar potential (optional) | $\phi$ | A | `(N,)` |
 
-#include "cdfmm/cdfmm.hpp"
+Inputs are total moments, never magnetisation: the library performs no volume
+scaling, for point dipoles or finite bodies alike. Positions may be given in
+any consistent unit; the field comes back in the matching unit.
 
-int main()
-{
-    const cdfmm::Vec3 target_position{0.0, 0.0, 2.0};
-    const std::vector<cdfmm::Vec3> source_positions{
-        {0.0, 0.0, 0.0},
-        {0.25, 0.0, 0.0}
-    };
-    const std::vector<cdfmm::Vec3> dipole_moments{
-        {0.0, 0.0, 1.0},
-        {1.0, 0.0, 0.0}
-    };
+## The plan lifecycle
 
-    const cdfmm::PotentialField result = cdfmm::p2p_dipole_sum(
-        target_position,
-        source_positions,
-        dipole_moments,
-        cdfmm::OutputFlags::Both
-    );
-
-    std::cout << "phi = " << result.phi << "\n";
-    std::cout << "H = (" << result.H.x << ", " << result.H.y << ", "
-              << result.H.z << ")\n";
-}
+```text
+define geometry              positions, optional prism/tetrahedron records,
+                             optional self-identity map
+    -> construct a plan      UniformFmm(sources, targets, options): tree,
+                             operators, exact near field, backend resources
+    -> evaluate              plan.evaluate(moments): the field of one state
+    -> evaluate again        new moments, same plan
 ```
 
-When targets coincide with sources, pass the corresponding `self_index` to
-`p2p_dipole_sum`; otherwise the singular self-pair is evaluated.
+Everything geometry-dependent is done once at construction; `evaluate`
+performs only operator application. Changing the moments or the identity map
+is an `evaluate` argument; changing positions, records, order, depth, basis,
+precision, backend or the periodic cell needs a new plan.
 
-## Python direct evaluation
+## Python
 
 ```python
 import numpy as np
 import cdfmm
 
-sources = np.array([[0.0, 0.0, 0.0], [0.25, 0.0, 0.0]])
-moments = np.array([[0.0, 0.0, 1.0], [1.0, 0.0, 0.0]])
+rng = np.random.default_rng(0)
+positions = rng.uniform(-50e-9, 50e-9, size=(4000, 3))     # metres
+moments = rng.normal(size=(4000, 3)) * 1e-19                # A m^2
+identities = np.arange(len(positions))                      # target i is source i
 
-result = cdfmm.p2p_dipole_sum(
-    [0.0, 0.0, 2.0], sources, moments, output="both"
-)
-print(result["phi"], result["H"])
-```
-
-## Python static FMM
-
-`UniformFmmOptions` defaults to real spherical harmonics, FP32, and portable
-CPU static execution:
-
-```python
 options = cdfmm.UniformFmmOptions()
-options.expansion_order = 6
-options.tree.max_level = 3
-options.expansion_basis = "spherical"
+options.expansion_order = 6            # p: accuracy versus cost
+options.tree.max_level = 3             # octree depth
+options.precision = cdfmm.StaticPrecision.FLOAT32   # the default
+options.backend = cdfmm.ExecutionBackend.AUTO       # resolves to CPU_STATIC
+options.fixed_target_source_indices = identities.tolist()
 
-plan = cdfmm.UniformFmm(sources, sources, options)
-identity = np.arange(len(sources), dtype=np.int32)
-field = plan.evaluate(moments, output="field", target_source_indices=identity)
+plan = cdfmm.UniformFmm(positions, positions, options)
+
+result = plan.evaluate(moments, output="field", target_source_indices=identities)
+H = result["H"]                        # (4000, 3) float32
+
+for state in (rng.normal(size=(4000, 3)) * 1e-19 for _ in range(10)):
+    H = plan.evaluate(state, target_source_indices=identities)["H"]
 ```
 
-The same plan accepts later moment arrays without rebuilding its tree or
-operators. Assign `"cartesian"` to select the independent Cartesian basis.
-The Python interface also exposes Cartesian reference operators, both static
-FMM bases, `UniformTree` inspection, direct plans, timings, and memory
-statistics.
+When targets are the sources themselves, the identity map tells each target
+which source is *itself* so that the singular self pair is omitted; identity
+is by index, never by coordinate equality. Pass `output="both"` for the
+potential as well (CPU and hybrid backends). The exact $O(N^2)$ references
+`cdfmm.direct_p2p_reference(targets, sources, moments, target_source_indices=...)`
+and `cdfmm.DenseDirectPlan(...)` validate any configuration. Every
+construction prints an initialisation summary of the requested and resolved
+options ([Execution backends](backends.md)).
+
+Assign `"cartesian"` to `options.expansion_basis` for the Cartesian basis, set
+`options.source_geometry` and the records for finite bodies
+([Geometry](geometry.md)), and see [Trees and parameter selection](trees-and-parameter-selection.md)
+for choosing `expansion_order` and `tree.max_level`.
+
+## C++
+
+```cpp
+#include <vector>
+#include "cdfmm/cdfmm.hpp"
+
+int main()
+{
+    std::vector<cdfmm::Vec3> positions = /* ... */;
+    std::vector<cdfmm::Vec3> moments = /* total moments, A m^2 */;
+    std::vector<int> identities(positions.size());
+    for (int i = 0; i < static_cast<int>(identities.size()); ++i) {
+        identities[i] = i;
+    }
+
+    cdfmm::UniformFmmOptions options;
+    options.expansion_order = 6;
+    options.tree.max_level = 3;
+    options.precision = cdfmm::StaticPrecision::Float32;
+    options.fixed_target_source_indices = identities;
+
+    cdfmm::UniformFmm plan(positions, positions, options);
+
+    // FP32 plans return FloatPotentialField; evaluate() widens to double.
+    const auto first = plan.evaluate_float32(moments, cdfmm::OutputFlags::Field, identities);
+    for (const auto& state : /* moment states */) {
+        const auto values = plan.evaluate_float32(state, cdfmm::OutputFlags::Field, identities);
+    }
+}
+```
+
+`evaluate_into` / `evaluate_into_float32` write into caller-owned storage
+without allocating. One `UniformFmm` is not re-entrant (its coefficients,
+scratch and timers are mutable); separate objects may be evaluated
+concurrently. The single-pair and summed direct formulas are
+`cdfmm::p2p_dipole_pair` and `cdfmm::p2p_dipole_sum` (with `self_index` to
+skip a source's own singular pair), and the low-level operators
+`p2m_dipole`, `m2m_add`, `m2l_add`, `l2l_add`, `l2p_eval`, `m2p_eval` are
+exposed for validation and teaching (tutorial 6).
+
+## Diagnostics
+
+`plan.last_timings` (C++ `last_timings()`) gives the phases of the last
+evaluation, `plan.static_plan_statistics` the construction phases and retained
+bytes of every operator, and `plan.cuda_plan_statistics` device residency and
+per-evaluation transfer bytes. The cache keys `universal_cache_key`,
+`geometry_cache_key` and `periodic_cache_key` identify what a later process
+will reuse ([Caching and periodicity](caching-and-periodicity.md)).

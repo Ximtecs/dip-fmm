@@ -8,7 +8,7 @@
 //     M_lm  = 1/(4 pi) sum_j m_j . grad R_lm(x_j - c),       (point P2M)
 //     H(x)  = -sum_lm L_lm grad R_lm(x - c),   phi = sum_lm L_lm R_lm(x - c),
 //
-// with the real regular solid harmonics R_lm of docs/math.md.  These kernels
+// with the real regular solid harmonics R_lm of docs/math/conventions.md.  These kernels
 // evaluate the same maps during every evaluation from the positions instead
 // of streaming precomputed rows.  They run the recurrence of
 // `math/solid_harmonic_recurrence.hpp` in its factorial normalisation and

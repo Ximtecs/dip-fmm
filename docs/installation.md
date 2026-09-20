@@ -213,16 +213,16 @@ sphinx-build -W --keep-going -b html docs docs/_build/html
 
 The generated homepage is `docs/_build/html/index.html`.
 
-### Start the notebooks
+### Start the tutorials
 
 The notebook stack is already included in `environment.yml`:
 
 ```console
 conda activate cdfmm
-jupyter lab
+jupyter lab examples/tutorials
 ```
 
-Run Jupyter from the repository root and select the `Python (cdfmm)` kernel.
+Select the `Python (cdfmm)` kernel ([Examples and tutorials](examples.md)).
 If the kernel is not registered automatically, run:
 
 ```console
@@ -246,7 +246,7 @@ Pip uses scikit-build-core to compile and install the native extension. This
 workflow is convenient for Python use, but the `release` preset is the
 recommended route when CUDA and oneMKL are required.
 
-### FMM3D notebook comparison
+### FMM3D comparison material
 
 FMM3D 2.1.0 has additional compiler and NumPy constraints. Add its environment
 overlay and run the checked-in installer after completing the main setup:
@@ -254,11 +254,11 @@ overlay and run the checked-in installer after completing the main setup:
 ```console
 conda env update --name cdfmm --file environment-fmm3d.yml
 conda activate cdfmm
-./examples/notebooks/install_fmm3d.sh
+./benchmarks/external/fmm3d/install_fmm3d.sh
 ```
 
-See [Examples and notebooks](examples.md) for the associated comparison
-workflow.
+The comparison notebook and runner live under `benchmarks/external/fmm3d/`
+([Benchmarks and profiling](benchmarks.md)).
 
 ### MagTense comparison environment
 
@@ -271,7 +271,9 @@ conda activate cdfmm-magtense
 ```
 
 Use the `magtense` preset when configuring cdfmm for those comparisons. A CUDA
-toolkit must also be available because that preset enables CUDA.
+toolkit must also be available because that preset enables CUDA. The
+comparison notebooks are under `examples/validation/`
+([Examples and tutorials](examples.md)).
 
 ### C and Fortran integration
 
@@ -283,7 +285,7 @@ cmake --fresh --preset release -DCDFMM_BUILD_FORTRAN_INTERFACE=ON
 cmake --build --preset release -j
 ```
 
-See [C and Fortran integration](fortran-interface.md) for compiler and linking
+See [C and Fortran integration](c-and-fortran.md) for compiler and linking
 details.
 
 ### Manual CMake configuration

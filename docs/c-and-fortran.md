@@ -1,6 +1,6 @@
-# Fortran interface
+# C and Fortran integration
 
-## MagTense-style use
+## Fortran: MagTense-style use
 
 The native Fortran wrapper is the recommended interface. It hides the C plan
 pointer and ABI structure, while retaining component-separated arrays and the

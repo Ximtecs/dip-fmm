@@ -1,16 +1,83 @@
 # Real spherical-harmonic expansions
 
 Real spherical harmonics are the default far-field basis for `UniformFmm`
-plans. The normative basis definition, solid-harmonic
-normalisation, coefficient indexing, P2M and evaluation signs, translation
-directions, and M2L box-width scaling are in
-[Mathematical formulation](math.md).
+plans. This page gives the basis convention, the coefficient ordering, the
+operator definitions in that basis, and how the static operators are
+constructed. The kernel, signs and displacement directions are those of
+[Mathematical conventions](conventions.md); the Cartesian Taylor basis remains
+available with `ExpansionBasis::Cartesian` or by assigning `"cartesian"` to
+the Python `options.expansion_basis` property.
 
-An order-`p` plan stores `(p+1)^2` real coefficients ordered by increasing
-degree and then `m=-l,...,+l`. `R_00=1`, and the degree-one modes are
-`(y,z,x)`. The Cartesian Taylor basis remains available with
-`ExpansionBasis::Cartesian` or by assigning `"cartesian"` to the Python
-`options.expansion_basis` property.
+## Basis convention
+
+Let $Y_l^m$ be an orthonormal complex spherical harmonic whose associated
+Legendre function includes the Condon–Shortley phase. For $m>0$, define the
+real tesseral harmonics by
+
+$$Y^R_{l0}=Y_l^0,$$
+
+$$Y^R_{lm}=\sqrt{2}(-1)^m\operatorname{Re}Y_l^m,
+\qquad
+Y^R_{l,-m}=\sqrt{2}(-1)^m\operatorname{Im}Y_l^m.$$
+
+The regular and irregular real solid harmonics are
+
+$$R_{lm}(r)=\sqrt{\frac{4\pi}{2l+1}}r^lY^R_{lm}(\hat r),\qquad
+I_{lm}(r)=\sqrt{\frac{4\pi}{2l+1}}
+\frac{Y^R_{lm}(\hat r)}{r^{l+1}}.$$
+
+This convention gives $R_{00}=1$. Degree-one modes in $m=(-1,0,1)$ order are
+$(y,z,x)$. Coefficients are ordered by increasing degree and then
+$m=-l,\ldots,+l$; the zero-based index is $l^2+m+l$, and an order-$p$
+expansion stores $(p+1)^2$ real coefficients. The Python function
+`spherical_modes(p)` returns this $(l,m)$ ordering.
+
+The corresponding addition theorem is
+
+$$\frac{1}{|x-d|}=\sum_{l=0}^{\infty}\sum_{m=-l}^{l}
+R_{lm}(d)I_{lm}(x),\qquad |d|<|x|.$$
+
+## Operators in the spherical basis
+
+For source centre $c_s$ and $d_j=x_j-c_s$, point-dipole P2M stores
+
+$$M_{lm}(c_s)=\frac{1}{4\pi}\sum_j
+m_j\mathbin{\cdot}\nabla R_{lm}(d_j).$$
+
+The multipole potential is
+
+$$\phi(x)=\sum_{l,m}M_{lm}I_{lm}(x-c_s),
+\qquad H(x)=-\nabla\phi(x).$$
+
+Spherical M2M shifts from child to parent with
+$d=c_{\mathrm{parent}}-c_{\mathrm{child}}$; M2L uses
+$R=c_{\mathrm{target}}-c_{\mathrm{source}}$ and maps source $M_{lm}$ values to
+target local coefficients; L2L shifts from parent to child with
+$d=c_{\mathrm{child}}-c_{\mathrm{parent}}$. These operators are defined by
+preserving the represented potential under the stated centre changes; their
+completed real matrices are constructed once for the static plan.
+
+A spherical local expansion is
+
+$$\phi(x)=\sum_{l,m}L_{lm}R_{lm}(x-c_t),
+\qquad H(x)=-\sum_{l,m}L_{lm}\nabla R_{lm}(x-c_t).$$
+
+Thus L2P uses analytic regular-harmonic values and gradients and the same
+$H=-\nabla\phi$ sign as direct evaluation. No field samples or numerical
+differentiation are used to construct these rows.
+
+For same-level M2L, write the physical separation as $R=h_\ell t$, where
+$h_\ell$ is the box width and $t$ is an integer displacement class. A matrix
+entry mapping source degree $l$ to target degree $\lambda$ scales as
+
+$$T^{(\ell)}_{\lambda\mu,lm}(t)=
+h_\ell^{-(l+\lambda+1)}\widehat T_{\lambda\mu,lm}(t).$$
+
+The implementation therefore retains one dense real matrix $\widehat T(t)$
+per used displacement class and applies degree-dependent multipole and local
+scalings for each level, exactly as in the Cartesian case.
+`SphericalM2LBackend::StaticDense` names this implemented strategy; it is the
+only spherical M2L strategy.
 
 ## Static operator construction
 
@@ -22,50 +89,46 @@ $$I_{lm}(r)=\frac{4\pi(-1)^l}{(2l-1)!!}R_{lm}(\nabla)G(r)$$
 to project validated Cartesian translation and Laplace-derivative tensors onto
 the minimal harmonic subspace. This produces the completed real P2M, M2M, M2L,
 L2L, and L2P operators directly. It is algebraically equivalent to a
-rotate--axial-shift--rotate-back spherical translation, but neither Cartesian
+rotate–axial-shift–rotate-back spherical translation, but neither Cartesian
 expansion state nor complex rotation data is retained at runtime.
 
 Point P2M and L2P use analytic regular-harmonic values and gradients. For an
-axis-aligned rectangular prism, setup analytically averages those finite
-Cartesian polynomials and their gradients over the source or target volume.
-The resulting P2M and L2P operators have spherical width and are stored
-directly; repeated evaluation performs neither cuboid integration nor a
-Cartesian/spherical conversion. M2M and L2L store eight universal child
-templates with exact power-of-two level scaling. M2L stores one dense real matrix
-per used integer displacement class and combines it with degree-dependent
-box-width scaling. No geometry-dependent harmonic construction or numerical
-field sampling occurs during `evaluate()`.
+axis-aligned rectangular prism or a tetrahedron, setup analytically averages
+those finite Cartesian polynomials and their gradients over the source or
+target volume ([Finite geometry](finite-geometry.md)); the resulting P2M and
+L2P operators have spherical width and are stored directly, so repeated
+evaluation performs neither volume integration nor a Cartesian/spherical
+conversion. M2M and L2L store eight universal child templates with exact
+power-of-two level scaling; M2L stores one dense real matrix per used integer
+displacement class and combines it with degree-dependent box-width scaling.
+No geometry-dependent harmonic construction or numerical field sampling occurs
+during `evaluate()`.
 
 FP64 setup temporaries are quantised and released for an FP32 plan. The
 retained static operators, multipoles, locals, scratch, transfers, and CUDA
 buffers use the selected execution scalar.
 
-## Backends and limits
+## Procedural point operators
 
-Spherical point-dipole, rectangular-prism, and tetrahedron sources, with
-point, rectangular-prism, or tetrahedron targets, support FP32 and FP64 CPU
-static, oneMKL, CUDA
-partial, and CUDA full plans. The ordinary spherical M2M, M2L, and L2L
-operators are shared by every geometry. Exact near-field P2P tensors are
-basis-independent and use the same canonical builder as Cartesian and dense
-direct plans. The independent dynamic CPU reference traversal remains
-Cartesian-only.
+For point sources and point targets the P2M contribution and the L2P
+evaluation are short recurrences of the resident positions: the real regular
+solid harmonics and their gradients are generated by the factorial-normalised
+recurrence in `src/math/solid_harmonic_recurrence.hpp`, and a per-mode factor
+table (the $f_{lm}/(4\pi)$ of P2M and $\mp f_{lm}$ of L2P) turns the
+accumulated sums into the canonical coefficients. The executors may therefore
+recompute these two operators during every evaluation instead of streaming
+the stored rows; the choice is an execution policy
+([Execution backends](../backends.md)), the operator definition is the one
+above, and the recurrence is checked against the polynomial basis at every
+compiled order.
 
-For controlled finite-geometry comparisons, set
-`far_field_source_model=SourceModel.POINT_DIPOLE` to substitute point P2M and
-`far_field_target_model=TargetModel.POINT` to substitute point-evaluation
-L2P. Source and target geometry remain unchanged, so exact near-field physics
-is identical across comparison cases.
+## Coefficient counts
 
-The comparison flags also provide a useful hybrid execution model. With
-rectangular-prism sources, rectangular-prism targets, and both far-field
-models set to their point variants, list1 uses exact prism-to-prism tensors
-while the far field uses point P2M
-and centre-sampled L2P. Evaluation input remains total dipole moment rather
-than magnetisation; no volume scaling is performed implicitly.
-
-`SphericalM2LBackend::StaticDense` is the implemented M2L strategy. FMM3D
-v2.1.0 is used only as an external validation and performance comparison.
-FMM3D's exponential/plane-wave representation is a possible later optimisation,
-not a required component: it should be considered only if profiling relevant
-orders and problem sizes shows dense static M2L to be the limiting stage.
+Cartesian order `p` stores `(p+1)(p+2)(p+3)/6` coefficients; spherical order
+`p` stores `(p+1)^2`. Real spherical harmonics are the default because they
+remove the Laplacian redundancy of the Cartesian total-degree basis; for the
+same order both bases give the same accuracy (the controlled comparisons of
+the benchmark record found identical relative $L^2$ errors to displayed
+precision for points and for finite cubes). That is a statement about
+coefficient count, not a universal performance claim: runtime and accuracy
+still depend on order, depth, geometry, precision, and hardware.
