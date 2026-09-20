@@ -45,9 +45,27 @@ namespace {
 // This translation unit retains complete FMM orchestration. Far-field kernels
 // are provided by the CUDA far-field backend, while list-1 execution is
 // provided by the CUDA P2P backend; separate streams retain near/far overlap.
+//
+// `CudaFullPlan` is the device-resident backend: every static operator, the
+// selected P2P packing, the permutations and all coefficient/field state live
+// on the device for the plan's lifetime, so a repeated evaluation transfers
+// only the changing moments in and the user-ordered field out.  Its event
+// graph is
+//
+//   far-field stream:  moments H2D -> permute -> [moments_ready]
+//                      -> P2M -> M2M -> M2L -> L2L -> L2P -> [l2p_complete]
+//                      -> wait(p2p_complete) -> combine + unsort -> D2H
+//   near-field stream: wait(moments_ready) -> P2P -> [p2p_complete]
+//
+// so the exact near field overlaps the whole far-field hierarchy and the only
+// host synchronisation is the final wait on `d2h_complete`.  Phase timings
+// come from the recorded events, which is why they may overlap and are never
+// summed as a critical path.  The FP64 and FP32 bodies are kept separate and
+// symmetric on purpose: each instantiates only its own kernels.
 
 using cuda_detail::check_cuda;
 
+// Gather the user-order moments into Morton (leaf) order.
 template <typename Vector>
 __global__ void permute_moments_kernel(const Vector *input,
                                        const int *permutation, const int count,
@@ -58,6 +76,8 @@ __global__ void permute_moments_kernel(const Vector *input,
     }
 }
 
+// far + near in sorted order, scattered straight into user order so no
+// sorted-order field ever leaves the device.
 template <typename Vector>
 __global__ void combine_order_kernel(const Vector *far_fields,
                                      const Vector *near_fields,
@@ -98,6 +118,15 @@ bool cuda_full_available() noexcept { return cuda_runtime_available(); }
 // Complete static CUDA FMM
 //------------------------------------------------------------------------------
 
+// Device state of one plan.  Exactly one precision's members are populated
+// (`fp32` says which) and exactly one P2P device view, chosen by the
+// `use_p2p_*` flags in the priority order the constructor and `evaluate` share:
+// dictionary, BSR, point geometry, leaf block, then canonical.  `self_indices`
+// exists only for packings that resolve identity at run time (canonical, leaf
+// block, point geometry); the dictionary and BSR packings have the fixed
+// identity map baked in.  Pinned host buffers stage the per-evaluation
+// transfers; callers may write into them directly through `pinned_moments()`
+// to skip one host copy.
 struct CudaFullPlan::Implementation {
     bool fp32{false};
     int coefficient_count{0};
@@ -166,6 +195,13 @@ struct CudaFullPlan::Implementation {
   std::size_t p2p_block_count{0};
 };
 
+// Construction uploads everything static on the far-field stream and ends
+// with one synchronisation: streams and events, permutations, the selected
+// P2P packing, the far-field operator plan, the M2L plan, then the retained
+// statistics (persistent bytes, per-operator byte counts, upload counts).
+// `p2p_block_count` is the number of streamed near-field items in the chosen
+// packing: pairs for the position-based executor, tokens for the dictionary,
+// 3x3 blocks for BSR, tensors for leaf blocks, canonical blocks otherwise.
 CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
     : implementation_(new Implementation{}) {
   auto &plan = *implementation_;
@@ -200,6 +236,9 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
              ? data.p2p_bsr.source_indices.size()
              : (data.use_p2p_leaf ? data.p2p_leaf.tensors[0].size()
                                   : data.p2p.blocks.size())));
+  // The execution policy raises the far-field stream's priority when it
+  // expects the far field to be the critical path, so a small P2P kernel
+  // cannot delay it; otherwise the streams share the default priority.
   if (data.far_field_stream_priority) {
     cuda_detail::create_priority_stream(plan.far_field_stream,
                                         "create full FMM far-field stream");
@@ -362,6 +401,10 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   plan.statistics.l2l_unique_matrix_count =
       far_field_statistics.l2l_unique_matrix_count;
   plan.statistics.l2l_matrix_bytes = far_field_statistics.l2l_matrix_bytes;
+  // Persistent device footprint: everything uploaded during setup, plus the
+  // moments (raw and sorted), the three field buffers, the two coefficient
+  // arrays, the identity array if it was not part of the setup upload, and
+  // the vendor scratch.
   plan.statistics.persistent_device_bytes =
       plan.statistics.setup_h2d_bytes + 2 * source_bytes + 3 * target_bytes +
       2 * coefficient_bytes +
@@ -406,6 +449,8 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   plan.statistics.geometry_upload_count = 1;
 }
 
+// FP32 construction: the same sequence as above over the FP32 plan types and
+// device views.  `scalar_bytes` is the only statistic that differs in kind.
 CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
     : implementation_(new Implementation{}) {
   auto &plan = *implementation_;
@@ -646,6 +691,9 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
   plan.statistics.geometry_upload_count = 1;
 }
 
+// Release in an order that is safe whichever precision and packing were
+// populated: unused pointers are null and the CUDA free functions accept
+// null.  Errors are ignored deliberately; a destructor cannot report them.
 CudaFullPlan::~CudaFullPlan() {
   if (implementation_ == nullptr) {
     return;
@@ -709,6 +757,10 @@ CudaFullPlan::~CudaFullPlan() {
     delete implementation_;
 }
 
+// One FP64 field evaluation, following the event graph in the file header.
+// The identity map is part of the plan: the first evaluation fixes it (and
+// uploads it for the packings that resolve identity at run time), and every
+// later evaluation must pass the same map or the caller is told to rebuild.
 void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
                             const std::span<Vec3> fields,
                             const std::span<const int> sorted_self_indices) {
@@ -736,6 +788,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
     throw std::invalid_argument(
         "CudaFull identity map changed; rebuild the static plan");
   }
+  // Stage through pinned memory so the H2D copy is asynchronous; a caller that
+  // filled `pinned_moments()` directly skips this copy.
   if (moments.data() != plan.pinned_moments) {
     std::copy(moments.begin(), moments.end(), plan.pinned_moments);
   }
@@ -885,6 +939,9 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
     std::copy(plan.pinned_fields, plan.pinned_fields + fields.size(),
               fields.begin());
   }
+  // Phase timings from the recorded events.  `p2p_seconds` is measured on the
+  // near-field stream and overlaps the far-field phases; `kernel_seconds` is
+  // therefore a diagnostic sum, not a wall time, and `total_seconds` is.
   const auto elapsed = [](const cudaEvent_t first, const cudaEvent_t second) {
     float milliseconds = 0.0F;
     check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
@@ -922,6 +979,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   ++plan.statistics.evaluation_d2h_calls;
 }
 
+// The FP32 evaluation mirrors the FP64 one step for step over the FP32
+// buffers and plans; see the comments above for the ordering rationale.
 void CudaFullPlan::evaluate(
     const std::span<const FloatVec3> moments,
     const std::span<FloatVec3> fields,
@@ -1109,6 +1168,8 @@ void CudaFullPlan::evaluate(
   ++plan.statistics.evaluation_d2h_calls;
 }
 
+// The pinned staging buffers of the plan's precision; the other precision's
+// accessor returns an empty span so a caller cannot write the wrong type.
 std::span<Vec3> CudaFullPlan::pinned_moments() noexcept {
   auto &plan = *implementation_;
   return {plan.pinned_moments,
@@ -1145,6 +1206,8 @@ const CudaEvaluationTimings &CudaFullPlan::timings() const noexcept {
   return implementation_->timings;
 }
 
+// Diagnostic only: the sorted-order far field of the last evaluation, widened
+// to double for an FP32 plan.  Not part of the evaluation path.
 void CudaFullPlan::copy_far_fields(std::span<Vec3> fields) const {
   const auto& plan = *implementation_;
   if (fields.size() != static_cast<std::size_t>(plan.target_count)) {

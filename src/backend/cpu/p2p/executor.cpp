@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// Portable executors for the stored-tensor P2P packings.  Every function here
+// applies the same exact near-field operator, H_i += sum_j T_ij m_j with T_ij
+// the symmetric 3x3 pair tensor, and differs only in how the tensors are laid
+// out in memory:
+//
+//   canonical AoS   (StaticP2POperator)     per-target CSR rows of
+//                                            StaticDipoleBlock records
+//   particle-row SoA (StaticP2PCompactPlan) the same CSR rows with the six
+//                                            components in separate arrays
+//   leaf block      (StaticP2PLeafPlan)     dense target-leaf x source-leaf
+//                                            blocks, target-major tensors
+//   BSR(3)          (StaticP2PBsrPlan)      full 3x3 blocks with the fixed
+//                                            identity map already applied
+//
+// Identity handling is uniform: a pair is skipped only when its packing entry
+// carries `skip_for_identity` (a point-dipole self pair) and the caller's map
+// names that source as the target's own; finite self tensors are never
+// skipped.  Each OpenMP iteration owns one target (or one target leaf), so
+// accumulation into `H` needs no synchronisation, and every function adds to
+// `H` rather than assigning so the caller can combine near and far fields.
 
 #include "cdfmm/backend/cpu/p2p.hpp"
 
@@ -6,6 +27,9 @@
 #include <stdexcept>
 
 namespace cdfmm {
+
+// Canonical AoS rows, FP64.  `accumulate_static_dipole_block` applies the
+// six stored components of one block.
 void apply_static_p2p_operator(
     const StaticP2POperator& operator_map,
     const std::span<const Vec3> dipole_moments,
@@ -37,6 +61,8 @@ void apply_static_p2p_operator(
     }
 }
 
+// Particle-row SoA, FP64.  The component arrays let the row loop vectorise;
+// the identity test stays inside the SIMD loop as a predicated skip.
 void apply_static_p2p_compact_plan(
     const StaticP2PCompactPlan &plan,
     const std::span<const Vec3> dipole_moments, const std::span<Vec3> H,
@@ -80,6 +106,7 @@ void apply_static_p2p_compact_plan(
   }
 }
 
+// Canonical AoS rows, FP32.
 void apply_static_p2p_operator(
     const FloatStaticP2POperator& operator_map,
     const std::span<const FloatVec3> dipole_moments,
@@ -113,6 +140,10 @@ void apply_static_p2p_operator(
     }
 }
 
+// Leaf blocks, FP32.  Within a block the tensors of one local target against
+// the block's `source_count` sources are contiguous at
+// `tensor_offset + local_target * source_count`; the identity test compares
+// the absolute source index because the block spans a whole source leaf.
 void apply_static_p2p_leaf_plan(
     const FloatStaticP2PLeafPlan& plan,
     const std::span<const FloatVec3> dipole_moments,
@@ -171,6 +202,9 @@ void apply_static_p2p_leaf_plan(
     }
 }
 
+// BSR(3), FP32.  The plan was built for one fixed identity map and stores full
+// row-major 3x3 blocks with the self pairs already removed, so a caller that
+// passes an identity map must pass the same one; there is no per-pair skip.
 void apply_static_p2p_bsr_plan(
     const FloatStaticP2PBsrPlan& plan,
     const std::span<const FloatVec3> dipole_moments,
@@ -207,6 +241,8 @@ void apply_static_p2p_bsr_plan(
     }
 }
 
+// Leaf blocks, FP64.  Same layout as the FP32 executor; the source loop of a
+// block is a SIMD reduction into three scalar accumulators.
 void apply_static_p2p_leaf_plan(
     const StaticP2PLeafPlan &plan, const std::span<const Vec3> dipole_moments,
     const std::span<Vec3> H, const std::span<const int> target_source_indices) {
@@ -264,6 +300,8 @@ void apply_static_p2p_leaf_plan(
     }
   }
 }
+
+// BSR(3), FP64.
 void apply_static_p2p_bsr_plan(
     const StaticP2PBsrPlan &plan, const std::span<const Vec3> dipole_moments,
     const std::span<Vec3> H, const std::span<const int> target_source_indices) {
@@ -298,6 +336,7 @@ void apply_static_p2p_bsr_plan(
   }
 }
 
+// Particle-row SoA, FP32.
 void apply_static_p2p_compact_plan(
     const FloatStaticP2PCompactPlan& plan,
     const std::span<const FloatVec3> dipole_moments,

@@ -35,6 +35,14 @@ namespace cdfmm {
 // canonical operators directly.  Nothing here rebuilds plans.  Near-field work
 // may therefore proceed independently while this branch consumes explicit
 // topology schedules.
+//
+// Each stage exists in an FP64 and an FP32 form over the corresponding plan
+// and state; the FP32 forms omit the `Reference` executor because the
+// dynamic Cartesian reference is FP64 only.  Schedules are level barriers:
+// M2M runs deep to shallow, L2L and M2L shallow to deep, and within a level
+// every parallel iteration owns a disjoint output node, so no stage needs
+// atomics.  Coefficients live in flat node-major arrays
+// (`multipole_for_node`, `local_for_node` are views into them).
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -45,6 +53,12 @@ inline double elapsed_seconds(const Clock::time_point start) {
 
 } // namespace
 
+// One level of the static M2L.  Portable execution prefers the transfer-class
+// sorted block schedule (backend/cpu/m2l/schedule.cpp) and falls back to the
+// per-target-row executor when the plan is too large for it; oneMKL groups
+// interactions by class into GEMMs and reports its gather/multiply/scatter
+// split.  Level 0 is only reached by a periodic plan, where the "M2L" of the
+// root onto itself is the periodic image operator.
 void UniformFmm::static_m2l(const int level) {
   detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
   if (static_matrix_backend_ == StaticMatrixBackend::Portable) {
@@ -102,6 +116,10 @@ void UniformFmm::upward_pass(std::span<const Vec3> dipole_moments) {
   upward_pass_prepared();
 }
 
+// Moment preparation: permute into leaf order and apply the s^-3 length
+// scaling that makes the normalised-space field equal the physical field
+// (see the evaluation unit).  The FP32 forms convert once here; the
+// FP64-input form divides in FP64 before narrowing.
 void UniformFmm::prepare_moments_float(
     const std::span<const Vec3> dipole_moments) {
   detail::ProfileRange input_range{"cdfmm/input_preparation_fp32"};
@@ -363,6 +381,11 @@ void UniformFmm::downward_pass() {
   downward_pass_for_output(OutputFlags::None, false);
 }
 
+// Downward pass: locals are reset, then per level L2L inherits the parent
+// local before that level's M2L adds the list-2 contributions, and finally
+// L2P evaluates the leaf locals at the targets.  With the CUDA M2L executor
+// the whole M2L is one device call, so the CPU only runs L2L afterwards.
+// `evaluate_l2p == false` leaves the locals in place for inspection.
 void UniformFmm::downward_pass_for_output(const OutputFlags output,
                                           const bool evaluate_l2p) {
   detail::ProfileRange downward_range{"cdfmm/far_field/downward"};
@@ -499,6 +522,8 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
   }
 }
 
+// FP32 downward pass; the same sequence as above without the reference
+// executor.
 void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
                                                 const bool evaluate_l2p) {
   auto phase_start = Clock::now();
@@ -597,6 +622,9 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
   }
 }
 
+// Hybrid backend: all levels of M2L in one device call.  The multipoles cross
+// to the device and the raw locals come back; the plan's timings are split
+// into the public H2D/scale/multiply/D2H lanes.
 void UniformFmm::cuda_m2l() {
   detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
   const auto phase_start = Clock::now();
@@ -612,6 +640,7 @@ void UniformFmm::cuda_m2l() {
   last_timings_.m2l.add(elapsed_seconds(phase_start));
 }
 
+// L2L over all levels after a device M2L has already filled every local.
 void UniformFmm::l2l_downward() {
   detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
   const auto &nodes = topology_->nodes;
@@ -636,9 +665,5 @@ void UniformFmm::l2l_downward() {
     last_timings_.l2l.add(elapsed_seconds(phase_start));
   }
 }
-
-//------------------------------------------------------------------------------
-// Complete evaluation
-//------------------------------------------------------------------------------
 
 } // namespace cdfmm

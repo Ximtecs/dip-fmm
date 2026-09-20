@@ -1,4 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// Portable execution of one level of the prepared static M2L directly from
+// the canonical target rows.  For a target t at this level:
+//
+//   L_t += S_L(level) * sum_{(s, class) in row(t)} M_class * (S_M(level_s) * M_s)
+//
+// where M_class is the normalised C x C matrix of the interaction's transfer
+// class and S_M, S_L are the per-level scaling tables that make the bank
+// depth independent.  The block-scheduled executor in schedule.cpp applies
+// the same terms in a cache-friendlier order and is preferred when it fits.
 
 #include "cdfmm/backend/cpu/m2l.hpp"
 
@@ -164,6 +174,8 @@ void apply_static_m2l_plan(const FloatStaticM2LPlan &plan, const int level,
     apply_m2l_level(plan, level, multipoles, locals);
 }
 
+// Compatibility overload over per-node coefficient vectors, retained for the
+// public flat API and its tests; production uses the flat node-major arrays.
 void apply_static_m2l_plan(
     const StaticM2LPlan &plan, const int level,
     const std::span<const std::vector<double>> multipoles,

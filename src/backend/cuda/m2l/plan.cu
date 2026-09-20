@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// CUDA execution of the prepared static M2L.  The device holds the normalised
+// transfer-class matrices, the per-level scaling tables and the interaction
+// metadata once; each evaluation launches either
+//
+//   * the transfer-class grouped kernel (the production path), where one
+//     block stages one shared matrix through shared memory and applies it to
+//     up to `pairs_per_block` (source, target) pairs, accumulating into the
+//     locals with atomics because several classes feed one target; or
+//   * the target-row kernels (fallback for coefficient counts that do not fit
+//     one block of threads), where one thread owns one (target, beta) output
+//     and walks the target's canonical row, deterministic and atomic-free,
+//     with an optional pre-scaling pass into demand-sized scratch.
+//
+// `CudaM2LExecutionStorage` is shared by the hybrid backend (`CudaM2LPlan`,
+// which stages coefficients through pinned memory on its own high-priority
+// stream) and by the device-resident `CudaFullPlan`, which passes its own
+// buffers and stream.  The pairs-per-thread choice is made by the execution
+// policy from plan facts; the block size of the row kernels by the occupancy
+// API at construction.  No evaluation allocates or synchronises beyond the
+// hybrid plan's final wait.
 
 #include "cdfmm/backend/cuda/m2l.hpp"
 #include "backend/cuda/common/stream.hpp"
@@ -17,6 +38,11 @@ namespace cdfmm::cuda_m2l_detail {
 using cuda_detail::check_cuda;
 
 namespace {
+
+// Pre-scaling pass of the row path: multiply every multipole coefficient by
+// its level's scaling once, so the row kernel reads scaled values instead of
+// re-applying the table for every interaction.  Nodes with level -1 (none in
+// a complete plan) pass through unscaled.
 template <typename Scalar>
 __global__ void scale_m2l_multipoles_kernel(
     const Scalar *multipoles, const int *node_levels,
@@ -40,6 +66,10 @@ __global__ void scale_m2l_multipoles_kernel(
                 multipoles[value_index];
 }
 
+// Row kernel over pre-scaled multipoles: L[target][beta] += S_L * sum over the
+// target's row of M_class[alpha][beta] * scaled M_source[alpha].  Matrices are
+// column-major with beta contiguous, so consecutive threads (consecutive beta)
+// read consecutive matrix values.
 template <typename Scalar>
 __global__ void apply_scaled_m2l_rows_kernel(
     const Scalar *matrices, const CudaM2LActiveRow *active_rows,
@@ -89,6 +119,8 @@ __global__ void apply_scaled_m2l_rows_kernel(
       value;
 }
 
+// Row kernel without scratch: the same reduction with the source scaling
+// applied inline, used when the pre-scaled buffer could not be allocated.
 template <typename Scalar>
 __global__ void apply_unscaled_m2l_rows_kernel(
     const Scalar *matrices, const CudaM2LActiveRow *active_rows,
@@ -287,6 +319,7 @@ public:
     initialise(data, stream);
   }
 
+  // Unused pointers are null and cudaFree accepts null.
   ~CudaM2LExecutionStorage() {
     cudaFree(matrices_);
     cudaFree(active_rows_);
@@ -306,6 +339,9 @@ public:
   CudaM2LExecutionStorage(const CudaM2LExecutionStorage &) = delete;
   CudaM2LExecutionStorage &operator=(const CudaM2LExecutionStorage &) = delete;
 
+  // Launch the complete M2L (every level at once: the grouping and the active
+  // rows already cover all levels) on `stream`.  `scale_complete` separates
+  // the scaling and multiply phases for the timing lanes.
   void enqueue(const Scalar *multipoles, Scalar *locals, cudaStream_t stream,
                cudaEvent_t scale_complete) const {
     if (group_count_ != 0) {
@@ -397,6 +433,10 @@ private:
     }
   }
 
+  // Validate the canonical plan against itself (row bounds, levels, matrix
+  // ids), build the active-row list (targets with at least one interaction),
+  // upload the immutable data, derive the transfer-class grouping, and size
+  // the optional scratch and the row-kernel launch.
   void initialise(const Plan &data, cudaStream_t stream) {
     if (data.coefficient_count < 0 || data.matrix_count < 0 ||
         data.level_count < 0 || data.target_row_offsets.empty()) {
@@ -742,6 +782,8 @@ using cuda_detail::check_cuda;
 //------------------------------------------------------------------------------
 // Standalone CUDA M2L plan
 //------------------------------------------------------------------------------
+// The hybrid backend's M2L: the CPU hands over all multipoles, the device
+// returns all raw locals.  Exactly one precision's members are populated.
 
 struct CudaM2LPlan::Implementation {
   bool fp32{false};
@@ -873,23 +915,32 @@ CudaM2LPlan::CudaM2LPlan(const StaticM2LPlan& data)
 }
 
 CudaM2LPlan::~CudaM2LPlan() {
-  if (!implementation_) return;
+  if (!implementation_) {
+    return;
+  }
   auto& plan = *implementation_;
   delete plan.executor;
   delete plan.executor_float;
-  cudaFree(plan.multipoles); cudaFree(plan.locals);
+  cudaFree(plan.multipoles);
+  cudaFree(plan.locals);
   cudaFree(plan.multipoles_float);
   cudaFree(plan.locals_float);
   cudaFreeHost(plan.host_multipoles);
   cudaFreeHost(plan.host_locals);
   cudaFreeHost(plan.host_multipoles_float);
   cudaFreeHost(plan.host_locals_float);
-  cudaEventDestroy(plan.start); cudaEventDestroy(plan.h2d);
+  cudaEventDestroy(plan.start);
+  cudaEventDestroy(plan.h2d);
   cudaEventDestroy(plan.scale);
-  cudaEventDestroy(plan.kernel); cudaEventDestroy(plan.d2h);
-  cudaStreamDestroy(plan.stream); delete implementation_;
+  cudaEventDestroy(plan.kernel);
+  cudaEventDestroy(plan.d2h);
+  cudaStreamDestroy(plan.stream);
+  delete implementation_;
 }
 
+// One hybrid M2L round trip: pinned staging -> H2D -> clear locals -> kernels
+// -> D2H -> wait.  The four events bound the h2d / scale / multiply / d2h
+// lanes; `total` is their sum because this stream is serial.
 void CudaM2LPlan::evaluate(const std::span<const float> multipoles,
                            const std::span<float> locals) {
   auto &plan = *implementation_;
@@ -980,8 +1031,10 @@ void CudaM2LPlan::evaluate(const std::span<const double> multipoles,
   check_cuda(cudaEventSynchronize(plan.d2h), "wait for M2L");
   std::copy(plan.host_locals, plan.host_locals + values, locals.begin());
   const auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
-    float ms = 0.0F; check_cuda(cudaEventElapsedTime(&ms, first, second), "time M2L");
-    return static_cast<double>(ms) * 1.0e-3;
+    float milliseconds = 0.0F;
+    check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
+               "time M2L");
+    return static_cast<double>(milliseconds) * 1.0e-3;
   };
   plan.timings = {};
   plan.timings.h2d_seconds = elapsed(plan.start, plan.h2d);
@@ -1006,7 +1059,5 @@ const CudaPlanStatistics& CudaM2LPlan::statistics() const noexcept {
 const CudaEvaluationTimings& CudaM2LPlan::timings() const noexcept {
   return implementation_->timings;
 }
-
-
 
 } // namespace cdfmm

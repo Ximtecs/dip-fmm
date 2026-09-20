@@ -21,11 +21,20 @@ namespace cdfmm::detail::cache {
 
 namespace {
 
+// The bank always holds one matrix per possible M2L transfer class (316 for
+// the complete interaction list); a periodic plan appends one more matrix,
+// the periodic root operator, after these.
 constexpr std::size_t kUniversalClassCount =
     StaticPlanStatistics::theoretical_maximum_m2l_classes;
 
 } // namespace
 
+// Payload: the eight M2M child operators, the eight L2L child operators, then
+// the flat column-major bank of `kUniversalClassCount` M2L matrices.  A
+// universal miss returns false so the caller rebuilds the bank; a periodic
+// miss after a universal hit still returns true, with
+// `periodic_operator_available` left false so only the periodic matrix is
+// rebuilt.
 bool load_universal_cache(const UniversalCacheIdentity& identity,
                           const int coefficient_count,
                           UniversalCachePayload payload,

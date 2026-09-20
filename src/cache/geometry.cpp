@@ -29,6 +29,18 @@ namespace cdfmm::detail::cache {
 
 // Geometry-plan serialisation is implemented below with field-wise arrays.
 // It deliberately excludes the universal translation matrices.
+//
+// Payload order (write_geometry_cache is the authoritative sequence and
+// load_geometry_cache reads it back in the same order):
+//   tree permutations and inverse permutations, leaf indices, occupied leaves
+//   node count, then every TreeNode field by field
+//   fixed identity flag and, if set, the fixed identity map
+//   P2M plans: leaf, begin, count, coefficient operator
+//   M2L plan metadata: counts, scaling tables, CSR rows and level schedule
+//   L2P evaluators: potential row and three field rows each
+//   canonical P2P operator: counts, row offsets, block count, blocks
+// The tree and identity sections are compared against the live objects on
+// load rather than trusted, so a key collision can never yield a wrong plan.
 bool load_geometry_cache(
     const GeometryCacheIdentity& identity, const UniformTree& tree,
     const StaticFmmTopology& topology,
@@ -281,6 +293,9 @@ bool load_geometry_cache(
             .count());
     return true;
   } catch (const std::exception&) {
+    // Any failure is a miss.  Only the FP32 members are reset because the
+    // FP64 members are overwritten by a cold build regardless, whereas the
+    // FP32 members would otherwise be taken as a partial direct load.
     geometry_cache_loaded_direct_float = false;
     payload.p2m_plans_float.clear();
     payload.l2p_evaluators_float.clear();

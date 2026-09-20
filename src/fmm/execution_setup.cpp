@@ -1,4 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// UniformFmm execution setup: everything between a constructed topology and a
+// plan that can evaluate.  In order, `initialise_execution`
+//
+//   1. validates the option combination and resolves `Auto` to a backend;
+//   2. sorts the finite-body records and the fixed identity map into leaf
+//      order (`initialise_*_geometry`, `initialise_p2p_policy`);
+//   3. resolves the deterministic execution policy from plan facts
+//      (`resolve_cuda_execution_policy`, which also settles the CPU
+//      dictionary and validates an explicit `p2p_packing` request);
+//   4. computes the cache identity (src/cache/keys.cpp);
+//   5. resolves the point P2M/L2P execution strategy and builds or loads the
+//      static plan (src/fmm/plan_preparation.cpp);
+//   6. derives the backend packings (CPU far-field packing, oneMKL M2L, CUDA
+//      P2P / M2L / full plans) from the canonical operators.
+//
+// Every choice made here is a pure function of the options and the
+// constructed geometry; nothing is measured at run time and no choice changes
+// the result.  The resolved choices are what the initialisation summary
+// reports.
 
 #include "cdfmm/uniform_fmm.hpp"
 
@@ -124,6 +144,8 @@ cuda_policy::CudaExecutionPolicy effective_cuda_policy(
   return cuda_policy::resolve_cuda_execution_policy(fallback);
 }
 
+// The four model selectors are enums the bindings may widen; reject anything
+// this build does not implement before it can reach a switch default.
 void validate_model_options(const UniformFmmOptions& options)
 {
   switch (options.near_field_source_model) {
@@ -158,6 +180,8 @@ void validate_model_options(const UniformFmmOptions& options)
 
 } // namespace
 
+// The *Owner types wrap backend resources behind opaque declarations in
+// fmm/internal.hpp so that uniform_fmm.hpp exposes no vendor or CUDA type.
 UniformFmm::MklM2LPlanOwner::MklM2LPlanOwner(const StaticM2LPlan& plan)
     : executor_(plan) {}
 
@@ -383,6 +407,10 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
   }
 }
 
+// Copy the P2P-related options, validate and sort a fixed identity map, and
+// resolve the execution policy.  A fixed map is retained only when the
+// near-field source is effectively a point dipole, because that is the only
+// case in which identity changes the operator.
 void UniformFmm::initialise_p2p_policy(const UniformFmmOptions &options) {
   cuda_p2p_bsr_max_bytes_ = options.cuda_p2p_bsr_max_bytes;
   spatial_layout_ = options.spatial_layout;
@@ -587,6 +615,9 @@ void UniformFmm::apply_p2p_packing_request(
   }
 }
 
+// Derive the signed tensor dictionary from the canonical near-field operator
+// when the policy selected it.  Runs on cold and warm constructions alike, so
+// the derived packing never enters the cache.
 void UniformFmm::build_reduced_symmetry_p2p_packing() {
   // The dictionary is derived when the user asked for it or when the CUDA
   // policy selected it from the regular-grid layout hint.
@@ -639,6 +670,10 @@ void UniformFmm::build_reduced_symmetry_p2p_packing() {
   }
 }
 
+// Finite-body records arrive in user order, one common record or one per
+// body; they are permuted into leaf order once here so every later stage can
+// index them by sorted position.  Record kinds that do not match the declared
+// geometry are rejected rather than ignored.
 void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
   source_geometry_ = options.source_geometry;
   near_field_source_model_ = options.near_field_source_model;
@@ -756,6 +791,10 @@ void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
   }
 }
 
+// Hybrid backend near field: instantiate the device P2P plan for the packing
+// the policy resolved, in the same priority order the CUDA plans use
+// (dictionary, point geometry, leaf block, BSR, canonical), and record the
+// resolved packing for the summary.
 void UniformFmm::build_cuda_p2p_plan() {
   using cuda_policy::CudaDictionaryExecutor;
   using cuda_policy::CudaP2PPacking;
@@ -916,6 +955,9 @@ void UniformFmm::resolve_point_expansion_execution() {
   procedural_l2p_ = procedural_faster && point_l2p;
 }
 
+// Backend packings derived after the static plan exists: the CPU far-field
+// packing for every backend that runs P2M/M2M/L2L/L2P on the host, and the
+// oneMKL M2L executor when it was selected and the device does not own M2L.
 void UniformFmm::build_backend_packing() {
   if (backend_ != ExecutionBackend::CudaFull) {
     build_cpu_far_field_packing();
@@ -1151,6 +1193,14 @@ void UniformFmm::release_stored_p2p_tensors() {
   static_plan_statistics_.p2p_canonical_total_bytes = 0;
 }
 
+// Device-resident backend: gather every static operator into the flat
+// CudaFullPlanData the device plan uploads.  P2M entries are re-indexed from
+// leaf-local (input = 3 * local source + component, output = coefficient) to
+// global (3 * sorted source + component, node * C + coefficient), L2P rows are
+// flattened the same way, and the eight M2M/L2L templates are concatenated
+// with the occupied translation edges.  Procedural stages skip their rows and
+// receive the topology instead.  The FP32 and FP64 bodies are the same
+// sequence over the two plan types.
 void UniformFmm::build_cuda_full_plan() {
   using cuda_policy::CudaDictionaryExecutor;
   using cuda_policy::CudaP2PPacking;

@@ -1,4 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// UniformFmm construction: input validation, choice of the physical root box,
+// normalisation of every coordinate and finite-body record into the unit root
+// [-1/2, 1/2]^3 on the canonical 1e-9 grid, and the constructor chain that
+// builds the trees and topology before handing over to `initialise_execution`
+// (src/fmm/execution_setup.cpp).
+//
+// Normalisation is what makes plans reusable: two geometries that differ only
+// by a physical translation or a uniform scale produce bitwise-identical
+// normalised coordinates, hence identical operators and identical cache keys.
+// Everything downstream of this unit works in normalised units; the physical
+// root centre and side length are retained only to scale results, keys and
+// the inspection API back.
 
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/tree/uniform_topology.hpp"
@@ -30,6 +43,12 @@ double canonicalise_normalised_value(const double value) {
   return std::nearbyint(value * resolution) / resolution;
 }
 
+// A prebuilt topology (for example from AdaptiveTree) already holds normalised
+// sorted positions, but the caller's finite-body records are still physical.
+// Scale them by the topology's coordinate scale, snap them to the canonical
+// grid, and verify that every body lies inside the normalised root.  Records
+// are indexed in user order, so `permutation[sorted]` maps a sorted position
+// back to its record.
 UniformFmmOptions normalise_supplied_topology_options(
     const StaticFmmTopology& topology, const UniformFmmOptions& options) {
   UniformFmmOptions normalised = options;
@@ -142,6 +161,11 @@ UniformFmmOptions normalise_supplied_topology_options(
 // Construction
 //------------------------------------------------------------------------------
 
+// Everything the delegating constructor needs, computed once by
+// `normalise_geometry`: the wrapped physical positions (for the physical
+// inspection tree), the normalised positions (for the plan tree), the options
+// with every record rewritten into normalised units, and the physical root so
+// results can be mapped back.
 struct UniformFmm::NormalisedGeometry {
   std::vector<Vec3> physical_source_positions{};
   std::vector<Vec3> physical_target_positions{};
@@ -155,6 +179,12 @@ struct UniformFmm::NormalisedGeometry {
   Clock::time_point construction_start{};
 };
 
+// Steps, in order: validate positions and records; bound the geometry
+// including finite extents; choose the physical root (the periodic cell, the
+// caller's explicit root, or the tight bounding cube); wrap periodic positions
+// into the cell and check finite bodies stay inside it; scale by the inverse
+// side length and snap to the canonical grid; rewrite the options so the rest
+// of the solver sees a unit root at the origin.
 UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
     const std::vector<Vec3>& source_positions,
     const std::vector<Vec3>& target_positions,
@@ -222,6 +252,9 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
                         "target tetrahedron");
   }
 
+  // Bounding box of the complete geometry.  Finite bodies contribute their
+  // full extent, not just their representative point, so the root box always
+  // contains every body the exact near field will integrate over.
   Vec3 minimum{std::numeric_limits<double>::infinity(),
                std::numeric_limits<double>::infinity(),
                std::numeric_limits<double>::infinity()};
@@ -281,6 +314,9 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
   NormalisedGeometry geometry;
   geometry.construction_start = normalisation_start;
   geometry.options = options;
+  // The periodic cell *is* the root box: the image topology assumes the unit
+  // cell and the root coincide.  Otherwise the root is the caller's explicit
+  // box, or the tightest cube about the geometry (or its chosen centre).
   if (options.periodic.enabled) {
     geometry.physical_root_centre = options.periodic.centre;
     geometry.physical_root_side_length = options.periodic.lengths.x;
@@ -339,6 +375,9 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
     }
     return wrapped;
   };
+  // Representative points are wrapped into the periodic cell, but finite
+  // bodies are not split across its faces: a body whose extent crosses the
+  // cell boundary after wrapping is rejected rather than silently imaged.
   if (options.periodic.enabled) {
     const std::vector<Vec3> wrapped_sources =
         physical_positions(source_positions);
@@ -410,6 +449,9 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
     }
   };
 
+  // Normalised coordinate = (physical - root centre) / side length, snapped to
+  // the grid.  Sizes are scaled but not offset; tetrahedron vertices are
+  // representative-relative and are scaled and snapped like coordinates.
   geometry.physical_source_positions = physical_positions(source_positions);
   geometry.physical_target_positions = physical_positions(target_positions);
   geometry.source_positions.reserve(geometry.physical_source_positions.size());
@@ -444,6 +486,7 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
   };
   canonicalise_sizes(geometry.options.source_sizes);
   canonicalise_sizes(geometry.options.target_sizes);
+  // From here on the solver only ever sees the unit root at the origin.
   geometry.options.tree.root_centre = Vec3{};
   geometry.options.tree.root_half_width = 0.5;
   if (geometry.options.periodic.enabled) {
@@ -454,6 +497,8 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
   return geometry;
 }
 
+// Public constructors delegate through `normalise_geometry` to the private
+// constructor below.  An empty target list means "targets are the sources".
 UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
                        const UniformFmmOptions &options)
     : UniformFmm(source_positions, std::vector<Vec3>{}, options) {}
@@ -464,6 +509,11 @@ UniformFmm::UniformFmm(const std::vector<Vec3> &source_positions,
     : UniformFmm(normalise_geometry(source_positions, target_positions, options),
                  options) {}
 
+// Two trees are built: `physical_tree_` in physical units backs the public
+// inspection API, `tree_` in normalised units is the one the plan is built
+// from.  `coordinate_scale_` (the physical side length) is what FP32 plans
+// and the cache keys use to relate the two.  `physical_options` is kept only
+// for the initialisation summary, which reports what the caller asked for.
 UniformFmm::UniformFmm(NormalisedGeometry geometry,
                        const UniformFmmOptions& physical_options)
     : physical_tree_(std::in_place, geometry.physical_source_positions,
@@ -497,6 +547,10 @@ UniformFmm::UniformFmm(NormalisedGeometry geometry,
   print_initialisation_summary(physical_options);
 }
 
+// Construction from a prebuilt topology (the AdaptiveTree route).  There is no
+// UniformTree in this case, so `tree_`/`physical_tree_` stay empty and the
+// uniform-tree inspection API is unavailable; the topology must already be
+// normalised to the unit root and non-periodic.
 UniformFmm::UniformFmm(std::shared_ptr<const StaticFmmTopology> topology,
                        const UniformFmmOptions& options)
     : topology_(std::move(topology)), supplied_topology_(true),

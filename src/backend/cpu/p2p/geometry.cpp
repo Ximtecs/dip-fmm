@@ -1,4 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// Position-based (procedural) point P2P: the `PointGeometry` packing.  No
+// pair tensor is stored; for every target leaf the list-1 neighbourhood is
+// gathered once into per-thread SoA scratch (positions with any periodic
+// image shift folded in, moments, and the source index for identity) and
+// each target sweeps it with the shared point-dipole formula from
+// operators/p2p_point_kernel.hpp.  Point sources and point targets only; the
+// identity marker of each record decides whether a matching source index is
+// a self pair to omit.
 
 #include "geometry.hpp"
 

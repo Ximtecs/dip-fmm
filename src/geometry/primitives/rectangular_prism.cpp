@@ -1,4 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// Exact analytical operators of a uniformly magnetised, axis-aligned
+// rectangular prism, adapted from MagTense (`getN_prism_3D` for the field at
+// a point, `TileRectangularPrismAvgTensor.f90` for the field averaged over a
+// second prism).  Conventions shared with docs/math/finite-geometry.md:
+//
+//   * `hx, hy, hz` are full side lengths and the representative point is the
+//     prism centre;
+//   * the displacement argument is target representative minus source
+//     representative;
+//   * a pair tensor T is the symmetric 3x3 map H = T m from the source's
+//     *total* moment m = V M, stored as (xx, xy, xz, yy, yz, zz).
+//
+// The pair tensors are evaluated in `long double` because the closed forms
+// combine logarithms, arctangents and square roots that cancel severely near
+// faces, edges and corners; the result is rounded to double once.
 
 #include "cdfmm/geometry/primitives/rectangular_prism.hpp"
 
@@ -54,6 +70,10 @@ void validate_displacement(const Vec3& displacement)
     }
 }
 
+// The MagTense primitives replace an exactly-zero coordinate by a small
+// epsilon before taking logarithms and ratios.  The epsilon is scaled to the
+// magnitude of the arguments so that the replacement is a relative, not an
+// absolute, perturbation.
 Real scale_for_limits(const Real x, const Real y, const Real z,
                       const Real a, const Real b, const Real c)
 {
@@ -69,6 +89,8 @@ Real limiting_epsilon(const Real x, const Real y, const Real z,
         scale_for_limits(x, y, z, a, b, c);
 }
 
+// atan(n / d) with the d -> 0 limit taken explicitly (+-pi/2, or 0 when the
+// numerator vanishes too) instead of dividing by zero.
 Real safe_atan_ratio(const Real numerator, const Real denominator)
 {
     if (denominator != 0.0L) {
@@ -158,6 +180,8 @@ Real F2(const Real x, const Real y, const Real z,
         X * Y * distance / 3.0L;
 }
 
+// Triple definite integral of a primitive over the box [x1,x2]x[y1,y2]x[z1,z2]
+// by inclusion-exclusion over its eight corners.
 template <typename Primitive>
 Real definite_integral(Primitive primitive, const Real x1, const Real x2,
                        const Real y1, const Real y2, const Real z1,
@@ -175,6 +199,12 @@ Real definite_integral(Primitive primitive, const Real x1, const Real x2,
         primitive(x1, y1, z1, a, b, c);
 }
 
+// The prism-to-prism integral is the integral over the target box of the
+// source's field, and the source's field is itself an inclusion-exclusion
+// over the source's eight corners (the surface-charge picture of a uniformly
+// magnetised prism).  So: for each source corner, shift the target box by
+// that corner and integrate the primitive over it; combine with the corner
+// parity sign (-1)^(i+j+k).
 template <typename Primitive>
 Real averaged_prism_sum(Primitive primitive, const Vec3& displacement,
                         const RectangularPrism& source,
@@ -259,6 +289,10 @@ PairTensor rectangular_prism_rectangular_prism_tensor(
         source.hz;
     const Real target_volume = static_cast<Real>(target.hx) * target.hy *
         target.hz;
+    // 1/V_source converts the total moment to magnetisation, 1/V_target turns
+    // the integral over the target into an average, and the minus sign is
+    // H = -grad(phi).  F1 gives a diagonal component and F2 an off-diagonal
+    // one; the other components follow by cyclic permutation of the axes.
     const Real scale = -1.0L / (four_pi * source_volume * target_volume);
     const Vec3& r = target_minus_source_representative;
     const Real xx = scale * averaged_prism_sum(F1, r, source, target);
@@ -288,6 +322,12 @@ PairTensor rectangular_prism_rectangular_prism_tensor(
             static_cast<double>(yz), static_cast<double>(zz)};
 }
 
+// J_beta(d, h): the average over the prism of the monomial-over-factorial
+// (d + t)^beta / beta! for t in the prism about its centre.  The average
+// separates by axis; along one axis with power n the binomial expansion of
+// (d + t)^n / n! averaged over [-h/2, h/2] keeps only even powers of t and
+// gives sum_{gamma even} d^(n-gamma)/(n-gamma)! * h^gamma / (2^gamma (gamma+1)!).
+// This is the building block of every finite-prism P2M and L2P row.
 double rectangular_prism_averaged_monomial(const MultiIndex& beta,
                                            const Vec3& d,
                                            const RectangularPrism& prism)

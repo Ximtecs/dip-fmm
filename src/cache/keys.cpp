@@ -30,6 +30,9 @@ namespace cdfmm::detail::cache {
 
 namespace {
 
+// A self-contained SHA-256 so that the geometry digest depends on no external
+// library and is reproducible byte for byte across builds.  Only the digest
+// matters here; it is a stable fingerprint, not a security primitive.
 class Sha256 {
 public:
   void update(const void* data, std::size_t size) {
@@ -186,11 +189,20 @@ template <typename T> void hash_value(Sha256& hash, const T value) {
   hash.value(value);
 }
 
+// Coordinates enter the hash as integers on the same 1e-9 grid that
+// construction snaps normalised geometry to, so the hash sees exactly the
+// values the operators were built from and is insensitive to representation
+// noise below that grid.
 std::int64_t canonical_coordinate(const double value) {
   constexpr double resolution = 1.0e9;
   return static_cast<std::int64_t>(std::llround(value * resolution));
 }
 
+// A complete, duplicate-free lattice of positions is hashed as this compact
+// descriptor instead of the full coordinate list.  The two encodings are
+// distinguished by their markers, and the descriptor is used only when it
+// reproduces the position set exactly, so equal keys still mean equal
+// geometry.
 struct UniformGridDescriptor {
   std::array<std::int64_t, 3> first{};
   std::array<std::int64_t, 3> step{};
@@ -211,6 +223,9 @@ std::optional<UniformGridDescriptor> detect_uniform_grid(
     axes[1].push_back(canonical_coordinate(position.y));
     axes[2].push_back(canonical_coordinate(position.z));
   }
+  // Each axis must be an arithmetic progression, the axis counts must multiply
+  // to the position count, and every lattice site must be occupied exactly
+  // once; anything else falls back to the explicit coordinate list.
   UniformGridDescriptor descriptor;
   std::size_t product = 1;
   for (int dimension = 0; dimension < 3; ++dimension) {
@@ -274,6 +289,11 @@ void hash_grid_descriptor(Sha256& hash,
   }
 }
 
+// The user-order permutation is part of the identity because the plan's
+// result ordering depends on it.  For a lattice whose user order is a
+// lexicographic sweep in some axis order, possibly with reversed axes, the
+// permutation is recovered exactly from the grid descriptor and hashed as the
+// (axis order, reversal mask) pair; any other ordering is hashed in full.
 void hash_permutation(Sha256& hash, const std::span<const int> permutation,
                       const std::span<const Vec3> sorted_positions,
                       const std::optional<UniformGridDescriptor>& grid) {
@@ -329,6 +349,14 @@ void hash_permutation(Sha256& hash, const std::span<const int> permutation,
 
 } // namespace
 
+// The three keys of one plan.  The universal key names the depth-independent
+// translation bank and depends only on basis, order and precision; the
+// periodic key adds the zero-k0 convention and its setup tolerance; the
+// geometry key names the complete static plan and carries a digest of
+// everything the plan's operators depend on: the geometry models, the
+// canonical positions and finite records, both permutations and the fixed
+// identity map.  A plan built from a supplied topology is never cached, so it
+// gets an empty identity.
 CacheIdentity compute_cache_identity(const bool supplied_topology,
                                      const bool option_enable_cache,
                                      const CacheIdentityInputs& inputs,
@@ -395,6 +423,9 @@ CacheIdentity compute_cache_identity(const bool supplied_topology,
   };
   const auto source_grid = hash_positions(inputs.tree.sorted_source_positions());
   const auto target_grid = hash_positions(inputs.tree.sorted_target_positions());
+  // Finite records: a single common record is hashed once under "SAME" so a
+  // regular lattice of identical bodies keys compactly; otherwise every
+  // record is hashed in sorted order.
   const auto hash_sizes = [&hash](const std::span<const CuboidSize> sizes) {
     hash_value(hash, static_cast<std::uint64_t>(sizes.size()));
     if (!sizes.empty() && std::all_of(

@@ -1,4 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// P2P: the exact near-field operator.  Two layers live here:
+//
+//   * `operators::p2p::build_pair` is the authoritative single-pair tensor for
+//     point and rectangular-prism sources and targets (tetrahedra have their
+//     own primitives), and `evaluate_pair` / `evaluate_sum` are the dynamic
+//     point-dipole references built on the shared kernel header;
+//   * `build_static_p2p_operator` turns a list of (target, source[, image
+//     shift, identity marker]) interactions into the canonical
+//     StaticP2POperator: per-target CSR rows of StaticDipoleBlock records that
+//     hold the potential row (r / 4 pi |r|^3), the six symmetric field
+//     components and the identity marker.
+//
+// The static builder sorts the interactions into canonical row order, then
+// dispatches on the effective (model-resolved) geometry pair.  Every pair
+// tensor is a pure function of the displacement and the two body records, so
+// each finite path classifies the pairs by those exact bits first
+// (operators/exact_operator_reuse.hpp), builds one tensor per distinct class
+// in parallel and scatters; point pairs are cheaper to build than to look up
+// and build directly.  A failure inside a parallel loop is recorded and
+// rethrown once, from the lowest failing index, so the reported error is
+// deterministic.
 
 #include "cdfmm/operators/p2p.hpp"
 
@@ -27,6 +49,8 @@
 namespace cdfmm {
 namespace {
 
+// -0.0 and +0.0 compare equal but differ bitwise; image shifts are compared
+// through tuples of these so a negated zero shift finds its reciprocal row.
 [[nodiscard]] constexpr double canonical_zero(const double value) noexcept
 {
     return value == 0.0 ? 0.0 : value;
@@ -58,6 +82,9 @@ using detail::exact_reuse::ExactOperatorClasses;
 using detail::exact_reuse::ExactOperatorKey;
 using FirstPairFailure = detail::exact_reuse::FirstFailure;
 
+// The within-row sort key of an interaction: source index, then image shift.
+// `RowInteractionKey` is the same key spelled without a target, used to look
+// up the reciprocal interaction of a pair in the partner's row.
 struct RowInteractionKey {
     int source{0};
     double shift_x{0.0};
@@ -82,6 +109,14 @@ struct RowInteractionKey {
         canonical_zero(key.shift_y), canonical_zero(key.shift_z)};
 }
 
+// The canonical builder.  Sections, in order: resolve the effective geometry
+// from the near-field models and validate the records; sort the interactions
+// and lay out the CSR rows; then one of three pair loops:
+//   1. prism <-> tetrahedron: the shared polyhedron surface formulation;
+//   2. tetrahedron <-> tetrahedron: the prepared-tetrahedron formulation with
+//      reciprocity sharing on a self-consistent layout;
+//   3. everything else (point/prism combinations, point <-> tetrahedron):
+//      `build_pair` and the tetrahedron point primitives.
 StaticP2POperator build_static_p2p_operator_impl(
     const std::span<const Vec3> target_positions,
     const std::span<const Vec3> source_positions,
@@ -95,6 +130,9 @@ StaticP2POperator build_static_p2p_operator_impl(
     const SourceModel source_model,
     const TargetModel target_model)
 {
+    // A point near-field model on a finite body evaluates the point formula
+    // at the representative point; only ExactGeometry reaches the finite
+    // primitives.
     const SourceGeometry effective_source_geometry =
         source_model == SourceModel::ExactGeometry
             ? source_geometry : SourceGeometry::PointDipole;
@@ -178,6 +216,9 @@ StaticP2POperator build_static_p2p_operator_impl(
     result.target_count = static_cast<int>(target_positions.size());
     result.row_offsets.assign(target_positions.size() + 1, 0);
 
+    // Canonical order: by target, then source, then image shift.  Every
+    // derived packing and the cache rely on this order, and the reciprocity
+    // lookup below binary-searches within a row on the (source, shift) part.
     std::vector<StaticP2PInteraction> sorted(
         interactions.begin(), interactions.end());
     std::sort(sorted.begin(), sorted.end(), [](const auto& left,
@@ -215,6 +256,9 @@ StaticP2POperator build_static_p2p_operator_impl(
         return target_positions[static_cast<std::size_t>(interaction.target)] -
             shifted_source;
     };
+    // Potential row of a point dipole: phi = m . r / (4 pi |r|^3), stored as
+    // the three coefficients of m.  Finite pairs store the same point row (the
+    // finite potential is not offered); a coincident pair stores zero.
     const auto potential_scale_at = [](const Vec3& displacement) -> double {
         const double radius_squared = dot(displacement, displacement);
         return radius_squared == 0.0
@@ -402,6 +446,8 @@ StaticP2POperator build_static_p2p_operator_impl(
                                                 static_cast<std::size_t>(target)];
         };
 
+        // Reciprocity applies when sources and targets are the same bodies in
+        // the same order (the usual self-interacting mesh).
         bool reciprocal_tetrahedron_layout =
             source_positions.size() == target_positions.size();
         for (std::size_t index = 0;
@@ -791,6 +837,9 @@ StaticP2POperator build_static_p2p_operator_impl(
 
 } // namespace
 
+// Public overloads.  Plain (target, source) index pairs describe a free-space
+// plan whose every pair carries the identity marker; the prism-only spellings
+// imply exact near-field models.  All four reach the implementation above.
 StaticP2POperator build_static_p2p_operator(
     const std::span<const Vec3> target_positions,
     const std::span<const Vec3> source_positions,
@@ -873,6 +922,11 @@ StaticP2POperator build_static_p2p_operator(
 
 namespace cdfmm::operators::p2p {
 
+// The single-pair tensor T with H_target = T m_source for point and prism
+// bodies, components (xx, xy, xz, yy, yz, zz).  Point <-> point is the closed
+// form below; the three prism combinations delegate to the exact primitives,
+// with the point -> prism direction obtained from the prism -> point tensor
+// by reciprocity (the tensor is symmetric and both use the total moment).
 PairTensor build_pair(
     const Vec3& target, const Vec3& source,
     const SourceGeometry source_geometry,
@@ -920,6 +974,7 @@ PairTensor build_pair(
         }
         throw std::domain_error("coincident point dipole and point target");
     }
+    // Point dipole: T = (1 / 4 pi) [3 r r^T / |r|^5 - I / |r|^3].
     const double inverse_r = 1.0 / std::sqrt(r2);
     const double inverse_r3 = inverse_r / r2;
     const double diagonal = inverse_r3 / (4.0 * std::numbers::pi);
@@ -977,6 +1032,8 @@ PotentialField evaluate_sum(
     return result;
 }
 
+// Structured spellings of the canonical builder; each delegates to the flat
+// overload with the same signature.
 CanonicalOperator build(
     const std::span<const Vec3> target_positions,
     const std::span<const Vec3> source_positions,

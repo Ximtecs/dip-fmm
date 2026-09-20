@@ -22,6 +22,11 @@
 // storage and must not be routed through FP64.
 namespace cdfmm::detail::cache {
 
+// Coefficient operator: i32 input size, i32 output size, u64 entry count,
+// then one packed record per entry of (i32 output, i32 input, scalar value)
+// with the scalar width following the plan precision.  Records are packed
+// without padding and accessed through unaligned loads and stores, so the
+// on-disk stride never depends on the host ABI.
 void write_operator(Writer& writer, const StaticCoefficientOperator& value,
                     const StaticPrecision precision) {
   writer.scalar(value.input_size);
@@ -77,6 +82,7 @@ StaticCoefficientOperator read_operator(Reader& reader,
   return value;
 }
 
+// FP32 plans decode into FP32 entries directly; there is no FP64 detour.
 FloatStaticCoefficientOperator read_operator_float(Reader& reader) {
   FloatStaticCoefficientOperator value;
   value.input_size = reader.scalar<int>();
@@ -104,6 +110,9 @@ FloatStaticCoefficientOperator read_operator_float(Reader& reader) {
   return value;
 }
 
+// Dense value array: u64 count then the values at the plan precision.  FP64
+// arrays are written as raw bytes; FP32 arrays are quantised on the way out
+// and this is the only place a stored FP32 value is produced from FP64.
 void write_values(Writer& writer, const std::span<const double> values,
                   const StaticPrecision precision) {
   writer.scalar<std::uint64_t>(values.size());
@@ -163,6 +172,11 @@ std::vector<float> read_values_float(Reader& reader) {
   return values;
 }
 
+// Canonical near-field block: (i32 target, i32 source, nine scalars px, py,
+// pz, xx, xy, xz, yy, yz, zz, i32 skip_for_identity).  The three potential
+// components precede the six symmetric field components; the identity marker
+// is stored per block because it is part of the operator's meaning, not of
+// the geometry.
 void write_p2p_blocks(Writer& writer,
                       const std::span<const StaticDipoleBlock> blocks,
                       const StaticPrecision precision) {

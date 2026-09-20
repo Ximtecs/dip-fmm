@@ -1,4 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// Portable executors for the two dictionary packings of the exact near-field
+// operator.  Both keep the canonical list-1 topology as dense target/source
+// leaf blocks and replace every stored six-component tensor by a token into a
+// shared dictionary of distinct tensors:
+//
+//   * the plain Tensor6 dictionary stores unsigned magnitudes plus a per-token
+//     six-bit sign mask and is decoded per pair (`tensor6_token_id`,
+//     `tensor6_token_sign_mask`);
+//   * the signed dictionary stores already-signed variants and one-, two- or
+//     four-byte ids, so its inner loop is a pure gather/FMA over a tile of
+//     targets with no sign reconstruction.
+//
+// Neither executor reads geometry: the identity semantics of a block are
+// carried by `skip_for_identity`, and the signed dictionary encodes fixed point
+// self pairs as an exact zero variant at construction, so it needs no identity
+// map at all.  The arithmetic and the per-target accumulation order of every
+// SIMD specialisation match the portable loop they replace.
 
 #include "cdfmm/backend/cpu/p2p.hpp"
 
@@ -16,6 +34,10 @@
 
 namespace cdfmm {
 
+// Plain Tensor6 dictionary, FP32.  Tokens are laid out target-major within a
+// leaf block: the `source_count` tokens of one local target are contiguous at
+// `tensor_offset + local_target * source_count`.  One thread owns a whole
+// target leaf, so no two threads accumulate into the same target.
 void apply_static_p2p_tensor_dictionary_plan(
     const FloatStaticP2PTensorDictionaryPlan &plan,
     const std::span<const FloatVec3> dipole_moments,
@@ -45,6 +67,8 @@ void apply_static_p2p_tensor_dictionary_plan(
           const std::uint32_t token = plan.tokens[begin + local_source];
           const auto id = tensor6_token_id(token);
           const auto signs = tensor6_token_sign_mask(token);
+          // Components are ordered xx, xy, xz, yy, yz, zz; bit `component` of
+          // the mask flips the sign of that component of the stored variant.
           const auto value = [&](int component) {
             const float coefficient = plan.tensors[static_cast<std::size_t>(component)][id];
             return (signs & (1U << component)) != 0U ? -coefficient : coefficient;
@@ -61,6 +85,9 @@ void apply_static_p2p_tensor_dictionary_plan(
     }
   }
 }
+
+// Plain Tensor6 dictionary, FP64.  Same layout and semantics as the FP32
+// executor above.
 void apply_static_p2p_tensor_dictionary_plan(
     const StaticP2PTensorDictionaryPlan &plan,
     const std::span<const Vec3> dipole_moments, const std::span<Vec3> H,
@@ -114,6 +141,18 @@ void apply_static_p2p_tensor_dictionary_plan(
 
 namespace {
 
+// Signed dictionary layout, shared by every executor below.  The plan splits
+// each target leaf into tiles of at most `target_tile_size` (<= 128) targets;
+// `tile_leaf_indices[work]` / `tile_target_offsets[work]` name one tile, and
+// one OpenMP iteration owns one tile, so the disjoint tiles need no atomics.
+// Within a leaf block the tokens are source-major: the tokens of one source
+// against all `target_count` targets of the leaf are contiguous, so a tile of
+// consecutive targets reads a contiguous token run per source.
+
+// Whole-tile variant: accumulates the complete tile in three stack arrays and
+// lets the compiler vectorise the target lanes.  Production uses the microtile
+// executor below; this one is retained as the simpler reference and as the
+// measurable alternative exercised by `benchmark_p2p`.
 template <typename Scalar, typename Vector, typename Plan, typename Token>
 void apply_signed_tensor_dictionary_whole_tile_impl(
     const Plan &plan, const std::span<const Vector> moments,
@@ -167,6 +206,9 @@ void apply_signed_tensor_dictionary_whole_tile_impl(
 
 #if defined(__AVX2__) && defined(__FMA__)
 
+// Widen four (FP64 lanes) or eight (FP32 lanes) narrow tokens to the 32-bit
+// gather indices the AVX2 gathers need.  Narrow tokens are copied through an
+// integer to avoid an unaligned vector load of fewer than 16 bytes.
 template <typename Token>
 [[nodiscard]] inline __m128i load_four_variant_ids(
     const Token *const tokens) noexcept {
@@ -199,12 +241,20 @@ template <typename Token>
   }
 }
 
+// NOTE(cdfmm): the microtile bodies are kept out of line so that the six
+// gathered vectors and three accumulators stay register resident per call
+// instead of being spilled by the enclosing tile loop.
 #if defined(__GNUC__) || defined(__clang__)
 #define CDFMM_SIGNED_P2P_NOINLINE __attribute__((noinline))
 #else
 #define CDFMM_SIGNED_P2P_NOINLINE
 #endif
 
+// One full-width microtile of four FP64 targets: for every source of every
+// block in the leaf row, gather the six signed components of the four
+// variants and FMA them against the broadcast moment.  The three accumulators
+// are the symmetric tensor product H = T m with T = [[xx,xy,xz],[xy,yy,yz],
+// [xz,yz,zz]].
 template <typename Vector, typename Plan, typename Token>
 CDFMM_SIGNED_P2P_NOINLINE void apply_signed_microtile_avx2_f64(
     const Plan &plan, const std::span<const Vector> moments,
@@ -266,6 +316,7 @@ CDFMM_SIGNED_P2P_NOINLINE void apply_signed_microtile_avx2_f64(
   }
 }
 
+// The FP32 counterpart: eight targets per microtile.
 template <typename Vector, typename Plan, typename Token>
 CDFMM_SIGNED_P2P_NOINLINE void apply_signed_microtile_avx2_f32(
     const Plan &plan, const std::span<const Vector> moments,
@@ -330,6 +381,9 @@ CDFMM_SIGNED_P2P_NOINLINE void apply_signed_microtile_avx2_f32(
 #undef CDFMM_SIGNED_P2P_NOINLINE
 #endif
 
+// Portable microtile of `lanes` <= width targets.  It is the whole path on
+// non-AVX2 builds and the remainder path (a partial final microtile) on AVX2
+// builds; the arithmetic is identical to the intrinsic bodies.
 template <typename Scalar, typename Vector, typename Plan, typename Token>
 inline void apply_signed_microtile_portable(
     const Plan &plan, const std::span<const Vector> moments,
@@ -377,6 +431,9 @@ inline void apply_signed_microtile_portable(
   }
 }
 
+// Microtile variant (the production CPU executor): walks each tile in
+// register-width steps of 8 FP32 or 4 FP64 targets and finishes any remainder
+// with the portable body.
 template <typename Scalar, typename Vector, typename Plan, typename Token>
 void apply_signed_tensor_dictionary_microtile_impl(
     const Plan &plan, const std::span<const Vector> moments,
@@ -418,6 +475,8 @@ void apply_signed_tensor_dictionary_microtile_impl(
   }
 }
 
+// Shape checks shared by both signed executors.  The tile size bound matches
+// the whole-tile stack arrays; the token width must be one the plan can store.
 template <typename Scalar, typename Vector, typename Plan>
 void validate_signed_tensor_dictionary(const Plan &plan,
                                        const std::span<const Vector> moments,
@@ -436,6 +495,8 @@ void validate_signed_tensor_dictionary(const Plan &plan,
   }
 }
 
+// Dispatch on the token width the plan chose at construction (the narrowest
+// that indexes every variant) so the inner loops are instantiated per width.
 template <typename Scalar, typename Vector, typename Plan>
 void apply_signed_tensor_dictionary(const Plan &plan,
                                     const std::span<const Vector> moments,
@@ -472,6 +533,8 @@ void apply_signed_tensor_dictionary_whole_tile(
 
 } // namespace
 
+// Public entry points: the signed dictionary carries its own identity encoding,
+// so unlike the other stored-tensor executors these take no identity map.
 void apply_static_p2p_signed_tensor_dictionary_plan(
     const StaticP2PSignedTensorDictionaryPlan &plan,
     const std::span<const Vec3> dipole_moments, const std::span<Vec3> H) {
@@ -498,6 +561,7 @@ void apply_static_p2p_signed_tensor_dictionary_plan_whole_tile(
   apply_signed_tensor_dictionary_whole_tile<float>(plan, dipole_moments, H);
 }
 
+// Diagnostics reported in the initialisation summary and by the benchmarks.
 const char *static_p2p_signed_simd_path() noexcept {
 #if defined(__AVX2__) && defined(__FMA__)
   return "avx2-gather-fma";

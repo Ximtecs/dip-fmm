@@ -1,4 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// P2M: the linear map from the dipole moments of one leaf's sources to the
+// leaf's multipole coefficients.  Every builder returns a sparse
+// StaticCoefficientOperator whose entries are (coefficient, input, value)
+// triples with input = 3 * source + component; the input vector is the
+// flattened moment array in leaf order.  Inputs are total moments, so a
+// finite body's operator is the body *average* of the point operator (the
+// volume is already inside m = V M) and needs no volume factor here.
+//
+// Cartesian basis: a dipole m at dx contributes
+//     M_alpha += (-1)^|alpha| * m . grad_dx [ dx^alpha / alpha! ]
+//             =  (-1)^|alpha| * sum_k m_k dx^(alpha - e_k) / (alpha - e_k)!
+// which is the repository convention of docs/math/conventions.md; alpha = 0
+// has no entries, so M_0 vanishes for pure dipole input.
+//
+// Spherical basis: a dipole contributes M_lm += (1/4 pi) m . grad R_lm(dx),
+// the Green's-function factor being carried by the multipole rather than by
+// the M2L kernel.
+//
+// Finite sources: the same expressions with each monomial replaced by its
+// average over the body; exact zero entries are dropped to keep the operator
+// sparse.
 
 #include "cdfmm/operators/p2m.hpp"
 
@@ -20,6 +42,8 @@ StaticCoefficientOperator build_static_p2m_operator(
         const Vec3 dx = source_positions[source] - centre;
         for (int alpha_index = 0; alpha_index < basis.size(); ++alpha_index) {
             const MultiIndex alpha = basis[alpha_index];
+            // (-1)^|alpha|: the sign of the Taylor coefficient of G(x - y)
+            // in the source offset.
             const double sign = alpha.degree() % 2 == 0 ? 1.0 : -1.0;
             const MultiIndex shifted[3] = {
                 {alpha.ax - 1, alpha.ay, alpha.az},
@@ -50,6 +74,8 @@ StaticCoefficientOperator build_static_p2m_operator(
     result.output_size = basis.size();
     const double green_factor = 1.0 / (4.0 * std::numbers::pi);
     for (std::size_t source = 0; source < source_positions.size(); ++source) {
+        // grad R_lm at the source offset gives the three input columns of
+        // mode lm directly.
         const SolidHarmonicValues regular = regular_solid_harmonics(
             basis, source_positions[source] - centre);
         for (int mode = 0; mode < basis.size(); ++mode) {
@@ -74,6 +100,8 @@ StaticCoefficientOperator build_static_cuboid_p2m_operator(
     const std::span<const Vec3> source_positions,
     const std::span<const CuboidSize> source_sizes)
 {
+    // One common size record or one per source; the per-source index is
+    // resolved by `source_sizes.size() == 1 ? 0 : source` below.
     if (source_sizes.size() != 1 &&
         source_sizes.size() != source_positions.size()) {
         throw std::invalid_argument(
@@ -128,6 +156,10 @@ StaticCoefficientOperator build_static_cuboid_p2m_operator(
         const CuboidSize size =
             source_sizes[source_sizes.size() == 1 ? 0 : source];
         for (int mode = 0; mode < basis.size(); ++mode) {
+            // Average grad R_lm over the prism term by term: R_lm is a
+            // polynomial sum c dx^alpha, d/dx_k of a term is
+            // c alpha_k dx^(alpha - e_k), and the prism average of dx^beta is
+            // beta! times the averaged monomial-over-factorial.
             double averaged_gradient[3]{0.0, 0.0, 0.0};
             for (const SolidHarmonicTerm& term : basis.polynomial(mode)) {
                 const int powers[3] = {
@@ -176,6 +208,8 @@ StaticCoefficientOperator build_static_tetrahedron_p2m_operator(
         throw std::invalid_argument(
             "tetrahedron P2M geometries must be common or per source");
     }
+    // The volume call is the degeneracy check; it throws for a flat or
+    // inverted tetrahedron before any averaged monomial is requested.
     for (const Tetrahedron& tetrahedron : source_tetrahedra) {
         static_cast<void>(tetrahedron_volume(tetrahedron));
     }
@@ -236,6 +270,8 @@ StaticCoefficientOperator build_static_tetrahedron_p2m_operator(
         const Tetrahedron& tetrahedron = source_tetrahedra[
             source_tetrahedra.size() == 1 ? 0 : source];
         for (int mode = 0; mode < basis.size(); ++mode) {
+            // Same term-wise averaging as the spherical prism builder, with
+            // the tetrahedron average of each monomial.
             double averaged_gradient[3]{0.0, 0.0, 0.0};
             for (const SolidHarmonicTerm& term : basis.polynomial(mode)) {
                 const int powers[3] = {
@@ -275,6 +311,9 @@ StaticCoefficientOperator build_static_tetrahedron_p2m_operator(
 
 } // namespace cdfmm
 
+// Structured spellings.  `build*` delegate to the static builders above;
+// `evaluate` is the dynamic Cartesian reference used by the CpuReference
+// traversal and the tests, applying the same map without storing it.
 namespace cdfmm::operators::p2m {
 
 StaticCoefficientOperator build(

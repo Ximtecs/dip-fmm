@@ -1,4 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// UniformFmm evaluation: the repeated part of the lifecycle.  One evaluation
+// validates the moments and identity map, permutes the moments into leaf
+// order, runs the far-field hierarchy (src/fmm/far_field.cpp) and the exact
+// list-1 near field, combines them in sorted order, and unpermutes the result
+// into user order while undoing the normalisation.  The CPU/oneMKL and hybrid
+// CUDA backends share one body per precision; `CudaFull` is a separate short
+// path because the whole evaluation happens on the device.
+//
+// Units: positions were normalised by the root side length s at construction.
+// A dipole field is homogeneous of degree -3 in length, so scaling the
+// moments by s^-3 before P2M makes the normalised-space field equal to the
+// physical field; the potential is homogeneous of degree -2 and comes back
+// one power of s short, hence the `phi *= coordinate_scale_` on output.  On
+// the CPU paths that moment scaling happens inside `prepare_moments`; the
+// CudaFull paths apply it while staging into pinned memory.
 
 #include "cdfmm/uniform_fmm.hpp"
 
@@ -59,6 +75,10 @@ void accumulate_timings(EvaluationTimings &aggregate,
   aggregate.evaluations += value.evaluations;
 }
 
+// The hybrid backend starts the device P2P before the CPU far field and
+// collects it afterwards.  If the far field throws in between, the pending
+// device work must still be cancelled so the plan is reusable; this guard
+// does that on unwind and is released once the near field was collected.
 class PendingCudaP2PGuard {
 public:
   explicit PendingCudaP2PGuard(CudaP2PPlan *plan) noexcept : plan_(plan) {}
@@ -89,6 +109,9 @@ UniformFmm::evaluate(std::span<const Vec3> dipole_moments,
   return results;
 }
 
+// Translate the user-order identity map (target i -> source j, or -1) into
+// sorted order on both sides: sorted target -> sorted source.  Identity is a
+// pure index relation, so this is the only place user indices are consulted.
 void UniformFmm::prepare_self_indices(
     const std::span<const int> target_source_indices) {
   const auto target_permutation =
@@ -108,6 +131,10 @@ void UniformFmm::prepare_self_indices(
   }
 }
 
+// Decide which identity map this evaluation uses.  Finite sources keep their
+// physical self field, so identity is irrelevant and the map is dropped.  A
+// plan built with a fixed map (required by the packings that bake identity
+// in) accepts either no map or exactly the same map again.
 std::span<const int> UniformFmm::resolve_self_indices(
     const std::span<const int> target_source_indices) const {
   const bool effective_point_source =
@@ -131,10 +158,14 @@ std::span<const int> UniformFmm::resolve_self_indices(
   return target_source_indices;
 }
 
+// FP64 entry point.  An FP32 plan is served by the FP32 body and widened at
+// the end; the FP64 body follows below.
 void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
                                std::span<PotentialField> results,
                                const OutputFlags output,
                                std::span<const int> target_source_indices) {
+  // Exact finite tensors carry no potential rows (see the P2P executors), so
+  // a potential request needs point near-field models.
   const bool effective_finite_source =
       source_geometry_ != SourceGeometry::PointDipole &&
       near_field_source_model_ == SourceModel::ExactGeometry;
@@ -243,6 +274,10 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     }
   }
 
+  // Exact near field.  The packing was resolved once at construction; the
+  // dispatch order here mirrors the priority used when it was built: signed
+  // dictionary, position-based point executor, canonical rows, then the
+  // particle-row SoA plan.
   if (execution_plan().p2p != StaticOperatorExecutor::Reference &&
       has_flag(output, OutputFlags::Field)) {
     detail::ProfileRange near_range{"cdfmm/near_field"};
@@ -290,6 +325,10 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     }
   }
 
+  // Near-field potential.  In a periodic plan the list-1 records include
+  // image shifts, so the potential must come from the same records the field
+  // came from (the stored potential rows, or the position-based sweep); in
+  // free space the direct list-1 reference below serves it instead.
   if (periodic_.enabled && has_flag(output, OutputFlags::Potential) &&
       p2p_execution_packing_ == P2PExecutionPacking::PointGeometry) {
     // The position-based executor keeps no stored potential rows; it sweeps
@@ -343,6 +382,8 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     last_timings_.p2p.add(elapsed_seconds(phase_start));
   }
 
+  // Unpermute into user order and restore the physical potential scale; the
+  // field needs no correction because the moments were pre-scaled.
   phase_start = Clock::now();
 #pragma omp parallel for schedule(static) if (target_count >= 256)
   for (std::ptrdiff_t sorted_index = 0;
@@ -372,6 +413,9 @@ std::span<const int> UniformFmm::stage_self_indices(
   return sorted_self_indices_;
 }
 
+// Map the device event timings onto the public phase names.  The device P2P
+// ran on its own stream and overlaps the far-field phases, so `p2p` here is a
+// lane, not an addend of `total`.
 void UniformFmm::record_cuda_full_timings() {
   const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
   last_timings_.cuda_h2d.add(device.h2d_seconds);
@@ -503,6 +547,9 @@ void UniformFmm::evaluate_into_float32(
                              target_source_indices);
 }
 
+// FP32 body, instantiated for FP64 and FP32 caller moments; the moments are
+// converted once in `prepare_moments_float`.  It mirrors the FP64 body above
+// over the FP32 plans and state; see there for the ordering rationale.
 template <typename Moment>
 void UniformFmm::evaluate_into_float32_impl(
     const std::span<const Moment> dipole_moments,
@@ -699,6 +746,9 @@ void UniformFmm::evaluate_into_float32_impl(
   accumulate_timings(aggregate_timings_, last_timings_);
 }
 
+// Diagnostic split of one evaluation into its far and near contributions,
+// used by tests and the tutorials.  Capturing costs one extra copy of the
+// far field per evaluation, so it is switched on only for this call.
 UniformFmm::FieldComponents UniformFmm::evaluate_components(
     std::span<const Vec3> moments, std::span<const int> identities) {
   capture_components_ = true;

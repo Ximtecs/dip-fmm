@@ -1,4 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// UniformFmm plan preparation: the geometry-dependent, moment-independent
+// half of the evaluator.  `build_static_plan` owns the cache-versus-build
+// decision for the two cached payloads (the depth-independent universal bank
+// of M2M/L2L/M2L operators, and the geometry plan of P2M plans, M2L schedule,
+// L2P evaluators and the canonical near-field operator), builds whatever is
+// missing from the canonical operator constructors, quantises an FP32 plan
+// once, and hands the finished canonical data to `build_backend_packing`.
+// Construction statistics are recorded per phase so that a warm plan (cache
+// hit) and a cold plan report identical resident storage and distinguishable
+// timings.
 
 #include "cdfmm/uniform_fmm.hpp"
 
@@ -54,6 +65,8 @@ using detail::exact_reuse::classify_exact_operators;
 constexpr ExactReuseGate endpoint_reuse_gate{
     .sample_items = 4096, .sample_reuse_factor = 2};
 
+// Size of the FP32 BSR(3) plan that `quantise_static_plan_to_float` prebuilds
+// speculatively; `cuda_p2p_bsr_max_bytes` bounds that prebuild only.
 template <typename Operator>
 std::size_t estimate_bsr_bytes(const Operator& p2p,
                                const std::size_t scalar_bytes) {
@@ -70,6 +83,14 @@ std::size_t estimate_bsr_bytes(const Operator& p2p,
 
 } // namespace
 
+// Cold construction of the universal bank: the eight M2M and eight L2L
+// child-class operators at the level-one child offset (+-1/4 in each axis;
+// deeper levels rescale them by powers of two), the 316 M2L matrices of the
+// complete interaction list (all integer displacements within +-3 excluding
+// the 27 nearest), and, for a periodic plan, the periodic root operator
+// appended as one more matrix.  All of these are dimensionless functions of
+// basis and order alone, which is what makes the bank shareable across every
+// geometry and depth.
 void UniformFmm::build_missing_universal_operators(
     const bool universal_available, const bool periodic_required) {
   constexpr std::size_t class_count =
@@ -351,8 +372,18 @@ void UniformFmm::build_static_plan() {
     static_plan_statistics_.total.add(elapsed_seconds(total_start));
     return;
   }
+  // ---- Cold construction of the geometry plan ------------------------------
+  // From here on the geometry cache missed (or was disabled).  The phases
+  // below build, in order: leaf P2M operators, the translation templates (if
+  // the universal bank also missed), the M2L class discovery and schedule, the
+  // per-target L2P evaluators, and the canonical near-field operator with its
+  // derived packings; the plan is then written to the cache and, for an FP32
+  // plan, quantised.  Each phase updates its own timer and byte counters.
   const bool universal_cache_hit = universal_available;
   const auto &nodes = topology_->nodes;
+  // An M2L transfer class is the normalised displacement (in target widths)
+  // plus the source/target width ratio; a uniform tree only ever produces
+  // ratio 1, an adaptive topology adds cross-level classes.
   using Key = std::tuple<double, double, double, double>;
   using ClassMap = std::map<Key, std::vector<std::pair<int, int>>>;
   ClassMap classes;
@@ -965,6 +996,12 @@ void UniformFmm::build_static_plan() {
   }
   static_plan_statistics_.l2p_plan.add(elapsed_seconds(phase_start));
 
+  // Canonical near field: expand the list-1 leaf records into individual
+  // (target, source[, image shift, identity marker]) pairs and build one
+  // exact tensor per pair (src/operators/p2p.cpp classifies and reuses them).
+  // The three sub-timers separate record expansion, tensor construction and
+  // derived packing so a warm plan, which only pays the last, is
+  // distinguishable.
   phase_start = Clock::now();
   auto p2p_stage_start = Clock::now();
   if (periodic_.enabled) {
@@ -1078,6 +1115,12 @@ void UniformFmm::build_static_plan() {
   build_backend_packing();
 }
 
+// FP32 plans: quantise every completed FP64 operator once into its FP32
+// container, derive the FP32 packings the selected backend needs, recompute
+// the byte accounting from what stays resident, and release the FP64
+// temporaries so the plan retains no hidden double-precision table.  After a
+// direct FP32 cache load only the shared universal matrices still need
+// conversion.
 void UniformFmm::quantise_static_plan_to_float() {
   const bool effective_point_source =
       source_geometry_ == SourceGeometry::PointDipole ||

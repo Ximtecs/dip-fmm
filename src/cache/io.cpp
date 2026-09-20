@@ -23,6 +23,9 @@
 namespace cdfmm::detail::cache {
 namespace {
 
+// Read-only private mapping of a whole cache file.  The payload is decoded
+// straight out of the mapping, so nothing is copied until a record is built;
+// the CachePayload owns the mapping and unmaps it on destruction.
 CachePayload map_cache_file(const std::filesystem::path& path) {
   const int fd = ::open(path.c_str(), O_RDONLY);
   if (fd < 0) {
@@ -119,6 +122,10 @@ bool write_all_fd(const int fd, const void* data, std::size_t bytes) noexcept {
 
 } // namespace
 
+// The root is resolved at every construction, so a test or a caller may
+// change `CDFMM_CACHE_DIR` between plans.  The `v1` subdirectory versions the
+// directory layout independently of the file schema, so a future layout can
+// coexist with files an older installation still reads.
 std::filesystem::path cache_root() {
   if (const char* override_path = std::getenv("CDFMM_CACHE_DIR");
       override_path != nullptr && *override_path != '\0') {
@@ -142,6 +149,18 @@ std::filesystem::path cache_path(const std::string& root,
   return std::filesystem::path(root) / category / key;
 }
 
+// Container layout (all integers little-endian as written by this process):
+//
+//   magic "CDFMMC2\0"
+//   u32 schema version, u32 operator version, u32 endian marker,
+//   u32 sizeof(size_t), u32 kind, u32 basis, i32 order, u32 precision,
+//   i32 depth, u32 checksum algorithm
+//   length-prefixed key string, length-prefixed geometry-hash string
+//   u64 payload offset, u64 payload size, u64 payload checksum
+//   payload bytes to end of file
+//
+// Every header field is checked against what the caller expects; any mismatch
+// throws and the caller treats the file as a rebuildable miss.
 CachePayload read_cache(const std::filesystem::path& path,
                         const CacheDescriptor& expected,
                         std::size_t& bytes_read) {
@@ -201,6 +220,12 @@ CachePayload read_cache(const std::filesystem::path& path,
   return file;
 }
 
+// Atomic publication: write the complete file under a unique temporary name,
+// fsync it, rename it into place, then fsync the directory.  A reader can
+// therefore only ever see a complete file, two processes building the same
+// plan may race harmlessly (the loser removes its temporary and reports the
+// winner's bytes), and any failure returns 0 bytes rather than throwing,
+// because a failed cache write must never fail a construction.
 std::size_t write_cache(const std::filesystem::path& path,
                         const CacheDescriptor& descriptor,
                         const std::vector<unsigned char>& payload) {

@@ -1,4 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// Device-resident far-field operators of the complete CUDA FMM: P2M, M2M, L2L
+// and L2P.  Construction converts the canonical operators into the device
+// layouts below and uploads them once; `enqueue_*` then only launch kernels
+// on the caller's stream, so a repeated evaluation performs no host work
+// beyond the launches.  M2L is a separate plan (backend/cuda/m2l).
+//
+// Layouts: P2M and L2P are sparse coefficient maps stored CSR-by-output, or
+// (point models) the procedural representation that holds positions and a
+// factor table and recomputes the rows in the kernel.  M2M and L2L are the
+// eight child-class matrices of the universal bank, pre-scaled per level, with
+// interactions grouped by (level, target) so that one launch per level owns
+// disjoint output rows and needs no atomics.  The kernels themselves are in
+// entries.cuh, procedural.cuh and translation.cuh.
 
 #include "backend/cuda/common/error.hpp"
 #include "backend/cuda/execution_policy.hpp"
@@ -438,6 +452,10 @@ void launch_translation_level(const DeviceTranslation<Scalar> &translation,
   check_cuda(cudaGetLastError(), description);
 }
 
+// Pick the lane width for one level from the number of outputs it produces:
+// wide lanes keep small levels (few nodes, near the root) busy, narrow lanes
+// give large levels more independent work items.  The rule lives in the
+// execution policy so the CPU-side summary can report it.
 template <typename Scalar>
 void enqueue_translation_level(const DeviceTranslation<Scalar> &translation,
                                const int level, const int coefficient_count,
@@ -464,6 +482,9 @@ void enqueue_translation_level(const DeviceTranslation<Scalar> &translation,
 
 } // namespace
 
+// Validate the static data, then build and upload each stage.  The uploads
+// are asynchronous on `stream`; the owner synchronises once after every plan
+// of the evaluation has been constructed.
 template <typename Scalar, typename Entry>
 CudaFarFieldExecutionPlan<Scalar, Entry>::CudaFarFieldExecutionPlan(
     const CudaFarFieldStaticData<Entry> &data, cudaStream_t stream)
@@ -583,6 +604,9 @@ CudaFarFieldExecutionPlan<Scalar, Entry>::~CudaFarFieldExecutionPlan() {
   delete implementation_;
 }
 
+// P2M: `input` is the sorted moment array viewed as scalars, `output` the
+// multipole coefficients of every node (zeroed by the caller).  Procedural
+// and stored representations produce the same coefficients up to rounding.
 template <typename Scalar, typename Entry>
 void CudaFarFieldExecutionPlan<Scalar, Entry>::enqueue_p2m(
     const Scalar *input, Scalar *output, cudaStream_t stream) const {
@@ -634,6 +658,8 @@ void CudaFarFieldExecutionPlan<Scalar, Entry>::enqueue_l2l(
   }
 }
 
+// L2P: `input` is the local coefficients of every node, `output` the sorted
+// far field viewed as scalars (zeroed by the caller).
 template <typename Scalar, typename Entry>
 void CudaFarFieldExecutionPlan<Scalar, Entry>::enqueue_l2p(
     const Scalar *input, Scalar *output, cudaStream_t stream) const {

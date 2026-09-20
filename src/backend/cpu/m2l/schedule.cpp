@@ -1,4 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// Transfer-class sorted block schedule for the portable static M2L.  The
+// canonical plan stores M2L interactions as target rows; applying them row by
+// row re-reads a different C x C matrix for almost every interaction.  This
+// schedule regroups each level's targets into blocks whose accumulators fit
+// one thread's stack, and within a block sorts the interactions by transfer
+// class so that consecutive interactions reuse the same matrix from L1.  It
+// is a pure reordering of the same terms: every target still receives every
+// interaction of its canonical row exactly once, with the per-level scaling
+// applied once at the end.  The schedule is built once at construction and
+// holds only indices.
 
 #include "schedule.hpp"
 
@@ -26,6 +37,11 @@ constexpr int max_block_values = 4096;
 constexpr int max_block_targets = 128;
 constexpr int max_stack_coefficients = 512;
 
+// Build the schedule for both plan precisions.  An empty schedule (returned
+// when the coefficient count exceeds the stack budget) tells the caller to use
+// the per-target-row executor instead.  Layout of the result, all CSR-style
+// offsets: level -> blocks, block -> targets and runs, run -> interactions,
+// with `run_matrix` naming the shared transfer class of each run.
 template <typename Plan>
 M2LBlockSchedule build_schedule(const Plan& plan) {
   M2LBlockSchedule schedule;
@@ -256,6 +272,8 @@ void apply_block(const Plan& plan, const M2LBlockSchedule& schedule,
   }
 }
 
+// Blocks of one level own disjoint targets, so they run in parallel without
+// synchronisation; dynamic scheduling absorbs the uneven interaction counts.
 template <typename Plan, typename Scalar>
 void apply_level(const Plan& plan, const M2LBlockSchedule& schedule,
                  const int level, const std::span<const Scalar> multipoles,

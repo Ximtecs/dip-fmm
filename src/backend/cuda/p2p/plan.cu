@@ -1,4 +1,32 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// CUDA execution of the exact near field: device views, upload routines and
+// kernels for every P2P packing, plus the hybrid backend's `CudaP2PPlan` that
+// owns them on a private stream.  All kernels apply the same operator,
+// H_i += sum_j T_ij m_j, and differ only in where T_ij comes from:
+//
+//   canonical rows    one thread per target walks its CSR row of blocks
+//   compact rows      the same with SoA components
+//   leaf blocks       one warp per dense (target leaf, source leaf) block,
+//                     lanes = targets x source slots, shuffle reduction,
+//                     atomic accumulation across blocks of one target leaf
+//   point geometry    the leaf-block lane layout over list-1 records, but
+//                     the pair tensor is recomputed from the resident
+//                     positions with the shared point-dipole formula
+//   signed dictionary one-, two- or four-byte tokens into a packed dictionary
+//                     of already-signed tensors, with three executors chosen
+//                     by the execution policy: source-warp (one block per
+//                     32-target tile, warps split the sources), target-owned
+//                     (one thread per target) and power-of-two microtiles
+//                     (one warp per T-target tile, T from 32 down to 1)
+//   BSR(3)            cuSPARSE SpMV over 3x3 blocks with identity baked in
+//
+// Identity semantics are those of the packing: the executors that receive
+// `self_indices` skip a pair only when its block carries `skip_for_identity`;
+// the dictionary and BSR packings encode the fixed map at construction.  The
+// device copy of a leaf-style packing is source-major inside a block so that
+// one tensor component of consecutive targets is a contiguous load.  All
+// uploads happen once at construction; evaluations only launch kernels.
 
 #include "cdfmm/backend/cuda/p2p.hpp"
 #include "backend/cuda/p2p/internal.hpp"
@@ -24,6 +52,8 @@ void check_cusparse(const cusparseStatus_t status, const char *operation) {
   }
 }
 
+// Canonical AoS rows: one thread per target, one block record per pair.
+// Assigns rather than accumulates, so no clear pass is needed.
 template <typename Block, typename Vector>
 __global__ void static_p2p_kernel(const int target_count,
                                   const int *row_offsets,
@@ -67,6 +97,8 @@ void launch_static_p2p(const CudaP2PDeviceView<Block> &plan,
   check_cuda(cudaGetLastError(), "launch canonical static P2P kernel");
 }
 
+// Compact (SoA) rows: the six components live in separate planes of
+// `interaction_count` values each.
 template <typename Scalar, typename Vector>
 __global__ void compact_p2p_kernel(
     const int target_count,
@@ -327,6 +359,9 @@ constexpr int cuda_dictionary_max_source_warps = 8;
 
 constexpr int cuda_dictionary_target_owned_threads = 256;
 
+// The device dictionary stores each signed variant as one 16-byte-aligned
+// float4/double4 plus a float2/double2, so a variant is fetched with two
+// vector loads instead of six scalar gathers.
 static CudaPackedTensor6<float> make_cuda_packed_tensor6(
     const float xx,
     const float xy,
@@ -359,6 +394,7 @@ static CudaPackedTensor6<double> make_cuda_packed_tensor6(
   return result;
 }
 
+// Work list of the source-warp executor: one entry per (leaf, 32-target tile).
 static void build_cuda_dictionary_tiles(
     const std::span<const int> target_counts, const int target_tile_size,
     std::vector<int> &tile_leaf_indices,
@@ -464,6 +500,14 @@ void launch_leaf_p2p(
   check_cuda(cudaGetLastError(), "launch leaf-block static P2P kernel");
 }
 
+// Source-warp dictionary executor: one block per 32-target tile of a leaf.
+// Every warp of the block holds the same 32 targets in its lanes and takes a
+// different 32-source slice of each source leaf; a source's moment is loaded
+// once per warp and broadcast with shuffles while the 32 lanes read their
+// consecutive source-major tokens.  With more than one warp the per-warp
+// partial fields are reduced through shared memory.  It is the executor of
+// choice at high leaf occupancy, where the source slices keep every warp
+// busy; the two executors below serve lower occupancies.
 template <typename Scalar, typename Vector, typename Token>
 __global__ void signed_dictionary_p2p_kernel(
     const int *__restrict__ target_begins,
@@ -697,6 +741,10 @@ __global__ void signed_dictionary_p2p_kernel(
   }
 }
 
+// Target-owned dictionary executor: one thread per target walks every source
+// of every block in its leaf row.  Consecutive threads are consecutive
+// targets of one leaf, so their token reads for a given source are
+// contiguous; no reduction or atomics are needed.
 template <typename Scalar, typename Vector, typename Token>
 __global__ void signed_dictionary_target_owned_p2p_kernel(
     const int target_count,
@@ -939,6 +987,8 @@ void launch_dictionary_power2_microtiles(
       plan, 5, moments, fields, stream);
 }
 
+// Dispatch to the executor the policy selected at upload.  All three assign
+// every target exactly once, so none needs a clear pass.
 template <typename Scalar, typename Vector, typename Token>
 void launch_signed_dictionary_p2p_typed(
     const CudaSignedDictionaryP2PDeviceView<Scalar> &plan,
@@ -1042,6 +1092,10 @@ void launch_signed_dictionary_p2p(
   }
 }
 
+// Upload one signed dictionary and prepare the work lists of all three
+// executors (the choice is fixed here, but the schedules are cheap and the
+// statistics report them).  The source-warp block size is the smallest
+// number of warps that covers the largest source leaf, capped at eight.
 template <typename Scalar, typename Vector, typename HostPlan>
 void upload_cuda_signed_dictionary(
     const HostPlan &host,
@@ -1433,6 +1487,9 @@ void upload_cuda_signed_dictionary(
       device.threads_per_block;
 }
 
+// cuSPARSE descriptors of the BSR(3) plan: the sparse matrix over 3x3 blocks
+// and the dense moment/field vectors it multiplies, bound once to the
+// device buffers the evaluation reuses, plus the SpMV workspace.
 template <typename Scalar>
 void initialise_bsr_p2p(
     CudaBsrP2PDeviceView<Scalar>& plan,
@@ -2006,6 +2063,9 @@ void upload_cuda_bsr(
                        handle_operation, descriptor_operation);
 }
 
+// Release helpers: every view is value-initialised, unused pointers are null
+// and cudaFree accepts null, so releasing an unpopulated view is a no-op.
+// Each resets the view so a second release is harmless.
 template <typename Block>
 void release_canonical_p2p(CudaP2PDeviceView<Block> &plan) noexcept {
   cudaFree(plan.row_offsets);
@@ -2142,6 +2202,14 @@ void release_p2p_device_view(CudaBsrP2PDeviceView<float> &plan) noexcept {
 
 using namespace cuda_p2p_detail;
 
+// The hybrid backend's near-field plan.  Exactly one device view (of the
+// plan's precision) is populated according to `kind`; the others stay empty
+// and release as no-ops.  The plan owns a private non-blocking stream so its
+// work overlaps the CPU far field, and the begin/finish protocol below lets
+// the caller enqueue the whole round trip, do other work, and collect the
+// result later.  `dynamic_self_identities` says whether the identity map is
+// uploaded per evaluation (true for packings that read it at run time
+// without a fixed map) or was fixed at construction.
 struct CudaP2PPlan::Implementation {
   enum class Kind {
     Canonical,
@@ -2198,6 +2266,11 @@ CudaP2PPlan::CudaP2PPlan(
     : CudaP2PPlan(source_count, target_count, fixed_self_indices,
                   device_self_indices, StaticPrecision::Float64) {}
 
+// Common constructor: the stream, events and the per-evaluation moment /
+// identity / field buffers (device and pinned) of the plan's precision.  The
+// packing-specific constructors delegate here and then upload their view.
+// `device_self_indices` is false for the packings whose executors take no
+// identity array (dictionary, BSR).
 CudaP2PPlan::CudaP2PPlan(
     const int source_count, const int target_count,
     const std::span<const int> fixed_self_indices,
@@ -2726,6 +2799,11 @@ CudaP2PPlan::~CudaP2PPlan() {
   delete implementation_;
 }
 
+// Enqueue one complete near-field evaluation (H2D, kernel, D2H) on the plan's
+// stream and return without waiting.  A fixed identity map must be passed
+// unchanged on every call; a dynamic map is staged and uploaded each time.
+// Any failure after `pending` is set drains the stream so the plan stays
+// reusable.  `finish_evaluate` collects the result and the event timings.
 void CudaP2PPlan::begin_evaluate(
     const std::span<const Vec3> moments,
     const std::span<const int> target_source_indices) {
@@ -2840,6 +2918,7 @@ void CudaP2PPlan::finish_evaluate(const std::span<Vec3> fields) {
   plan.pending = false;
 }
 
+// FP32 form of the protocol above over the FP32 buffers and views.
 void CudaP2PPlan::begin_evaluate(
     const std::span<const FloatVec3> moments,
     const std::span<const int> target_source_indices) {
@@ -2959,14 +3038,18 @@ void CudaP2PPlan::finish_evaluate(const std::span<FloatVec3> fields) {
   plan.pending = false;
 }
 
+// Abandon a pending evaluation: drain the stream so no kernel still reads the
+// staging buffers, then clear the flag.  Called on the error paths and from
+// the destructor.
 void CudaP2PPlan::cancel_evaluate() noexcept {
   if (implementation_ == nullptr || !implementation_->pending) {
     return;
   }
-    cudaStreamSynchronize(implementation_->stream);
-    implementation_->pending = false;
+  cudaStreamSynchronize(implementation_->stream);
+  implementation_->pending = false;
 }
 
+// Synchronous convenience form of begin/finish.
 void CudaP2PPlan::evaluate(const std::span<const Vec3> moments,
                            const std::span<const int> target_source_indices,
                            const std::span<Vec3> fields) {

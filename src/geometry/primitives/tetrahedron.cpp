@@ -1,4 +1,30 @@
 // SPDX-License-Identifier: Apache-2.0
+//
+// Exact analytical operators of a uniformly magnetised tetrahedron.  Three
+// formulations live here, all expressed as symmetric pair tensors T with
+// H = T m for the source's total moment m = V M (docs/math/finite-geometry.md):
+//
+//   * tetrahedron -> point: the surface-charge picture.  The field of a
+//     uniformly magnetised body is the sum over its faces of (M . n) times
+//     the field of a uniformly charged triangle, evaluated with the
+//     analytical edge primitives adapted from MagTense's TileTriangle
+//     (in-plane components) and the Van Oosterom-Strackee solid angle
+//     (normal component);
+//   * point -> tetrahedron: the same tensor by reciprocity;
+//   * tetrahedron -> tetrahedron (and prism <-> tetrahedron): the Galerkin
+//     double surface integral, where each face pair contributes the exact
+//     integral of 1/|x - y| over two triangles (Gumerov, Kaneko and
+//     Duraiswami, SIAM J. Sci. Comput. 46 (2024)) times the outer product
+//     of the outward normals.  Far-separated pairs switch to a converged
+//     Gauss rule over the target of the exact source field, because the
+//     analytical reduction loses accuracy through cancellation exactly where
+//     quadrature becomes trivially accurate.
+//
+// Vertices are representative-relative.  Degenerate faces, evaluation on an
+// edge or vertex, and a lost rank in the dimensional reduction are reported
+// as exceptions rather than patched with a limiting value.  The `Prepared*`
+// records hoist everything that depends on the body alone (frames, normals,
+// circumradius) so that a body used in many pairs derives it once.
 
 #include "cdfmm/geometry/primitives/tetrahedron.hpp"
 
@@ -21,10 +47,14 @@ namespace {
 
 constexpr long double four_pi = 4.0L * std::numbers::pi_v<long double>;
 
+// Full 3x3 working tensor; results are symmetrised and reduced to the public
+// six-component PairTensor at the end.
 struct Matrix3 {
     double value[3][3]{};
 };
 
+// The face opposite vertex i, oriented so that the right-hand normal points
+// outwards for a positively oriented tetrahedron.
 constexpr std::array<std::array<int, 3>, 4> tetrahedron_face_vertices{{
     {{1, 2, 3}},
     {{0, 3, 2}},
@@ -73,6 +103,8 @@ bool finite(const Vec3& value)
         std::isfinite(value.z);
 }
 
+// Unit outward normal of `face`, fixed by requiring the opposite vertex to
+// lie behind it, so the result does not depend on the vertex ordering.
 Vec3 tetrahedron_outward_normal(
     const std::array<Vec3, 4>& vertices,
     const std::array<int, 3>& face,
@@ -221,6 +253,10 @@ double triangle_solid_angle_column(const Vec3& r, const double x_first,
 
 using detail::FaceFrame;
 
+// Local frame of one face for the TileTriangle primitives: e1 along the base
+// edge, the normal outward, e2 in-plane, origin at the foot of the apex, so
+// the face is the union of two right triangles with x-extents `x_first` (> 0)
+// and `x_third` (< 0) and common height.  `face[3]` is the opposite vertex.
 FaceFrame make_face_frame(std::array<Vec3, 4> face)
 {
     const Vec3 first_edge = face[0] - face[1];
@@ -333,6 +369,10 @@ Matrix3 face_tensor_prepared(const FaceFrame& frame,
     return result;
 }
 
+// Sum of the four face tensors, i.e. the demagnetisation tensor N with
+// H = -N M of the whole tetrahedron at a point, then divided by the volume so
+// the returned tensor acts on the total moment.  Evaluation on a vertex or an
+// edge is a genuine singularity and is rejected up front.
 Matrix3 tetrahedron_magnetisation_tensor_prepared(
     const Vec3& target_relative_position,
     const detail::PreparedTetrahedronPointField& source)
@@ -433,6 +473,10 @@ PairTensor to_pair_tensor(const Matrix3& matrix)
 // DOI 10.1137/23M1547688.  The upstream reference implementation is MIT
 // licensed: https://github.com/pirl-lab/analytical-quadrature-laplace-galerkin.
 
+// Decomposition of an offset vector into the span of up to four edge vectors
+// (the coefficients) plus the perpendicular remainder (`residual`, the
+// "height" the reduced integrals see).  The I3/I2/I1/I0 recursion reduces the
+// dimension of the integration domain one edge at a time using these.
 struct ExpansionProjection {
     std::array<double, 4> coefficient{{0.0, 0.0, 0.0, 0.0}};
     Vec3 projected{};
@@ -527,6 +571,10 @@ ExpansionProjection expand_gram_schmidt(
     return result;
 }
 
+// I0: the fully reduced one-dimensional primitive of the recursion, a closed
+// form in the edge length `p` and the four heights, with the reference's
+// case analysis of which heights vanish.  Evaluated in long double because
+// the branches subtract nearly equal logarithms and arctangents.
 long double triangle_i0(const double p,
                         const std::array<double, 4>& input_heights)
 {
@@ -651,6 +699,10 @@ long double triangle_i0(const double p,
     return answer;
 }
 
+// I1, I2s, I2t, I3: the reduction steps.  Each expands the offset in the
+// remaining edge vectors, drops one edge and calls the next lower primitive
+// at the two endpoints of that edge; a coefficient within `zero_tolerance`
+// of zero contributes nothing and is skipped, exactly as in the reference.
 double triangle_i1(const Vec3& vector, const Vec3& offset,
                    const double h2, const double h3, const double h4)
 {
@@ -768,6 +820,11 @@ double triangle_i3(const Vec3& first, const Vec3& second, const Vec3& third,
     return result;
 }
 
+// The Galerkin integral of 1/|x - y| over two triangles in normalised
+// coordinates (largest triangle first, common origin, unit scale).  The two
+// triangles' edge vectors a1..a4 and the vertex offset e4 are expanded
+// together; coplanar (parallel) pairs take the reduced branch in which only
+// the in-plane offset and the separation height enter.
 double triangle_triangle_integral_core(
     const std::array<Vec3, 3>& first,
     const std::array<Vec3, 3>& second)
@@ -833,6 +890,9 @@ double triangle_triangle_integral_core(
         (0.5 * second_area_twice) * reduced;
 }
 
+// Normalise a triangle pair to unit scale about the first vertex of the
+// larger triangle before the core; the integral is homogeneous of degree 3
+// in length, so the result is rescaled by scale^3.
 double triangle_triangle_integral_impl(
     std::array<Vec3, 3> first,
     std::array<Vec3, 3> second)
@@ -878,11 +938,17 @@ double triangle_triangle_integral(const std::array<Vec3, 3>& first,
     return triangle_triangle_integral_impl(first, second);
 }
 
+// Support for the tetrahedron-averaged monomials of the finite P2M/L2P
+// operators: a monomial in one Cartesian coordinate of a point inside the
+// tetrahedron, written as a polynomial in the four barycentric coordinates.
 struct BarycentricPolynomial {
     std::array<int, 4> power{{0, 0, 0, 0}};
     double coefficient{0.0};
 };
 
+// Expand (offset + sum_v coordinate_v * lambda_v)^power / power! into
+// barycentric monomials lambda^n (each with its own 1/n! factors), which the
+// caller integrates exactly with the Dirichlet formula.
 void expand_axis(const int power, const double offset,
                  const std::array<double, 4>& coordinates,
                  std::vector<BarycentricPolynomial>& terms)
@@ -1097,6 +1163,11 @@ PolyhedronSurface prepare_rectangular_prism_surface(
     return surface;
 }
 
+// General Galerkin pair of two triangulated polyhedra: the target-averaged
+// field of the source is sum over face pairs of (integral of 1/|x - y| over
+// the two faces) times n_target n_source^T, normalised afterwards.  Both
+// bodies enter through their faces and outward normals only, so a prism
+// (twelve triangles) and a tetrahedron (four) combine freely.
 PairTensor polyhedron_polyhedron_tensor(
     const Vec3& target_minus_source_representative,
     const std::span<const std::array<Vec3, 3>> source_faces,
@@ -1273,6 +1344,10 @@ PolyhedronBody prepare_polyhedron_body(const Tetrahedron& tetrahedron)
     return {prepare_tetrahedron_surface(tetrahedron), tetrahedron};
 }
 
+// Entry point for prepared bodies: quadrature of the exact source field when
+// the pair is far separated (in circumradii), the Galerkin surface integral
+// otherwise.  The switch is a numerical-accuracy decision; both branches
+// evaluate the same tensor.
 PairTensor polyhedron_pair_tensor(
     const Vec3& target_minus_source_representative,
     const PolyhedronBody& source,
@@ -1315,6 +1390,10 @@ PairTensor tetrahedron_tetrahedron_tensor_prepared(
             source.outward_normals, source.volume, target.faces,
             target.outward_normals, target.volume);
     }
+    // Coincident identical bodies (the self tensor): the face-pair integral
+    // is symmetric in its two faces, so only the upper triangle of the 4x4
+    // face matrix is evaluated and each off-diagonal integral is added with
+    // both normal orderings.
     Matrix3 tensor{};
     {
         for (int target_face = 0; target_face < 4; ++target_face) {
@@ -1373,6 +1452,9 @@ Vec3 Tetrahedron::centroid_offset() const noexcept
                 4.0};
 }
 
+// The validating volume: every finite-tetrahedron path calls this first, so a
+// non-finite, zero-extent or degenerate (flat) record is rejected with one
+// consistent message before any primitive sees it.
 double tetrahedron_volume(const Tetrahedron& tetrahedron)
 {
     for (const Vec3& vertex : tetrahedron.vertices) {
@@ -1407,6 +1489,10 @@ PairTensor tetrahedron_point_tensor(const Vec3& target_minus_source_representati
         target_minus_source_representative, source));
 }
 
+// Point source -> tetrahedron target by reciprocity: the average over the
+// target of the point field equals the field of the target-as-source at the
+// point, with the displacement reversed.  The tensor is symmetric and both
+// directions act on a total moment, so no volume factor is needed.
 PairTensor point_tetrahedron_tensor(const Vec3& target_minus_source_representative,
                                     const Tetrahedron& target)
 {
@@ -1414,6 +1500,11 @@ PairTensor point_tetrahedron_tensor(const Vec3& target_minus_source_representati
         scale(target_minus_source_representative, -1.0), target);
 }
 
+// Average over the tetrahedron of (d + t)^beta / beta!, t in the tetrahedron
+// about its representative point.  Each Cartesian factor is expanded into
+// barycentric monomials and the products are integrated exactly with the
+// Dirichlet formula: the average of lambda^n over a tetrahedron is
+// 3! * prod(n_i!) / (3 + sum n_i)!.
 double tetrahedron_averaged_monomial(const MultiIndex& beta, const Vec3& d,
                                      const Tetrahedron& tetrahedron)
 {
