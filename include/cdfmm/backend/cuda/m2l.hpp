@@ -18,19 +18,25 @@ namespace cdfmm {
  */
 class CudaM2LPlan {
 public:
+  /// @brief Uploads an FP64 plan; throws when no CUDA device is available.
   explicit CudaM2LPlan(const StaticM2LPlan &plan);
+  /// @brief Uploads an FP32 plan; throws when no CUDA device is available.
   explicit CudaM2LPlan(const FloatStaticM2LPlan &plan);
   ~CudaM2LPlan();
 
   CudaM2LPlan(const CudaM2LPlan &) = delete;
   CudaM2LPlan &operator=(const CudaM2LPlan &) = delete;
 
+  /// @brief Applies every level of the FP64 M2L: all node multipoles in, all node locals out (raw, before L2L).
   void evaluate(std::span<const double> multipoles,
                 std::span<double> raw_locals);
+  /// @brief Applies every level of the FP32 M2L: all node multipoles in, all node locals out (raw, before L2L).
   void evaluate(std::span<const float> multipoles,
                 std::span<float> raw_locals);
 
+  /// @brief Persistent storage and transfer diagnostics.
   [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
+  /// @brief Device-stream timings of the latest evaluation.
   [[nodiscard]] const CudaEvaluationTimings &timings() const noexcept;
 
 private:

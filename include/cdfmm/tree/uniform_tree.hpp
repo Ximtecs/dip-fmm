@@ -41,11 +41,12 @@ struct UniformTreeOptions {
 
 /** @brief Retained storage owned by one immutable uniform tree. */
 struct TreeMemoryStatistics {
-    std::size_t node_bytes{0};
-    std::size_t position_bytes{0};
-    std::size_t index_bytes{0};
-    std::size_t interaction_bytes{0};
+    std::size_t node_bytes{0};          ///< Node records of every level.
+    std::size_t position_bytes{0};      ///< Sorted source and target positions.
+    std::size_t index_bytes{0};         ///< Permutations and leaf indices.
+    std::size_t interaction_bytes{0};   ///< Near- and far-field interaction lists.
 
+    /// Sum of the four categories.
     [[nodiscard]] std::size_t total_bytes() const noexcept {
         return node_bytes + position_bytes + index_bytes + interaction_bytes;
     }

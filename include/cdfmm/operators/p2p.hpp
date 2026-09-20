@@ -17,10 +17,10 @@ namespace cdfmm {
 
 /** @brief One exact near-field pair with a periodically shifted source. */
 struct StaticP2PInteraction {
-    int target{0};
-    int source{0};
-    Vec3 source_shift{};
-    bool skip_for_identity{true};
+    int target{0};                  ///< Sorted target index.
+    int source{0};                  ///< Sorted source index.
+    Vec3 source_shift{};            ///< Periodic image shift added to the source position; zero in free space.
+    bool skip_for_identity{true};   ///< Whether an identity match omits the pair (point self pair, central image only).
 };
 
 } // namespace cdfmm

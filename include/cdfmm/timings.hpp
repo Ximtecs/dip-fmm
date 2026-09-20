@@ -105,12 +105,15 @@ struct StaticPlanStatistics {
     PhaseTiming cuda_upload{};
     /// @brief Complete constructor setup time, including backend creation.
     PhaseTiming total_setup{};
-    /// @brief Cache outcomes for this construction.
+    /// @brief Whether the universal operator bank was loaded from the cache.
     bool universal_cache_hit{false};
+    /// @brief Whether the periodic root operator was loaded from the cache.
     bool periodic_cache_hit{false};
+    /// @brief Whether the complete geometry plan was loaded from the cache.
     bool geometry_cache_hit{false};
-    /// @brief Validated cache traffic for this construction.
+    /// @brief Validated cache bytes read during this construction.
     std::size_t cache_bytes_read{0};
+    /// @brief Cache bytes written during this construction.
     std::size_t cache_bytes_written{0};
     /// @brief Maximum expansion degree selected by the plan.
     int expansion_order{0};
@@ -251,11 +254,13 @@ struct StaticPlanStatistics {
 struct CudaPlanStatistics {
     /// @brief Bytes used by one selected device execution scalar.
     std::size_t scalar_bytes{sizeof(double)};
-    /// @brief Number and bytes of unique uploaded M2M matrices.
+    /// @brief Number of unique uploaded M2M matrices.
     std::size_t m2m_unique_matrix_count{0};
+    /// @brief Bytes of the uploaded M2M matrices and their schedule.
     std::size_t m2m_matrix_bytes{0};
-    /// @brief Number and bytes of unique uploaded M2L matrices.
+    /// @brief Number of unique uploaded M2L matrices.
     std::size_t m2l_unique_matrix_count{0};
+    /// @brief Bytes of the uploaded M2L matrices.
     std::size_t m2l_matrix_bytes{0};
     /// @brief Bytes occupied by uploaded M2L interaction metadata.
     std::size_t m2l_interaction_metadata_bytes{0};
@@ -267,15 +272,19 @@ struct CudaPlanStatistics {
     std::size_t m2l_scratch_bytes{0};
     /// @brief Threads used by each CUDA M2L target-row kernel block.
     int m2l_threads_per_block{0};
-    /// @brief Number and bytes of unique uploaded L2L matrices.
+    /// @brief Number of unique uploaded L2L matrices.
     std::size_t l2l_unique_matrix_count{0};
+    /// @brief Bytes of the uploaded L2L matrices and their schedule.
     std::size_t l2l_matrix_bytes{0};
     /// @brief Number of particle pairs in the uploaded P2P packing.
     std::size_t p2p_interaction_count{0};
-    /// @brief Bytes occupied by P2P values, indices, and packing metadata.
+    /// @brief Bytes occupied by uploaded P2P tensor values or dictionary variants.
     std::size_t p2p_tensor_bytes{0};
+    /// @brief Bytes occupied by uploaded P2P source indices or tokens.
     std::size_t p2p_index_bytes{0};
+    /// @brief Bytes occupied by uploaded P2P row offsets.
     std::size_t p2p_row_metadata_bytes{0};
+    /// @brief Bytes occupied by uploaded P2P leaf ranges, block records and tile schedules.
     std::size_t p2p_leaf_metadata_bytes{0};
     /// @brief Bytes occupied by immutable P2P self-identity metadata.
     std::size_t p2p_identity_bytes{0};
@@ -286,42 +295,54 @@ struct CudaPlanStatistics {
     std::size_t p2p_geometry_bytes{0};
     /// @brief Threads per block for a custom P2P kernel, or zero for cuSPARSE.
     int p2p_threads_per_block{0};
-    /// @brief Immutable setup traffic and per-evaluation dynamic traffic.
+    /// @brief Bytes uploaded once at construction.
     std::size_t setup_h2d_bytes{0};
+    /// @brief Bytes uploaded by the most recent evaluation.
     std::size_t evaluation_h2d_bytes{0};
+    /// @brief Bytes downloaded by the most recent evaluation.
     std::size_t evaluation_d2h_bytes{0};
-    /// @brief Dynamic transfer counts accumulated over evaluations.
+    /// @brief Number of per-evaluation uploads so far.
     std::uint64_t evaluation_h2d_calls{0};
+    /// @brief Number of per-evaluation downloads so far.
     std::uint64_t evaluation_d2h_calls{0};
     /// @brief Total persistent device allocation owned by the plan.
     std::size_t persistent_device_bytes{0};
     /// @brief Number of device plans constructed from this payload.
     std::uint64_t plan_generation_count{0};
-    /// @brief Counts of all static, M2L, and P2P upload operations.
+    /// @brief Number of static operator uploads (always one per plan).
     std::uint64_t static_upload_count{0};
+    /// @brief Number of static M2L uploads (always one per plan).
     std::uint64_t static_m2l_upload_count{0};
+    /// @brief Number of static P2P uploads (always one per plan).
     std::uint64_t static_p2p_upload_count{0};
     /// @brief Number of immutable geometry-metadata uploads.
     std::uint64_t geometry_upload_count{0};
 };
 
-/** @brief Device-stream phase timings for the most recent CUDA evaluation. */
+/**
+ * @brief Device-stream phase timings for the most recent CUDA evaluation.
+ *
+ * Every value is measured between CUDA events on the plan's streams.  Phases
+ * that ran on different streams overlap, so they are lanes, not addends:
+ * compare them with `total_seconds` rather than summing them.  Fields a plan
+ * does not use stay zero.
+ */
 struct CudaEvaluationTimings {
-    double h2d_seconds{0.0};
-    double gather_seconds{0.0};
-    double multiply_seconds{0.0};
-    double scatter_seconds{0.0};
-    double scale_seconds{0.0};
-    double kernel_seconds{0.0};
-    double d2h_seconds{0.0};
-    double p2m_seconds{0.0};
-    double m2m_seconds{0.0};
-    double m2l_seconds{0.0};
-    double l2l_seconds{0.0};
-    double l2p_seconds{0.0};
-    double p2p_seconds{0.0};
-    double accumulation_seconds{0.0};
-    double total_seconds{0.0};
+    double h2d_seconds{0.0};           ///< Upload of the changing inputs.
+    double gather_seconds{0.0};        ///< Grouped M2L: packing source multipoles (unused by the current kernels).
+    double multiply_seconds{0.0};      ///< M2L matrix application.
+    double scatter_seconds{0.0};       ///< Grouped M2L: accumulation into locals (unused by the current kernels).
+    double scale_seconds{0.0};         ///< M2L multipole pre-scaling pass.
+    double kernel_seconds{0.0};        ///< Sum of the kernel phases; a diagnostic, not a wall time.
+    double d2h_seconds{0.0};           ///< Download of the requested outputs.
+    double p2m_seconds{0.0};           ///< Device P2M (CudaFull only).
+    double m2m_seconds{0.0};           ///< Device M2M (CudaFull only).
+    double m2l_seconds{0.0};           ///< Device M2L including its scaling pass.
+    double l2l_seconds{0.0};           ///< Device L2L (CudaFull only).
+    double l2p_seconds{0.0};           ///< Device L2P (CudaFull only).
+    double p2p_seconds{0.0};           ///< Device near field, on its own stream.
+    double accumulation_seconds{0.0};  ///< Combination and unsorting of near and far fields (CudaFull only).
+    double total_seconds{0.0};         ///< First event to last event on the plan's primary stream.
 };
 
 } // namespace cdfmm

@@ -20,12 +20,12 @@ namespace cdfmm {
  * `image_count` records sharing its ranges; free-space pairs use 0 and 1.
  */
 struct StaticP2PLeafPair {
-    int target_begin{0};
-    int target_count{0};
-    int source_begin{0};
-    int source_count{0};
-    int image_ordinal{0};
-    int image_count{1};
+    int target_begin{0};    ///< First sorted target of the target leaf.
+    int target_count{0};    ///< Number of targets in the target leaf.
+    int source_begin{0};    ///< First sorted source of the source leaf.
+    int source_count{0};    ///< Number of sources in the source leaf.
+    int image_ordinal{0};   ///< Position of this image among the records with the same ranges.
+    int image_count{1};     ///< Number of images sharing these ranges.
 };
 
 /**
@@ -38,45 +38,54 @@ struct StaticP2PLeafPair {
  * Executors obey this flag; they never infer identity handling from geometry.
  */
 struct StaticP2PLeafBlock {
-    int source_begin{0};
-    int source_count{0};
-    std::size_t tensor_offset{0};
-    int skip_for_identity{0};
+    int source_begin{0};          ///< First sorted source of the block.
+    int source_count{0};          ///< Number of sources in the block.
+    std::size_t tensor_offset{0}; ///< Index of the block's first tensor in each component array.
+    int skip_for_identity{0};     ///< Non-zero when an identity match omits the pair.
 };
 
-/** @brief Dense leaf-pair packing derived from canonical FP64 target rows. */
+/**
+ * @brief Dense leaf-pair packing derived from canonical FP64 target rows.
+ *
+ * Within a block the tensors are target-major: the `source_count` tensors of
+ * one local target are contiguous at
+ * `tensor_offset + local_target * source_count`.  The occupancy statistics
+ * describe the target leaves and feed the execution policy.
+ */
 struct StaticP2PLeafPlan {
-    int source_count{0};
-    int target_count{0};
-    std::vector<int> target_begins{};
-    std::vector<int> target_counts{};
-    std::vector<int> leaf_row_offsets{};
-    std::vector<StaticP2PLeafBlock> blocks{};
-    std::array<std::vector<double>, 6> tensors{};
-    int minimum_occupancy{0};
-    int maximum_occupancy{0};
-    double mean_occupancy{0.0};
-    int unique_occupancies{0};
-    bool uniform_occupancy{false};
+    int source_count{0};                        ///< Number of sorted sources.
+    int target_count{0};                        ///< Number of sorted targets.
+    std::vector<int> target_begins{};           ///< First sorted target of each target leaf.
+    std::vector<int> target_counts{};           ///< Number of targets in each target leaf.
+    std::vector<int> leaf_row_offsets{};        ///< Range of `blocks` per target leaf (CSR offsets).
+    std::vector<StaticP2PLeafBlock> blocks{};   ///< Dense source-leaf blocks in canonical order.
+    std::array<std::vector<double>, 6> tensors{};  ///< One array per component xx, xy, xz, yy, yz, zz.
+    int minimum_occupancy{0};                   ///< Fewest targets in any target leaf.
+    int maximum_occupancy{0};                   ///< Most targets in any target leaf.
+    double mean_occupancy{0.0};                 ///< Mean targets per target leaf.
+    int unique_occupancies{0};                  ///< Number of distinct target-leaf occupancies.
+    bool uniform_occupancy{false};              ///< Whether every target leaf holds the same number of targets.
 
+    /// Retained storage split by category.
     [[nodiscard]] StaticP2PMemory memory() const noexcept;
 };
 
 /** @brief Dense leaf-pair packing at FP32 execution precision. */
 struct FloatStaticP2PLeafPlan {
-    int source_count{0};
-    int target_count{0};
-    std::vector<int> target_begins{};
-    std::vector<int> target_counts{};
-    std::vector<int> leaf_row_offsets{};
-    std::vector<StaticP2PLeafBlock> blocks{};
-    std::array<std::vector<float>, 6> tensors{};
-    int minimum_occupancy{0};
-    int maximum_occupancy{0};
-    double mean_occupancy{0.0};
-    int unique_occupancies{0};
-    bool uniform_occupancy{false};
+    int source_count{0};                        ///< Number of sorted sources.
+    int target_count{0};                        ///< Number of sorted targets.
+    std::vector<int> target_begins{};           ///< First sorted target of each target leaf.
+    std::vector<int> target_counts{};           ///< Number of targets in each target leaf.
+    std::vector<int> leaf_row_offsets{};        ///< Range of `blocks` per target leaf (CSR offsets).
+    std::vector<StaticP2PLeafBlock> blocks{};   ///< Dense source-leaf blocks in canonical order.
+    std::array<std::vector<float>, 6> tensors{};   ///< One array per component xx, xy, xz, yy, yz, zz.
+    int minimum_occupancy{0};                   ///< Fewest targets in any target leaf.
+    int maximum_occupancy{0};                   ///< Most targets in any target leaf.
+    double mean_occupancy{0.0};                 ///< Mean targets per target leaf.
+    int unique_occupancies{0};                  ///< Number of distinct target-leaf occupancies.
+    bool uniform_occupancy{false};              ///< Whether every target leaf holds the same number of targets.
 
+    /// Retained storage split by category.
     [[nodiscard]] StaticP2PMemory memory() const noexcept;
 };
 

@@ -38,6 +38,15 @@ enum class DenseDirectBackend {
  */
 class DenseDirectPlan {
 public:
+    /**
+     * @brief Builds the six exact pair-tensor matrices for fixed geometry.
+     *
+     * Finite records are one common record or one per body in user order; the
+     * models select whether a finite body enters with its exact tensor or as
+     * a point at its representative.  `target_source_indices` (target i ->
+     * source j, or -1) omits the singular point self pairs and is fixed for
+     * the plan's lifetime.
+     */
     DenseDirectPlan(
         std::span<const Vec3> source_positions,
         std::span<const Vec3> target_positions,
@@ -53,9 +62,13 @@ public:
         TargetModel target_model = TargetModel::ExactGeometry
     );
 
+    /// @brief Deep-copies the matrices; the private staging is recreated.
     DenseDirectPlan(const DenseDirectPlan& other);
+    /// @brief Deep-copies the matrices; the private staging is recreated.
     DenseDirectPlan& operator=(const DenseDirectPlan& other);
+    /// @brief Transfers the matrices and staging.
     DenseDirectPlan(DenseDirectPlan&& other) noexcept;
+    /// @brief Transfers the matrices and staging.
     DenseDirectPlan& operator=(DenseDirectPlan&& other) noexcept;
     ~DenseDirectPlan();
 
@@ -75,14 +88,18 @@ public:
         DenseDirectBackend backend = DenseDirectBackend::Automatic
     ) const;
 
+    /// @brief Number of sources (matrix columns).
     [[nodiscard]] std::size_t source_count() const noexcept { return ns_; }
+    /// @brief Number of targets (matrix rows).
     [[nodiscard]] std::size_t target_count() const noexcept { return nt_; }
+    /// @brief Bytes retained by the six matrices at the plan's precision.
     [[nodiscard]] std::size_t tensor_memory_bytes() const noexcept;
     /// @brief Returns the scalar precision of the six immutable matrices.
     [[nodiscard]] StaticPrecision static_precision() const noexcept
     {
         return static_precision_;
     }
+    /// @brief Number of stored tensor components per pair (the six of a symmetric tensor).
     [[nodiscard]] std::size_t tensor_component_count() const noexcept { return 6; }
     /** @brief Returns matrices for an explicitly selected FP64 plan. */
     [[nodiscard]] const std::array<std::vector<double>, 6>& matrices() const

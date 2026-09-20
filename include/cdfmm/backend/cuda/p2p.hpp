@@ -103,9 +103,12 @@ public:
                 std::span<const int> target_source_indices,
                 std::span<Vec3> fields);
 
+  /** @brief FP32 form of `begin_evaluate`; requires an FP32 plan. */
   void begin_evaluate(std::span<const FloatVec3> moments,
                       std::span<const int> target_source_indices);
+  /** @brief FP32 form of `finish_evaluate`; requires an FP32 plan. */
   void finish_evaluate(std::span<FloatVec3> fields);
+  /** @brief FP32 form of the synchronous `evaluate`; requires an FP32 plan. */
   void evaluate(std::span<const FloatVec3> moments,
                 std::span<const int> target_source_indices,
                 std::span<FloatVec3> fields);

@@ -37,16 +37,17 @@ struct PeriodicCellOptions {
 
 /** @brief Identity of a periodically imaged box without tree replication. */
 struct PeriodicBoxIdentity {
-    int node{0};
-    std::array<int, 3> image_shift{};
+    int node{0};                        ///< Node id of the box inside the central cell.
+    std::array<int, 3> image_shift{};   ///< Integer cell shift of the image; zero is the central image.
 
+    /// Equal when both the node and the image shift agree.
     [[nodiscard]] bool operator==(const PeriodicBoxIdentity&) const = default;
 };
 
 /** @brief Wrapped coordinate and cell shift associated with one integer axis. */
 struct WrappedBoxCoordinate {
-    int coordinate{0};
-    int image_shift{0};
+    int coordinate{0};    ///< Box coordinate wrapped into the central cell.
+    int image_shift{0};   ///< Number of cells the coordinate was shifted by (floor division).
 };
 
 //------------------------------------------------------------------------------

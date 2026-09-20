@@ -85,12 +85,12 @@ enum class P2PExecutionPacking {
  * operators nor scratch buffers. See `docs/backends.md` for transfer flow.
  */
 struct StaticExecutionPlan {
-  StaticOperatorExecutor p2m{StaticOperatorExecutor::Portable};
-  StaticOperatorExecutor m2m{StaticOperatorExecutor::Portable};
-  StaticOperatorExecutor m2l{StaticOperatorExecutor::Portable};
-  StaticOperatorExecutor l2l{StaticOperatorExecutor::Portable};
-  StaticOperatorExecutor l2p{StaticOperatorExecutor::Portable};
-  StaticOperatorExecutor p2p{StaticOperatorExecutor::Portable};
+  StaticOperatorExecutor p2m{StaticOperatorExecutor::Portable};   ///< Where P2M runs.
+  StaticOperatorExecutor m2m{StaticOperatorExecutor::Portable};   ///< Where M2M runs.
+  StaticOperatorExecutor m2l{StaticOperatorExecutor::Portable};   ///< Where M2L runs.
+  StaticOperatorExecutor l2l{StaticOperatorExecutor::Portable};   ///< Where L2L runs.
+  StaticOperatorExecutor l2p{StaticOperatorExecutor::Portable};   ///< Where L2P runs.
+  StaticOperatorExecutor p2p{StaticOperatorExecutor::Portable};   ///< Where the exact near field runs.
 };
 
 // CUDA and oneMKL backend capability queries (`cuda_compiled`,
@@ -124,8 +124,13 @@ struct UniformFmmOptions {
       SphericalM2LBackend::StaticDense};
   /// @brief Complete uniform-tree geometry options.
   UniformTreeOptions tree{};
+  /// @brief M2L execution choices.
+  enum class M2LBackend {
+    Static,     ///< Prepared static M2L plan (the default).
+    Reference   ///< Dynamic Cartesian reference traversal (validation only).
+  };
   /// @brief M2L execution backend; static grouped execution is the default.
-  enum class M2LBackend { Static, Reference } m2l_backend{M2LBackend::Static};
+  M2LBackend m2l_backend{M2LBackend::Static};
   /// @brief Multiplication implementation used by cached static M2L matrices.
   StaticMatrixBackend static_matrix_backend{StaticMatrixBackend::Portable};
   /// @brief Complete evaluation backend. Auto safely selects CPU static.
@@ -267,18 +272,25 @@ public:
    */
   UniformFmm(std::shared_ptr<const StaticFmmTopology> topology,
              const UniformFmmOptions& options);
+  /// @brief The immutable interaction topology the plan was built from.
   [[nodiscard]] const StaticFmmTopology& topology() const { return *topology_; }
+  /// @brief Shared ownership of the topology, so another plan can reuse it.
   [[nodiscard]] std::shared_ptr<const StaticFmmTopology> shared_topology() const {
     return topology_;
   }
   /** @brief Opt-in field diagnostics; normal evaluate performs no diagnostic copies. */
   struct FieldComponents {
-    std::vector<Vec3> far, p2p, total;
+    std::vector<Vec3> far;    ///< Far-field (P2M..L2P) contribution in user order.
+    std::vector<Vec3> p2p;    ///< Near-field (exact list-1) contribution in user order.
+    std::vector<Vec3> total;  ///< `far + p2p`, the field `evaluate` returns.
   };
+  /// @brief Evaluates one moment state and splits the field into its far and near parts.
   FieldComponents evaluate_components(std::span<const Vec3> moments,
                                      std::span<const int> identities = {});
   ~UniformFmm();
+  /// @brief Transfers the plan, its state and its backend resources.
   UniformFmm(UniformFmm&&) noexcept;
+  /// @brief Transfers the plan, its state and its backend resources.
   UniformFmm& operator=(UniformFmm&&) noexcept;
   UniformFmm(const UniformFmm&) = delete;
   UniformFmm& operator=(const UniformFmm&) = delete;

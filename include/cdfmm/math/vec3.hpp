@@ -39,16 +39,24 @@ struct Vec3 {
 
 /** @brief Single-precision Cartesian vector used by FP32 FMM state. */
 struct FloatVec3 {
+  /// @brief Cartesian x component.
   float x{0.0F};
+  /// @brief Cartesian y component.
   float y{0.0F};
+  /// @brief Cartesian z component.
   float z{0.0F};
 
+  /// @brief Constructs the zero vector.
   FloatVec3() = default;
+  /// @brief Constructs a vector from its Cartesian components.
   FloatVec3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
 
+  /// @brief Returns a mutable component by axis index.
   float &operator[](int i) { return i == 0 ? x : (i == 1 ? y : z); }
+  /// @brief Returns a component by axis index.
   float operator[](int i) const { return i == 0 ? x : (i == 1 ? y : z); }
 
+  /// @brief Adds another vector in place.
   FloatVec3 &operator+=(const FloatVec3 &b) {
     x += b.x;
     y += b.y;

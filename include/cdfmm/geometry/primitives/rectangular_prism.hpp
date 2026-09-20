@@ -10,9 +10,9 @@ namespace cdfmm {
 
 /** @brief Full side lengths of an axis-aligned rectangular prism. */
 struct RectangularPrism {
-    double hx{0.0};
-    double hy{0.0};
-    double hz{0.0};
+    double hx{0.0};   ///< Full side length along x.
+    double hy{0.0};   ///< Full side length along y.
+    double hz{0.0};   ///< Full side length along z.
 
     /// @brief Returns the prism volume.
     [[nodiscard]] double volume() const noexcept { return hx * hy * hz; }

@@ -17,47 +17,47 @@ namespace cdfmm {
 
 /** @brief Timings and status recorded for one tested tree depth. */
 struct PerformanceCandidate {
-  int depth{0};
-  bool succeeded{false};
-  std::string reason{};
-  double near_seconds{0.0};
-  double far_seconds{0.0};
-  double evaluation_seconds{0.0};
-  double estimated_concurrent_seconds{0.0};
-  double balance_ratio{0.0};
+  int depth{0};                              ///< Tree depth that was constructed and timed.
+  bool succeeded{false};                     ///< Whether construction and evaluation completed.
+  std::string reason{};                      ///< Failure message when `succeeded` is false.
+  double near_seconds{0.0};                  ///< Median near-field (P2P) time per evaluation.
+  double far_seconds{0.0};                   ///< Median far-field (P2M..L2P) time per evaluation.
+  double evaluation_seconds{0.0};            ///< Median wall time per evaluation.
+  double estimated_concurrent_seconds{0.0};  ///< `max(near, far)`, the wall time if the branches overlapped perfectly.
+  double balance_ratio{0.0};                 ///< `max(near, far) / min(near, far)`; 1 is perfectly balanced.
 };
 
 /** @brief Result of an empirical fixed-order performance sweep. */
 struct PerformanceSuggestion {
-  int suggested_depth{-1};
-  int order{0};
-  bool branches_concurrent{false};
-  std::vector<PerformanceCandidate> candidates{};
+  int suggested_depth{-1};                   ///< Fastest successful depth, or -1 when none succeeded.
+  int order{0};                              ///< Expansion order every candidate used.
+  bool branches_concurrent{false};           ///< Whether the backend overlaps near and far work (ranking then uses the concurrent estimate).
+  std::vector<PerformanceCandidate> candidates{};  ///< Every tested depth in test order.
 };
 
 /** @brief Accuracy, timing, and status for one tested order/depth pair. */
 struct AccuracyCandidate {
-  int order{0};
-  int depth{0};
-  bool succeeded{false};
-  bool satisfies_accuracy{false};
-  std::string reason{};
-  double evaluation_seconds{0.0};
-  double mean_relative_error{0.0};
-  double rms_relative_error{0.0};
-  double maximum_relative_error{0.0};
-  double mean_absolute_error{0.0};
-  double maximum_absolute_error{0.0};
+  int order{0};                              ///< Expansion order tested.
+  int depth{0};                              ///< Tree depth tested.
+  bool succeeded{false};                     ///< Whether construction and evaluation completed.
+  bool satisfies_accuracy{false};            ///< Whether the sampled RMS relative error met the request.
+  std::string reason{};                      ///< Failure message when `succeeded` is false.
+  double evaluation_seconds{0.0};            ///< Median wall time per evaluation.
+  double mean_relative_error{0.0};           ///< Mean of |H - H_ref| / |H_ref| over the sampled targets.
+  double rms_relative_error{0.0};            ///< Root-mean-square relative field error over the sampled targets.
+  double maximum_relative_error{0.0};        ///< Largest relative field error over the sampled targets.
+  double mean_absolute_error{0.0};           ///< Mean of |H - H_ref| over the sampled targets.
+  double maximum_absolute_error{0.0};        ///< Largest |H - H_ref| over the sampled targets.
 };
 
 /** @brief Result of an empirical sampled-accuracy parameter sweep. */
 struct AccuracySuggestion {
-  int suggested_order{-1};
-  int suggested_depth{-1};
-  double requested_accuracy{0.0};
-  std::size_t reference_target_count{0};
-  std::vector<std::size_t> reference_target_indices{};
-  std::vector<AccuracyCandidate> candidates{};
+  int suggested_order{-1};                   ///< Order of the fastest pair meeting the accuracy, or -1.
+  int suggested_depth{-1};                   ///< Depth of the fastest pair meeting the accuracy, or -1.
+  double requested_accuracy{0.0};            ///< The RMS relative error that was requested.
+  std::size_t reference_target_count{0};     ///< Number of targets whose direct reference field was computed.
+  std::vector<std::size_t> reference_target_indices{};  ///< User indices of the sampled reference targets.
+  std::vector<AccuracyCandidate> candidates{};  ///< Every tested (order, depth) pair in test order.
 };
 
 //------------------------------------------------------------------------------

@@ -15,7 +15,9 @@ struct PotentialField {
 
 /** @brief Single-precision potential and field result for FP32 FMM. */
 struct FloatPotentialField {
+  /// @brief Scalar potential contribution (optional output).
   float phi{0.0F};
+  /// @brief Magnetic field H = -grad(phi) contribution (optional output).
   FloatVec3 H{};
 };
 

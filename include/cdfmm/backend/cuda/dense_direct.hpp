@@ -23,6 +23,12 @@ namespace cdfmm {
  */
 class CudaDenseDirectPlan {
 public:
+  /**
+   * @brief Builds the six matrices on the host and uploads them.
+   *
+   * Arguments and semantics match DenseDirectPlan; construction throws when
+   * no CUDA device is available.
+   */
   CudaDenseDirectPlan(
       std::span<const Vec3> source_positions,
       std::span<const Vec3> target_positions,

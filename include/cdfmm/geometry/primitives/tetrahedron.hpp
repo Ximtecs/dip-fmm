@@ -20,7 +20,7 @@ namespace cdfmm {
  * explicit: the physical vertices are `representative + vertices[i]`.
  */
 struct Tetrahedron {
-    std::array<Vec3, 4> vertices{};
+    std::array<Vec3, 4> vertices{};   ///< Vertex offsets from the representative point.
 
     /// @brief Returns the signed volume, with the supplied vertex ordering.
     [[nodiscard]] double signed_volume() const noexcept;
