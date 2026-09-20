@@ -1,11 +1,12 @@
 # C++ test guidance
 
-Inherit `../AGENTS.md`. Tests are the behavioural contract during the refactor;
-do not prune or consolidate them in the architecture steps.
+Inherit `../AGENTS.md`. Every retained test protects one distinct invariant
+or failure mode; the Phase-4 audit (`agent_docs/project_progress.md`) records
+why each file exists and where its overlaps are deliberate.
 
 ## Current structure
 
-All sources currently build into one Catch2 executable:
+All sources build into one Catch2 executable:
 
 ```text
 tests/
@@ -14,11 +15,19 @@ tests/
 |   spherical_harmonics}.cpp                   mathematics
 |-- test_{p2p,p2m_m2l_l2p,multipole_accuracy,
 |   operator_consistency,static_m2l}.cpp       operators
+|-- test_{p2p_exact_reuse,dense_direct_exact_reuse}.cpp
+|                                              exact-operator reuse (near
+|                                              field and dense builders)
+|-- test_p2p_geometry_matrix.cpp               nine geometry pairs x backends x
+|                                              precisions x packings, free-space
+|                                              and periodic, against dense direct
 |-- test_{uniform_tree,static_topology}.cpp    tree/topology
 |-- test_{cuboid,rectangular_prism_magtense,
-|   tetrahedron,tetrahedron_static}.cpp        geometry
+|   tetrahedron,tetrahedron_static}.cpp        geometry (the prism and
+|                                              tetrahedron trust anchors)
 |-- test_{uniform_fmm,periodic,precision,
-|   normalisation,output_flags,cache}.cpp      integration
+|   normalisation,output_flags,cache,
+|   procedural_point_expansion}.cpp            integration
 |-- test_{cuda_backend,cuda_m2l}.cpp           CUDA/backend
 |-- test_cuda_p2p_stub.cpp                     non-CUDA backend boundary
 |-- test_foundational_headers.cpp              canonical/compatibility headers
@@ -31,8 +40,34 @@ tests/
 `-- test_fortran_api.f90                       optional smoke test
 ```
 
-The future `unit/`, `backend/`, and `integration/` split should follow tested
-responsibility, not file size alone.
+## Tiers
+
+- **Portable CI tier**: everything that runs in a CUDA-less, oneMKL-less
+  build. GitHub Actions runs this tier; keep it fast. Reproduction and
+  exactness checks use the smallest scene that populates every stage, never
+  a convergence-sized one.
+- **Optional backend tier**: CUDA and oneMKL cases. They return early
+  (`SUCCEED()`) or skip when the build or device is absent and execute for
+  real on the `cuda`/`notebooks` presets; do not turn a real failure into a
+  skip. CTest recognises return code 4 as a skip for the discovered cases.
+- **Regression-tool tier**: benchmark drivers and analysers are tested under
+  `../python_tests/`, not here.
+
+## Deliberate per-layer coverage
+
+The same physical contract is pinned once per implementation that could
+regress independently; this is not duplication and must not be merged:
+
+- point self exclusion comes from the identity map, finite self fields are
+  physical: `test_p2p_exact_reuse.cpp` (canonical near-field builder),
+  `test_dense_direct_exact_reuse.cpp` (dense builder), `test_cuboid.cpp` and
+  `test_tetrahedron_static.cpp` (geometry-specific tensors),
+  `test_uniform_fmm.cpp` (the `UniformFmm` façade) and
+  `test_cuda_backend.cpp` (every CUDA packing);
+- one header per translation unit in the `*_headers.cpp` and
+  `*_legacy_*_header.cpp` files: self-containment of a public header is only
+  tested when it is the sole `cdfmm` include of its TU, so these stay
+  separate files, while `test_foundational_headers.cpp` tests coexistence.
 
 ## Rules
 
@@ -42,9 +77,9 @@ responsibility, not file size alone.
 - Cover supported precision, output, geometry/model, tree, periodic, cache,
   and backend variants relevant to a change.
 - Self-exclusion tests use explicit source identity, never coordinate equality.
-- CUDA tests may skip when CUDA is not compiled or no runtime device exists;
-  do not turn a real failure into a skip. CTest recognises return code 4 as a
-  skip for the discovered Catch2 cases.
+- Two same-layer cases with near-identical inputs asserting one contract are
+  merged or parameterised (SECTIONs or a table); two layers asserting one
+  physical result are kept.
 
 ## Validation
 

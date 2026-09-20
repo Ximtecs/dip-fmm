@@ -39,6 +39,22 @@ Tetrahedron test_tetrahedron()
             Vec3{0.02, -0.02, 0.27}}};
 }
 
+// Relative RMS field error of a complete FMM evaluation against an exact
+// dense reference, over every target.
+double relative_rms_field_error(std::span<const PotentialField> approximate,
+                                std::span<const Vec3> reference)
+{
+    REQUIRE(approximate.size() == reference.size());
+    double difference_squared = 0.0;
+    double reference_squared = 0.0;
+    for (std::size_t index = 0; index < reference.size(); ++index) {
+        const Vec3 difference = approximate[index].H - reference[index];
+        difference_squared += dot(difference, difference);
+        reference_squared += dot(reference[index], reference[index]);
+    }
+    return std::sqrt(difference_squared / reference_squared);
+}
+
 Vec3 apply_pair_tensor(const PairTensor& tensor, const Vec3& moment)
 {
     return {tensor.xx * moment.x + tensor.xy * moment.y + tensor.xz * moment.z,
@@ -754,15 +770,7 @@ TEST_CASE("cuboid FMM converges to exact dense direct", "[uniform_fmm][cuboid]")
         options.far_field_source_model = use_exact_source_model
             ? SourceModel::ExactGeometry : SourceModel::PointDipole;
         UniformFmm fmm(positions, positions, options);
-        const auto approximate = fmm.evaluate(moments);
-        double difference_squared = 0.0;
-        double reference_squared = 0.0;
-        for (std::size_t i = 0; i < reference.size(); ++i) {
-            const Vec3 difference = approximate[i].H - reference[i];
-            difference_squared += dot(difference, difference);
-            reference_squared += dot(reference[i], reference[i]);
-        }
-        return std::sqrt(difference_squared / reference_squared);
+        return relative_rms_field_error(fmm.evaluate(moments), reference);
     };
     const double low_order_error = error_at_order(2, true);
     const double high_order_error = error_at_order(6, true);
@@ -838,16 +846,8 @@ TEST_CASE("tetrahedron FMM converges to exact dense direct",
                     positions.size() * positions.size());
             REQUIRE(statistics.interactions > 0);
         }
-        const auto approximate = fmm.evaluate(
-            moments, OutputFlags::Field, identities);
-        double difference_squared = 0.0;
-        double reference_squared = 0.0;
-        for (std::size_t index = 0; index < reference.size(); ++index) {
-            const Vec3 difference = approximate[index].H - reference[index];
-            difference_squared += dot(difference, difference);
-            reference_squared += dot(reference[index], reference[index]);
-        }
-        return std::sqrt(difference_squared / reference_squared);
+        return relative_rms_field_error(
+            fmm.evaluate(moments, OutputFlags::Field, identities), reference);
     };
 
     const double low_order_error = relative_rms_error(2);

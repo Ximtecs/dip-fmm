@@ -2,10 +2,14 @@
 //
 // Procedural point P2M / L2P.  Recomputing the point-source expansion
 // contribution and the point-target local evaluation from the positions
-// during every evaluation must reproduce the precomputed coefficient rows on
-// every static backend, in both precisions and at every compiled order, for
-// the field and (on the CPU) the potential; the selection rules must reject
-// what the executors cannot do and leave finite far-field models precomputed.
+// during every evaluation must reproduce the precomputed coefficient rows.
+// The CPU kernel is checked against the canonical rows at every compiled
+// order (1..10) on one leaf, which needs no plan and no operator bank; the
+// complete plans are then compared on every static backend, in both
+// precisions and at a low, a middle and a high order (the order-10 universal
+// M2L bank alone costs over a minute to build cold, so the maximum-order
+// boundary is the kernel test's job). The selection rules must reject what
+// the executors cannot do and leave finite far-field models precomputed.
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -20,8 +24,13 @@
 
 #include <unistd.h>
 
+#include "cdfmm/math/spherical_harmonics.hpp"
+#include "cdfmm/operators/l2p.hpp"
+#include "cdfmm/operators/p2m.hpp"
 #include "cdfmm/rectangular_prism.hpp"
 #include "cdfmm/uniform_fmm.hpp"
+
+#include "backend/cpu/far_field/procedural.hpp"
 
 using namespace cdfmm;
 
@@ -143,16 +152,151 @@ double tolerance_for(const StaticPrecision precision)
     return precision == StaticPrecision::Float32 ? 5.0e-5 : 1.0e-11;
 }
 
+// These are reproduction checks between two executions of one operator, not
+// convergence studies: the scene only has to populate every leaf of the
+// depth-2 tree so that P2M, M2M, M2L, L2L and L2P all run. A few hundred
+// points do that; more points multiply the cost without adding coverage.
+constexpr int scene_size = 256;
+
 } // namespace
+
+TEST_CASE("procedural point P2M and L2P kernels reproduce the canonical rows "
+          "at every compiled order",
+          "[far-field][procedural]")
+{
+    using detail::cpu::ProceduralPointExpansion;
+    // One leaf of eleven points: not a multiple of either SIMD pack width
+    // (four FP64 or eight FP32 lanes), so the padded tail pack is exercised.
+    const Scene scene = make_scene(11);
+    const Vec3 centre{0.05, -0.03, 0.02};
+    std::vector<FloatVec3> float_moments;
+    std::vector<double> flat_moments;
+    for (const Vec3& moment : scene.moments) {
+        float_moments.push_back({static_cast<float>(moment.x),
+                                 static_cast<float>(moment.y),
+                                 static_cast<float>(moment.z)});
+        flat_moments.insert(flat_moments.end(), {moment.x, moment.y, moment.z});
+    }
+    std::uint64_t state = 0x9E3779B97F4A7C15ULL;
+    const auto next_local = [&state]() {
+        state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+        return -1.0 + 2.0 * static_cast<double>(state >> 11) /
+            static_cast<double>(1ULL << 53);
+    };
+
+    for (int order = 1; order <= ProceduralPointExpansion<double>::max_order;
+         ++order) {
+        INFO("order " << order);
+        const SphericalHarmonicBasis basis(order);
+        const auto modes = static_cast<std::size_t>(basis.size());
+
+        // P2M: the canonical sparse map applied to the flattened moments.
+        const StaticCoefficientOperator rows =
+            build_static_p2m_operator(basis, centre, scene.positions);
+        std::vector<double> expected_M(modes, 0.0);
+        for (const StaticOperatorEntry& entry : rows.entries) {
+            expected_M[static_cast<std::size_t>(entry.output)] +=
+                entry.value * flat_moments[static_cast<std::size_t>(entry.input)];
+        }
+        const double M_scale = *std::max_element(
+            expected_M.begin(), expected_M.end(),
+            [](const double a, const double b) {
+                return std::abs(a) < std::abs(b);
+            });
+        REQUIRE(std::abs(M_scale) > 0.0);
+
+        const ProceduralPointExpansion<double> fp64(order);
+        std::vector<double> M(modes, 0.0);
+        fp64.apply_p2m<Vec3>(centre, scene.positions, scene.moments, M.data());
+        const ProceduralPointExpansion<float> fp32(order);
+        std::vector<float> M_float(modes, 0.0F);
+        fp32.apply_p2m<FloatVec3>(centre, scene.positions, float_moments,
+                                  M_float.data());
+        for (std::size_t mode = 0; mode < modes; ++mode) {
+            REQUIRE(std::abs(M[mode] - expected_M[mode]) <=
+                    tolerance_for(StaticPrecision::Float64) *
+                        std::abs(M_scale));
+            REQUIRE(std::abs(static_cast<double>(M_float[mode]) -
+                             expected_M[mode]) <=
+                    tolerance_for(StaticPrecision::Float32) *
+                        std::abs(M_scale));
+        }
+
+        // L2P: the canonical potential and field rows of every point applied
+        // to one local expansion with entries of order one.
+        std::vector<double> L(modes);
+        std::vector<float> L_float(modes);
+        for (std::size_t mode = 0; mode < modes; ++mode) {
+            L[mode] = next_local();
+            L_float[mode] = static_cast<float>(L[mode]);
+        }
+        std::vector<PotentialField> expected(scene.positions.size());
+        double field_scale = 0.0;
+        double potential_scale = 0.0;
+        for (std::size_t target = 0; target < scene.positions.size(); ++target) {
+            const StaticL2PEvaluator evaluator = build_static_l2p_evaluator(
+                basis, centre, scene.positions[target]);
+            PotentialField& value = expected[target];
+            for (std::size_t mode = 0; mode < modes; ++mode) {
+                value.phi += evaluator.potential[mode] * L[mode];
+                value.H.x += evaluator.field[0][mode] * L[mode];
+                value.H.y += evaluator.field[1][mode] * L[mode];
+                value.H.z += evaluator.field[2][mode] * L[mode];
+            }
+            field_scale = std::max({field_scale, std::abs(value.H.x),
+                                    std::abs(value.H.y), std::abs(value.H.z)});
+            potential_scale = std::max(potential_scale, std::abs(value.phi));
+        }
+        REQUIRE(field_scale > 0.0);
+        REQUIRE(potential_scale > 0.0);
+
+        std::vector<PotentialField> actual(scene.positions.size());
+        fp64.apply_l2p<PotentialField>(centre, scene.positions, L.data(),
+                                       actual, true, true);
+        std::vector<FloatPotentialField> actual_float(scene.positions.size());
+        fp32.apply_l2p<FloatPotentialField>(centre, scene.positions,
+                                            L_float.data(), actual_float, true,
+                                            true);
+        for (std::size_t target = 0; target < scene.positions.size(); ++target) {
+            const PotentialField& reference = expected[target];
+            const double fp64_tolerance = tolerance_for(StaticPrecision::Float64);
+            const double fp32_tolerance = tolerance_for(StaticPrecision::Float32);
+            REQUIRE(std::abs(actual[target].H.x - reference.H.x) <=
+                    fp64_tolerance * field_scale);
+            REQUIRE(std::abs(actual[target].H.y - reference.H.y) <=
+                    fp64_tolerance * field_scale);
+            REQUIRE(std::abs(actual[target].H.z - reference.H.z) <=
+                    fp64_tolerance * field_scale);
+            REQUIRE(std::abs(actual[target].phi - reference.phi) <=
+                    fp64_tolerance * potential_scale);
+            REQUIRE(std::abs(actual_float[target].H.x - reference.H.x) <=
+                    fp32_tolerance * field_scale);
+            REQUIRE(std::abs(actual_float[target].H.y - reference.H.y) <=
+                    fp32_tolerance * field_scale);
+            REQUIRE(std::abs(actual_float[target].H.z - reference.H.z) <=
+                    fp32_tolerance * field_scale);
+            REQUIRE(std::abs(actual_float[target].phi - reference.phi) <=
+                    fp32_tolerance * potential_scale);
+        }
+    }
+}
 
 TEST_CASE("procedural point P2M and L2P reproduce the precomputed rows",
           "[far-field][procedural]")
 {
-    const Scene scene = make_scene(2000);
+    const Scene scene = make_scene(scene_size);
     for (const ExecutionBackend backend : available_backends()) {
+        // CudaFull is field-only; the CPU hierarchy (CpuStatic and the CPU
+        // stages of CudaPartial) also evaluates the potential, so the
+        // procedural L2P potential row is checked there.
+        const OutputFlags output = backend == ExecutionBackend::CudaFull
+            ? OutputFlags::Field : OutputFlags::Both;
         for (const StaticPrecision precision :
              {StaticPrecision::Float64, StaticPrecision::Float32}) {
-            for (const int order : {1, 3, 6, 10}) {
+            // Orders 1, 3 and 6 exercise the smallest, an odd and the
+            // production expansion; the compiled maximum is covered by the
+            // kernel test above without an order-10 operator bank.
+            for (const int order : {1, 3, 6}) {
                 INFO(name(backend) << " "
                      << (precision == StaticPrecision::Float32 ? "fp32" : "fp64")
                      << " order " << order);
@@ -175,15 +319,19 @@ TEST_CASE("procedural point P2M and L2P reproduce the precomputed rows",
                 REQUIRE(procedural.requested_point_expansion_execution() ==
                         PointExpansionExecution::Procedural);
                 const auto expected = precomputed.evaluate(
-                    scene.moments, OutputFlags::Field, scene.identities);
+                    scene.moments, output, scene.identities);
                 const auto actual = procedural.evaluate(
-                    scene.moments, OutputFlags::Field, scene.identities);
+                    scene.moments, output, scene.identities);
                 const double scale = field_scale(expected);
                 REQUIRE(scale > 0.0);
                 const double difference =
                     maximum_field_difference(actual, expected);
                 CAPTURE(difference / scale);
                 REQUIRE(difference <= tolerance_for(precision) * scale);
+                if (output == OutputFlags::Both) {
+                    REQUIRE(maximum_potential_difference(actual, expected) <=
+                            tolerance_for(precision));
+                }
                 if (backend != ExecutionBackend::CudaFull) {
                     // The CPU hierarchy keeps only three small factor tables
                     // instead of 3 C values per source and per target.
@@ -199,37 +347,10 @@ TEST_CASE("procedural point P2M and L2P reproduce the precomputed rows",
     }
 }
 
-TEST_CASE("procedural point L2P reproduces the precomputed potential",
-          "[far-field][procedural]")
-{
-    const Scene scene = make_scene(2000);
-    for (const StaticPrecision precision :
-         {StaticPrecision::Float64, StaticPrecision::Float32}) {
-        INFO((precision == StaticPrecision::Float32 ? "fp32" : "fp64"));
-        UniformFmm precomputed(
-            scene.positions, scene.positions,
-            plan_options(ExecutionBackend::CpuStatic, precision, 6,
-                         PointExpansionExecution::Precomputed));
-        UniformFmm procedural(
-            scene.positions, scene.positions,
-            plan_options(ExecutionBackend::CpuStatic, precision, 6,
-                         PointExpansionExecution::Procedural));
-        const auto expected = precomputed.evaluate(
-            scene.moments, OutputFlags::Both, scene.identities);
-        const auto actual = procedural.evaluate(
-            scene.moments, OutputFlags::Both, scene.identities);
-        const double scale = field_scale(expected);
-        REQUIRE(maximum_field_difference(actual, expected) <=
-                tolerance_for(precision) * scale);
-        REQUIRE(maximum_potential_difference(actual, expected) <=
-                tolerance_for(precision));
-    }
-}
-
 TEST_CASE("procedural point expansion requests are validated",
           "[far-field][procedural]")
 {
-    const Scene scene = make_scene(500);
+    const Scene scene = make_scene(scene_size / 2);
 
     // The Cartesian basis has no procedural executor.
     UniformFmmOptions cartesian = plan_options(
@@ -292,7 +413,7 @@ TEST_CASE("procedural point expansion agrees between cold and warm caches",
         ("cdfmm-procedural-" + std::to_string(::getpid()));
     std::filesystem::create_directories(directory);
     ::setenv("CDFMM_CACHE_DIR", directory.c_str(), 1);
-    const Scene scene = make_scene(1500);
+    const Scene scene = make_scene(scene_size);
     UniformFmmOptions options = plan_options(
         ExecutionBackend::CpuStatic, StaticPrecision::Float32, 6,
         PointExpansionExecution::Procedural);
