@@ -12,8 +12,11 @@ dependencies = ["numpy"]
 test = [
     "pytest",
     "matplotlib",
-    # The notebook contract tests parse .ipynb files with nbformat.
+    # The tutorial tests parse the notebooks with nbformat and execute them
+    # headlessly with nbclient on a generic python3 kernel.
     "nbformat",
+    "nbclient",
+    "ipykernel",
 ]
 examples = [
     "matplotlib",

@@ -1,5 +1,3 @@
-import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -69,53 +67,3 @@ def test_spherical_accepts_cuboids_and_rejects_reference_execution():
     options.backend = cdfmm.ExecutionBackend.CPU_REFERENCE
     with pytest.raises(ValueError, match="static M2L"):
         cdfmm.UniformFmm(positions, positions, options)
-
-
-def test_cartesian_spherical_comparison_notebook_is_valid_and_compilable():
-    notebook_path = (
-        Path(__file__).parents[1]
-        / "examples"
-        / "simple_notebooks"
-        / "simple_cartesian_spherical_fmm_compare.ipynb"
-    )
-    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
-    assert notebook["nbformat"] == 4
-    sources = [
-        "".join(cell.get("source", []))
-        for cell in notebook["cells"]
-        if cell["cell_type"] == "code"
-    ]
-    for index, source in enumerate(sources):
-        compile(source, f"{notebook_path.name}:cell-{index}", "exec")
-
-    combined = "\n".join(sources)
-    assert "ORDERS = [1, 2, 3, 4, 5, 6]" in combined
-    assert "REPETITIONS = 7" in combined
-    assert "ExpansionBasis.SPHERICAL" in combined
-    assert "DenseDirectPlan" in combined
-    assert "SourceGeometry." in combined
-    assert "TargetGeometry." in combined
-
-
-def test_spherical_cuboid_p2m_l2p_notebook_is_valid_and_compilable():
-    notebook_path = (
-        Path(__file__).parents[1]
-        / "examples"
-        / "simple_notebooks"
-        / "simple_cuboid_p2m_l2p_direct_compare.ipynb"
-    )
-    notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
-    assert notebook["nbformat"] == 4
-    sources = [
-        "".join(cell.get("source", []))
-        for cell in notebook["cells"]
-        if cell["cell_type"] == "code"
-    ]
-    for index, source in enumerate(sources):
-        compile(source, f"{notebook_path.name}:cell-{index}", "exec")
-
-    combined = "\n".join(sources)
-    assert "ExpansionBasis.SPHERICAL" in combined
-    assert "SourceGeometry." in combined
-    assert "TargetGeometry." in combined
-    assert "ORDERS = [4, 6]" in combined

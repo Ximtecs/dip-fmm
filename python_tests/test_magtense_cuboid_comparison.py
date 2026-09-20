@@ -12,8 +12,8 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOK = (
     REPOSITORY_ROOT
     / "examples"
-    / "simple_notebooks"
-    / "simple_cuboid_magtense_compare.ipynb"
+    / "validation"
+    / "magtense_cuboid_compare.ipynb"
 )
 MAGTENSE_ENVIRONMENT = REPOSITORY_ROOT / "environment-magtense.yml"
 CMAKE_PRESETS = REPOSITORY_ROOT / "CMakePresets.json"

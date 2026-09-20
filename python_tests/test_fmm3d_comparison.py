@@ -6,7 +6,7 @@ import subprocess
 import numpy as np
 import pytest
 
-from examples.notebooks.fmm3d_comparison import (
+from benchmarks.external.fmm3d.fmm3d_comparison import (
     fmm3d_laplace_nterms,
     fmm3d_source_fields,
     is_out_of_memory_error,
@@ -17,8 +17,8 @@ from examples.notebooks.fmm3d_comparison import (
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
-NOTEBOOK = REPOSITORY_ROOT / "examples/notebooks/11_fmm3d_comparison.ipynb"
-INSTALLER = REPOSITORY_ROOT / "examples/notebooks/install_fmm3d.sh"
+NOTEBOOK = REPOSITORY_ROOT / "benchmarks/external/fmm3d/fmm3d_comparison.ipynb"
+INSTALLER = REPOSITORY_ROOT / "benchmarks/external/fmm3d/install_fmm3d.sh"
 
 
 class Fmm3dOutput:

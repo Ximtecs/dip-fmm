@@ -14,8 +14,8 @@ import nbformat
 NOTEBOOK = (
     Path(__file__).parents[1]
     / "examples"
-    / "simple_notebooks"
-    / "simple_geometry_magtense_compare.ipynb"
+    / "validation"
+    / "magtense_geometry_compare.ipynb"
 )
 
 

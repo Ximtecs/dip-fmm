@@ -1,15 +1,14 @@
-"""Focused validation for the adaptive-tree showcase helpers and notebook."""
+"""Focused validation for the adaptive-tree tutorial helpers."""
 
 from pathlib import Path
 import sys
 
-import nbformat
 import numpy as np
 import cdfmm
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPOSITORY_ROOT / "examples" / "notebooks"))
+sys.path.insert(0, str(REPOSITORY_ROOT / "examples" / "tutorials"))
 
 from adaptive_showcase import (
     INTERACTION_MODES,
@@ -27,9 +26,6 @@ from adaptive_showcase import (
 )
 
 
-NOTEBOOK = REPOSITORY_ROOT / "examples" / "notebooks" / "15_adaptive_tree.ipynb"
-
-
 def _adaptive_options(capacity=10, max_depth=3):
     options = cdfmm.AdaptiveTreeOptions()
     options.max_particles_per_leaf = capacity
@@ -37,34 +33,6 @@ def _adaptive_options(capacity=10, max_depth=3):
     options.root_centre = cdfmm.Vec3(0.0, 0.0, 0.0)
     options.root_half_width = 0.5
     return options
-
-
-def test_adaptive_notebook_has_ids_and_compilable_code_cells():
-    notebook = nbformat.read(NOTEBOOK, as_version=4)
-    nbformat.validate(notebook)
-
-    ids = [cell.id for cell in notebook.cells]
-    assert len(ids) == len(set(ids)) == len(notebook.cells)
-    assert notebook.metadata["kernelspec"]["display_name"] == "cdfmm"
-
-    sources = [
-        "".join(cell.source)
-        for cell in notebook.cells
-        if cell.cell_type == "code"
-    ]
-    for index, source in enumerate(sources):
-        compile(source, f"{NOTEBOOK.name}:cell-{index}", "exec")
-
-    combined = "\n".join(sources)
-    assert "cdfmm.AdaptiveTree" in combined or "build_trees" in combined
-    assert "ExecutionBackend.CUDA_FULL" in combined
-    assert "INTERACTION_MODES" in combined
-    assert "REDUCED_VALUES" in combined
-    assert "reference_target_indices" in combined
-    assert "direct_reference" in combined
-    assert "evaluate_components" in combined
-    assert "plan.cuda_plan_statistics" in combined
-    assert "plan.cuda_statistics" not in combined
 
 
 def test_material_generation_is_deterministic_and_conserves_volume_and_moment():

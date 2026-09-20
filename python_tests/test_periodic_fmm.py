@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import numpy as np
@@ -7,9 +6,6 @@ import cdfmm
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]
-COMPARISON_NOTEBOOK = (
-    REPOSITORY_ROOT / "examples/notebooks/14_periodic_fmm_direct_compare.ipynb"
-)
 
 
 def test_periodic_point_self_retains_nonzero_images():
@@ -48,23 +44,3 @@ def test_periodic_positions_wrap_before_tree_construction():
         rtol=1.0e-12,
         atol=1.0e-12,
     )
-
-
-def test_periodic_comparison_switches_exact_near_field_geometry():
-    notebook = json.loads(COMPARISON_NOTEBOOK.read_text(encoding="utf-8"))
-    sources = [
-        "".join(cell["source"])
-        for cell in notebook["cells"]
-        if cell["cell_type"] == "code"
-    ]
-    combined_source = "\n".join(sources)
-
-    assert "USE_CUBOIDS =" in sources[0]
-    assert "moments = CUBOID_VOLUME * magnetisations" in combined_source
-    assert "cdfmm.CudaDenseDirectPlan(" in combined_source
-    assert "cdfmm.cuda_dense_direct_available()" in combined_source
-    assert "SourceGeometry." in combined_source
-    assert "TargetGeometry." in combined_source
-
-    for index, source in enumerate(sources):
-        compile(source, f"{COMPARISON_NOTEBOOK.name}:cell-{index}", "exec")
