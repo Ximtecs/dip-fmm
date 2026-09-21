@@ -330,6 +330,9 @@ def make_options(material, backend, order=6, interaction_mode="point-point",
     source_geometry, target_geometry = interaction_geometry(interaction_mode)
     options = cdfmm.UniformFmmOptions()
     options.backend = backend
+    # The showcase reports phase medians, so it collects the detailed solver
+    # timing; the headline seconds remain the external clock around evaluate.
+    options.timing_level = cdfmm.TimingLevel.DETAILED
     options.precision = precision or cdfmm.StaticPrecision.FLOAT32
     options.expansion_basis = cdfmm.ExpansionBasis.SPHERICAL
     options.expansion_order = order
@@ -635,7 +638,9 @@ def benchmark_summary(setup, measurements, diagnostics):
                 if (row["tree"], row["interaction_mode"], row["p2p_mode"],
                     row["dictionary_executor"]) == key]
         seconds = np.asarray([row["seconds"] for row in rows])
-        phase_names = sorted({name for row in rows for name in row["phases"]})
+        # `timing_level` labels the record and is not a phase.
+        phase_names = sorted({name for row in rows for name in row["phases"]}
+                             - {"timing_level"})
         record = dict(diagnostic)
         record.update(
             plan_setup_seconds=setup[key],
