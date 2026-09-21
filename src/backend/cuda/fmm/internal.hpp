@@ -168,7 +168,12 @@ public:
   [[nodiscard]] std::span<Vec3> pinned_fields() noexcept;
   [[nodiscard]] std::span<FloatVec3> pinned_fields_float() noexcept;
   [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
+  /// @brief Device lanes of the latest evaluation; populated only at `Detailed`.
   [[nodiscard]] const CudaEvaluationTimings &timings() const noexcept;
+  /// @brief Level of device timing collected by later evaluations (default `Off`).
+  [[nodiscard]] TimingLevel timing_level() const noexcept;
+  /// @brief Selects the level of device timing; safe between evaluations.
+  void set_timing_level(TimingLevel level) noexcept;
 
 private:
     struct Implementation;

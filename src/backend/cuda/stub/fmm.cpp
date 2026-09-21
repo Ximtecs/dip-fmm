@@ -50,6 +50,12 @@ const CudaEvaluationTimings &CudaFullPlan::timings() const noexcept {
   return empty;
 }
 
+TimingLevel CudaFullPlan::timing_level() const noexcept {
+  return TimingLevel::Off;
+}
+
+void CudaFullPlan::set_timing_level(TimingLevel) noexcept {}
+
 void CudaFullPlan::copy_far_fields(std::span<Vec3>) const {
   throw std::runtime_error("CUDA backend is unavailable");
 }

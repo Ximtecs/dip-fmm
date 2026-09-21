@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "backend/cuda/fmm/internal.hpp"
+#include "backend/cuda/common/diagnostic_event.hpp"
 #include "backend/cuda/common/stream.hpp"
 #include "profile.hpp"
 #include "cdfmm/backend/cuda/m2l.hpp"
@@ -58,12 +59,22 @@ namespace {
 //   near-field stream: wait(moments_ready) -> P2P -> [p2p_complete]
 //
 // so the exact near field overlaps the whole far-field hierarchy and the only
-// host synchronisation is the final wait on `d2h_complete`.  Phase timings
-// come from the recorded events, which is why they may overlap and are never
-// summed as a critical path.  The FP64 and FP32 bodies are kept separate and
-// symmetric on purpose: each instantiates only its own kernels.
+// host synchronisation is the final wait on `d2h_complete`.
+//
+// Exactly three events are functional: `moments_ready` (the near-field
+// stream waits on it), `p2p_complete` (the far-field stream waits on it
+// before combining) and `d2h_complete` (the host's completion point).  They
+// are created with cudaEventDisableTiming and are recorded on every
+// evaluation.  Every other event is diagnostic: it exists to bound a phase
+// for `CudaEvaluationTimings`, is recorded only when the plan's timing level
+// is `Detailed`, and no elapsed time is ever queried below that level.  The
+// phase lanes may overlap and are never summed as a critical path.  The FP64
+// and FP32 bodies are kept separate and symmetric on purpose: each
+// instantiates only its own kernels.
 
 using cuda_detail::check_cuda;
+using cuda_detail::diagnostic_elapsed_seconds;
+using cuda_detail::record_diagnostic;
 
 // Gather the user-order moments into Morton (leaf) order.
 template <typename Vector>
@@ -175,8 +186,16 @@ struct CudaFullPlan::Implementation {
     FloatVec3 *pinned_fields_float{nullptr};
     cudaStream_t far_field_stream{};
     cudaStream_t near_field_stream{};
-    cudaEvent_t evaluation_start{};
+    // Functional events (cudaEventDisableTiming): the two cross-stream
+    // dependencies and the host completion point.  Always recorded.
     cudaEvent_t moments_ready{};
+    cudaEvent_t p2p_complete{};
+    cudaEvent_t d2h_complete{};
+    // Diagnostic events (timing-capable): recorded only at
+    // TimingLevel::Detailed.  `moments_permuted`, `p2p_finished` and
+    // `evaluation_end` are the timing twins of the three functional events.
+    cudaEvent_t evaluation_start{};
+    cudaEvent_t moments_permuted{};
     cudaEvent_t p2m_complete{};
     cudaEvent_t m2m_complete{};
     cudaEvent_t m2l_scale_complete{};
@@ -184,16 +203,85 @@ struct CudaFullPlan::Implementation {
     cudaEvent_t l2l_complete{};
     cudaEvent_t l2p_complete{};
     cudaEvent_t p2p_start{};
-    cudaEvent_t p2p_complete{};
+    cudaEvent_t p2p_finished{};
     cudaEvent_t combination_start{};
     cudaEvent_t combination_complete{};
-    cudaEvent_t d2h_complete{};
+    cudaEvent_t evaluation_end{};
+    TimingLevel timing_level{TimingLevel::Off};
     CudaPlanStatistics statistics{};
     CudaEvaluationTimings timings{};
   std::vector<int> fixed_self_indices{};
   bool identity_initialised{false};
   std::size_t p2p_block_count{0};
 };
+
+namespace {
+
+// `Implementation` is private to CudaFullPlan, so the helpers below are
+// templates over it rather than naming it.  The three functional events carry
+// no timestamps; the diagnostic events do.
+template <typename Implementation>
+void create_plan_events(Implementation &plan, const char *what) {
+  for (cudaEvent_t *event : {&plan.moments_ready, &plan.p2p_complete,
+                             &plan.d2h_complete}) {
+    check_cuda(cudaEventCreateWithFlags(event, cudaEventDisableTiming), what);
+  }
+  for (cudaEvent_t *event :
+       {&plan.evaluation_start, &plan.moments_permuted, &plan.p2m_complete,
+        &plan.m2m_complete, &plan.m2l_scale_complete, &plan.m2l_complete,
+        &plan.l2l_complete, &plan.l2p_complete, &plan.p2p_start,
+        &plan.p2p_finished, &plan.combination_start,
+        &plan.combination_complete, &plan.evaluation_end}) {
+    check_cuda(cudaEventCreate(event), what);
+  }
+}
+
+template <typename Implementation>
+void destroy_plan_events(Implementation &plan) noexcept {
+  for (const cudaEvent_t event :
+       {plan.moments_ready, plan.p2p_complete, plan.d2h_complete,
+        plan.evaluation_start, plan.moments_permuted, plan.p2m_complete,
+        plan.m2m_complete, plan.m2l_scale_complete, plan.m2l_complete,
+        plan.l2l_complete, plan.l2p_complete, plan.p2p_start,
+        plan.p2p_finished, plan.combination_start, plan.combination_complete,
+        plan.evaluation_end}) {
+    cudaEventDestroy(event);
+  }
+}
+
+// Phase lanes from the diagnostic events of one completed evaluation.
+// `p2p_seconds` is measured on the near-field stream and overlaps the
+// far-field phases, so `kernel_seconds` is a diagnostic sum, not a wall time;
+// `total_seconds` is the far-field stream's first-to-last event.
+template <typename Implementation>
+void read_detailed_timings(Implementation &plan, const char *what) {
+  const auto elapsed = [what](const cudaEvent_t first,
+                              const cudaEvent_t second) {
+    return diagnostic_elapsed_seconds(first, second, what);
+  };
+  CudaEvaluationTimings &timings = plan.timings;
+  timings = {};
+  timings.timing_level = TimingLevel::Detailed;
+  timings.h2d_seconds = elapsed(plan.evaluation_start, plan.moments_permuted);
+  timings.p2m_seconds = elapsed(plan.moments_permuted, plan.p2m_complete);
+  timings.m2m_seconds = elapsed(plan.p2m_complete, plan.m2m_complete);
+  timings.m2l_seconds = elapsed(plan.m2m_complete, plan.m2l_complete);
+  timings.scale_seconds = elapsed(plan.m2m_complete, plan.m2l_scale_complete);
+  timings.multiply_seconds =
+      elapsed(plan.m2l_scale_complete, plan.m2l_complete);
+  timings.l2l_seconds = elapsed(plan.m2l_complete, plan.l2l_complete);
+  timings.l2p_seconds = elapsed(plan.l2l_complete, plan.l2p_complete);
+  timings.p2p_seconds = elapsed(plan.p2p_start, plan.p2p_finished);
+  timings.accumulation_seconds =
+      elapsed(plan.combination_start, plan.combination_complete);
+  timings.d2h_seconds = elapsed(plan.combination_complete, plan.evaluation_end);
+  timings.kernel_seconds = timings.p2m_seconds + timings.m2m_seconds +
+      timings.m2l_seconds + timings.l2l_seconds + timings.l2p_seconds +
+      timings.p2p_seconds + timings.accumulation_seconds;
+  timings.total_seconds = elapsed(plan.evaluation_start, plan.evaluation_end);
+}
+
+} // namespace
 
 // Construction uploads everything static on the far-field stream and ends
 // with one synchronisation: streams and events, permutations, the selected
@@ -250,24 +338,7 @@ CudaFullPlan::CudaFullPlan(const CudaFullPlanData &data)
   check_cuda(cudaStreamCreateWithFlags(&plan.near_field_stream,
                                        cudaStreamNonBlocking),
              "create full FMM near-field stream");
-  const std::array<cudaEvent_t *, 13> events{
-      &plan.evaluation_start,
-      &plan.moments_ready,
-      &plan.p2m_complete,
-      &plan.m2m_complete,
-      &plan.m2l_scale_complete,
-      &plan.m2l_complete,
-      &plan.l2l_complete,
-      &plan.l2p_complete,
-      &plan.p2p_start,
-      &plan.p2p_complete,
-      &plan.combination_start,
-      &plan.combination_complete,
-      &plan.d2h_complete,
-  };
-  for (cudaEvent_t *event : events) {
-    check_cuda(cudaEventCreate(event), "create full FMM event");
-  }
+  create_plan_events(plan, "create full FMM event");
     const auto allocate = [](auto** pointer, const std::size_t bytes) {
         check_cuda(cudaMalloc(reinterpret_cast<void**>(pointer),
                           std::max(bytes, std::size_t{1})),
@@ -498,15 +569,7 @@ CudaFullPlan::CudaFullPlan(const FloatCudaFullPlanData &data)
   check_cuda(cudaStreamCreateWithFlags(&plan.near_field_stream,
                                        cudaStreamNonBlocking),
              "create FP32 full FMM near-field stream");
-  const std::array<cudaEvent_t *, 13> events{
-      &plan.evaluation_start, &plan.moments_ready, &plan.p2m_complete,
-      &plan.m2m_complete, &plan.m2l_scale_complete, &plan.m2l_complete,
-      &plan.l2l_complete, &plan.l2p_complete, &plan.p2p_start,
-      &plan.p2p_complete, &plan.combination_start,
-      &plan.combination_complete, &plan.d2h_complete};
-  for (cudaEvent_t *event : events) {
-    check_cuda(cudaEventCreate(event), "create FP32 full FMM event");
-  }
+  create_plan_events(plan, "create FP32 full FMM event");
   const auto allocate = [](auto **pointer, const std::size_t bytes) {
     check_cuda(cudaMalloc(reinterpret_cast<void **>(pointer),
                           std::max(bytes, std::size_t{1})),
@@ -734,24 +797,7 @@ CudaFullPlan::~CudaFullPlan() {
     cudaFree(plan.final_fields_float);
     cudaFreeHost(plan.pinned_moments_float);
     cudaFreeHost(plan.pinned_fields_float);
-    const std::array<cudaEvent_t, 13> events{
-        plan.evaluation_start,
-        plan.moments_ready,
-        plan.p2m_complete,
-        plan.m2m_complete,
-        plan.m2l_scale_complete,
-        plan.m2l_complete,
-        plan.l2l_complete,
-        plan.l2p_complete,
-        plan.p2p_start,
-        plan.p2p_complete,
-        plan.combination_start,
-        plan.combination_complete,
-        plan.d2h_complete,
-    };
-    for (cudaEvent_t event : events) {
-      cudaEventDestroy(event);
-    }
+    destroy_plan_events(plan);
     cudaStreamDestroy(plan.near_field_stream);
     cudaStreamDestroy(plan.far_field_stream);
     delete implementation_;
@@ -794,8 +840,9 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
     std::copy(moments.begin(), moments.end(), plan.pinned_moments);
   }
   constexpr int threads = 256;
-  check_cuda(cudaEventRecord(plan.evaluation_start, plan.far_field_stream),
-             "record full FMM start");
+  const bool detailed = plan.timing_level == TimingLevel::Detailed;
+  record_diagnostic(detailed, plan.evaluation_start, plan.far_field_stream,
+                    "record full FMM start");
   {
     detail::ProfileRange transfer_range{"cdfmm/input_preparation/moments_h2d"};
     if (!moments.empty()) {
@@ -815,14 +862,16 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   }
   check_cuda(cudaEventRecord(plan.moments_ready, plan.far_field_stream),
              "record full FMM moments ready");
+  record_diagnostic(detailed, plan.moments_permuted, plan.far_field_stream,
+                    "record full FMM moments permuted");
 
   // P2P and the far-field hierarchy both consume the immutable sorted moments.
   // Once permutation is complete they have no data dependency until final
   // field combination, so retain them on independent non-blocking streams.
   check_cuda(cudaStreamWaitEvent(plan.near_field_stream, plan.moments_ready, 0),
              "wait for full FMM moments on near-field stream");
-  check_cuda(cudaEventRecord(plan.p2p_start, plan.near_field_stream),
-             "record full FMM P2P start");
+  record_diagnostic(detailed, plan.p2p_start, plan.near_field_stream,
+                    "record full FMM P2P start");
   {
     detail::ProfileRange p2p_range{"cdfmm/near_field/p2p"};
     if (plan.use_p2p_dictionary) {
@@ -846,6 +895,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   }
   check_cuda(cudaEventRecord(plan.p2p_complete, plan.near_field_stream),
              "record full FMM P2P completion");
+  record_diagnostic(detailed, plan.p2p_finished, plan.near_field_stream,
+                    "record full FMM P2P finished");
 
   {
     detail::ProfileRange p2m_range{"cdfmm/far_field/p2m"};
@@ -859,16 +910,16 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
         plan.far_field_stream);
     p2m_range.end();
   }
-  check_cuda(cudaEventRecord(plan.p2m_complete, plan.far_field_stream),
-             "record P2M");
+  record_diagnostic(detailed, plan.p2m_complete, plan.far_field_stream,
+                    "record P2M");
   // Kernels for one level can update parent coefficients concurrently, but a
   // parent level must not consume them early. Launching levels into one stream
   // supplies the required child-to-parent ordering without a host barrier.
   detail::ProfileRange m2m_range{"cdfmm/far_field/m2m"};
   plan.far_field->enqueue_m2m(plan.multipoles, plan.multipoles,
                               plan.far_field_stream);
-  check_cuda(cudaEventRecord(plan.m2m_complete, plan.far_field_stream),
-             "record M2M");
+  record_diagnostic(detailed, plan.m2m_complete, plan.far_field_stream,
+                    "record M2M");
   m2m_range.end();
   detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
   check_cuda(cudaMemsetAsync(plan.locals, 0,
@@ -877,17 +928,17 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
                              plan.far_field_stream),
              "clear full FMM locals");
   plan.m2l->enqueue(plan.multipoles, plan.locals, plan.far_field_stream,
-                    plan.m2l_scale_complete);
-  check_cuda(cudaEventRecord(plan.m2l_complete, plan.far_field_stream),
-             "record M2L");
+                    detailed ? plan.m2l_scale_complete : nullptr);
+  record_diagnostic(detailed, plan.m2l_complete, plan.far_field_stream,
+                    "record M2L");
   m2l_range.end();
   detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
   // The downward dependency is the reverse: each parent local must be complete
   // before the next level translates it to children. Stream order enforces it.
   plan.far_field->enqueue_l2l(plan.locals, plan.locals,
                               plan.far_field_stream);
-  check_cuda(cudaEventRecord(plan.l2l_complete, plan.far_field_stream),
-             "record L2L");
+  record_diagnostic(detailed, plan.l2l_complete, plan.far_field_stream,
+                    "record L2L");
   l2l_range.end();
   detail::ProfileRange l2p_range{"cdfmm/far_field/l2p"};
   check_cuda(cudaMemsetAsync(plan.far_fields, 0,
@@ -898,8 +949,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   plan.far_field->enqueue_l2p(
       plan.locals, reinterpret_cast<double *>(plan.far_fields),
       plan.far_field_stream);
-  check_cuda(cudaEventRecord(plan.l2p_complete, plan.far_field_stream),
-             "record L2P");
+  record_diagnostic(detailed, plan.l2p_complete, plan.far_field_stream,
+                    "record L2P");
   l2p_range.end();
 
   // Final combination is the first operation that consumes both branches.
@@ -907,8 +958,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   // all available near/far overlap.
   check_cuda(cudaStreamWaitEvent(plan.far_field_stream, plan.p2p_complete, 0),
              "wait for full FMM P2P before combination");
-  check_cuda(cudaEventRecord(plan.combination_start, plan.far_field_stream),
-             "record full FMM combination start");
+  record_diagnostic(detailed, plan.combination_start, plan.far_field_stream,
+                    "record full FMM combination start");
   detail::ProfileRange combine_range{"cdfmm/combine"};
   if (plan.target_count != 0) {
     // Combining and unsorting on-device keeps intermediate far/near fields
@@ -918,8 +969,8 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
         plan.far_fields, plan.near_fields, plan.target_permutation,
         plan.target_count, plan.final_fields);
   }
-  check_cuda(cudaEventRecord(plan.combination_complete, plan.far_field_stream),
-             "record accumulation");
+  record_diagnostic(detailed, plan.combination_complete,
+                    plan.far_field_stream, "record accumulation");
   combine_range.end();
   {
     detail::ProfileRange transfer_range{"cdfmm/output/final_field_d2h"};
@@ -933,46 +984,17 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
   }
   check_cuda(cudaEventRecord(plan.d2h_complete, plan.far_field_stream),
              "record field download");
+  record_diagnostic(detailed, plan.evaluation_end, plan.far_field_stream,
+                    "record full FMM end");
   check_cuda(cudaEventSynchronize(plan.d2h_complete),
              "wait for full FMM evaluation");
   if (fields.data() != plan.pinned_fields) {
     std::copy(plan.pinned_fields, plan.pinned_fields + fields.size(),
               fields.begin());
   }
-  // Phase timings from the recorded events.  `p2p_seconds` is measured on the
-  // near-field stream and overlaps the far-field phases; `kernel_seconds` is
-  // therefore a diagnostic sum, not a wall time, and `total_seconds` is.
-  const auto elapsed = [](const cudaEvent_t first, const cudaEvent_t second) {
-    float milliseconds = 0.0F;
-    check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
-               "time full FMM phase");
-    return static_cast<double>(milliseconds) * 1.0e-3;
-  };
-  plan.timings = {};
-  plan.timings.h2d_seconds =
-      elapsed(plan.evaluation_start, plan.moments_ready);
-  plan.timings.p2m_seconds =
-      elapsed(plan.moments_ready, plan.p2m_complete);
-  plan.timings.m2m_seconds = elapsed(plan.p2m_complete, plan.m2m_complete);
-  plan.timings.m2l_seconds = elapsed(plan.m2m_complete, plan.m2l_complete);
-  plan.timings.scale_seconds =
-      elapsed(plan.m2m_complete, plan.m2l_scale_complete);
-  plan.timings.multiply_seconds =
-      elapsed(plan.m2l_scale_complete, plan.m2l_complete);
-  plan.timings.l2l_seconds = elapsed(plan.m2l_complete, plan.l2l_complete);
-  plan.timings.l2p_seconds = elapsed(plan.l2l_complete, plan.l2p_complete);
-  plan.timings.p2p_seconds = elapsed(plan.p2p_start, plan.p2p_complete);
-  plan.timings.accumulation_seconds =
-      elapsed(plan.combination_start, plan.combination_complete);
-  plan.timings.d2h_seconds =
-      elapsed(plan.combination_complete, plan.d2h_complete);
-  plan.timings.kernel_seconds =
-      plan.timings.p2m_seconds + plan.timings.m2m_seconds +
-      plan.timings.m2l_seconds + plan.timings.l2l_seconds +
-      plan.timings.l2p_seconds + plan.timings.p2p_seconds +
-      plan.timings.accumulation_seconds;
-  plan.timings.total_seconds =
-      elapsed(plan.evaluation_start, plan.d2h_complete);
+  if (detailed) {
+    read_detailed_timings(plan, "time full FMM phase");
+  }
   plan.statistics.evaluation_h2d_bytes = moments.size_bytes();
   plan.statistics.evaluation_d2h_bytes = fields.size_bytes();
     ++plan.statistics.evaluation_h2d_calls;
@@ -1016,9 +1038,10 @@ void CudaFullPlan::evaluate(
     std::copy(moments.begin(), moments.end(), plan.pinned_moments_float);
   }
   constexpr int threads = 256;
+  const bool detailed = plan.timing_level == TimingLevel::Detailed;
 
-  check_cuda(cudaEventRecord(plan.evaluation_start, plan.far_field_stream),
-             "record FP32 full FMM start");
+  record_diagnostic(detailed, plan.evaluation_start, plan.far_field_stream,
+                    "record FP32 full FMM start");
   if (!moments.empty()) {
     check_cuda(cudaMemcpyAsync(plan.moments_float, plan.pinned_moments_float,
                                moments.size_bytes(), cudaMemcpyHostToDevice,
@@ -1032,11 +1055,13 @@ void CudaFullPlan::evaluate(
   }
   check_cuda(cudaEventRecord(plan.moments_ready, plan.far_field_stream),
              "record FP32 full FMM moments ready");
+  record_diagnostic(detailed, plan.moments_permuted, plan.far_field_stream,
+                    "record FP32 full FMM moments permuted");
 
   check_cuda(cudaStreamWaitEvent(plan.near_field_stream, plan.moments_ready, 0),
              "wait for FP32 full FMM moments on P2P stream");
-  check_cuda(cudaEventRecord(plan.p2p_start, plan.near_field_stream),
-             "record FP32 full FMM P2P start");
+  record_diagnostic(detailed, plan.p2p_start, plan.near_field_stream,
+                    "record FP32 full FMM P2P start");
   if (plan.use_p2p_dictionary) {
     launch_signed_dictionary_p2p(
         plan.p2p_dictionary_float, plan.sorted_moments_float,
@@ -1059,6 +1084,8 @@ void CudaFullPlan::evaluate(
   }
   check_cuda(cudaEventRecord(plan.p2p_complete, plan.near_field_stream),
              "record FP32 full FMM P2P completion");
+  record_diagnostic(detailed, plan.p2p_finished, plan.near_field_stream,
+                    "record FP32 full FMM P2P finished");
 
   const std::size_t coefficient_values =
       static_cast<std::size_t>(plan.node_count) * plan.coefficient_count;
@@ -1069,13 +1096,13 @@ void CudaFullPlan::evaluate(
   plan.far_field_float->enqueue_p2m(
       reinterpret_cast<float *>(plan.sorted_moments_float),
       plan.multipoles_float, plan.far_field_stream);
-  check_cuda(cudaEventRecord(plan.p2m_complete, plan.far_field_stream),
-             "record FP32 P2M");
+  record_diagnostic(detailed, plan.p2m_complete, plan.far_field_stream,
+                    "record FP32 P2M");
 
   plan.far_field_float->enqueue_m2m(
       plan.multipoles_float, plan.multipoles_float, plan.far_field_stream);
-  check_cuda(cudaEventRecord(plan.m2m_complete, plan.far_field_stream),
-             "record FP32 M2M");
+  record_diagnostic(detailed, plan.m2m_complete, plan.far_field_stream,
+                    "record FP32 M2M");
 
   check_cuda(cudaMemsetAsync(plan.locals_float, 0,
                              coefficient_values * sizeof(float),
@@ -1083,14 +1110,14 @@ void CudaFullPlan::evaluate(
              "clear FP32 full FMM locals");
   plan.m2l_float->enqueue(plan.multipoles_float, plan.locals_float,
                           plan.far_field_stream,
-                          plan.m2l_scale_complete);
-  check_cuda(cudaEventRecord(plan.m2l_complete, plan.far_field_stream),
-             "record FP32 M2L");
+                          detailed ? plan.m2l_scale_complete : nullptr);
+  record_diagnostic(detailed, plan.m2l_complete, plan.far_field_stream,
+                    "record FP32 M2L");
 
   plan.far_field_float->enqueue_l2l(
       plan.locals_float, plan.locals_float, plan.far_field_stream);
-  check_cuda(cudaEventRecord(plan.l2l_complete, plan.far_field_stream),
-             "record FP32 L2L");
+  record_diagnostic(detailed, plan.l2l_complete, plan.far_field_stream,
+                    "record FP32 L2L");
 
   check_cuda(cudaMemsetAsync(plan.far_fields_float, 0,
                              static_cast<std::size_t>(plan.target_count) *
@@ -1100,13 +1127,13 @@ void CudaFullPlan::evaluate(
   plan.far_field_float->enqueue_l2p(
       plan.locals_float, reinterpret_cast<float *>(plan.far_fields_float),
       plan.far_field_stream);
-  check_cuda(cudaEventRecord(plan.l2p_complete, plan.far_field_stream),
-             "record FP32 L2P");
+  record_diagnostic(detailed, plan.l2p_complete, plan.far_field_stream,
+                    "record FP32 L2P");
 
   check_cuda(cudaStreamWaitEvent(plan.far_field_stream, plan.p2p_complete, 0),
              "wait for FP32 P2P before combination");
-  check_cuda(cudaEventRecord(plan.combination_start, plan.far_field_stream),
-             "record FP32 combination start");
+  record_diagnostic(detailed, plan.combination_start, plan.far_field_stream,
+                    "record FP32 combination start");
   if (plan.target_count != 0) {
     combine_order_kernel<<<
         (plan.target_count + threads - 1) / threads, threads, 0,
@@ -1114,8 +1141,8 @@ void CudaFullPlan::evaluate(
         plan.far_fields_float, plan.near_fields_float,
         plan.target_permutation, plan.target_count, plan.final_fields_float);
   }
-  check_cuda(cudaEventRecord(plan.combination_complete, plan.far_field_stream),
-             "record FP32 combination");
+  record_diagnostic(detailed, plan.combination_complete,
+                    plan.far_field_stream, "record FP32 combination");
   if (!fields.empty()) {
     check_cuda(cudaMemcpyAsync(plan.pinned_fields_float,
                                plan.final_fields_float, fields.size_bytes(),
@@ -1125,43 +1152,17 @@ void CudaFullPlan::evaluate(
   }
   check_cuda(cudaEventRecord(plan.d2h_complete, plan.far_field_stream),
              "record FP32 field download");
+  record_diagnostic(detailed, plan.evaluation_end, plan.far_field_stream,
+                    "record FP32 full FMM end");
   check_cuda(cudaEventSynchronize(plan.d2h_complete),
              "wait for FP32 full FMM evaluation");
   if (fields.data() != plan.pinned_fields_float) {
     std::copy(plan.pinned_fields_float,
               plan.pinned_fields_float + fields.size(), fields.begin());
   }
-
-  const auto elapsed = [](const cudaEvent_t first, const cudaEvent_t second) {
-    float milliseconds = 0.0F;
-    check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
-               "time FP32 full FMM phase");
-    return static_cast<double>(milliseconds) * 1.0e-3;
-  };
-  plan.timings = {};
-  plan.timings.h2d_seconds =
-      elapsed(plan.evaluation_start, plan.moments_ready);
-  plan.timings.p2m_seconds = elapsed(plan.moments_ready, plan.p2m_complete);
-  plan.timings.m2m_seconds = elapsed(plan.p2m_complete, plan.m2m_complete);
-  plan.timings.m2l_seconds = elapsed(plan.m2m_complete, plan.m2l_complete);
-  plan.timings.scale_seconds =
-      elapsed(plan.m2m_complete, plan.m2l_scale_complete);
-  plan.timings.multiply_seconds =
-      elapsed(plan.m2l_scale_complete, plan.m2l_complete);
-  plan.timings.l2l_seconds = elapsed(plan.m2l_complete, plan.l2l_complete);
-  plan.timings.l2p_seconds = elapsed(plan.l2l_complete, plan.l2p_complete);
-  plan.timings.p2p_seconds = elapsed(plan.p2p_start, plan.p2p_complete);
-  plan.timings.accumulation_seconds =
-      elapsed(plan.combination_start, plan.combination_complete);
-  plan.timings.d2h_seconds =
-      elapsed(plan.combination_complete, plan.d2h_complete);
-  plan.timings.kernel_seconds =
-      plan.timings.p2m_seconds + plan.timings.m2m_seconds +
-      plan.timings.m2l_seconds + plan.timings.l2l_seconds +
-      plan.timings.l2p_seconds + plan.timings.p2p_seconds +
-      plan.timings.accumulation_seconds;
-  plan.timings.total_seconds =
-      elapsed(plan.evaluation_start, plan.d2h_complete);
+  if (detailed) {
+    read_detailed_timings(plan, "time FP32 full FMM phase");
+  }
   plan.statistics.evaluation_h2d_bytes = moments.size_bytes();
   plan.statistics.evaluation_d2h_bytes = fields.size_bytes();
   ++plan.statistics.evaluation_h2d_calls;
@@ -1204,6 +1205,19 @@ const CudaPlanStatistics &CudaFullPlan::statistics() const noexcept {
 
 const CudaEvaluationTimings &CudaFullPlan::timings() const noexcept {
   return implementation_->timings;
+}
+
+TimingLevel CudaFullPlan::timing_level() const noexcept {
+  return implementation_->timing_level;
+}
+
+// Only the diagnostic records depend on the level, so switching needs no
+// resource change; the stale lanes are cleared so they cannot be mistaken for
+// a measurement at the new level.
+void CudaFullPlan::set_timing_level(const TimingLevel level) noexcept {
+  implementation_->timing_level = level;
+  implementation_->timings = {};
+  implementation_->timings.timing_level = level;
 }
 
 // Diagnostic only: the sorted-order far field of the last evaluation, widened

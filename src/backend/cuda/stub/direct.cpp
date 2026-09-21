@@ -45,6 +45,12 @@ const CudaPlanStatistics &CudaDirectPlan::statistics() const noexcept {
   return empty;
 }
 
+TimingLevel CudaDirectPlan::timing_level() const noexcept {
+  return TimingLevel::Off;
+}
+
+void CudaDirectPlan::set_timing_level(TimingLevel) noexcept {}
+
 const CudaEvaluationTimings &
 CudaDirectPlan::evaluation_timings() const noexcept {
   static const CudaEvaluationTimings empty{};

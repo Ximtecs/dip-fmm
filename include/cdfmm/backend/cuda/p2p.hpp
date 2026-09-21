@@ -116,8 +116,18 @@ public:
   /// @brief Returns persistent storage and transfer diagnostics.
   [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
 
-  /// @brief Returns device-stream timings for the latest evaluation.
+  /**
+   * @brief Returns device-stream timings for the latest evaluation.
+   *
+   * Populated only at `TimingLevel::Detailed`; below it no timing event is
+   * recorded and every lane stays zero (see `timing_level()`).
+   */
   [[nodiscard]] const CudaEvaluationTimings &timings() const noexcept;
+
+  /// @brief Level of device timing collected by later evaluations (default `Off`).
+  [[nodiscard]] TimingLevel timing_level() const noexcept;
+  /// @brief Selects the level of device timing; safe between evaluations.
+  void set_timing_level(TimingLevel level) noexcept;
 
 private:
   struct Implementation;

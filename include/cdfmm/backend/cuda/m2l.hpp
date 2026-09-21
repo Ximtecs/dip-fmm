@@ -36,8 +36,13 @@ public:
 
   /// @brief Persistent storage and transfer diagnostics.
   [[nodiscard]] const CudaPlanStatistics &statistics() const noexcept;
-  /// @brief Device-stream timings of the latest evaluation.
+  /// @brief Device-stream timings of the latest evaluation; populated only at
+  /// `TimingLevel::Detailed`.
   [[nodiscard]] const CudaEvaluationTimings &timings() const noexcept;
+  /// @brief Level of device timing collected by later evaluations (default `Off`).
+  [[nodiscard]] TimingLevel timing_level() const noexcept;
+  /// @brief Selects the level of device timing; safe between evaluations.
+  void set_timing_level(TimingLevel level) noexcept;
 
 private:
   struct Implementation;

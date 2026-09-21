@@ -113,4 +113,10 @@ const CudaEvaluationTimings &CudaP2PPlan::timings() const noexcept {
   return empty;
 }
 
+TimingLevel CudaP2PPlan::timing_level() const noexcept {
+  return TimingLevel::Off;
+}
+
+void CudaP2PPlan::set_timing_level(TimingLevel) noexcept {}
+
 } // namespace cdfmm

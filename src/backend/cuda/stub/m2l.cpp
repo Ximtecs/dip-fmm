@@ -34,4 +34,10 @@ const CudaEvaluationTimings &CudaM2LPlan::timings() const noexcept {
   return empty;
 }
 
+TimingLevel CudaM2LPlan::timing_level() const noexcept {
+  return TimingLevel::Off;
+}
+
+void CudaM2LPlan::set_timing_level(TimingLevel) noexcept {}
+
 } // namespace cdfmm

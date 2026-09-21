@@ -30,6 +30,7 @@
 
 #include "cdfmm/backend/cuda/p2p.hpp"
 #include "backend/cuda/p2p/internal.hpp"
+#include "backend/cuda/common/diagnostic_event.hpp"
 #include "backend/cuda/common/error.hpp"
 #include "operators/p2p_point_kernel.hpp"
 
@@ -2247,16 +2248,43 @@ struct CudaP2PPlan::Implementation {
   FloatVec3 *pinned_moments_float{nullptr};
   FloatVec3 *pinned_fields_float{nullptr};
   cudaStream_t stream{};
+  // `d2h` is the functional completion point that finish_evaluate waits on
+  // (cudaEventDisableTiming).  The others are diagnostic, recorded only at
+  // TimingLevel::Detailed; `finished` is the timing twin of `d2h`.
+  cudaEvent_t d2h{};
   cudaEvent_t start{};
   cudaEvent_t h2d{};
   cudaEvent_t kernel{};
-  cudaEvent_t d2h{};
+  cudaEvent_t finished{};
+  TimingLevel timing_level{TimingLevel::Off};
   CudaPlanStatistics statistics{};
   CudaEvaluationTimings timings{};
   std::vector<int> fixed_self_indices{};
   bool dynamic_self_identities{true};
   bool pending{false};
 };
+
+namespace {
+
+// The h2d / kernel / d2h lanes of one completed evaluation; `total` is their
+// sum because the plan's stream is serial.
+template <typename Implementation>
+void read_p2p_timings(Implementation &plan, const char *what) {
+  CudaEvaluationTimings &timings = plan.timings;
+  timings = {};
+  timings.timing_level = TimingLevel::Detailed;
+  timings.h2d_seconds =
+      cuda_detail::diagnostic_elapsed_seconds(plan.start, plan.h2d, what);
+  timings.kernel_seconds =
+      cuda_detail::diagnostic_elapsed_seconds(plan.h2d, plan.kernel, what);
+  timings.p2p_seconds = timings.kernel_seconds;
+  timings.d2h_seconds = cuda_detail::diagnostic_elapsed_seconds(
+      plan.kernel, plan.finished, what);
+  timings.total_seconds =
+      timings.h2d_seconds + timings.kernel_seconds + timings.d2h_seconds;
+}
+
+} // namespace
 
 CudaP2PPlan::CudaP2PPlan(
     const int source_count,
@@ -2290,10 +2318,12 @@ CudaP2PPlan::CudaP2PPlan(
       fixed_self_indices.begin(), fixed_self_indices.end());
   check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
              "create static P2P stream");
-  check_cuda(cudaEventCreate(&plan.start), "create static P2P event");
-  check_cuda(cudaEventCreate(&plan.h2d), "create static P2P event");
-  check_cuda(cudaEventCreate(&plan.kernel), "create static P2P event");
-  check_cuda(cudaEventCreate(&plan.d2h), "create static P2P event");
+  check_cuda(cudaEventCreateWithFlags(&plan.d2h, cudaEventDisableTiming),
+             "create static P2P event");
+  for (cudaEvent_t *event : {&plan.start, &plan.h2d, &plan.kernel,
+                             &plan.finished}) {
+    check_cuda(cudaEventCreate(event), "create static P2P event");
+  }
   if (plan.fp32) {
     check_cuda(cudaMalloc(&plan.moments_float,
                           std::max(source_count * sizeof(FloatVec3),
@@ -2794,6 +2824,7 @@ CudaP2PPlan::~CudaP2PPlan() {
   cudaEventDestroy(plan.start);
   cudaEventDestroy(plan.h2d);
   cudaEventDestroy(plan.kernel);
+  cudaEventDestroy(plan.finished);
   cudaEventDestroy(plan.d2h);
   cudaStreamDestroy(plan.stream);
   delete implementation_;
@@ -2831,8 +2862,10 @@ void CudaP2PPlan::begin_evaluate(
               plan.pinned_self_indices);
   }
   plan.pending = true;
+  const bool detailed = plan.timing_level == TimingLevel::Detailed;
   try {
-    check_cuda(cudaEventRecord(plan.start, plan.stream), "record P2P start");
+    cuda_detail::record_diagnostic(detailed, plan.start, plan.stream,
+                                   "record P2P start");
     check_cuda(cudaMemcpyAsync(plan.moments, plan.pinned_moments,
                                moments.size_bytes(), cudaMemcpyHostToDevice,
                                plan.stream),
@@ -2844,7 +2877,8 @@ void CudaP2PPlan::begin_evaluate(
                      cudaMemcpyHostToDevice, plan.stream),
                  "upload P2P identities");
     }
-    check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record P2P upload");
+    cuda_detail::record_diagnostic(detailed, plan.h2d, plan.stream,
+                                   "record P2P upload");
     switch (plan.kind) {
     case Implementation::Kind::Canonical:
       launch_static_p2p(plan.canonical, plan.moments, plan.self_indices,
@@ -2870,13 +2904,16 @@ void CudaP2PPlan::begin_evaluate(
       launch_bsr_p2p(plan.bsr, plan.fields, plan.stream);
       break;
     }
-    check_cuda(cudaEventRecord(plan.kernel, plan.stream), "record P2P kernel");
+    cuda_detail::record_diagnostic(detailed, plan.kernel, plan.stream,
+                                   "record P2P kernel");
     check_cuda(cudaMemcpyAsync(plan.pinned_fields, plan.fields,
                                static_cast<std::size_t>(plan.target_count) *
                                    sizeof(Vec3),
                                cudaMemcpyDeviceToHost, plan.stream),
                "download P2P fields");
     check_cuda(cudaEventRecord(plan.d2h, plan.stream), "record P2P download");
+    cuda_detail::record_diagnostic(detailed, plan.finished, plan.stream,
+                                   "record P2P finished");
   } catch (...) {
     cancel_evaluate();
     throw;
@@ -2902,19 +2939,9 @@ void CudaP2PPlan::finish_evaluate(const std::span<Vec3> fields) {
   check_cuda(cudaEventSynchronize(plan.d2h), "synchronise static P2P");
   std::copy(plan.pinned_fields, plan.pinned_fields + fields.size(),
             fields.begin());
-  auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
-    float milliseconds = 0.0F;
-    check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
-               "time static P2P phase");
-    return static_cast<double>(milliseconds) * 1.0e-3;
-  };
-  plan.timings = {};
-  plan.timings.h2d_seconds = elapsed(plan.start, plan.h2d);
-  plan.timings.kernel_seconds = elapsed(plan.h2d, plan.kernel);
-  plan.timings.p2p_seconds = plan.timings.kernel_seconds;
-  plan.timings.d2h_seconds = elapsed(plan.kernel, plan.d2h);
-  plan.timings.total_seconds = plan.timings.h2d_seconds +
-      plan.timings.kernel_seconds + plan.timings.d2h_seconds;
+  if (plan.timing_level == TimingLevel::Detailed) {
+    read_p2p_timings(plan, "time static P2P phase");
+  }
   plan.pending = false;
 }
 
@@ -2947,8 +2974,10 @@ void CudaP2PPlan::begin_evaluate(
               plan.pinned_self_indices);
   }
   plan.pending = true;
+  const bool detailed = plan.timing_level == TimingLevel::Detailed;
   try {
-    check_cuda(cudaEventRecord(plan.start, plan.stream), "record FP32 P2P start");
+    cuda_detail::record_diagnostic(detailed, plan.start, plan.stream,
+                                   "record FP32 P2P start");
     check_cuda(cudaMemcpyAsync(plan.moments_float, plan.pinned_moments_float,
                                moments.size_bytes(), cudaMemcpyHostToDevice,
                                plan.stream),
@@ -2960,7 +2989,8 @@ void CudaP2PPlan::begin_evaluate(
                      cudaMemcpyHostToDevice, plan.stream),
                  "upload FP32 P2P identities");
     }
-    check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record FP32 P2P upload");
+    cuda_detail::record_diagnostic(detailed, plan.h2d, plan.stream,
+                                   "record FP32 P2P upload");
     switch (plan.kind) {
     case Implementation::Kind::Canonical:
       launch_static_p2p(plan.canonical_float, plan.moments_float,
@@ -2987,8 +3017,8 @@ void CudaP2PPlan::begin_evaluate(
       launch_bsr_p2p(plan.bsr_float, plan.fields_float, plan.stream);
       break;
     }
-    check_cuda(cudaEventRecord(plan.kernel, plan.stream),
-               "record FP32 P2P kernel");
+    cuda_detail::record_diagnostic(detailed, plan.kernel, plan.stream,
+                                   "record FP32 P2P kernel");
     check_cuda(cudaMemcpyAsync(
                    plan.pinned_fields_float, plan.fields_float,
                    static_cast<std::size_t>(plan.target_count) *
@@ -2997,6 +3027,8 @@ void CudaP2PPlan::begin_evaluate(
                "download FP32 P2P fields");
     check_cuda(cudaEventRecord(plan.d2h, plan.stream),
                "record FP32 P2P download");
+    cuda_detail::record_diagnostic(detailed, plan.finished, plan.stream,
+                                   "record FP32 P2P finished");
   } catch (...) {
     cancel_evaluate();
     throw;
@@ -3022,19 +3054,9 @@ void CudaP2PPlan::finish_evaluate(const std::span<FloatVec3> fields) {
   check_cuda(cudaEventSynchronize(plan.d2h), "synchronise FP32 P2P");
   std::copy(plan.pinned_fields_float,
             plan.pinned_fields_float + fields.size(), fields.begin());
-  const auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
-    float milliseconds = 0.0F;
-    check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
-               "time FP32 P2P phase");
-    return static_cast<double>(milliseconds) * 1.0e-3;
-  };
-  plan.timings = {};
-  plan.timings.h2d_seconds = elapsed(plan.start, plan.h2d);
-  plan.timings.kernel_seconds = elapsed(plan.h2d, plan.kernel);
-  plan.timings.p2p_seconds = plan.timings.kernel_seconds;
-  plan.timings.d2h_seconds = elapsed(plan.kernel, plan.d2h);
-  plan.timings.total_seconds = plan.timings.h2d_seconds +
-      plan.timings.kernel_seconds + plan.timings.d2h_seconds;
+  if (plan.timing_level == TimingLevel::Detailed) {
+    read_p2p_timings(plan, "time FP32 P2P phase");
+  }
   plan.pending = false;
 }
 
@@ -3081,6 +3103,16 @@ const CudaPlanStatistics &CudaP2PPlan::statistics() const noexcept {
 
 const CudaEvaluationTimings &CudaP2PPlan::timings() const noexcept {
   return implementation_->timings;
+}
+
+TimingLevel CudaP2PPlan::timing_level() const noexcept {
+  return implementation_->timing_level;
+}
+
+void CudaP2PPlan::set_timing_level(const TimingLevel level) noexcept {
+  implementation_->timing_level = level;
+  implementation_->timings = {};
+  implementation_->timings.timing_level = level;
 }
 
 } // namespace cdfmm

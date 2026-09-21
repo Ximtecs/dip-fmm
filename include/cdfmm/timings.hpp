@@ -13,7 +13,24 @@ namespace cdfmm {
 // Public timing types
 //------------------------------------------------------------------------------
 
-/** @brief Wall-clock breakdown for one or more dipole evaluations. */
+/**
+ * @brief Wall-clock breakdown for one or more dipole evaluations.
+ *
+ * Which fields are populated depends on `timing_level`:
+ *
+ * - `TimingLevel::Off`: nothing is measured; every field keeps its default
+ *   and `evaluations` still counts the evaluations represented.
+ * - `TimingLevel::Coarse`: `total` always; `far_field` and `p2p` when the
+ *   corresponding branch runs on the CPU (they overlap on the CUDA backends
+ *   and are then left uncollected); `cuda_p2p_wait` for the hybrid backend.
+ * - `TimingLevel::Detailed`: every phase below, including the CUDA lanes.
+ *
+ * `far_field` is the wall time of the complete CPU hierarchy (moment
+ * preparation through L2P); the per-phase fields partition it.  `m2l_scale`,
+ * `m2l_gather`, `m2l_multiply` and `m2l_scatter` partition `m2l`.  The CUDA
+ * lanes run on their own streams and overlap the host phases: compare them
+ * with `total`, never add them to it.
+ */
 struct EvaluationTimings {
     /// @brief Time spent permuting moments into Morton order.
     PhaseTiming moment_permutation{};
@@ -61,14 +78,29 @@ struct EvaluationTimings {
     PhaseTiming cuda_p2p_d2h{};
     /// @brief Host time spent at the single final CUDA P2P synchronisation.
     PhaseTiming cuda_p2p_wait{};
+    /// @brief Wall time of the complete CPU far-field hierarchy (`Coarse`).
+    PhaseTiming far_field{};
     /// @brief Total complete-evaluation time.
     PhaseTiming total{};
     /// @brief Number of complete evaluations represented by these timings.
     std::uint64_t evaluations{0};
+    /// @brief Level at which these timings were collected; `Off` means that
+    /// every timing field is an uncollected default, not a measurement.
+    TimingLevel timing_level{TimingLevel::Off};
 };
 
-/** @brief One-time cost and storage of the immutable static CPU plan. */
+/**
+ * @brief One-time cost and storage of the immutable static CPU plan.
+ *
+ * Byte, count and cache-hit fields are always populated.  The `PhaseTiming`
+ * fields follow `timing_level`: none at `TimingLevel::Off`, `total_setup` and
+ * `total` at `TimingLevel::Coarse`, every construction subphase at
+ * `TimingLevel::Detailed`.  The tree's own `TreeBuildTimings` are copied into
+ * `tree_construction` only at `Detailed`.
+ */
 struct StaticPlanStatistics {
+    /// @brief Level at which the timing fields below were collected.
+    TimingLevel timing_level{TimingLevel::Off};
     /// @brief Time spent converting physical inputs to the canonical cube.
     PhaseTiming normalisation{};
     /// @brief Time spent constructing the immutable uniform tree.
@@ -325,9 +357,12 @@ struct CudaPlanStatistics {
  * Every value is measured between CUDA events on the plan's streams.  Phases
  * that ran on different streams overlap, so they are lanes, not addends:
  * compare them with `total_seconds` rather than summing them.  Fields a plan
- * does not use stay zero.
+ * does not use stay zero.  The diagnostic events exist only at
+ * `TimingLevel::Detailed`; below it no timing event is recorded, no elapsed
+ * time is queried, and every field stays zero with `timing_level` saying so.
  */
 struct CudaEvaluationTimings {
+  TimingLevel timing_level{TimingLevel::Off};  ///< Level the lanes below were collected at.
     double h2d_seconds{0.0};           ///< Upload of the changing inputs.
     double gather_seconds{0.0};        ///< Grouped M2L: packing source multipoles (unused by the current kernels).
     double multiply_seconds{0.0};      ///< M2L matrix application.

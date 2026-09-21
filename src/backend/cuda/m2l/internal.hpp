@@ -33,6 +33,10 @@ public:
   CudaM2LExecutionPlan(const CudaM2LExecutionPlan &) = delete;
   CudaM2LExecutionPlan &operator=(const CudaM2LExecutionPlan &) = delete;
 
+  /// @brief Launches the complete M2L on `stream`.  `scale_complete` is a
+  /// diagnostic timing event recorded between the scaling and multiply
+  /// phases; pass `nullptr` to record nothing (the phases are stream-ordered
+  /// regardless).
   void enqueue(const Scalar *multipoles, Scalar *locals, cudaStream_t stream,
                cudaEvent_t scale_complete) const;
 

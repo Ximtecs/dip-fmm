@@ -2,6 +2,7 @@
 
 #include "cdfmm/backend/cuda/direct.hpp"
 
+#include "../common/diagnostic_event.hpp"
 #include "../common/error.hpp"
 #include "../common/runtime.hpp"
 
@@ -89,10 +90,15 @@ struct CudaDirectPlan::Implementation {
   double *pinned_potentials{nullptr};
   std::vector<int> self_indices{};
   cudaStream_t stream{nullptr};
+  // `d2h_complete` is the functional completion point
+  // (cudaEventDisableTiming); the others are diagnostic and recorded only at
+  // TimingLevel::Detailed, with `evaluation_end` the twin of `d2h_complete`.
+  cudaEvent_t d2h_complete{nullptr};
   cudaEvent_t evaluation_start{nullptr};
   cudaEvent_t h2d_complete{nullptr};
   cudaEvent_t kernel_complete{nullptr};
-  cudaEvent_t d2h_complete{nullptr};
+  cudaEvent_t evaluation_end{nullptr};
+  TimingLevel timing_level{TimingLevel::Off};
   CudaPlanStatistics statistics{};
   CudaEvaluationTimings evaluation_timings{};
 };
@@ -135,14 +141,13 @@ CudaDirectPlan::CudaDirectPlan(
 
   check_cuda(cudaStreamCreateWithFlags(&plan.stream, cudaStreamNonBlocking),
              "cudaStreamCreateWithFlags");
-  check_cuda(cudaEventCreate(&plan.evaluation_start),
-             "cudaEventCreate evaluation start");
-  check_cuda(cudaEventCreate(&plan.h2d_complete),
-             "cudaEventCreate H2D complete");
-  check_cuda(cudaEventCreate(&plan.kernel_complete),
-             "cudaEventCreate kernel complete");
-  check_cuda(cudaEventCreate(&plan.d2h_complete),
+  check_cuda(cudaEventCreateWithFlags(&plan.d2h_complete,
+                                      cudaEventDisableTiming),
              "cudaEventCreate D2H complete");
+  for (cudaEvent_t *event : {&plan.evaluation_start, &plan.h2d_complete,
+                             &plan.kernel_complete, &plan.evaluation_end}) {
+    check_cuda(cudaEventCreate(event), "cudaEventCreate timing event");
+  }
 
   const std::size_t source_bytes = plan.source_count * sizeof(Vec3);
   const std::size_t target_bytes = plan.target_count * sizeof(Vec3);
@@ -211,6 +216,7 @@ CudaDirectPlan::~CudaDirectPlan() {
   cudaEventDestroy(plan.evaluation_start);
   cudaEventDestroy(plan.h2d_complete);
   cudaEventDestroy(plan.kernel_complete);
+  cudaEventDestroy(plan.evaluation_end);
   cudaEventDestroy(plan.d2h_complete);
   cudaStreamDestroy(plan.stream);
   delete implementation_;
@@ -227,15 +233,16 @@ void CudaDirectPlan::evaluate(
   }
   std::copy(moments.begin(), moments.end(), plan.pinned_moments);
   const std::size_t moment_bytes = plan.source_count * sizeof(Vec3);
-  check_cuda(cudaEventRecord(plan.evaluation_start, plan.stream),
-             "record CUDA evaluation start");
+  const bool detailed = plan.timing_level == TimingLevel::Detailed;
+  cuda_detail::record_diagnostic(detailed, plan.evaluation_start, plan.stream,
+                                 "record CUDA evaluation start");
   check_cuda(cudaMemcpyAsync(plan.device_moments, plan.pinned_moments,
                              moment_bytes, cudaMemcpyHostToDevice, plan.stream),
              "upload dipole moments");
   plan.statistics.evaluation_h2d_bytes = moment_bytes;
   plan.statistics.evaluation_h2d_calls = 1;
-  check_cuda(cudaEventRecord(plan.h2d_complete, plan.stream),
-             "record CUDA H2D completion");
+  cuda_detail::record_diagnostic(detailed, plan.h2d_complete, plan.stream,
+                                 "record CUDA H2D completion");
 
   constexpr int threads = 128;
   const int blocks =
@@ -249,8 +256,8 @@ void CudaDirectPlan::evaluate(
         plan.device_fields, plan.device_potentials, field, potential);
     check_cuda(cudaGetLastError(), "launch CUDA FMM evaluation");
   }
-  check_cuda(cudaEventRecord(plan.kernel_complete, plan.stream),
-             "record CUDA kernel completion");
+  cuda_detail::record_diagnostic(detailed, plan.kernel_complete, plan.stream,
+                                 "record CUDA kernel completion");
 
   plan.statistics.evaluation_d2h_bytes = 0;
   plan.statistics.evaluation_d2h_calls = 0;
@@ -274,27 +281,24 @@ void CudaDirectPlan::evaluate(
   }
   check_cuda(cudaEventRecord(plan.d2h_complete, plan.stream),
              "record CUDA D2H completion");
+  cuda_detail::record_diagnostic(detailed, plan.evaluation_end, plan.stream,
+                                 "record CUDA evaluation end");
   check_cuda(cudaEventSynchronize(plan.d2h_complete),
              "complete CUDA evaluation");
 
-  float h2d_milliseconds = 0.0F;
-  float kernel_milliseconds = 0.0F;
-  float d2h_milliseconds = 0.0F;
-  check_cuda(cudaEventElapsedTime(&h2d_milliseconds, plan.evaluation_start,
-                                  plan.h2d_complete),
-             "measure CUDA H2D time");
-  check_cuda(cudaEventElapsedTime(&kernel_milliseconds, plan.h2d_complete,
-                                  plan.kernel_complete),
-             "measure CUDA kernel time");
-  check_cuda(cudaEventElapsedTime(&d2h_milliseconds, plan.kernel_complete,
-                                  plan.d2h_complete),
-             "measure CUDA D2H time");
-  plan.evaluation_timings.h2d_seconds =
-      static_cast<double>(h2d_milliseconds) * 1.0e-3;
-  plan.evaluation_timings.kernel_seconds =
-      static_cast<double>(kernel_milliseconds) * 1.0e-3;
-  plan.evaluation_timings.d2h_seconds =
-      static_cast<double>(d2h_milliseconds) * 1.0e-3;
+  if (detailed) {
+    CudaEvaluationTimings &timings = plan.evaluation_timings;
+    timings = {};
+    timings.timing_level = TimingLevel::Detailed;
+    timings.h2d_seconds = cuda_detail::diagnostic_elapsed_seconds(
+        plan.evaluation_start, plan.h2d_complete, "measure CUDA H2D time");
+    timings.kernel_seconds = cuda_detail::diagnostic_elapsed_seconds(
+        plan.h2d_complete, plan.kernel_complete, "measure CUDA kernel time");
+    timings.d2h_seconds = cuda_detail::diagnostic_elapsed_seconds(
+        plan.kernel_complete, plan.evaluation_end, "measure CUDA D2H time");
+    timings.total_seconds =
+        timings.h2d_seconds + timings.kernel_seconds + timings.d2h_seconds;
+  }
   for (std::size_t index = 0; index < plan.target_count; ++index) {
     results[index].H = field ? plan.pinned_fields[index] : Vec3{};
     results[index].phi = potential ? plan.pinned_potentials[index] : 0.0;
@@ -316,6 +320,16 @@ const CudaPlanStatistics &CudaDirectPlan::statistics() const noexcept {
 const CudaEvaluationTimings &
 CudaDirectPlan::evaluation_timings() const noexcept {
   return implementation_->evaluation_timings;
+}
+
+TimingLevel CudaDirectPlan::timing_level() const noexcept {
+  return implementation_->timing_level;
+}
+
+void CudaDirectPlan::set_timing_level(const TimingLevel level) noexcept {
+  implementation_->timing_level = level;
+  implementation_->evaluation_timings = {};
+  implementation_->evaluation_timings.timing_level = level;
 }
 
 std::vector<PotentialField> cuda_direct_p2p_reference(

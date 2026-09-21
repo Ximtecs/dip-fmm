@@ -22,6 +22,7 @@
 // hybrid plan's final wait.
 
 #include "cdfmm/backend/cuda/m2l.hpp"
+#include "backend/cuda/common/diagnostic_event.hpp"
 #include "backend/cuda/common/stream.hpp"
 #include "backend/cuda/m2l/internal.hpp"
 #include "backend/cuda/common/error.hpp"
@@ -340,15 +341,17 @@ public:
   CudaM2LExecutionStorage &operator=(const CudaM2LExecutionStorage &) = delete;
 
   // Launch the complete M2L (every level at once: the grouping and the active
-  // rows already cover all levels) on `stream`.  `scale_complete` separates
-  // the scaling and multiply phases for the timing lanes.
+  // rows already cover all levels) on `stream`.  `scale_complete` is a
+  // diagnostic event separating the scaling and multiply phases for the
+  // timing lanes; it is nullptr when the caller collects no detailed timing.
+  // The phases are ordered by the stream regardless.
   void enqueue(const Scalar *multipoles, Scalar *locals, cudaStream_t stream,
                cudaEvent_t scale_complete) const {
     if (group_count_ != 0) {
       // The grouped kernel scales multipoles while staging, so there is no
       // separate scaling pass; the event still marks the phase boundary.
-      check_cuda(cudaEventRecord(scale_complete, stream),
-                 "record M2L scaling completion");
+      cuda_detail::record_diagnostic(scale_complete != nullptr, scale_complete,
+                                     stream, "record M2L scaling completion");
       if (pairs_per_thread_ == m2l_group_pairs_wide) {
         apply_grouped_m2l_kernel<Scalar, m2l_group_pairs_wide>
             <<<group_count_, m2l_group_threads, group_shared_bytes_, stream>>>(
@@ -378,8 +381,8 @@ public:
           coefficient_values, scaled_multipoles_);
       check_cuda(cudaGetLastError(), "launch M2L multipole scaling kernel");
     }
-    check_cuda(cudaEventRecord(scale_complete, stream),
-               "record M2L scaling completion");
+    cuda_detail::record_diagnostic(scale_complete != nullptr, scale_complete,
+                                   stream, "record M2L scaling completion");
 
     const std::size_t outputs =
         static_cast<std::size_t>(active_row_count_) * coefficient_count_;
@@ -803,14 +806,55 @@ struct CudaM2LPlan::Implementation {
   double* multipoles{nullptr};
   double* locals{nullptr};
   cudaStream_t stream{nullptr};
+  // `d2h` is the functional completion point (cudaEventDisableTiming); the
+  // others are diagnostic and recorded only at TimingLevel::Detailed, with
+  // `finished` the timing twin of `d2h`.
+  cudaEvent_t d2h{nullptr};
   cudaEvent_t start{nullptr};
   cudaEvent_t h2d{nullptr};
   cudaEvent_t scale{nullptr};
   cudaEvent_t kernel{nullptr};
-  cudaEvent_t d2h{nullptr};
+  cudaEvent_t finished{nullptr};
+  TimingLevel timing_level{TimingLevel::Off};
   CudaPlanStatistics statistics{};
   CudaEvaluationTimings timings{};
 };
+
+namespace {
+
+template <typename Implementation>
+void create_m2l_events(Implementation &plan) {
+  cuda_detail::check_cuda(
+      cudaEventCreateWithFlags(&plan.d2h, cudaEventDisableTiming),
+      "create M2L event");
+  for (cudaEvent_t *event : {&plan.start, &plan.h2d, &plan.scale,
+                             &plan.kernel, &plan.finished}) {
+    cuda_detail::check_cuda(cudaEventCreate(event), "create M2L event");
+  }
+}
+
+// The four diagnostic events bound the h2d / scale / multiply / d2h lanes;
+// `total` is their sum because this stream is serial.
+template <typename Implementation>
+void read_m2l_timings(Implementation &plan, const char *what) {
+  CudaEvaluationTimings &timings = plan.timings;
+  timings = {};
+  timings.timing_level = TimingLevel::Detailed;
+  timings.h2d_seconds =
+      cuda_detail::diagnostic_elapsed_seconds(plan.start, plan.h2d, what);
+  timings.scale_seconds =
+      cuda_detail::diagnostic_elapsed_seconds(plan.h2d, plan.scale, what);
+  timings.multiply_seconds =
+      cuda_detail::diagnostic_elapsed_seconds(plan.scale, plan.kernel, what);
+  timings.kernel_seconds = timings.scale_seconds + timings.multiply_seconds;
+  timings.m2l_seconds = timings.kernel_seconds;
+  timings.d2h_seconds = cuda_detail::diagnostic_elapsed_seconds(
+      plan.kernel, plan.finished, what);
+  timings.total_seconds =
+      timings.h2d_seconds + timings.kernel_seconds + timings.d2h_seconds;
+}
+
+} // namespace
 
 CudaM2LPlan::CudaM2LPlan(const FloatStaticM2LPlan &data)
     : implementation_(new Implementation{}) {
@@ -844,11 +888,7 @@ CudaM2LPlan::CudaM2LPlan(const FloatStaticM2LPlan &data)
   // unconditional priority there cost 3 % on far-field-dominated plans.
   cuda_detail::create_priority_stream(plan.stream,
                                       "create canonical FP32 M2L stream");
-  check_cuda(cudaEventCreate(&plan.start), "create M2L event");
-  check_cuda(cudaEventCreate(&plan.h2d), "create M2L event");
-  check_cuda(cudaEventCreate(&plan.scale), "create M2L event");
-  check_cuda(cudaEventCreate(&plan.kernel), "create M2L event");
-  check_cuda(cudaEventCreate(&plan.d2h), "create M2L event");
+  create_m2l_events(plan);
   const auto allocate = [](auto **pointer, const std::size_t bytes) {
     check_cuda(cudaMalloc(reinterpret_cast<void **>(pointer),
                           std::max(bytes, std::size_t{1})),
@@ -895,11 +935,7 @@ CudaM2LPlan::CudaM2LPlan(const StaticM2LPlan& data)
   // unconditional priority there cost 3 % on far-field-dominated plans.
   cuda_detail::create_priority_stream(plan.stream,
                                       "create canonical M2L stream");
-  check_cuda(cudaEventCreate(&plan.start), "create M2L event");
-  check_cuda(cudaEventCreate(&plan.h2d), "create M2L event");
-  check_cuda(cudaEventCreate(&plan.scale), "create M2L event");
-  check_cuda(cudaEventCreate(&plan.kernel), "create M2L event");
-  check_cuda(cudaEventCreate(&plan.d2h), "create M2L event");
+  create_m2l_events(plan);
   const auto allocate = [](auto** pointer, const std::size_t bytes) {
     check_cuda(cudaMalloc(reinterpret_cast<void**>(pointer),
                           std::max(bytes, std::size_t{1})), "allocate M2L data");
@@ -933,14 +969,16 @@ CudaM2LPlan::~CudaM2LPlan() {
   cudaEventDestroy(plan.h2d);
   cudaEventDestroy(plan.scale);
   cudaEventDestroy(plan.kernel);
+  cudaEventDestroy(plan.finished);
   cudaEventDestroy(plan.d2h);
   cudaStreamDestroy(plan.stream);
   delete implementation_;
 }
 
 // One hybrid M2L round trip: pinned staging -> H2D -> clear locals -> kernels
-// -> D2H -> wait.  The four events bound the h2d / scale / multiply / d2h
-// lanes; `total` is their sum because this stream is serial.
+// -> D2H -> wait on the functional `d2h` event.  The diagnostic events that
+// bound the h2d / scale / multiply / d2h lanes are recorded only at
+// TimingLevel::Detailed.
 void CudaM2LPlan::evaluate(const std::span<const float> multipoles,
                            const std::span<float> locals) {
   auto &plan = *implementation_;
@@ -949,7 +987,9 @@ void CudaM2LPlan::evaluate(const std::span<const float> multipoles,
     throw std::invalid_argument("CUDA FP32 M2L coefficient dimensions differ");
   }
   std::copy(multipoles.begin(), multipoles.end(), plan.host_multipoles_float);
-  check_cuda(cudaEventRecord(plan.start, plan.stream), "record M2L start");
+  const bool detailed = plan.timing_level == TimingLevel::Detailed;
+  cuda_detail::record_diagnostic(detailed, plan.start, plan.stream,
+                                 "record M2L start");
   if (values != 0) {
     check_cuda(cudaMemcpyAsync(plan.multipoles_float,
                                plan.host_multipoles_float,
@@ -957,15 +997,17 @@ void CudaM2LPlan::evaluate(const std::span<const float> multipoles,
                                plan.stream),
                "upload FP32 M2L multipoles");
   }
-  check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record M2L H2D");
+  cuda_detail::record_diagnostic(detailed, plan.h2d, plan.stream,
+                                 "record M2L H2D");
   if (values != 0) {
     check_cuda(cudaMemsetAsync(plan.locals_float, 0, values * sizeof(float),
                                plan.stream),
                "clear FP32 M2L locals");
   }
   plan.executor_float->enqueue(plan.multipoles_float, plan.locals_float,
-                               plan.stream, plan.scale);
-  check_cuda(cudaEventRecord(plan.kernel, plan.stream), "record M2L kernel");
+                               plan.stream, detailed ? plan.scale : nullptr);
+  cuda_detail::record_diagnostic(detailed, plan.kernel, plan.stream,
+                                 "record M2L kernel");
   if (values != 0) {
     check_cuda(cudaMemcpyAsync(plan.host_locals_float, plan.locals_float,
                                values * sizeof(float), cudaMemcpyDeviceToHost,
@@ -973,25 +1015,14 @@ void CudaM2LPlan::evaluate(const std::span<const float> multipoles,
                "download FP32 M2L locals");
   }
   check_cuda(cudaEventRecord(plan.d2h, plan.stream), "record M2L D2H");
+  cuda_detail::record_diagnostic(detailed, plan.finished, plan.stream,
+                                 "record M2L finished");
   check_cuda(cudaEventSynchronize(plan.d2h), "wait for FP32 M2L");
   std::copy(plan.host_locals_float, plan.host_locals_float + values,
             locals.begin());
-  const auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
-    float milliseconds = 0.0F;
-    check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
-               "time FP32 M2L");
-    return static_cast<double>(milliseconds) * 1.0e-3;
-  };
-  plan.timings = {};
-  plan.timings.h2d_seconds = elapsed(plan.start, plan.h2d);
-  plan.timings.scale_seconds = elapsed(plan.h2d, plan.scale);
-  plan.timings.multiply_seconds = elapsed(plan.scale, plan.kernel);
-  plan.timings.kernel_seconds =
-      plan.timings.scale_seconds + plan.timings.multiply_seconds;
-  plan.timings.m2l_seconds = plan.timings.kernel_seconds;
-  plan.timings.d2h_seconds = elapsed(plan.kernel, plan.d2h);
-  plan.timings.total_seconds = plan.timings.h2d_seconds +
-      plan.timings.kernel_seconds + plan.timings.d2h_seconds;
+  if (detailed) {
+    read_m2l_timings(plan, "time FP32 M2L");
+  }
   plan.statistics.evaluation_h2d_bytes = values * sizeof(float);
   plan.statistics.evaluation_d2h_bytes = values * sizeof(float);
   ++plan.statistics.evaluation_h2d_calls;
@@ -1006,21 +1037,26 @@ void CudaM2LPlan::evaluate(const std::span<const double> multipoles,
     throw std::invalid_argument("CUDA M2L coefficient dimensions differ");
   }
   std::copy(multipoles.begin(), multipoles.end(), plan.host_multipoles);
-  check_cuda(cudaEventRecord(plan.start, plan.stream), "record M2L start");
+  const bool detailed = plan.timing_level == TimingLevel::Detailed;
+  cuda_detail::record_diagnostic(detailed, plan.start, plan.stream,
+                                 "record M2L start");
   if (values != 0) {
     check_cuda(cudaMemcpyAsync(plan.multipoles, plan.host_multipoles,
                                values * sizeof(double), cudaMemcpyHostToDevice,
                                plan.stream),
                "upload M2L multipoles");
   }
-  check_cuda(cudaEventRecord(plan.h2d, plan.stream), "record M2L H2D");
+  cuda_detail::record_diagnostic(detailed, plan.h2d, plan.stream,
+                                 "record M2L H2D");
   if (values != 0) {
     check_cuda(cudaMemsetAsync(plan.locals, 0, values * sizeof(double),
                                plan.stream),
                "clear M2L locals");
   }
-  plan.executor->enqueue(plan.multipoles, plan.locals, plan.stream, plan.scale);
-  check_cuda(cudaEventRecord(plan.kernel, plan.stream), "record M2L kernel");
+  plan.executor->enqueue(plan.multipoles, plan.locals, plan.stream,
+                         detailed ? plan.scale : nullptr);
+  cuda_detail::record_diagnostic(detailed, plan.kernel, plan.stream,
+                                 "record M2L kernel");
   if (values != 0) {
     check_cuda(cudaMemcpyAsync(plan.host_locals, plan.locals,
                                values * sizeof(double), cudaMemcpyDeviceToHost,
@@ -1028,25 +1064,13 @@ void CudaM2LPlan::evaluate(const std::span<const double> multipoles,
                "download M2L locals");
   }
   check_cuda(cudaEventRecord(plan.d2h, plan.stream), "record M2L D2H");
+  cuda_detail::record_diagnostic(detailed, plan.finished, plan.stream,
+                                 "record M2L finished");
   check_cuda(cudaEventSynchronize(plan.d2h), "wait for M2L");
   std::copy(plan.host_locals, plan.host_locals + values, locals.begin());
-  const auto elapsed = [](cudaEvent_t first, cudaEvent_t second) {
-    float milliseconds = 0.0F;
-    check_cuda(cudaEventElapsedTime(&milliseconds, first, second),
-               "time M2L");
-    return static_cast<double>(milliseconds) * 1.0e-3;
-  };
-  plan.timings = {};
-  plan.timings.h2d_seconds = elapsed(plan.start, plan.h2d);
-  plan.timings.scale_seconds = elapsed(plan.h2d, plan.scale);
-  plan.timings.multiply_seconds = elapsed(plan.scale, plan.kernel);
-  plan.timings.kernel_seconds =
-      plan.timings.scale_seconds + plan.timings.multiply_seconds;
-  plan.timings.m2l_seconds = plan.timings.kernel_seconds;
-  plan.timings.d2h_seconds = elapsed(plan.kernel, plan.d2h);
-  plan.timings.total_seconds =
-      plan.timings.h2d_seconds + plan.timings.kernel_seconds +
-      plan.timings.d2h_seconds;
+  if (detailed) {
+    read_m2l_timings(plan, "time M2L");
+  }
   plan.statistics.evaluation_h2d_bytes = values * sizeof(double);
   plan.statistics.evaluation_d2h_bytes = values * sizeof(double);
   ++plan.statistics.evaluation_h2d_calls;
@@ -1058,6 +1082,16 @@ const CudaPlanStatistics& CudaM2LPlan::statistics() const noexcept {
 }
 const CudaEvaluationTimings& CudaM2LPlan::timings() const noexcept {
   return implementation_->timings;
+}
+
+TimingLevel CudaM2LPlan::timing_level() const noexcept {
+  return implementation_->timing_level;
+}
+
+void CudaM2LPlan::set_timing_level(const TimingLevel level) noexcept {
+  implementation_->timing_level = level;
+  implementation_->timings = {};
+  implementation_->timings.timing_level = level;
 }
 
 } // namespace cdfmm
