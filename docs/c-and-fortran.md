@@ -81,7 +81,7 @@ with separate source and target arrays, and explicit `cdfmm_evaluate_f32` or
 remain unchanged; periodic same-cuboid plans use an additive C entry point.
 
 No exception crosses this boundary. Calls return integer status values and a
-thread-local C error is exposed through `cdfmm_last_error()`. One plan is
+thread-local C error is exposed through `cdfmm_get_last_error()`. One plan is
 non-reentrant; separate plans may be used independently.
 
 Internal timing is off for a C plan by default, as everywhere else. The
@@ -91,6 +91,23 @@ changing results; `cdfmm_plan_get_last_evaluation_seconds` then returns the
 measured wall time, and fails with `CDFMM_ERROR_UNSUPPORTED` while the plan
 is `CDFMM_TIMING_OFF` rather than returning an uncollected zero. The Fortran
 convenience layer exposes no timing and needs none.
+
+The compatibility status of that change, precisely:
+
+- **ABI**: compatible. `CDFMM_ABI_VERSION` stays 1; no existing symbol,
+  struct layout (`cdfmm_options`, `cdfmm_plan_stats`) or status code changed,
+  and `cdfmm_plan_set_timing_level` and the `CDFMM_TIMING_*` constants are
+  additive. A binary built against v0.1 loads and runs against v0.2.
+- **Source/API**: compatible. Every v0.1 declaration in `cdfmm/c_api.h`
+  compiles unchanged.
+- **Behaviour**: intentionally changed. In v0.1 every evaluation was timed
+  and `cdfmm_plan_get_last_evaluation_seconds` always succeeded; in v0.2
+  timing is opt-in, so a caller that never selects a level now receives
+  `CDFMM_ERROR_UNSUPPORTED` (with `cdfmm_get_last_error()` set) instead of a
+  number. Such a caller adds one call to `cdfmm_plan_set_timing_level` with
+  `CDFMM_TIMING_COARSE` or `CDFMM_TIMING_DETAILED` before the evaluations it
+  wants timed. Automatic timing was not kept for compatibility because it is
+  exactly the always-on cost the level exists to remove.
 
 ## Building
 

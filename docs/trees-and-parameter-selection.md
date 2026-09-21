@@ -141,6 +141,11 @@ measured; see [Benchmarks and profiling](benchmarks.md));
 `plan.cuda_plan_statistics` reports device residency and per-evaluation
 transfer bytes regardless of the level. The parameter-selection search
 (`suggest_parameters_for_accuracy` and its relatives) collects the detailed
-timings it needs on its own candidate plans, whatever the caller selected. `UniformTree.build_timings` and
-`AdaptiveTree.tree_seconds`/`interaction_seconds` time the tree construction
-itself. Tutorial 3 shows the tables these produce.
+timings it needs on its own candidate plans, whatever the caller selected.
+`UniformTree.build_timings` (C++) times the tree construction itself for a
+tree you build standalone: `UniformTreeOptions.collect_build_timings` is
+true by default and, when false, no clock is read during the build. The trees
+a `UniformFmm` builds take that flag from the plan's `timing_level` (only
+`DETAILED` collects), so a plan at `OFF` reads no tree clock either.
+`AdaptiveTree.tree_seconds`/`interaction_seconds` are always recorded (three
+clock reads per build). Tutorial 3 shows the tables these produce.
