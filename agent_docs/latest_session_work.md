@@ -1,5 +1,79 @@
 # Latest session work
 
+## 2026-09-21 — Phase 5: opt-in timing levels and the implementation freeze
+
+Starting HEAD `8f54e6f` (tip of `phase4-pruning`); work on
+`phase5-timing-freeze`, based exactly on it. Seven commits: `62e4ce8` CUDA event separation, `776d26a` UniformFmm timing levels, `fa870c6` Python/C ABI, `244b341` benchmark drivers and the overhead record, `7688d6a` tests, `3fb36d2` examples, `62835b5` documentation.
+
+Question answered: what does the always-on instrumentation cost, and can the
+production path be made free of it without touching results, policy, cache or
+the functional CUDA synchronisation?
+
+**It was measured before anything was redesigned.** A temporary "hard-off"
+copy of the starting HEAD had every diagnostic `cudaEventRecord`, every
+`cudaEventElapsedTime` and every host evaluation clock removed, with the three
+functional events (the two cross-stream waits and the completion point) kept
+and created without timestamps. Against the untouched HEAD, under one external
+clock and five interleaved repetitions, the instrumentation cost a `CudaFull`
+evaluation 12-20 us whatever its size: 15 % of an 86-108 us evaluation,
+3.3 % at 50k points, 20 % of the fastest standalone P2P plan, and nothing
+measurable on the CPU (the ~14 host clock reads are below 0.3 % of a
+millisecond). The RTX 5090 run-to-run spread was about 1 us, so the numbers
+were not in doubt.
+
+**What changed.** `TimingLevel { Off, Coarse, Detailed }` with `Off` the
+default; `UniformFmmOptions::timing_level`, `UniformFmm::timing_level()`
+and `set_timing_level()`; every timing record now names the level it was
+collected at. `Off` reads no clock and records no diagnostic event; `Coarse`
+is host wall times only (`total`, the new `far_field`, `p2p`,
+`cuda_p2p_wait`, `total_setup`, static-plan `total`); `Detailed` is the old
+depth. The CUDA plans got a *separate* diagnostic event graph — the three
+functional events have timing twins — so the functional graph is identical at
+every level and nothing is recreated when the level changes. Host clocks are
+one `detail::PhaseStopwatch` per level (`src/phase_stopwatch.hpp`), the
+MagTense idea that the verbosity gate precedes the clock. Python exposes
+`cdfmm.TimingLevel` and the setter; the C ABI gains the additive
+`cdfmm_plan_set_timing_level`, and its wall-time accessor now fails while a
+plan is `Off` instead of returning a zero that looks like a measurement.
+Fortran is untouched (it exposes no timing). NVTX is untouched and independent.
+
+**Acceptance.** `Off` sits within 0.1-0.6 % of hard-off on every FMM workload
+(inside the spread; the fastest CUDA cases agree to 0.1 us); `Coarse` costs at
+most 0.3 %; `Detailed` reproduces the old cost, now quantified: +6 % to +18 %
+on the sub-millisecond CUDA cases, +4 % at 50k FP32, nothing on the CPU. One
+Phase-J row (standalone leaf-block P2P, Off 1.12 vs Coarse 0.97 on the same
+binary and device path) was noise in a minimum-of-50 at 40 us; re-measured
+alone with ten repetitions, Off and hard-off agree to 0.3 us there too. The
+record is `benchmarks/baselines/phase5-timing/` (INTERNAL TIMING OVERHEAD
+STUDY, NOT ARTICLE1); `baselines/phase3d/` is unchanged and its runner now
+requests `--timing detailed` so later runs compare like with like.
+
+**Benchmark drivers** take `--timing off|coarse|detailed` (default `off`)
+and record the level in every row; the headline `evaluation_median` was and
+is the driver's own external clock. `run_benchmarks.py`, the Phase-3D
+runner, `benchmark_cache_initialisation`, the operator-representation driver,
+the parameter-selection search, the adaptive showcase and three tutorials ask
+for `Detailed` explicitly because they *display* phases.
+
+**Validation.** CI reproduction with conda-forge g++ 13.4 (Unix Makefiles,
+LTO, `-Werror`): 252/252 CTest, 173 passed / 9 skipped pytest. CUDA + oneMKL
+(`notebooks` preset + benchmarks, `-Werror`): 252/252 CTest, 181 passed /
+1 skipped pytest with the six tutorials executed. `compute-sanitizer` memcheck, racecheck, initcheck and synccheck over the 35 CUDA- and timing-tagged C++ test cases (41 312 assertions): 0 errors, 0 hazards each.
+`sphinx-build -W` clean, `git diff --check` clean. New
+`tests/test_timing_levels.cpp` (and the Python twin) pins: Off collects
+nothing, Coarse only the coarse fields, Detailed everything, aggregates and
+reset, run-time level changes leave results/policy unchanged, cache keys and
+*persisted bytes* identical across levels, CUDA lanes gated and results
+unchanged across levels. Cache format and keys unchanged; C ABI additive
+(`CDFMM_ABI_VERSION` 1). CI: the branch was pushed as `phase5-timing-freeze`; the CI result is recorded in the follow-up entry below once the run completes.
+
+**Unvalidated, as before:** Fortran (no compiler here; `fortran/` is
+byte-identical to the start), MSVC/Windows.
+
+**Implementation is FROZEN FOR ARTICLE1 BENCHMARKING** at `62835b5`. Next:
+the Article1 benchmark campaign, with `timing_level = Off` and external
+wall-clock timing of repeated `evaluate_into` calls.
+
 ## 2026-09-20 — Phase 4 repository pruning and documentation cleanup
 
 Starting HEAD `ad48459` on `refactor/architecture-v0.2`; work on

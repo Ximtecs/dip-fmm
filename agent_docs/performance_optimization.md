@@ -4511,3 +4511,231 @@ Carried forward, untouched here and explicitly not started:
   (`procedural point P2M and L2P reproduce the precomputed rows` at 1102 s
   and `procedural point expansion requests are validated` at 364 s), which is
   what makes the CI test step slow. Neither was touched here.
+
+## Phase 5 — timing overhead and implementation freeze
+
+**Status: FROZEN FOR ARTICLE1 BENCHMARKING** at `62835b5`. Starting HEAD `8f54e6f` (`refactor: defer the endpoint
+classifier merge, which GCC 13 LTO rejects`, the tip of `phase4-pruning`);
+work on `phase5-timing-freeze`, based exactly on it. Toolchain: g++ 15.3
+(conda `cdfmm`), nvcc 13.3, oneMKL, CMake 4.4; CI reproduction with
+conda-forge g++ 13.4; hardware: i9-14900KF (8 threads used), RTX 5090
+(sm_120, driver 595.84).
+
+Question answered: how much does the always-on instrumentation cost, and can
+it be made opt-in without touching results, policy, cache or functional
+synchronisation?
+
+### A. Instrumentation inventory (starting HEAD)
+
+Three mechanisms existed and were entangled at three CUDA events:
+
+| Mechanism | Where | Construction / evaluation | Unconditional? |
+|---|---|---|---|
+| Host `std::chrono::steady_clock` phase clocks | `src/fmm/evaluation.cpp` (total, P2P, unpermutation, hybrid wait), `src/fmm/far_field.cpp` (moment permutation, resets, P2M, M2M, per-level L2L and M2L, L2P), `src/backend/mkl/m2l.cpp` (gather/multiply/scatter) | evaluation | yes: about 14 clock reads per CPU evaluation, 2 per hybrid M2L call, 3 per oneMKL level |
+| Host clocks | `src/fmm/construction.cpp`, `plan_preparation.cpp`, `execution_setup.cpp`, `src/cache/{universal,geometry,keys}.cpp` | construction | yes: about 40 reads per cold build |
+| CUDA timing events | `CudaFullPlan` 13 events, 13 `cudaEventRecord` + 12 `cudaEventElapsedTime` per evaluation; `CudaP2PPlan` 4 + 3; `CudaM2LPlan` 5 + 4 (one recorded inside the shared M2L `enqueue`); `CudaDirectPlan` 4 + 3; `CudaDenseDirectPlan` none | evaluation | yes; every event created timing-capable |
+| NVTX `ProfileRange` | `src/profile.hpp`, used in `evaluation.cpp`, `far_field.cpp`, `cuda/fmm/plan.cu` | evaluation | no: compile-time `CDFMM_ENABLE_PROFILING` (`CDFMM_ENABLE_NVTX`), an empty object otherwise |
+| Tree build timings, dense-direct construction statistics | `UniformTree`, `AdaptiveTree`, `src/plan/direct/dense.cpp`, `src/backend/cuda/direct/dense.cu` | construction | yes; outside `UniformFmm`, one-time, unchanged in this phase |
+
+No timer sat inside a per-body or per-leaf loop; every host clock bracketed a
+whole OpenMP region or a whole backend call, so the per-thread MagTense timer
+was not needed. No `cudaDeviceSynchronize` existed anywhere and none was
+added.
+
+**CUDA event classification.** Of `CudaFullPlan`'s 13 events exactly three
+carried a functional role: `moments_ready` (the near-field stream waits on it),
+`p2p_complete` (the far-field stream waits on it before combining) and
+`d2h_complete` (the host's completion point). Each was *also* an
+elapsed-time endpoint. The other ten (`evaluation_start`, `p2m_complete`,
+`m2m_complete`, `m2l_scale_complete`, `m2l_complete`, `l2l_complete`,
+`l2p_complete`, `p2p_start`, `combination_start`, `combination_complete`)
+were diagnostic only. In the single-stream plans (`CudaP2PPlan`,
+`CudaM2LPlan`, `CudaDirectPlan`) only the terminal `d2h` event is functional
+(the `cudaEventSynchronize` completion point); `start`, `h2d`, `scale`,
+`kernel` are diagnostic. The C ABI exposed one timing value
+(`cdfmm_plan_get_last_evaluation_seconds` = `last_timings().total`); the
+Fortran wrapper exposes none.
+
+### B. Measured cost of the old instrumentation
+
+External `steady_clock` around complete `evaluate_into` calls (the driver's
+`evaluation_median`; 20 evaluations x 9 samples, 5 warm-ups, 8 threads,
+`OMP_PROC_BIND=close OMP_PLACES=cores`, 5 interleaved repetitions per build,
+median of the per-run medians). "hard-off" is a temporary tree of the starting
+HEAD with every diagnostic record, every `cudaEventElapsedTime` and every host
+evaluation clock removed, the three functional events kept and created with
+`cudaEventDisableTiming` (`/tmp` experiment, never committed).
+
+| Workload | start (us) | hard-off (us) | hard-off / start | absolute |
+|---|---:|---:|---:|---:|
+| CPU point 10k, d3, p4, FP32 | 1249.5 | 1252.9 | 1.003 | noise |
+| CPU point 50k, d4, p6, FP32 | 11730.0 | 11747.7 | 1.002 | noise |
+| oneMKL point 50k, d4, p6, FP32 | 15698.4 | 15590.0 | 0.993 | -108 |
+| CudaFull point 4k, d2, p4, FP32 | 101.8 | 86.2 | 0.848 | -15.6 |
+| CudaFull point 10k, d3, p4, FP32 | 116.0 | 103.8 | 0.894 | -12.2 |
+| CudaFull point 50k, d4, p6, FP32 | 446.2 | 431.4 | 0.967 | -14.8 |
+| CudaFull point 50k, d4, p6, FP64 | 2787.1 | 2695.6 | 0.967 | -91.5 |
+| CudaFull prism 4k, d3, p6, FP32 | 127.6 | 107.9 | 0.846 | -19.7 |
+| CudaPartial point 50k, d4, p6, FP32 | 1072.6 | 1063.8 | 0.992 | -8.8 |
+| standalone CUDA P2P canonical AoS (d3, occ 8) | 182.6 | 173.8 | 0.952 | -8.8 |
+| standalone CUDA P2P particle-row SoA | 268.9 | 266.1 | 0.990 | -2.8 |
+| standalone CUDA P2P leaf block | 48.2 | 38.5 | 0.798 | -9.7 |
+| standalone CUDA P2P cuSPARSE BSR(3) | 61.2 | 57.1 | 0.934 | -4.1 |
+
+Run-to-run spread of a case's medians was about 1 us on the CUDA cases, so
+these differences are real. The instrumentation cost a `CudaFull` evaluation
+12-20 us regardless of size: 15 % of the fastest cases, 3.3 % at 50k points,
+and 20 % of the fastest standalone P2P plan. On the CPU it was below the noise
+(<0.3 %). Removed per `CudaFull` evaluation: 10 event records, 12
+elapsed-time queries and 1 host clock pair; per hybrid evaluation 3 + 3 (P2P)
+and 4 + 4 (M2L) plus 14 host clock reads.
+
+### C. Final design
+
+`TimingLevel { Off, Coarse, Detailed }` in `cdfmm/core/timing.hpp`;
+`UniformFmmOptions::timing_level` (default `Off`), `UniformFmm::timing_level()`
+and `set_timing_level()`. Every timing record carries the level it was
+collected at (`EvaluationTimings::timing_level`,
+`StaticPlanStatistics::timing_level`, `CudaEvaluationTimings::timing_level`),
+so an uncollected zero is never mistaken for a measurement.
+
+- **Off**: no host clock is read during evaluation or construction; the CUDA
+  plans record only their functional events, which are now created with
+  `cudaEventDisableTiming`; `cudaEventElapsedTime` is never called; the
+  device lanes are not copied. Byte, count and cache-hit statistics are
+  unchanged.
+- **Coarse**: host wall times only. Evaluation: `total`; on the CPU
+  hierarchy `far_field` (new field: the whole P2M..L2P branch) and `p2p`;
+  the hybrid backend's `cuda_p2p_wait`. Construction: `total_setup` and the
+  static-plan `total`. No device event is recorded, because the `CudaFull`
+  near and far lanes overlap and a device total would just duplicate the host
+  total.
+- **Detailed**: the previous depth: every host phase, the oneMKL split, the
+  construction subphases including cache lookup/load/write, and the device
+  lanes from a *separate diagnostic event graph*: the three functional events
+  gain timing twins (`moments_permuted`, `p2p_finished`, `evaluation_end`),
+  so the functional graph never changes with the level. A `CudaFull`
+  evaluation records 16 events and queries 12 elapsed times at `Detailed`;
+  the single-stream plans 5 (4 diagnostic + the functional `d2h`) and 3-4.
+
+Host clocks are one `detail::PhaseStopwatch` (`src/phase_stopwatch.hpp`) per
+level: `start()`/`record()` are one predictable branch when the level does
+not include the region, following the MagTense rule that the verbosity gate
+precedes the clock. CUDA diagnostic records go through
+`cuda_detail::record_diagnostic` (`src/backend/cuda/common/diagnostic_event.hpp`).
+The shared M2L `enqueue` takes a nullable phase event. The cache functions
+gate on `statistics.timing_level`, so no cache signature changed. NVTX is
+untouched and independent: a `profile-all` build can run `Off` under Nsight.
+
+**Runtime setter.** `set_timing_level` is supported because no resource
+depends on the level: the CUDA plans hold all events permanently and only
+the *records* are gated, so switching is a member write plus a propagation
+to the owned device plans (`set_timing_level` on `CudaFullPlan`,
+`CudaP2PPlan`, `CudaM2LPlan`, `CudaDirectPlan`). It resets the aggregate so
+an aggregate never mixes levels.
+
+**Bindings.** Python: `cdfmm.TimingLevel` (`OFF`/`COARSE`/`DETAILED`),
+`options.timing_level`, `plan.timing_level`, `plan.set_timing_level`,
+`plan.reset_timings`; the timing dictionaries gain `far_field` and
+`timing_level`. C ABI: additive `cdfmm_plan_set_timing_level` and
+`CDFMM_TIMING_*`; `cdfmm_plan_get_last_evaluation_seconds` now fails with
+`CDFMM_ERROR_UNSUPPORTED` while a plan is `Off` instead of returning zero;
+options struct and ABI version unchanged. Fortran: unchanged, exposes no
+timing (decision recorded). `suggest_parameters_for_accuracy` forces
+`Detailed` on its own candidate plans because it splits near and far.
+
+**Not gated, deliberately.** `UniformTree`/`AdaptiveTree` build timings and
+the dense-direct construction statistics are one-time construction records
+outside `UniformFmm` (about ten clock reads per build); they are copied into
+`StaticPlanStatistics::tree_construction` only at `Detailed`.
+
+**Semantic change worth noting.** The FP32 hybrid path's `p2p` used to span
+fill, wait and accumulation on the host; it is now the device lane sum, as on
+the FP64 path. `reset_timings()` now also records the level in the cleared
+aggregate.
+
+### J. Final performance
+
+Same protocol as B, five builds interleaved (times in us; medians of the
+five per-run medians; `phaseJ_all_builds.csv`):
+
+| Workload | hard-off | start | Off | Coarse | Detailed | Off/hard-off | Coarse/hard-off | Detailed/Off | start/hard-off |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| CPU point 10k, d3, p4, FP32 | 1251.1 | 1253.0 | 1258.6 | 1254.1 | 1256.8 | 1.006 | 1.002 | 0.999 | 1.002 |
+| CPU point 50k, d4, p6, FP32 | 11773.4 | 11786.6 | 11758.7 | 11774.7 | 11753.9 | 0.999 | 1.000 | 1.000 | 1.001 |
+| oneMKL point 50k, d4, p6, FP32 | 15732.3 | 15596.3 | 15620.5 | 15619.4 | 15590.4 | 0.993 | 0.993 | 0.998 | 0.991 |
+| CudaFull point 4k, d2, p4, FP32 | 86.3 | 102.3 | 86.2 | 86.5 | 91.7 | 0.999 | 1.002 | 1.064 | 1.185 |
+| CudaFull point 10k, d3, p4, FP32 | 104.1 | 115.1 | 104.1 | 104.4 | 121.4 | 1.000 | 1.003 | 1.166 | 1.106 |
+| CudaFull point 50k, d4, p6, FP32 | 431.0 | 448.1 | 431.2 | 431.7 | 448.7 | 1.000 | 1.002 | 1.041 | 1.040 |
+| CudaFull point 50k, d4, p6, FP64 | 2695.6 | 2706.1 | 2698.2 | 2697.7 | 2710.0 | 1.001 | 1.001 | 1.004 | 1.004 |
+| CudaFull prism 4k, d3, p6, FP32 | 108.3 | 127.4 | 108.3 | 108.1 | 128.0 | 1.000 | 0.998 | 1.182 | 1.176 |
+| CudaPartial point 50k, d4, p6, FP32 | 1067.7 | 1070.9 | 1062.0 | 1063.9 | 1069.9 | 0.995 | 0.996 | 1.007 | 1.003 |
+| standalone P2P canonical AoS | 172.2 | 183.0 | 172.6 | 173.9 | 182.6 | 1.002 | 1.010 | 1.058 | 1.063 |
+| standalone P2P particle-row SoA | 266.8 | 269.6 | 266.5 | 266.0 | 268.4 | 0.999 | 0.997 | 1.007 | 1.010 |
+| standalone P2P leaf block | 40.2 | 48.1 | 45.1 | 38.9 | 47.9 | 1.122 | 0.968 | 1.062 | 1.197 |
+| standalone P2P cuSPARSE BSR(3) | 59.4 | 63.5 | 56.8 | 57.5 | 62.6 | 0.956 | 0.968 | 1.102 | 1.069 |
+
+**Off acceptance.** On every FMM workload the final `Off` path is within
+0.1-0.6 % of the hard-off lower bound (0.995-1.006), i.e. inside the
+run-to-run spread; the fastest CUDA cases agree to 0.1 us. The standalone P2P
+leaf-block row (Off 1.12, Coarse 0.97 on the *same* binary and the same
+device path, since neither level records a device event) is noise in a
+minimum-of-50 at 40 us; a dedicated re-measurement of that driver alone (10
+interleaved repetitions, 200 evaluations each,
+`p2p_standalone_repeat.log`) gave medians hard-off 43.4 / Off 43.7 /
+start 46.5 / Detailed 47.1 us for the leaf block and 173.0 / 173.2 / 181.9 /
+182.4 us for canonical AoS, so Off equals hard-off there too.
+
+**Coarse** costs at most 0.3 % anywhere (two to four host clock reads).
+**Detailed** reproduces the old always-on cost, now quantified once and
+for all: +6 % on the 86 us case, +17-18 % on the 104-108 us cases, +4 % at
+50k FP32, +0.4 % at 50k FP64, +6-10 % on the standalone CUDA P2P plans, and
+nothing measurable on the CPU. Recorded numbers live in
+`benchmarks/baselines/phase5-timing/` (labelled INTERNAL TIMING OVERHEAD
+STUDY, NOT ARTICLE1); `benchmarks/baselines/phase3d/` is unchanged.
+
+### K/L. Validation
+
+- Correctness of the timing code: `tests/test_timing_levels.cpp` (Off collects
+  nothing; Coarse populates only the coarse fields; Detailed every phase;
+  aggregate accumulates; `reset_timings` clears only timing; a run-time
+  level change leaves results, `execution_plan`, packing and point-expansion
+  resolution unchanged; cache keys *and persisted file bytes* identical
+  across levels and a warm load at a third level agrees; CUDA backends agree
+  across levels to the backend's own reproducibility, i.e. bitwise when a
+  repeat at one level is bitwise, and gate their lanes; the CUDA direct plan
+  gates its lanes), `python_tests/test_timing_levels.py`, and the C ABI test
+  (`Off` makes `cdfmm_plan_get_last_evaluation_seconds` fail,
+  `set_timing_level` succeeds). Tests that read timing call counts now ask
+  for `Detailed` explicitly.
+- Fresh warning-as-error builds: portable CPU (CI reproduction with
+  conda-forge g++ 13.4, Unix Makefiles, LTO, `-Werror`: 252/252 CTest,
+  173 passed / 9 skipped pytest), and CUDA + oneMKL (`notebooks` preset plus
+  benchmarks, g++ 15.3 / nvcc 13.3, `-Werror`: 252/252 CTest, 181 passed /
+  1 skipped pytest including the six executed tutorials); the
+  `benchmark-all` preset (the Phase-J binaries). CPU + oneMKL without CUDA
+  and CUDA without oneMKL were not built separately in this pass: every
+  translation unit they compile is covered by the two configurations above
+  (the oneMKL and CUDA sources are the union, and the stubs are compiled by
+  the CPU-only build).
+- `compute-sanitizer` memcheck, racecheck, initcheck and synccheck over the 35 CUDA- and timing-tagged C++ test cases (41 312 assertions): 0 errors, 0 hazards each.
+- `sphinx-build -W` clean; `git diff --check` clean.
+- Cache format and keys: unchanged (the key strings still end in `_v04`; the
+  timing-level test compares the persisted bytes of an `Off` and a
+  `Detailed` cold build and finds them identical). C ABI: additive only
+  (`CDFMM_ABI_VERSION` stays 1; `cdfmm_options` unchanged); the accessor's
+  new failure while `Off` is a behaviour change for a C caller that never
+  selected a level, documented in `docs/c-and-fortran.md`. Fortran wrapper:
+  byte-identical to the starting HEAD, no Fortran compiler available here.
+  NVTX: `src/profile.hpp` untouched.
+- Numerical results: the CPU tests compare bitwise across levels; the CUDA
+  levels agree to the backend's reproducibility; the pre-existing
+  CPU-versus-CUDA agreement tests pass unchanged.
+
+### Commits and status
+
+Seven commits: `62e4ce8` CUDA event separation, `776d26a` UniformFmm timing levels, `fa870c6` Python/C ABI, `244b341` benchmark drivers and the overhead record, `7688d6a` tests, `3fb36d2` examples, `62835b5` documentation. The implementation is **FROZEN FOR ARTICLE1 BENCHMARKING** at
+`62835b5`; the agent-documentation commit follows it. CI: the branch was pushed as `phase5-timing-freeze`; the CI result is recorded in the follow-up entry below once the run completes.
+Next: the Article1 benchmark campaign, with `timing_level = Off` and external
+wall-clock timing of repeated `evaluate_into` calls; detailed timing is a
+separate diagnostic run.

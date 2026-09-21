@@ -1,5 +1,41 @@
 # Project progress
 
+## Phase 5 low-overhead timing and implementation freeze: COMPLETE — 2026-09-21
+
+Starting HEAD `8f54e6f` (tip of `phase4-pruning`); work on
+`phase5-timing-freeze`. Seven commits: `62e4ce8` CUDA event separation, `776d26a` UniformFmm timing levels, `fa870c6` Python/C ABI, `244b341` benchmark drivers and the overhead record, `7688d6a` tests, `3fb36d2` examples, `62835b5` documentation.
+
+**What it answered.** The always-on instrumentation cost a `CudaFull`
+evaluation 12-20 us regardless of size (15 % of an 86-108 us evaluation,
+3.3 % at 50k points, 20 % of the fastest standalone P2P plan; nothing
+measurable on the CPU), measured against a temporary hard-off copy of the
+starting HEAD before anything was redesigned.
+
+**What changed.** `TimingLevel {Off, Coarse, Detailed}`, default `Off`, on
+`UniformFmmOptions`, with a run-time `set_timing_level`. `Off` reads no clock
+and records no diagnostic CUDA event; the three functional events (two
+cross-stream waits, the completion point) are created without timestamps and
+the diagnostic graph has its own twins, so the functional graph is identical
+at every level. `Coarse` is host wall times (total, far field, near field,
+setup totals); `Detailed` is the old depth. Every record names its level.
+Python enum and setter; additive C ABI setter, with the wall-time accessor
+failing while `Off`; Fortran untouched; NVTX untouched and independent.
+Benchmark drivers take `--timing` (default `off`) and record it.
+
+**Acceptance.** `Off` within 0.1-0.6 % of hard-off on every FMM workload,
+`Coarse` at most 0.3 %, `Detailed` reproduces the old cost (+6 to +18 % on
+sub-millisecond CUDA cases). Numerical results, resolved policy, cache keys
+and persisted cache bytes are identical across levels (tested). Record:
+`benchmarks/baselines/phase5-timing/` (NOT ARTICLE1).
+
+**Validation.** GCC 13 CI reproduction 252/252 CTest and 173/9 pytest; CUDA +
+oneMKL `-Werror` 252/252 and 181/1 pytest with the tutorials executed;
+`compute-sanitizer` memcheck, racecheck, initcheck and synccheck over the 35 CUDA- and timing-tagged C++ test cases (41 312 assertions): 0 errors, 0 hazards each. `sphinx-build -W` and `git diff --check` clean. Unvalidated:
+Fortran (no compiler), MSVC/Windows.
+
+**Implementation FROZEN FOR ARTICLE1 BENCHMARKING at `62835b5`.** Next:
+the Article1 benchmark campaign.
+
 ## Phase 4 repository pruning and documentation cleanup: COMPLETE — 2026-09-20
 
 Starting HEAD `ad48459` on `refactor/architecture-v0.2`; work on

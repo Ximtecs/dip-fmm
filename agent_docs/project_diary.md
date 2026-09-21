@@ -803,3 +803,21 @@ roles, Light/Medium/Heavy semantics, and absolute route paths. `codex exec`
 calls with no observable spawn event, while the app session ran Explorer,
 Researcher, two Luna executors, and Tester. No project validation or commit was
 performed; both worktrees contain unrelated user changes.
+
+## 2026-09-21 — Phase 5: timing overhead measured, made opt-in, implementation frozen
+
+The instrumentation question was answered by measurement first: a hard-off
+copy of the starting HEAD showed the always-on clocks and CUDA timing events
+cost 12-20 us per `CudaFull` evaluation (up to 15 % of the fastest cases) and
+nothing on the CPU. The redesign separates three concerns that had shared
+three CUDA events: functional synchronisation (kept, timestamp-free),
+diagnostic timing (opt-in through `TimingLevel`, default `Off`, with its own
+event graph) and NVTX profiling (untouched). `Off` is indistinguishable from
+hard-off within noise; `Detailed` keeps the old depth. Results, policy,
+cache keys and cache bytes are level-independent and tested. Two lessons
+worth keeping: a CUDA plan that accumulates with atomics is not bitwise
+reproducible between evaluations, so a "results identical across levels"
+test must first check whether a repeat is bitwise; and a minimum-of-50 at
+40 us can swing 6 us between runs of the same binary, so an outlier ratio on
+such a row is re-measured before it is believed. Implementation frozen for
+Article1 at `62835b5`.
