@@ -132,10 +132,15 @@ meets the tolerance rather than the most accurate one.
 ## Diagnostics
 
 `plan.static_plan_statistics` reports the tree and topology bytes, the retained
-bytes of every operator, the near-field pair count and unique tensors, and the
-construction time of every phase (including cache lookups and loads).
+bytes of every operator, the near-field pair count and unique tensors, and,
+when the plan was built with `options.timing_level = TimingLevel.DETAILED`,
+the construction time of every phase (including cache lookups and loads).
 `plan.last_timings` and `plan.aggregate_timings` report the phases of the last
-and of all evaluations; `plan.cuda_plan_statistics` reports device residency
-and per-evaluation transfer bytes. `UniformTree.build_timings` and
+and of all evaluations at the selected level (`OFF` by default: nothing is
+measured; see [Benchmarks and profiling](benchmarks.md));
+`plan.cuda_plan_statistics` reports device residency and per-evaluation
+transfer bytes regardless of the level. The parameter-selection search
+(`suggest_parameters_for_accuracy` and its relatives) collects the detailed
+timings it needs on its own candidate plans, whatever the caller selected. `UniformTree.build_timings` and
 `AdaptiveTree.tree_seconds`/`interaction_seconds` time the tree construction
 itself. Tutorial 3 shows the tables these produce.

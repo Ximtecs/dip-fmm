@@ -189,10 +189,40 @@ enabled.
 drivers with a README stating what it is: an engineering regression baseline,
 explicitly not an Article1 benchmark.
 
+## Timing levels
+
+Internal timing is opt-in. `UniformFmmOptions::timing_level` (Python
+`options.timing_level`, a `TimingLevel` enum) selects how much the solver
+measures, and `UniformFmm::set_timing_level` changes it later on the same
+plan; results, the resolved backend and packing, cache keys and cache contents
+are the same at every level.
+
+| Level | Collected | Cost |
+|---|---|---|
+| `Off` (default) | Nothing. Only the functional CUDA events remain (two cross-stream dependencies and the completion point, created without timestamps). Every `PhaseTiming` keeps its default and the records say `timing_level == Off`. | The production path and the Article1 configuration; indistinguishable from a build with no instrumentation. |
+| `Coarse` | Whole host wall times: `total`, and on the CPU hierarchy `far_field` and `p2p` (`cuda_p2p_wait` for the hybrid backend); at construction `total_setup` and the static-plan `total`. No device event is recorded. | A handful of `steady_clock` reads per evaluation. |
+| `Detailed` | Every phase: the host phases, the oneMKL gather/multiply/scatter split, the CUDA device lanes (`CudaEvaluationTimings`, up to sixteen event records and twelve elapsed-time queries per full-plan evaluation) and the construction subphases including cache lookup, load and write. | Measured 3–15 % of a sub-millisecond CUDA evaluation, at noise level on the CPU (`agent_docs/performance_optimization.md`, Phase 5). |
+
+A region above the selected level is never entered by a clock, so a zero in
+`last_timings` at `Off` is an uncollected default, not a measurement; read the
+record's `timing_level` first. The NVTX ranges
+(`CDFMM_ENABLE_PROFILING`) are a separate compile-time mechanism for external
+profilers and do not depend on the timing level, so a profiling build can run
+`Off` under Nsight. The C ABI exposes the same switch through
+`cdfmm_plan_set_timing_level`; `cdfmm_plan_get_last_evaluation_seconds` fails
+rather than returning zero while a plan is `Off`.
+
+For a performance measurement, run with timing `Off` and time complete
+`evaluate`/`evaluate_into` calls with an external clock; every driver here
+does so (`evaluation_median`) and records the level it ran at
+(`--timing off|coarse|detailed`, default `off`, column `timing_level`). Use
+`Detailed` in a separate diagnostic run when the phase split is the question.
+
 ## Reading the numbers
 
 `EvaluationTimings` (Python `last_timings`) reports caller wall time per
-phase. `m2l` is a top-level phase; `m2l_scale`, `m2l_gather`, `m2l_multiply`
+phase at `TimingLevel::Detailed` (`total`, `far_field` and `p2p` already at
+`Coarse`). `m2l` is a top-level phase; `m2l_scale`, `m2l_gather`, `m2l_multiply`
 and `m2l_scatter` partition its work and are excluded from top-level
 phase-share normalisation so the same time is not counted twice (CUDA uses
 `m2l_scale` for its pre-scaling pass; grouped CPU execution uses gather,

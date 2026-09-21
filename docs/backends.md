@@ -73,7 +73,11 @@ changing moments -> H2D
 
 Static M2L matrices, interaction metadata, scaling tables and the selected P2P
 packing are uploaded during construction. In the partial backend M2L and P2P
-may overlap, so their phase timings are not a sequential sum; its M2L stream
+may overlap, so their phase timings are not a sequential sum; the device
+phase timings of both CUDA backends are recorded only at
+`TimingLevel::Detailed`, and below it only the three functional events (the
+two cross-stream dependencies and the completion point, created without
+timestamps) remain ([Benchmarks and profiling](benchmarks.md)); its M2L stream
 is created at the greatest stream priority because the CPU waits for exactly
 that result (measured 4–11 % faster at 32–128 points per leaf). In the full
 backend a repeated evaluation uploads only the changing moments and downloads

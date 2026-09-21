@@ -120,6 +120,12 @@ exposed for validation and teaching (tutorial 6).
 `plan.last_timings` (C++ `last_timings()`) gives the phases of the last
 evaluation, `plan.static_plan_statistics` the construction phases and retained
 bytes of every operator, and `plan.cuda_plan_statistics` device residency and
-per-evaluation transfer bytes. The cache keys `universal_cache_key`,
+per-evaluation transfer bytes. Timing is opt-in: the default
+`options.timing_level = TimingLevel.OFF` reads no clock and leaves every
+timing field at zero, `COARSE` measures the whole evaluation and its far and
+near branches, and `DETAILED` every phase; `plan.set_timing_level(...)`
+switches a built plan. Byte and count statistics are always populated, and
+the level never changes results or the resolved plan
+([Benchmarks and profiling](benchmarks.md)). The cache keys `universal_cache_key`,
 `geometry_cache_key` and `periodic_cache_key` identify what a later process
 will reuse ([Caching and periodicity](caching-and-periodicity.md)).

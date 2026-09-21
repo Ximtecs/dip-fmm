@@ -84,6 +84,14 @@ No exception crosses this boundary. Calls return integer status values and a
 thread-local C error is exposed through `cdfmm_last_error()`. One plan is
 non-reentrant; separate plans may be used independently.
 
+Internal timing is off for a C plan by default, as everywhere else. The
+additive `cdfmm_plan_set_timing_level(plan, CDFMM_TIMING_COARSE)` (or
+`CDFMM_TIMING_DETAILED`) switches it on for later evaluations without
+changing results; `cdfmm_plan_get_last_evaluation_seconds` then returns the
+measured wall time, and fails with `CDFMM_ERROR_UNSUPPORTED` while the plan
+is `CDFMM_TIMING_OFF` rather than returning an uncollected zero. The Fortran
+convenience layer exposes no timing and needs none.
+
 ## Building
 
 ```sh
