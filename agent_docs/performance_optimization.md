@@ -4514,7 +4514,9 @@ Carried forward, untouched here and explicitly not started:
 
 ## Phase 5 — timing overhead and implementation freeze
 
-**Status: FROZEN FOR ARTICLE1 BENCHMARKING** at `62835b5`. Starting HEAD `8f54e6f` (`refactor: defer the endpoint
+**Status: FROZEN FOR ARTICLE1 BENCHMARKING** at `48c2142`
+(the closure follow-up in section M; it supersedes the first freeze at
+`62835b5`). Starting HEAD `8f54e6f` (`refactor: defer the endpoint
 classifier merge, which GCC 13 LTO rejects`, the tip of `phase4-pruning`);
 work on `phase5-timing-freeze`, based exactly on it. Toolchain: g++ 15.3
 (conda `cdfmm`), nvcc 13.3, oneMKL, CMake 4.4; CI reproduction with
@@ -4644,10 +4646,14 @@ options struct and ABI version unchanged. Fortran: unchanged, exposes no
 timing (decision recorded). `suggest_parameters_for_accuracy` forces
 `Detailed` on its own candidate plans because it splits near and far.
 
-**Not gated, deliberately.** `UniformTree`/`AdaptiveTree` build timings and
-the dense-direct construction statistics are one-time construction records
-outside `UniformFmm` (about ten clock reads per build); they are copied into
-`StaticPlanStatistics::tree_construction` only at `Detailed`.
+**Not gated at first, superseded.** At `62835b5` the `UniformTree`/
+`AdaptiveTree` build timings and the dense-direct construction statistics
+were left unconditional as one-time construction records outside
+`UniformFmm` (about ten clock reads per build), copied into
+`StaticPlanStatistics::tree_construction` only at `Detailed`. The Phase-5
+closure follow-up (section M below) measured them, gated the ones a plan
+owns (`UniformFmm`'s two trees) or benchmarks (the dense plans), and left
+only the standalone `AdaptiveTree` unconditional.
 
 **Semantic change worth noting.** The FP32 hybrid path's `p2p` used to span
 fill, wait and accumulation on the host; it is now the device lane sum, as on
@@ -4730,10 +4736,153 @@ STUDY, NOT ARTICLE1); `benchmarks/baselines/phase3d/` is unchanged.
   levels agree to the backend's reproducibility; the pre-existing
   CPU-versus-CUDA agreement tests pass unchanged.
 
+### M. Closure follow-up: residual construction clocks, benchmark semantics, C accessor
+
+Starting point `d691830` (the agent-record tip above `62835b5`). Review had
+left three items: construction clocks outside the `UniformFmm` gate, a
+benchmark driver that copied its own clock into internal-looking phase
+columns for the direct references, and an undocumented compatibility status
+for the C accessor's new failure. Scope was timing gating, benchmark output
+semantics, their tests and documentation only; no mathematics, policy,
+representation, cache format or key changed.
+
+**Audit (before any change).** Every remaining `steady_clock` read in the
+library was inventoried:
+
+| Subsystem | Clock reads per construction | API | Unconditional | Benchmark relevance | Expected cost | Gate chosen |
+|---|---|---|---|---|---|---|
+| `UniformTree::build` | 13 per tree; `UniformFmm` builds two trees, so 26 per plan | public `build_timings()` | yes | Article1 setup of every plan | 26 x ~20 ns, under 1 us against ms-scale builds | `UniformTreeOptions::collect_build_timings` (default true; a plan sets it to `timing_level == Detailed`) |
+| `AdaptiveTree` | 3 | public `tree_seconds()`/`interaction_seconds()` | yes | standalone only; a plan receives a prebuilt topology | under 0.1 us | left unconditional, documented |
+| `DenseDirectPlan` | 8-10 into a thread-local internal record | public constructor, internal record | yes | Article1 dense reference construction | ~0.2 us against 50 us or more | trailing constructor argument `TimingLevel timing_level = Off` |
+| `CudaDenseDirectPlan` | 8 plus the host plan's | as above | yes | Article1 CUDA dense reference | ~0.2 us against ms-scale allocation and upload | same argument, forwarded to the host plan |
+| `src/cache/io.cpp` temp-file stamp | 1 per cache write | internal | yes, functional (unique file name), not diagnostic | none | none | none |
+
+Everything else (`UniformFmm` construction and evaluation, the CUDA plans)
+was already gated at `62835b5`.
+
+**Measurement.** External `steady_clock` around complete constructor calls
+(`construction_harness.cpp`, job scratch; one process per build; medians of
+the per-round medians over 7 interleaved rounds; 8 threads,
+`OMP_PROC_BIND=close OMP_PLACES=cores`; CPU-only Release builds without LTO,
+g++ 15.3). `hardoff` is a copy of `d691830` with the four files' clock reads
+and record writes deleted and nothing else changed; `current` is `d691830`;
+`final` is the follow-up at `Off` with the standalone trees built with
+`collect_build_timings = false`; `final-detailed` the same binary at
+`Detailed`. Warm-cache plans use the default cache directory after one
+warm-up construction; the cold row a fresh `CDFMM_CACHE_DIR` per build.
+Times in us (`benchmarks/baselines/phase5-timing/construction_clocks_*.csv`):
+
+| Case | hardoff | current | final (Off) | final-detailed | current/hardoff | final/hardoff | detailed/hardoff | hardoff round spread |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| standalone tree, 64 points, depth 1 | 5.76 | 5.98 | 5.75 | 5.94 | 1.039 | 0.999 | 1.031 | 0.5 % |
+| standalone tree, 1k points, depth 2 | 73.3 | 74.4 | 73.4 | 73.5 | 1.015 | 1.000 | 1.003 | 1.2 % |
+| standalone tree, 10k points, depth 3 | 889 | 891 | 886 | 887 | 1.002 | 0.997 | 0.998 | 0.6 % |
+| `UniformFmm` point 512, d2, p4, FP32, warm | 415 | 416 | 416 | 424 | 1.002 | 1.001 | 1.022 | 1.8 % |
+| `UniformFmm` point 10k, d3, p4, FP32, warm | 5389 | 5426 | 5437 | 5432 | 1.007 | 1.009 | 1.008 | 2.7 % |
+| `UniformFmm` prism 4k (16^3), d3, p6, FP32, warm | 5449 | 5517 | 5482 | 5569 | 1.013 | 1.006 | 1.022 | 7.4 % |
+| `UniformFmm` point 10k, d3, p4, FP32, cold cache | 94195 | 94429 | 94369 | 94599 | 1.002 | 1.002 | 1.004 | 1.1 % |
+| dense point 100 x 100 (8 threads) | 53.1 | 65.7 | 80.3 | 57.0 | 1.24 | 1.51 | 1.07 | 23 % |
+| dense point 1000 x 1000 | 5483 | 5411 | 5454 | 5396 | 0.987 | 0.995 | 0.984 | 4.5 % |
+| dense prism 512 (8^3 lattice) | 46277 | 46279 | 46301 | 46279 | 1.000 | 1.000 | 1.000 | 0.2 % |
+| dense prism 1728 (12^3 lattice) | 237116 | 236798 | 237339 | 236738 | 0.999 | 1.001 | 0.998 | 0.3 % |
+| dense tetrahedron 512 (8^3 lattice) | 149550 | 149553 | 149484 | 149427 | 1.000 | 1.000 | 0.999 | 0.6 % |
+
+Reading: the residual clocks cost about 17 ns per read. The only case that
+resolves them is the 6 us standalone tree, where the 13 reads are +0.22 us
+(+3.8 %) and the gated `final` build returns to hard-off to 0.01 us, with
+`final-detailed` reproducing the cost (+0.18 us). Every plan construction is
+inside its round-to-round spread (0.1-1 % differences against 1-7 % spread),
+as 26 reads against a 415 us build (0.1 %) must be. The 8-thread dense
+100 x 100 row is not a clock effect: its 10 000-pair fused loop is a 50 us
+OpenMP region whose thread wake-up jitter gives a 23 % round spread and puts
+`final-detailed` *below* `final`; the single-threaded re-measurement
+(`construction_clocks_serial.csv`, table below) settles it. The finite dense
+rows agree to 0.1 %.
+
+Single-threaded dense point plans (`OMP_NUM_THREADS=1`, so the fused loop
+runs serially and the only variable is the clock; 10 interleaved rounds,
+4000 or 1000 constructions per round; `dense_small_harness.cpp`, same three
+libraries through the pre-existing 7-argument constructor, which on the
+final tree defaults to `Off`):
+
+| Case | hardoff | current | final (Off) | current/hardoff | final/hardoff | hardoff round spread |
+|---|---:|---:|---:|---:|---:|---:|
+| dense point 40 x 40 | 15.43 | 15.54 | 15.36 | 1.007 | 0.995 | 3.7 % |
+| dense point 100 x 100 | 97.8 | 97.5 | 96.7 | 0.997 | 0.988 | 3.2 % |
+| dense point 300 x 300 | 1181 | 1180 | 1172 | 1.000 | 0.992 | 2.4 % |
+
+The eight dense clock reads (about 0.15 us) sit at the resolution floor of a
+15 us build (0.7 % round spread on the medians of 4000); `final` is at or
+below `hardoff` on every row.
+
+**Decision.** Gate what a plan owns and what Article1 benchmarks; leave the
+one standalone tree alone.
+
+- `UniformTreeOptions::collect_build_timings` (default `true`) keeps the
+  standalone tree's historical behaviour and Python exposes it;
+  `UniformFmm::normalise_geometry` sets it to `timing_level == Detailed` on
+  both trees it builds, so a plan at `Off` or `Coarse` reads no tree clock and
+  a plan at `Detailed` still fills `tree_construction` (now with `calls == 2`,
+  one per tree). `UniformTree::build` uses two `detail::PhaseStopwatch`
+  instances; enabled, it reads the clock 18 times instead of 20 (a record
+  followed directly by the next phase shares one read), disabled, never.
+- `DenseDirectPlan` and `CudaDenseDirectPlan` take a trailing
+  `TimingLevel timing_level = TimingLevel::Off`: `Coarse` records `total`,
+  `Detailed` every phase, `Off` nothing; counts and bytes are always filled;
+  both internal records carry `timing_level`. The one reader,
+  `benchmark_dense_direct_construction`, passes `Detailed`. Python dense
+  plans stay `Off` (they cannot read the record). Source-compatible through
+  the default; no ABI (the C ABI has no dense plan).
+- `AdaptiveTree` (3 reads, under 0.1 us, not plan-owned) is left as is and
+  documented as such, rather than growing an option for a cost below the
+  measurement floor.
+
+**Benchmark semantics.** `benchmark_uniform_fmm` no longer writes its own
+clock into `EvaluationTimings` for the direct references: the CPU reference
+contributes no phase at all and the CUDA direct plan only its device lanes,
+and only when its record says `Detailed`. The headline columns
+(`fmm_setup_seconds`, `evaluation_median`, `evaluation_mean`,
+`amortised_seconds`, `direct_seconds`, the workload medians) are external at
+every level; the tree, phase, CUDA-lane and static-plan columns are internal
+and follow the level (the tree columns are now zero below `Detailed`, since
+the trees no longer time themselves). A trailing column
+`internal_timing_source` (`uniform_fmm`, `cuda_direct_plan`, `none`) names
+the collector. `benchmark_p2p` already separated `host_total_s` from the
+device lanes and was unchanged; the dense driver's `construction_seconds`
+was already external. Phase-3D baseline CSVs are untouched and their
+analysers read columns by name, so the added column does not affect them.
+
+**C accessor.** Documented in `docs/c-and-fortran.md` as ABI-compatible
+(`CDFMM_ABI_VERSION` 1, no layout or symbol change), source-compatible and an
+intentional behaviour change (opt-in timing; a v0.1 caller that read the
+time without selecting a level now gets `CDFMM_ERROR_UNSUPPORTED`). The C
+test now also covers `Detailed` and the return to `Off`.
+
+**Tests added.** `tests/test_uniform_tree.cpp`: the opt-out leaves every
+node record, both interaction lists, both permutations, leaf maps and sorted
+positions identical and collects nothing. `tests/test_timing_levels.cpp`:
+`Off` and `Coarse` plans have `build_timings().total.calls == 0` on their
+tree, `Detailed` has every tree phase once and `tree_construction.calls ==
+2`; `DenseDirectPlan` at the three levels gives bit-identical matrices,
+identical results on the automatic and portable backends and the expected
+record fields (fused point path without classification/materialisation,
+classified prism path with them); `CudaDenseDirectPlan` gates its setup
+record, forwards the level to the host plan and agrees across levels to
+cuBLAS's reproducibility. `python_tests/test_construction_timing.py`: the
+Python option, `tree_construction_seconds` zero at `OFF` and positive at
+`DETAILED`, and, when a built `benchmark_uniform_fmm` is found (or named by
+`CDFMM_BENCHMARK_UNIFORM_FMM`), that `cpu-direct` rows carry
+`internal_timing_source == none` and zero internal columns at both levels and
+that `cpu-static-matrix` rows have zero internal columns at `off` and
+populated ones at `detailed`; it skips, saying why, when no driver is built.
+
 ### Commits and status
 
 Seven commits: `62e4ce8` CUDA event separation, `776d26a` UniformFmm timing levels, `fa870c6` Python/C ABI, `244b341` benchmark drivers and the overhead record, `7688d6a` tests, `3fb36d2` examples, `62835b5` documentation. The implementation is **FROZEN FOR ARTICLE1 BENCHMARKING** at
 `62835b5`; the agent-documentation commit follows it. CI: green on `5cdfaa8` (run 35571431509), both jobs and every step, including the C++ and Python test steps. The run on `62835b5` shows as cancelled because the workflow sets `cancel-in-progress` per ref and the documentation push superseded it; `5cdfaa8` contains that commit's tree plus the agent docs.
+Closure follow-up (section M): `60a361f` timing gates (tree and dense construction clocks by level, tests), `985ef6b` benchmark semantics (external versus internal columns, `internal_timing_source`, Python test, benchmarks guide), `d989270` documentation (C accessor compatibility status, tree clocks), `48c2142` a comment correction in the tree build; the
+agent-record commit follows. Validation: Four warning-as-error configurations rebuilt, zero warnings each: portable CPU CI reproduction (conda-forge g++ 13.4, Unix Makefiles, LTO) 255/255 CTest, 178 passed / 9 skipped pytest; CPU + oneMKL without CUDA 255/255, 167 passed / 7 skipped (notebooks excluded); CUDA without oneMKL (`cuda` preset) 255/255; CUDA + oneMKL (`notebooks` preset plus benchmarks, g++ 15.3 / nvcc 13.3) 255/255, 186 passed / 1 skipped including the six executed tutorials and the benchmark-CSV tests against the rebuilt driver. The three new CTest cases are the tree opt-out and the two dense timing cases. `compute-sanitizer` memcheck, racecheck, initcheck and synccheck over the `[dense]` and `[timing]` groups (12 cases, 9 643 assertions), since the CUDA dense constructor changed: 0 errors, 0 hazards each; no other CUDA source, event or synchronisation code changed, so the Phase-5 sanitizer campaign was not repeated. `sphinx-build -W` clean, `git diff --check` clean. Unvalidated, as before: Fortran (no compiler here; `fortran/` untouched), MSVC/Windows.. The final
+frozen implementation is `48c2142`; CI green on `d989270` (run 35578346697, both jobs: portable CPU build and tests, first-party warning surface); the run on the final HEAD that adds this record is listed below.
 Next: the Article1 benchmark campaign, with `timing_level = Off` and external
 wall-clock timing of repeated `evaluate_into` calls; detailed timing is a
 separate diagnostic run.

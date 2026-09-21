@@ -40,6 +40,24 @@ later runs compare like with like).
 | `phaseB_start_vs_hardoff.csv` | Starting HEAD against the hard-off lower bound. |
 | `phaseJ_all_builds.csv` | Hard-off, starting HEAD and the final build at `off`, `coarse`, `detailed`. |
 | `phaseB.json`, `phaseJ.json` | Every individual run behind the two tables. |
+| `construction_clocks_before.csv` | Closure follow-up: construction wall time of the branch before the residual construction clocks were gated (`current`) against a hard-off copy with those clocks deleted (`hardoff`), 7 interleaved rounds, 8 threads. |
+| `construction_clocks_final.csv` | The same study with the final implementation added at `Off` (`final`) and `Detailed` (`final-detailed`), 7 interleaved rounds, 8 threads. |
+| `construction_clocks_serial.csv` | `hardoff`, `current` and `final` again with `OMP_NUM_THREADS=1`, which removes the thread wake-up jitter that dominated the 50 us dense point case. |
+
+## Construction clocks (closure follow-up)
+
+The evaluation study above left three construction-time clocks unconditional
+(`UniformTree`, `AdaptiveTree`, the dense-direct construction records). The
+follow-up measured them with an external `steady_clock` around complete
+constructor calls, one process per build, cases and repetitions chosen so
+that the smallest builds (a 6 us standalone tree, a 50 us dense point plan)
+could resolve tens of nanoseconds. Each row is the median over the interleaved
+rounds of the per-round median. `final` builds the standalone trees with
+`collect_build_timings = false` and every plan at `TimingLevel::Off`;
+`final-detailed` is the same binary at `Detailed`. The clocks cost about
+17 ns per read, resolvable only on the 6 us tree (+3.8 %), and `final` equals
+`hardoff` there to 0.01 us; the narrative is in
+`agent_docs/performance_optimization.md`, Phase 5, section M.
 
 ## Reading them
 

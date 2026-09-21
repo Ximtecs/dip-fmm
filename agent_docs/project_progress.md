@@ -35,8 +35,33 @@ the tutorials executed;
 `compute-sanitizer` memcheck, racecheck, initcheck and synccheck over the 35 CUDA- and timing-tagged C++ test cases (41 312 assertions): 0 errors, 0 hazards each. `sphinx-build -W` and `git diff --check` clean. Unvalidated:
 Fortran (no compiler), MSVC/Windows.
 
-**Implementation FROZEN FOR ARTICLE1 BENCHMARKING at `62835b5`.** Next:
-the Article1 benchmark campaign.
+**Closure follow-up (same day).** Review found three residues: construction
+clocks outside the `UniformFmm` gate (`UniformTree` 13 reads per tree, 26
+per plan; `AdaptiveTree` 3; the dense-direct records 8-10, CUDA 8 more), a
+benchmark driver that wrote its own clock into internal-looking phase columns
+for the direct references, and an undocumented compatibility status for the C
+accessor. Measured first against a hard-off copy: about 17 ns per read,
+resolvable only on a 6 us standalone tree (+3.8 %), inside the noise on every
+plan and dense build. Gated anyway where a plan owns the clock or a benchmark
+constructs the object: `UniformTreeOptions::collect_build_timings` (default
+true; set from the plan's level, `Detailed` only), a trailing
+`TimingLevel timing_level = Off` on `DenseDirectPlan`/`CudaDenseDirectPlan`;
+`AdaptiveTree` left alone and documented. `benchmark_uniform_fmm` keeps its
+external clock apart from the solver's records and names the collector in a
+new trailing `internal_timing_source` column. `docs/c-and-fortran.md` states
+ABI-compatible / source-compatible / behaviour changed. Re-measured: `Off`
+equals hard-off (6 us tree to 0.01 us; dense builds at or below hard-off
+single-threaded). Tests at the tree, dense, CUDA dense, C ABI, Python and
+benchmark-CSV layers. Record: section M of the Phase-5 chapter in
+`performance_optimization.md`;
+`benchmarks/baselines/phase5-timing/construction_clocks_*.csv`.
+
+**Validation of the follow-up.** Four warning-as-error configurations rebuilt, zero warnings each: portable CPU CI reproduction (conda-forge g++ 13.4, Unix Makefiles, LTO) 255/255 CTest, 178 passed / 9 skipped pytest; CPU + oneMKL without CUDA 255/255, 167 passed / 7 skipped (notebooks excluded); CUDA without oneMKL (`cuda` preset) 255/255; CUDA + oneMKL (`notebooks` preset plus benchmarks, g++ 15.3 / nvcc 13.3) 255/255, 186 passed / 1 skipped including the six executed tutorials and the benchmark-CSV tests against the rebuilt driver. The three new CTest cases are the tree opt-out and the two dense timing cases. `compute-sanitizer` memcheck, racecheck, initcheck and synccheck over the `[dense]` and `[timing]` groups (12 cases, 9 643 assertions), since the CUDA dense constructor changed: 0 errors, 0 hazards each; no other CUDA source, event or synchronisation code changed, so the Phase-5 sanitizer campaign was not repeated. `sphinx-build -W` clean, `git diff --check` clean. Unvalidated, as before: Fortran (no compiler here; `fortran/` untouched), MSVC/Windows.
+
+**Implementation FROZEN FOR ARTICLE1 BENCHMARKING at
+`48c2142`** (supersedes `62835b5`; CI green on `d989270` (run 35578346697, both jobs: portable CPU build and tests, first-party warning surface); the run on the final HEAD that adds this record is listed below).
+Next: fast-forward into `refactor/architecture-v0.2` after review, then the
+Article1 benchmark campaign.
 
 ## Phase 4 repository pruning and documentation cleanup: COMPLETE — 2026-09-20
 

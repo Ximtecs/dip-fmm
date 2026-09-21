@@ -821,3 +821,21 @@ test must first check whether a repeat is bitwise; and a minimum-of-50 at
 40 us can swing 6 us between runs of the same binary, so an outlier ratio on
 such a row is re-measured before it is believed. Implementation frozen for
 Article1 at `62835b5`.
+
+## 2026-09-21 — Phase 5 closure: the last construction clocks, and what a benchmark column means
+
+The freeze had a loose end: three construction-time clocks outside the
+`UniformFmm` gate, and a benchmark driver whose direct-reference rows showed
+a nonzero `p2p` "phase" at `timing=off` because it had copied its own clock
+into the solver's record. The clocks were measured before they were touched
+(about 17 ns a read; visible only on a 6 us standalone tree) and then gated
+where a plan or a benchmark owns them, with the standalone `AdaptiveTree`
+left alone and said so. Two lessons. First, a claim like "`Off` reads no
+clock" has to name its scope; the honest sentence is "no clock in anything a
+plan owns", and the docs now say exactly that. Second, a CSV column belongs
+to one clock: the benchmark's external wall clock or the solver's internal
+record, never a mixture that looks like the other, and a `none` in
+`internal_timing_source` is more useful than a zero that might be a
+measurement. A third, smaller one: an OpenMP region of 50 us has a
+thread-wake jitter far larger than any clock read, so the small dense case
+had to be settled single-threaded. Final freeze at `48c2142`.
