@@ -55,10 +55,12 @@ runner, `benchmark_cache_initialisation`, the operator-representation driver,
 the parameter-selection search, the adaptive showcase and three tutorials ask
 for `Detailed` explicitly because they *display* phases.
 
-**Validation.** CI reproduction with conda-forge g++ 13.4 (Unix Makefiles,
-LTO, `-Werror`): 252/252 CTest, 173 passed / 9 skipped pytest. CUDA + oneMKL
-(`notebooks` preset + benchmarks, `-Werror`): 252/252 CTest, 181 passed /
-1 skipped pytest with the six tutorials executed. `compute-sanitizer` memcheck, racecheck, initcheck and synccheck over the 35 CUDA- and timing-tagged C++ test cases (41 312 assertions): 0 errors, 0 hazards each.
+**Validation.** Four warning-as-error configurations, zero warnings each.
+CI reproduction with conda-forge g++ 13.4 (Unix Makefiles, LTO): 252/252
+CTest, 173 passed / 9 skipped pytest. CPU + oneMKL without CUDA: 252/252,
+162 passed / 7 skipped. CUDA without oneMKL: 252/252. CUDA + oneMKL
+(`notebooks` preset + benchmarks): 252/252, 181 passed / 1 skipped with the
+six tutorials executed. `compute-sanitizer` memcheck, racecheck, initcheck and synccheck over the 35 CUDA- and timing-tagged C++ test cases (41 312 assertions): 0 errors, 0 hazards each.
 `sphinx-build -W` clean, `git diff --check` clean. New
 `tests/test_timing_levels.cpp` (and the Python twin) pins: Off collects
 nothing, Coarse only the coarse fields, Detailed everything, aggregates and

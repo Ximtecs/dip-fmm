@@ -28,8 +28,10 @@ sub-millisecond CUDA cases). Numerical results, resolved policy, cache keys
 and persisted cache bytes are identical across levels (tested). Record:
 `benchmarks/baselines/phase5-timing/` (NOT ARTICLE1).
 
-**Validation.** GCC 13 CI reproduction 252/252 CTest and 173/9 pytest; CUDA +
-oneMKL `-Werror` 252/252 and 181/1 pytest with the tutorials executed;
+**Validation.** All four warning-as-error configurations, zero warnings:
+GCC 13 CI reproduction 252/252 CTest and 173/9 pytest; CPU + oneMKL 252/252
+and 162/7; CUDA without oneMKL 252/252; CUDA + oneMKL 252/252 and 181/1 with
+the tutorials executed;
 `compute-sanitizer` memcheck, racecheck, initcheck and synccheck over the 35 CUDA- and timing-tagged C++ test cases (41 312 assertions): 0 errors, 0 hazards each. `sphinx-build -W` and `git diff --check` clean. Unvalidated:
 Fortran (no compiler), MSVC/Windows.
 

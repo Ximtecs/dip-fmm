@@ -4708,16 +4708,14 @@ STUDY, NOT ARTICLE1); `benchmarks/baselines/phase3d/` is unchanged.
   (`Off` makes `cdfmm_plan_get_last_evaluation_seconds` fail,
   `set_timing_level` succeeds). Tests that read timing call counts now ask
   for `Detailed` explicitly.
-- Fresh warning-as-error builds: portable CPU (CI reproduction with
-  conda-forge g++ 13.4, Unix Makefiles, LTO, `-Werror`: 252/252 CTest,
-  173 passed / 9 skipped pytest), and CUDA + oneMKL (`notebooks` preset plus
-  benchmarks, g++ 15.3 / nvcc 13.3, `-Werror`: 252/252 CTest, 181 passed /
-  1 skipped pytest including the six executed tutorials); the
-  `benchmark-all` preset (the Phase-J binaries). CPU + oneMKL without CUDA
-  and CUDA without oneMKL were not built separately in this pass: every
-  translation unit they compile is covered by the two configurations above
-  (the oneMKL and CUDA sources are the union, and the stubs are compiled by
-  the CPU-only build).
+- Fresh warning-as-error builds, all four configurations, zero warnings:
+  portable CPU (CI reproduction with conda-forge g++ 13.4, Unix Makefiles,
+  LTO: 252/252 CTest, 173 passed / 9 skipped pytest); CPU + oneMKL without
+  CUDA (252/252 CTest, 162 passed / 7 skipped pytest, notebooks excluded);
+  CUDA without oneMKL (`cuda` preset, 252/252 CTest); and CUDA + oneMKL
+  (`notebooks` preset plus benchmarks, g++ 15.3 / nvcc 13.3: 252/252 CTest,
+  181 passed / 1 skipped pytest including the six executed tutorials). The
+  `benchmark-all` preset built the Phase-J binaries.
 - `compute-sanitizer` memcheck, racecheck, initcheck and synccheck over the 35 CUDA- and timing-tagged C++ test cases (41 312 assertions): 0 errors, 0 hazards each.
 - `sphinx-build -W` clean; `git diff --check` clean.
 - Cache format and keys: unchanged (the key strings still end in `_v04`; the
