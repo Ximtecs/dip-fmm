@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cache/internal.hpp"
+#include "phase_stopwatch.hpp"
 
-#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <span>
@@ -42,7 +42,9 @@ bool load_universal_cache(const UniversalCacheIdentity& identity,
   if (!identity.enabled) {
     return false;
   }
-  const auto start = std::chrono::steady_clock::now();
+  detail::PhaseStopwatch clock(
+      statistics.timing_level == TimingLevel::Detailed);
+  clock.start();
   try {
     const auto file = read_cache(
         cache_path(identity.directory, "universal", identity.universal_key),
@@ -66,23 +68,25 @@ bool load_universal_cache(const UniversalCacheIdentity& identity,
       throw std::runtime_error("universal M2L bank size mismatch");
     }
     statistics.universal_cache_hit = true;
-    statistics.universal_cache_load.add(
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-            .count());
+    if (clock.enabled()) {
+      statistics.universal_cache_load.add(clock.elapsed());
+    }
   } catch (const std::exception&) {
-    statistics.universal_cache_lookup.add(
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-            .count());
+    if (clock.enabled()) {
+      statistics.universal_cache_lookup.add(clock.elapsed());
+    }
     return false;
   }
-  statistics.universal_cache_lookup.add(
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-          .count());
+  if (clock.enabled()) {
+    statistics.universal_cache_lookup.add(clock.elapsed());
+  }
 
   if (!identity.periodic_enabled) {
     return true;
   }
-  const auto periodic_start = std::chrono::steady_clock::now();
+  detail::PhaseStopwatch periodic_clock(
+      statistics.timing_level == TimingLevel::Detailed);
+  periodic_clock.start();
   try {
     const auto file = read_cache(
         cache_path(identity.directory, "periodic", identity.periodic_key),
@@ -101,21 +105,18 @@ bool load_universal_cache(const UniversalCacheIdentity& identity,
                                 periodic.end());
     statistics.periodic_cache_hit = true;
     payload.periodic_operator_available = true;
-    statistics.periodic_cache_load.add(
-        std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                     periodic_start)
-            .count());
+    if (periodic_clock.enabled()) {
+      statistics.periodic_cache_load.add(periodic_clock.elapsed());
+    }
   } catch (const std::exception&) {
-    statistics.periodic_cache_lookup.add(
-        std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                     periodic_start)
-            .count());
+    if (periodic_clock.enabled()) {
+      statistics.periodic_cache_lookup.add(periodic_clock.elapsed());
+    }
     return true;
   }
-  statistics.periodic_cache_lookup.add(
-      std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                   periodic_start)
-          .count());
+  if (periodic_clock.enabled()) {
+    statistics.periodic_cache_lookup.add(periodic_clock.elapsed());
+  }
   return true;
 }
 
@@ -127,7 +128,9 @@ void write_universal_cache(
   if (!identity.enabled) {
     return;
   }
-  const auto start = std::chrono::steady_clock::now();
+  detail::PhaseStopwatch clock(
+      statistics.timing_level == TimingLevel::Detailed);
+  clock.start();
   Writer payload;
   for (const auto& value : m2m_operators) {
     write_operator(payload, value, identity.precision);
@@ -162,9 +165,9 @@ void write_universal_cache(
         periodic_payload.bytes());
     statistics.cache_bytes_written += periodic_bytes;
   }
-  statistics.universal_cache_write.add(
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-          .count());
+  if (clock.enabled()) {
+    statistics.universal_cache_write.add(clock.elapsed());
+  }
 }
 
 } // namespace cdfmm::detail::cache

@@ -80,6 +80,9 @@ PerformanceCandidate benchmark_candidate(
     options.expansion_order = order;
     options.tree.max_level = depth;
     options.backend = backend;
+    // The search splits every candidate into its near and far branches, so
+    // it needs the detailed phase timings whatever the caller selected.
+    options.timing_level = TimingLevel::Detailed;
     UniformFmm fmm({source_positions.begin(), source_positions.end()},
                    {target_positions.begin(), target_positions.end()}, options);
     (void)fmm.evaluate(dipole_moments, OutputFlags::Field,

@@ -3,7 +3,6 @@
 #include "cdfmm/uniform_fmm.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 
 #ifdef CDFMM_USE_OPENMP
@@ -18,6 +17,7 @@
 #include "backend/cpu/far_field/packing.hpp"
 #include "backend/cpu/m2l/schedule.hpp"
 #include "fmm/internal.hpp"
+#include "phase_stopwatch.hpp"
 #include "profile.hpp"
 
 namespace cdfmm {
@@ -43,15 +43,10 @@ namespace cdfmm {
 // every parallel iteration owns a disjoint output node, so no stage needs
 // atomics.  Coefficients live in flat node-major arrays
 // (`multipole_for_node`, `local_for_node` are views into them).
-
-namespace {
-using Clock = std::chrono::steady_clock;
-
-inline double elapsed_seconds(const Clock::time_point start) {
-  return std::chrono::duration<double>(Clock::now() - start).count();
-}
-
-} // namespace
+//
+// Every phase clock here is a `Detailed`-level stopwatch: below that level
+// `start()`/`record()` are one predictable branch and no clock is read.  The
+// clocks bracket whole OpenMP regions, so they report caller wall time.
 
 // One level of the static M2L.  Portable execution prefers the transfer-class
 // sorted block schedule (backend/cpu/m2l/schedule.cpp) and falls back to the
@@ -61,28 +56,32 @@ inline double elapsed_seconds(const Clock::time_point start) {
 // root onto itself is the periodic image operator.
 void UniformFmm::static_m2l(const int level) {
   detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
+  detail::PhaseStopwatch detailed(detailed_timing());
   if (static_matrix_backend_ == StaticMatrixBackend::Portable) {
-    const auto phase_start = Clock::now();
+    detailed.start();
     if (cpu_packing_ && !cpu_packing_->m2l_schedule.empty()) {
       detail::cpu::apply_static_m2l_plan(m2l_plan_, cpu_packing_->m2l_schedule,
                                          level, multipoles_, locals_);
     } else {
       apply_static_m2l_plan(m2l_plan_, level, multipoles_, locals_);
     }
-    last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
+    detailed.record(last_timings_.m2l_multiply);
     return;
   }
   const detail::mkl::M2LApplyTimings timings = mkl_m2l_plan_->apply(
-      m2l_plan_, level, multipoles_, locals_);
-  last_timings_.m2l_gather.add(timings.gather_seconds);
-  last_timings_.m2l_multiply.add(timings.multiply_seconds);
-  last_timings_.m2l_scatter.add(timings.scatter_seconds);
+      m2l_plan_, level, multipoles_, locals_, detailed.enabled());
+  if (detailed.enabled()) {
+    last_timings_.m2l_gather.add(timings.gather_seconds);
+    last_timings_.m2l_multiply.add(timings.multiply_seconds);
+    last_timings_.m2l_scatter.add(timings.scatter_seconds);
+  }
 }
 
 void UniformFmm::static_m2l_float(const int level) {
   detail::ProfileRange m2l_range{"cdfmm/far_field/m2l_fp32"};
+  detail::PhaseStopwatch detailed(detailed_timing());
   if (static_matrix_backend_ == StaticMatrixBackend::Portable) {
-    const auto phase_start = Clock::now();
+    detailed.start();
     if (cpu_packing_ && !cpu_packing_->m2l_schedule.empty()) {
       detail::cpu::apply_static_m2l_plan(
           m2l_plan_float_, cpu_packing_->m2l_schedule, level,
@@ -91,15 +90,18 @@ void UniformFmm::static_m2l_float(const int level) {
       apply_static_m2l_plan(m2l_plan_float_, level, multipoles_float_,
                             locals_float_);
     }
-    last_timings_.m2l_multiply.add(elapsed_seconds(phase_start));
+    detailed.record(last_timings_.m2l_multiply);
     return;
   }
 
   const detail::mkl::M2LApplyTimings timings = mkl_m2l_plan_->apply(
-      m2l_plan_float_, level, multipoles_float_, locals_float_);
-  last_timings_.m2l_gather.add(timings.gather_seconds);
-  last_timings_.m2l_multiply.add(timings.multiply_seconds);
-  last_timings_.m2l_scatter.add(timings.scatter_seconds);
+      m2l_plan_float_, level, multipoles_float_, locals_float_,
+      detailed.enabled());
+  if (detailed.enabled()) {
+    last_timings_.m2l_gather.add(timings.gather_seconds);
+    last_timings_.m2l_multiply.add(timings.multiply_seconds);
+    last_timings_.m2l_scatter.add(timings.scatter_seconds);
+  }
 }
 
 //------------------------------------------------------------------------------
@@ -128,11 +130,12 @@ void UniformFmm::prepare_moments_float(
         "UniformFmm::upward_pass requires one dipole moment per source "
         "position");
   }
-  auto phase_start = Clock::now();
+  detail::PhaseStopwatch detailed(detailed_timing());
+  detailed.start();
   std::fill(multipoles_float_.begin(), multipoles_float_.end(), 0.0F);
-  last_timings_.multipole_reset.add(elapsed_seconds(phase_start));
+  detailed.record(last_timings_.multipole_reset);
 
-  phase_start = Clock::now();
+  detailed.start();
   const auto permutation = std::span<const int>(topology_->source_permutation);
 #pragma omp parallel for schedule(static) if (permutation.size() >= 256)
   for (std::ptrdiff_t sorted_index = 0;
@@ -146,7 +149,7 @@ void UniformFmm::prepare_moments_float(
         static_cast<float>(moment.y / scale / scale / scale),
         static_cast<float>(moment.z / scale / scale / scale)};
   }
-  last_timings_.moment_permutation.add(elapsed_seconds(phase_start));
+  detailed.record(last_timings_.moment_permutation);
 }
 
 void UniformFmm::prepare_moments_float(
@@ -156,10 +159,11 @@ void UniformFmm::prepare_moments_float(
     throw std::invalid_argument(
         "UniformFmm::upward_pass requires one dipole moment per source position");
   }
-  auto phase_start = Clock::now();
+  detail::PhaseStopwatch detailed(detailed_timing());
+  detailed.start();
   std::fill(multipoles_float_.begin(), multipoles_float_.end(), 0.0F);
-  last_timings_.multipole_reset.add(elapsed_seconds(phase_start));
-  phase_start = Clock::now();
+  detailed.record(last_timings_.multipole_reset);
+  detailed.start();
   const auto permutation = std::span<const int>(topology_->source_permutation);
   const float scale = static_cast<float>(coordinate_scale_);
 #pragma omp parallel for schedule(static) if (permutation.size() >= 256)
@@ -173,13 +177,14 @@ void UniformFmm::prepare_moments_float(
         moment.y / scale / scale / scale,
         moment.z / scale / scale / scale};
   }
-  last_timings_.moment_permutation.add(elapsed_seconds(phase_start));
+  detailed.record(last_timings_.moment_permutation);
 }
 
 void UniformFmm::upward_pass_prepared_float() {
   const auto &nodes = topology_->nodes;
   const auto &occupied_leaves = topology_->source_leaves;
-  auto phase_start = Clock::now();
+  detail::PhaseStopwatch detailed(detailed_timing());
+  detailed.start();
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
   for (std::ptrdiff_t occupied_index = 0;
        occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
@@ -203,9 +208,9 @@ void UniformFmm::upward_pass_prepared_float() {
                                     leaf_moments, M.data());
     }
   }
-  last_timings_.p2m.add(elapsed_seconds(phase_start));
+  detailed.record(last_timings_.p2m);
 
-  phase_start = Clock::now();
+  detailed.start();
 #pragma omp parallel if (nodes.size() >= 64)
   {
     for (int level = topology_->maximum_level - 1; level >= 0; --level) {
@@ -238,7 +243,7 @@ void UniformFmm::upward_pass_prepared_float() {
       }
     }
   }
-  last_timings_.m2m.add(elapsed_seconds(phase_start));
+  detailed.record(last_timings_.m2m);
 }
 
 void UniformFmm::prepare_moments(std::span<const Vec3> dipole_moments) {
@@ -249,16 +254,16 @@ void UniformFmm::prepare_moments(std::span<const Vec3> dipole_moments) {
         "position");
   }
 
+  detail::PhaseStopwatch detailed(detailed_timing());
   {
-    const auto phase_start = Clock::now();
+    detailed.start();
     detail::ProfileRange reset_range{"cdfmm/far_field/multipole_reset"};
     // Flat node-major storage permits one streaming reset instead of one small
     // fill and one vector-metadata load per tree node.
     std::fill(multipoles_.begin(), multipoles_.end(), 0.0);
-    last_timings_.multipole_reset.add(elapsed_seconds(phase_start));
+    detailed.record(last_timings_.multipole_reset);
   }
 
-  const auto phase_start = Clock::now();
   detail::ProfileRange permutation_range{
       "cdfmm/input_preparation/moment_permutation"};
   const auto permutation = std::span<const int>(topology_->source_permutation);
@@ -274,14 +279,15 @@ void UniformFmm::prepare_moments(std::span<const Vec3> dipole_moments) {
         dipole_moments[static_cast<std::size_t>(original_index)] *
         inverse_volume_scale;
   }
-  last_timings_.moment_permutation.add(elapsed_seconds(phase_start));
+  detailed.record(last_timings_.moment_permutation);
 }
 
 void UniformFmm::upward_pass_prepared() {
   const auto &nodes = topology_->nodes;
   const auto &occupied_leaves = topology_->source_leaves;
   const StaticOperatorExecutor p2m_executor = execution_plan().p2m;
-  auto phase_start = Clock::now();
+  detail::PhaseStopwatch detailed(detailed_timing());
+  detailed.start();
   detail::ProfileRange p2m_range{"cdfmm/far_field/p2m"};
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
   for (std::ptrdiff_t occupied_index = 0;
@@ -319,10 +325,10 @@ void UniformFmm::upward_pass_prepared() {
       std::copy(M.begin(), M.end(), multipole_for_node(leaf_index).begin());
     }
   }
-  last_timings_.p2m.add(elapsed_seconds(phase_start));
+  detailed.record(last_timings_.p2m);
   p2m_range.end();
 
-  phase_start = Clock::now();
+  detailed.start();
   detail::ProfileRange m2m_range{"cdfmm/far_field/m2m"};
   const StaticOperatorExecutor m2m_executor = execution_plan().m2m;
 // One team traverses all dependent levels; the implicit omp-for barrier
@@ -366,7 +372,7 @@ void UniformFmm::upward_pass_prepared() {
       }
     }
   }
-  last_timings_.m2m.add(elapsed_seconds(phase_start));
+  detailed.record(last_timings_.m2m);
 }
 
 //------------------------------------------------------------------------------
@@ -389,10 +395,11 @@ void UniformFmm::downward_pass() {
 void UniformFmm::downward_pass_for_output(const OutputFlags output,
                                           const bool evaluate_l2p) {
   detail::ProfileRange downward_range{"cdfmm/far_field/downward"};
-  auto phase_start = Clock::now();
+  detail::PhaseStopwatch detailed(detailed_timing());
+  detailed.start();
   detail::ProfileRange reset_range{"cdfmm/far_field/local_reset"};
   std::fill(locals_.begin(), locals_.end(), 0.0);
-  last_timings_.local_reset.add(elapsed_seconds(phase_start));
+  detailed.record(last_timings_.local_reset);
   reset_range.end();
 
   if (execution_plan().m2l == StaticOperatorExecutor::Cuda) {
@@ -400,9 +407,9 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
     l2l_downward();
   } else {
     if (periodic_.enabled && m2l_backend_ == M2LBackend::Static) {
-      phase_start = Clock::now();
+      detailed.start();
       static_m2l(0);
-      last_timings_.m2l.add(elapsed_seconds(phase_start));
+      detailed.record(last_timings_.m2l);
     }
 
     const auto &nodes = topology_->nodes;
@@ -413,7 +420,7 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
       const int begin = topology_->l2l_level_offsets[static_cast<std::size_t>(level)];
       const int end = topology_->l2l_level_offsets[static_cast<std::size_t>(level + 1)];
 
-      phase_start = Clock::now();
+      detailed.start();
       detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
 #pragma omp parallel for schedule(static) if (end - begin >= 8)
       for (int edge_slot = begin; edge_slot < end; ++edge_slot) {
@@ -435,17 +442,17 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
                   local_for_node(target_index));
         }
       }
-      last_timings_.l2l.add(elapsed_seconds(phase_start));
+      detailed.record(last_timings_.l2l);
       l2l_range.end();
 
       if (m2l_backend_ == M2LBackend::Static) {
-        phase_start = Clock::now();
+        detailed.start();
         static_m2l(level);
-        last_timings_.m2l.add(elapsed_seconds(phase_start));
+        detailed.record(last_timings_.m2l);
         continue;
       }
 
-      phase_start = Clock::now();
+      detailed.start();
       detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
       // Reference M2L retains list2 order through the canonical interaction
       // records. It is intentionally serial to preserve each target's sum.
@@ -462,7 +469,7 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
         operators::m2l::apply(basis_, R, multipole_for_node(interaction.source_node),
                 local_for_node(interaction.target_node));
       }
-      last_timings_.m2l.add(elapsed_seconds(phase_start));
+      detailed.record(last_timings_.m2l);
     }
   }
 
@@ -476,7 +483,7 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
     const StaticOperatorExecutor l2p_executor = execution_plan().l2p;
     const bool want_field = has_flag(output, OutputFlags::Field);
     const bool want_potential = has_flag(output, OutputFlags::Potential);
-    phase_start = Clock::now();
+    detailed.start();
     detail::ProfileRange l2p_range{"cdfmm/far_field/l2p"};
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
     for (std::ptrdiff_t occupied_index = 0;
@@ -518,7 +525,7 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
         }
       }
     }
-    last_timings_.l2p.add(elapsed_seconds(phase_start));
+    detailed.record(last_timings_.l2p);
   }
 }
 
@@ -526,36 +533,39 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
 // executor.
 void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
                                                 const bool evaluate_l2p) {
-  auto phase_start = Clock::now();
+  detail::PhaseStopwatch detailed(detailed_timing());
+  detailed.start();
   std::fill(locals_float_.begin(), locals_float_.end(), 0.0F);
-  last_timings_.local_reset.add(elapsed_seconds(phase_start));
+  detailed.record(last_timings_.local_reset);
 
   const bool cuda_m2l_executor =
       execution_plan().m2l == StaticOperatorExecutor::Cuda;
   if (cuda_m2l_executor) {
-    phase_start = Clock::now();
+    detailed.start();
     cuda_m2l_plan_->plan->evaluate(multipoles_float_, locals_float_);
-    const CudaEvaluationTimings &device = cuda_m2l_plan_->plan->timings();
-    last_timings_.cuda_h2d.add(device.h2d_seconds);
-    last_timings_.cuda_m2l_h2d.add(device.h2d_seconds);
-    last_timings_.m2l_scale.add(device.scale_seconds);
-    last_timings_.m2l_multiply.add(device.multiply_seconds);
-    last_timings_.cuda_kernel.add(device.kernel_seconds);
-    last_timings_.cuda_d2h.add(device.d2h_seconds);
-    last_timings_.cuda_m2l_d2h.add(device.d2h_seconds);
-    last_timings_.m2l.add(elapsed_seconds(phase_start));
+    if (detailed.enabled()) {
+      const CudaEvaluationTimings &device = cuda_m2l_plan_->plan->timings();
+      last_timings_.cuda_h2d.add(device.h2d_seconds);
+      last_timings_.cuda_m2l_h2d.add(device.h2d_seconds);
+      last_timings_.m2l_scale.add(device.scale_seconds);
+      last_timings_.m2l_multiply.add(device.multiply_seconds);
+      last_timings_.cuda_kernel.add(device.kernel_seconds);
+      last_timings_.cuda_d2h.add(device.d2h_seconds);
+      last_timings_.cuda_m2l_d2h.add(device.d2h_seconds);
+    }
+    detailed.record(last_timings_.m2l);
   }
 
   const auto &nodes = topology_->nodes;
   if (periodic_.enabled && !cuda_m2l_executor) {
-    phase_start = Clock::now();
+    detailed.start();
     static_m2l_float(0);
-    last_timings_.m2l.add(elapsed_seconds(phase_start));
+    detailed.record(last_timings_.m2l);
   }
   for (int level = 1; level <= topology_->maximum_level; ++level) {
     const int begin = topology_->l2l_level_offsets[static_cast<std::size_t>(level)];
     const int end = topology_->l2l_level_offsets[static_cast<std::size_t>(level + 1)];
-    phase_start = Clock::now();
+    detailed.start();
 #pragma omp parallel for schedule(static) if (end - begin >= 8)
     for (int edge_slot = begin; edge_slot < end; ++edge_slot) {
       const StaticTranslationEdge &edge = topology_->l2l_edges[
@@ -570,12 +580,12 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
           local_float_for_node(edge.source_node).data(),
           local_float_for_node(target_index).data());
     }
-    last_timings_.l2l.add(elapsed_seconds(phase_start));
+    detailed.record(last_timings_.l2l);
 
     if (!cuda_m2l_executor) {
-      phase_start = Clock::now();
+      detailed.start();
       static_m2l_float(level);
-      last_timings_.m2l.add(elapsed_seconds(phase_start));
+      detailed.record(last_timings_.m2l);
     }
   }
 
@@ -583,7 +593,7 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
     const auto &occupied_leaves = topology_->target_leaves;
     const bool want_field = has_flag(output, OutputFlags::Field);
     const bool want_potential = has_flag(output, OutputFlags::Potential);
-    phase_start = Clock::now();
+    detailed.start();
 #pragma omp parallel for schedule(static) if (occupied_leaves.size() >= 8)
     for (std::ptrdiff_t occupied_index = 0;
          occupied_index < static_cast<std::ptrdiff_t>(occupied_leaves.size());
@@ -618,7 +628,7 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
         sorted_results_float_[target_index] = result;
       }
     }
-    last_timings_.l2p.add(elapsed_seconds(phase_start));
+    detailed.record(last_timings_.l2p);
   }
 }
 
@@ -627,27 +637,31 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
 // into the public H2D/scale/multiply/D2H lanes.
 void UniformFmm::cuda_m2l() {
   detail::ProfileRange m2l_range{"cdfmm/far_field/m2l"};
-  const auto phase_start = Clock::now();
+  detail::PhaseStopwatch detailed(detailed_timing());
+  detailed.start();
   cuda_m2l_plan_->plan->evaluate(multipoles_, locals_);
-  const CudaEvaluationTimings &device = cuda_m2l_plan_->plan->timings();
-  last_timings_.cuda_h2d.add(device.h2d_seconds);
-  last_timings_.cuda_m2l_h2d.add(device.h2d_seconds);
-  last_timings_.m2l_scale.add(device.scale_seconds);
-  last_timings_.m2l_multiply.add(device.multiply_seconds);
-  last_timings_.cuda_kernel.add(device.kernel_seconds);
-  last_timings_.cuda_d2h.add(device.d2h_seconds);
-  last_timings_.cuda_m2l_d2h.add(device.d2h_seconds);
-  last_timings_.m2l.add(elapsed_seconds(phase_start));
+  if (detailed.enabled()) {
+    const CudaEvaluationTimings &device = cuda_m2l_plan_->plan->timings();
+    last_timings_.cuda_h2d.add(device.h2d_seconds);
+    last_timings_.cuda_m2l_h2d.add(device.h2d_seconds);
+    last_timings_.m2l_scale.add(device.scale_seconds);
+    last_timings_.m2l_multiply.add(device.multiply_seconds);
+    last_timings_.cuda_kernel.add(device.kernel_seconds);
+    last_timings_.cuda_d2h.add(device.d2h_seconds);
+    last_timings_.cuda_m2l_d2h.add(device.d2h_seconds);
+  }
+  detailed.record(last_timings_.m2l);
 }
 
 // L2L over all levels after a device M2L has already filled every local.
 void UniformFmm::l2l_downward() {
   detail::ProfileRange l2l_range{"cdfmm/far_field/l2l"};
+  detail::PhaseStopwatch detailed(detailed_timing());
   const auto &nodes = topology_->nodes;
   for (int level = 1; level <= topology_->maximum_level; ++level) {
     const int begin = topology_->l2l_level_offsets[static_cast<std::size_t>(level)];
     const int end = topology_->l2l_level_offsets[static_cast<std::size_t>(level + 1)];
-    const auto phase_start = Clock::now();
+    detailed.start();
 #pragma omp parallel for schedule(static) if (end - begin >= 8)
     for (int edge_slot = begin; edge_slot < end; ++edge_slot) {
       const StaticTranslationEdge &edge = topology_->l2l_edges[
@@ -662,7 +676,7 @@ void UniformFmm::l2l_downward() {
           local_for_node(edge.source_node).data(),
           local_for_node(target_index).data());
     }
-    last_timings_.l2l.add(elapsed_seconds(phase_start));
+    detailed.record(last_timings_.l2l);
   }
 }
 

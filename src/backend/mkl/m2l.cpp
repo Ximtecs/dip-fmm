@@ -2,8 +2,9 @@
 
 #include "backend/mkl/m2l.hpp"
 
+#include "phase_stopwatch.hpp"
+
 #include <algorithm>
-#include <chrono>
 #include <numeric>
 #include <stdexcept>
 #include <type_traits>
@@ -27,11 +28,8 @@ bool one_mkl_available() noexcept {
 namespace detail::mkl {
 namespace {
 
-using Clock = std::chrono::steady_clock;
-
-double elapsed_seconds(const Clock::time_point start) {
-  return std::chrono::duration<double>(Clock::now() - start).count();
-}
+// The gather / multiply / scatter clocks bracket whole OpenMP regions and
+// are read only when the caller collects detailed timings.
 
 template <typename Scalar>
 struct M2LGroup {
@@ -220,8 +218,9 @@ M2LApplyTimings apply_groups(
     const Plan& plan, std::vector<M2LGroup<Scalar>>& groups,
     const std::vector<LevelScatter>& schedule, const int level,
     const std::span<const Scalar> multipoles,
-    const std::span<Scalar> locals) {
+    const std::span<Scalar> locals, const bool collect_timings) {
   M2LApplyTimings timings;
+  PhaseStopwatch phase(collect_timings);
   const int n = plan.coefficient_count;
   const std::ptrdiff_t group_count =
       static_cast<std::ptrdiff_t>(groups.size());
@@ -233,7 +232,7 @@ M2LApplyTimings apply_groups(
     return timings;
   }
 
-  auto phase_start = Clock::now();
+  phase.start();
   // Gather applies source-level multipole scaling while retaining the
   // canonical matrix-column order; only this level's columns are visited.
 #pragma omp parallel for schedule(dynamic, 1) if (group_count >= 8)
@@ -257,9 +256,9 @@ M2LApplyTimings apply_groups(
       }
     }
   }
-  timings.gather_seconds = elapsed_seconds(phase_start);
+  timings.gather_seconds = phase.elapsed();
 
-  phase_start = Clock::now();
+  phase.start();
 #ifdef CDFMM_USE_MKL
 #pragma omp parallel if (group_count >= 8)
   {
@@ -304,9 +303,9 @@ M2LApplyTimings apply_groups(
   static_cast<void>(locals);
   throw std::runtime_error("The oneMKL M2L backend is unavailable");
 #endif
-  timings.multiply_seconds = elapsed_seconds(phase_start);
+  timings.multiply_seconds = phase.elapsed();
 
-  phase_start = Clock::now();
+  phase.start();
   // Parallel over targets: each target's contributions are visited in the
   // canonical (group, column) order, so the accumulation matches the serial
   // scatter exactly and no two threads touch the same local.
@@ -332,7 +331,7 @@ M2LApplyTimings apply_groups(
       }
     }
   }
-  timings.scatter_seconds = elapsed_seconds(phase_start);
+  timings.scatter_seconds = phase.elapsed();
   return timings;
 }
 
@@ -369,17 +368,17 @@ M2LExecutor& M2LExecutor::operator=(M2LExecutor&&) noexcept = default;
 M2LApplyTimings M2LExecutor::apply(
     const StaticM2LPlan& plan, const int level,
     const std::span<const double> multipoles,
-    const std::span<double> locals) {
+    const std::span<double> locals, const bool collect_timings) {
   return apply_groups(plan, impl_->groups, impl_->scatter, level, multipoles,
-                      locals);
+                      locals, collect_timings);
 }
 
 M2LApplyTimings M2LExecutor::apply(
     const FloatStaticM2LPlan& plan, const int level,
     const std::span<const float> multipoles,
-    const std::span<float> locals) {
+    const std::span<float> locals, const bool collect_timings) {
   return apply_groups(plan, impl_->float_groups, impl_->scatter, level,
-                      multipoles, locals);
+                      multipoles, locals, collect_timings);
 }
 
 M2LStorageStatistics M2LExecutor::statistics() const noexcept {

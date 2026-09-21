@@ -318,7 +318,34 @@ const EvaluationTimings &UniformFmm::aggregate_timings() const {
   return aggregate_timings_;
 }
 
-void UniformFmm::reset_timings() { aggregate_timings_ = {}; }
+void UniformFmm::reset_timings() {
+  aggregate_timings_ = {};
+  aggregate_timings_.timing_level = timing_level_;
+}
+
+TimingLevel UniformFmm::timing_level() const noexcept { return timing_level_; }
+
+// Changing the level touches timing state only: the plans, their device
+// resources and the resolved policy are untouched.  The aggregate is reset so
+// it never mixes levels; the CUDA plans receive the level so their diagnostic
+// event records are gated locally.
+void UniformFmm::set_timing_level(const TimingLevel level) {
+  timing_level_ = level;
+  propagate_timing_level();
+  reset_timings();
+}
+
+void UniformFmm::propagate_timing_level() {
+  if (cuda_full_plan_ && cuda_full_plan_->plan) {
+    cuda_full_plan_->plan->set_timing_level(timing_level_);
+  }
+  if (cuda_m2l_plan_ && cuda_m2l_plan_->plan) {
+    cuda_m2l_plan_->plan->set_timing_level(timing_level_);
+  }
+  if (cuda_p2p_plan_ && cuda_p2p_plan_->plan) {
+    cuda_p2p_plan_->plan->set_timing_level(timing_level_);
+  }
+}
 
 UniformFmm::~UniformFmm() = default;
 UniformFmm::UniformFmm(UniformFmm &&) noexcept = default;

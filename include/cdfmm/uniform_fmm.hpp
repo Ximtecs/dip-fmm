@@ -242,6 +242,17 @@ struct UniformFmmOptions {
     int signed_p2p_target_tile_size{32};
   /// @brief Enables validated persistent operator and geometry-plan caches.
   bool enable_cache{true};
+  /**
+   * @brief How much internal timing the plan collects (see `TimingLevel`).
+   *
+   * `Off`, the default, is the production path: no diagnostic clock, CUDA
+   * timing event or elapsed-time query runs during construction or
+   * evaluation.  `Coarse` adds the complete host wall times, `Detailed` every
+   * phase.  The level can be changed later with
+   * `UniformFmm::set_timing_level`.  It never affects results, the resolved
+   * execution policy, cache keys or cache contents.
+   */
+  TimingLevel timing_level{TimingLevel::Off};
 };
 
 using M2LBackend = UniformFmmOptions::M2LBackend;
@@ -369,12 +380,31 @@ public:
                      OutputFlags output = OutputFlags::Field,
                      std::span<const int> target_source_indices = {});
 
-  /// @brief Returns timings for the most recent complete evaluation.
+  /**
+   * @brief Returns timings for the most recent complete evaluation.
+   *
+   * Only the fields the plan's `timing_level()` collects are populated; the
+   * record's own `timing_level` says which.  At `TimingLevel::Off` every
+   * timing field is an uncollected default.
+   */
   [[nodiscard]] const EvaluationTimings &last_timings() const;
-  /// @brief Returns accumulated timings since construction or the last reset.
+  /// @brief Returns accumulated timings since construction, the last reset or
+  /// the last timing-level change.
   [[nodiscard]] const EvaluationTimings &aggregate_timings() const;
-  /// @brief Clears accumulated evaluation timings without changing geometry.
+  /// @brief Clears the accumulated evaluation timings without changing geometry,
+  /// results or the timing level.
   void reset_timings();
+  /// @brief Returns the level of internal timing this plan collects.
+  [[nodiscard]] TimingLevel timing_level() const noexcept;
+  /**
+   * @brief Changes the level of internal timing collected by later evaluations.
+   *
+   * The plan's geometry, operators, backend resources and results are
+   * untouched; only timing state changes.  The accumulated timings are reset
+   * so an aggregate never mixes levels.  Safe between evaluations; not
+   * while one is in progress.
+   */
+  void set_timing_level(TimingLevel level);
 
   /// @brief Returns the fixed geometry tree in caller-supplied physical units.
   [[nodiscard]] const UniformTree &tree() const;
@@ -547,6 +577,7 @@ private:
   evaluate_cuda_full_float32(std::span<const Moment> dipole_moments,
                              std::span<const int> target_source_indices);
   void record_cuda_full_timings();
+  void record_cuda_p2p_timings();
   [[nodiscard]] std::span<const int>
   resolve_self_indices(std::span<const int> target_source_indices) const;
   void static_m2l(int level);
@@ -680,6 +711,17 @@ private:
   std::vector<int> sorted_self_indices_{};
   std::optional<std::vector<int>> fixed_target_source_indices_{};
   std::vector<int> fixed_sorted_self_indices_{};
+  // Timing is opt-in (see TimingLevel).  The level is a plain member read
+  // once per phase boundary; the CUDA plans hold their own copy so their
+  // diagnostic event records are gated without a call back into this class.
+  TimingLevel timing_level_{TimingLevel::Off};
+  [[nodiscard]] bool coarse_timing() const noexcept {
+    return timing_level_ != TimingLevel::Off;
+  }
+  [[nodiscard]] bool detailed_timing() const noexcept {
+    return timing_level_ == TimingLevel::Detailed;
+  }
+  void propagate_timing_level();
   EvaluationTimings last_timings_{};
   EvaluationTimings aggregate_timings_{};
 };

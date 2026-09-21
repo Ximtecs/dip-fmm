@@ -586,6 +586,8 @@ TEST_CASE("oneMKL and portable static matrices agree when oneMKL is enabled") {
     portable_options.expansion_order = 3;
     portable_options.tree.max_level = 2;
     portable_options.backend = ExecutionBackend::CpuStatic;
+    // The gather/multiply/scatter split asserted below is detailed timing.
+    portable_options.timing_level = TimingLevel::Detailed;
     UniformFmmOptions mkl_options = portable_options;
     mkl_options.static_matrix_backend = StaticMatrixBackend::OneMkl;
 
@@ -659,7 +661,7 @@ TEST_CASE("oneMKL grouped executor retains canonical levels and scratch") {
   const std::vector<double> multipoles{11.0, 13.0, 0.0};
   std::vector<double> locals(3, 0.0);
   const detail::mkl::M2LApplyTimings level_zero =
-      executor.apply(plan, 0, multipoles, locals);
+      executor.apply(plan, 0, multipoles, locals, true);
   REQUIRE(locals[0] == 0.0);
   REQUIRE(locals[1] == 0.0);
   REQUIRE(locals[2] == 780.0);
@@ -668,7 +670,7 @@ TEST_CASE("oneMKL grouped executor retains canonical levels and scratch") {
   REQUIRE(level_zero.scatter_seconds >= 0.0);
 
   const detail::mkl::M2LApplyTimings level_one =
-      executor.apply(plan, 1, multipoles, locals);
+      executor.apply(plan, 1, multipoles, locals, true);
   REQUIRE(locals[0] == 0.0);
   REQUIRE(locals[1] == 616.0);
   REQUIRE(locals[2] == 780.0);

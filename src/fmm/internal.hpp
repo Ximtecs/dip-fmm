@@ -25,12 +25,12 @@ public:
   [[nodiscard]] detail::mkl::M2LApplyTimings apply(
       const StaticM2LPlan& plan, const int level,
       const std::span<const double> multipoles,
-      const std::span<double> locals);
+      const std::span<double> locals, bool collect_timings);
 
   [[nodiscard]] detail::mkl::M2LApplyTimings apply(
       const FloatStaticM2LPlan& plan, const int level,
       const std::span<const float> multipoles,
-      const std::span<float> locals);
+      const std::span<float> locals, bool collect_timings);
 
   [[nodiscard]] detail::mkl::M2LStorageStatistics statistics() const noexcept;
 

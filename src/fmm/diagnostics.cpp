@@ -116,6 +116,18 @@ std::string_view name(const P2PExecutionPacking value) {
   return "unknown";
 }
 
+std::string_view name(const TimingLevel value) {
+  switch (value) {
+  case TimingLevel::Off:
+    return "off";
+  case TimingLevel::Coarse:
+    return "coarse";
+  case TimingLevel::Detailed:
+    return "detailed";
+  }
+  return "unknown";
+}
+
 std::string_view name(const StaticPrecision value) {
   switch (value) {
   case StaticPrecision::Float32:
@@ -340,71 +352,78 @@ void UniformFmm::print_initialisation_summary(
          << static_plan_statistics_.cache_bytes_read << '\n';
   stream << "  cache.bytes_written: "
          << static_plan_statistics_.cache_bytes_written << '\n';
-  stream << "  setup.normalisation_seconds: "
-         << static_plan_statistics_.normalisation.total_seconds << '\n';
-  stream << "  setup.tree_construction_seconds: "
-         << static_plan_statistics_.tree_construction.total_seconds << '\n';
-  stream << "  setup.topology_construction_seconds: "
-         << static_plan_statistics_.topology_construction.total_seconds << '\n';
-  stream << "  setup.universal_cache_lookup_seconds: "
-         << static_plan_statistics_.universal_cache_lookup.total_seconds
-         << '\n';
-  stream << "  setup.universal_cache_load_seconds: "
-         << static_plan_statistics_.universal_cache_load.total_seconds << '\n';
-  stream << "  setup.universal_operator_build_seconds: "
-         << static_plan_statistics_.universal_operator_build.total_seconds
-         << '\n';
-  stream << "  setup.universal_cache_write_seconds: "
-         << static_plan_statistics_.universal_cache_write.total_seconds
-         << '\n';
-  stream << "  setup.periodic_cache_lookup_seconds: "
-         << static_plan_statistics_.periodic_cache_lookup.total_seconds
-         << '\n';
-  stream << "  setup.periodic_cache_load_seconds: "
-         << static_plan_statistics_.periodic_cache_load.total_seconds << '\n';
-  stream << "  setup.periodic_operator_build_seconds: "
-         << static_plan_statistics_.periodic_operator_build.total_seconds
-         << '\n';
-  stream << "  setup.geometry_hash_seconds: "
-         << static_plan_statistics_.geometry_hash.total_seconds << '\n';
-  stream << "  setup.geometry_cache_lookup_seconds: "
-         << static_plan_statistics_.geometry_cache_lookup.total_seconds << '\n';
-  stream << "  setup.geometry_cache_load_seconds: "
-         << static_plan_statistics_.geometry_cache_load.total_seconds << '\n';
-  stream << "  setup.geometry_cache_write_seconds: "
-         << static_plan_statistics_.geometry_cache_write.total_seconds << '\n';
-  stream << "  setup.p2m_seconds: "
-         << static_plan_statistics_.p2m_plan.total_seconds << '\n';
-  stream << "  setup.m2m_seconds: "
-         << static_plan_statistics_.m2m_plan.total_seconds << '\n';
-  stream << "  setup.m2l_seconds: "
-         << static_plan_statistics_.m2l_plan.total_seconds << '\n';
-  stream << "  setup.l2l_seconds: "
-         << static_plan_statistics_.l2l_plan.total_seconds << '\n';
-  stream << "  setup.l2p_seconds: "
-         << static_plan_statistics_.l2p_plan.total_seconds << '\n';
-  stream << "  setup.p2p_seconds: "
-         << static_plan_statistics_.p2p_tensor_plan.total_seconds << '\n';
-  stream << "  setup.p2p_interaction_setup_seconds: "
-         << static_plan_statistics_.p2p_interaction_setup.total_seconds
-         << '\n';
-  stream << "  setup.p2p_canonical_operator_seconds: "
-         << static_plan_statistics_.p2p_canonical_operator.total_seconds
-         << '\n';
-  stream << "  setup.p2p_derived_packing_seconds: "
-         << static_plan_statistics_.p2p_derived_packing.total_seconds << '\n';
-  stream << "  setup.precision_conversion_seconds: "
-         << static_plan_statistics_.precision_conversion.total_seconds << '\n';
-  stream << "  setup.backend_packing_seconds: "
-         << static_plan_statistics_.backend_packing.total_seconds << '\n';
-  stream << "  setup.far_field_packing_seconds: "
-         << static_plan_statistics_.far_field_packing.total_seconds << '\n';
-  stream << "  setup.cuda_upload_seconds: "
-         << static_plan_statistics_.cuda_upload.total_seconds << '\n';
-  stream << "  setup.static_plan_seconds: "
-         << static_plan_statistics_.total.total_seconds << '\n';
-  stream << "  setup.total_seconds: "
-         << static_plan_statistics_.total_setup.total_seconds << '\n';
+  stream << "  timing.level: " << name(timing_level_) << '\n';
+  // Construction clocks run only at the level that collects them, so a
+  // line is printed only when it holds a measurement.
+  if (detailed_timing()) {
+    stream << "  setup.normalisation_seconds: "
+           << static_plan_statistics_.normalisation.total_seconds << '\n';
+    stream << "  setup.tree_construction_seconds: "
+           << static_plan_statistics_.tree_construction.total_seconds << '\n';
+    stream << "  setup.topology_construction_seconds: "
+           << static_plan_statistics_.topology_construction.total_seconds << '\n';
+    stream << "  setup.universal_cache_lookup_seconds: "
+           << static_plan_statistics_.universal_cache_lookup.total_seconds
+           << '\n';
+    stream << "  setup.universal_cache_load_seconds: "
+           << static_plan_statistics_.universal_cache_load.total_seconds << '\n';
+    stream << "  setup.universal_operator_build_seconds: "
+           << static_plan_statistics_.universal_operator_build.total_seconds
+           << '\n';
+    stream << "  setup.universal_cache_write_seconds: "
+           << static_plan_statistics_.universal_cache_write.total_seconds
+           << '\n';
+    stream << "  setup.periodic_cache_lookup_seconds: "
+           << static_plan_statistics_.periodic_cache_lookup.total_seconds
+           << '\n';
+    stream << "  setup.periodic_cache_load_seconds: "
+           << static_plan_statistics_.periodic_cache_load.total_seconds << '\n';
+    stream << "  setup.periodic_operator_build_seconds: "
+           << static_plan_statistics_.periodic_operator_build.total_seconds
+           << '\n';
+    stream << "  setup.geometry_hash_seconds: "
+           << static_plan_statistics_.geometry_hash.total_seconds << '\n';
+    stream << "  setup.geometry_cache_lookup_seconds: "
+           << static_plan_statistics_.geometry_cache_lookup.total_seconds << '\n';
+    stream << "  setup.geometry_cache_load_seconds: "
+           << static_plan_statistics_.geometry_cache_load.total_seconds << '\n';
+    stream << "  setup.geometry_cache_write_seconds: "
+           << static_plan_statistics_.geometry_cache_write.total_seconds << '\n';
+    stream << "  setup.p2m_seconds: "
+           << static_plan_statistics_.p2m_plan.total_seconds << '\n';
+    stream << "  setup.m2m_seconds: "
+           << static_plan_statistics_.m2m_plan.total_seconds << '\n';
+    stream << "  setup.m2l_seconds: "
+           << static_plan_statistics_.m2l_plan.total_seconds << '\n';
+    stream << "  setup.l2l_seconds: "
+           << static_plan_statistics_.l2l_plan.total_seconds << '\n';
+    stream << "  setup.l2p_seconds: "
+           << static_plan_statistics_.l2p_plan.total_seconds << '\n';
+    stream << "  setup.p2p_seconds: "
+           << static_plan_statistics_.p2p_tensor_plan.total_seconds << '\n';
+    stream << "  setup.p2p_interaction_setup_seconds: "
+           << static_plan_statistics_.p2p_interaction_setup.total_seconds
+           << '\n';
+    stream << "  setup.p2p_canonical_operator_seconds: "
+           << static_plan_statistics_.p2p_canonical_operator.total_seconds
+           << '\n';
+    stream << "  setup.p2p_derived_packing_seconds: "
+           << static_plan_statistics_.p2p_derived_packing.total_seconds << '\n';
+    stream << "  setup.precision_conversion_seconds: "
+           << static_plan_statistics_.precision_conversion.total_seconds << '\n';
+    stream << "  setup.backend_packing_seconds: "
+           << static_plan_statistics_.backend_packing.total_seconds << '\n';
+    stream << "  setup.far_field_packing_seconds: "
+           << static_plan_statistics_.far_field_packing.total_seconds << '\n';
+    stream << "  setup.cuda_upload_seconds: "
+           << static_plan_statistics_.cuda_upload.total_seconds << '\n';
+  }
+  if (coarse_timing()) {
+    stream << "  setup.static_plan_seconds: "
+           << static_plan_statistics_.total.total_seconds << '\n';
+    stream << "  setup.total_seconds: "
+           << static_plan_statistics_.total_setup.total_seconds << '\n';
+  }
   stream << "  periodic.enabled: " << physical_periodic_.enabled << '\n';
   stream << "  periodic.axes: [" << physical_periodic_.axes[0] << ", "
          << physical_periodic_.axes[1] << ", "

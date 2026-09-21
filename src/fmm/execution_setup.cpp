@@ -23,7 +23,6 @@
 #include "cdfmm/uniform_fmm.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <memory>
 #include <stdexcept>
@@ -43,16 +42,11 @@
 #include "backend/cuda/fmm/internal.hpp"
 #include "cache/internal.hpp"
 #include "fmm/internal.hpp"
+#include "phase_stopwatch.hpp"
 
 namespace cdfmm {
 
 namespace {
-
-using Clock = std::chrono::steady_clock;
-
-double elapsed_seconds(const Clock::time_point start) {
-  return std::chrono::duration<double>(Clock::now() - start).count();
-}
 
 // Dense leaf rectangles of the canonical list-1 topology, in canonical order.
 // A periodic topology lists one record per image of a (target leaf, source
@@ -192,15 +186,15 @@ UniformFmm::MklM2LPlanOwner::MklM2LPlanOwner(
 detail::mkl::M2LApplyTimings UniformFmm::MklM2LPlanOwner::apply(
     const StaticM2LPlan& plan, const int level,
     const std::span<const double> multipoles,
-    const std::span<double> locals) {
-  return executor_.apply(plan, level, multipoles, locals);
+    const std::span<double> locals, const bool collect_timings) {
+  return executor_.apply(plan, level, multipoles, locals, collect_timings);
 }
 
 detail::mkl::M2LApplyTimings UniformFmm::MklM2LPlanOwner::apply(
     const FloatStaticM2LPlan& plan, const int level,
     const std::span<const float> multipoles,
-    const std::span<float> locals) {
-  return executor_.apply(plan, level, multipoles, locals);
+    const std::span<float> locals, const bool collect_timings) {
+  return executor_.apply(plan, level, multipoles, locals, collect_timings);
 }
 
 detail::mkl::M2LStorageStatistics
@@ -385,7 +379,8 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
       static_plan_statistics_.state_bytes -
       static_plan_statistics_.multipole_state_bytes -
       static_plan_statistics_.local_state_bytes;
-  const auto cuda_setup_start = Clock::now();
+  detail::PhaseStopwatch cuda_setup_clock(detailed_timing());
+  cuda_setup_clock.start();
   const bool creates_cuda_plan = backend_ == ExecutionBackend::CudaM2LP2P ||
       backend_ == ExecutionBackend::CudaFull;
   if (backend_ == ExecutionBackend::CudaM2LP2P) {
@@ -402,8 +397,10 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
     build_cuda_full_plan();
   }
   if (creates_cuda_plan) {
-    static_plan_statistics_.cuda_upload.add(
-        elapsed_seconds(cuda_setup_start));
+    cuda_setup_clock.record(static_plan_statistics_.cuda_upload);
+    // The device plans gate their diagnostic event records on their own copy
+    // of the level; hand it over once they exist.
+    propagate_timing_level();
   }
 }
 
@@ -968,7 +965,8 @@ void UniformFmm::build_backend_packing() {
       cuda_executes_m2l) {
     return;
   }
-  const auto start = Clock::now();
+  detail::PhaseStopwatch clock(detailed_timing());
+  clock.start();
   if (precision_ == StaticPrecision::Float32) {
     mkl_m2l_plan_ = std::make_unique<MklM2LPlanOwner>(m2l_plan_float_);
   } else {
@@ -979,7 +977,7 @@ void UniformFmm::build_backend_packing() {
   static_plan_statistics_.interaction_bytes += storage.metadata_bytes;
   static_plan_statistics_.m2l_interaction_bytes += storage.metadata_bytes;
   static_plan_statistics_.scratch_bytes += storage.scratch_bytes;
-  static_plan_statistics_.backend_packing.add(elapsed_seconds(start));
+  clock.record(static_plan_statistics_.backend_packing);
 }
 
 bool UniformFmm::selects_point_geometry_p2p() const noexcept {
@@ -1028,7 +1026,8 @@ void UniformFmm::build_cpu_far_field_packing() {
   // P2M/M2M/L2L/L2P on the CPU, and after packing nothing else reads the
   // per-source/per-target canonical maps, so they are released to keep the
   // resident operator footprint at the packed size.
-  const auto start = Clock::now();
+  detail::PhaseStopwatch clock(detailed_timing());
+  clock.start();
   const int n = coefficient_count();
   std::vector<int> degrees(static_cast<std::size_t>(n));
   for (int coefficient = 0; coefficient < n; ++coefficient) {
@@ -1171,7 +1170,7 @@ void UniformFmm::build_cpu_far_field_packing() {
       procedural_l2p_ ? procedural_l2p_bytes : packed_l2p_bytes;
   static_plan_statistics_.m2m_operator_bytes += packed_translation_bytes / 2;
   static_plan_statistics_.l2l_operator_bytes += packed_translation_bytes / 2;
-  static_plan_statistics_.far_field_packing.add(elapsed_seconds(start));
+  clock.record(static_plan_statistics_.far_field_packing);
 }
 
 void UniformFmm::release_stored_p2p_tensors() {

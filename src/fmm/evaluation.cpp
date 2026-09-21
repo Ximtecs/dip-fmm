@@ -19,7 +19,6 @@
 #include "cdfmm/uniform_fmm.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <stdexcept>
 #include <type_traits>
 
@@ -29,17 +28,18 @@
 
 #include "backend/cpu/p2p/near_field.hpp"
 #include "fmm/internal.hpp"
+#include "phase_stopwatch.hpp"
 #include "profile.hpp"
+
+// Timing is opt-in (TimingLevel).  Three stopwatches appear below: the
+// `Coarse` ones bracket the whole evaluation and its far/near branches, the
+// `Detailed` one the remaining host phases.  Below their level they read no
+// clock; the device lanes are copied only at `Detailed`, where the CUDA plans
+// have recorded their diagnostic events.
 
 namespace cdfmm {
 
 namespace {
-
-using Clock = std::chrono::steady_clock;
-
-double elapsed_seconds(const Clock::time_point start) {
-  return std::chrono::duration<double>(Clock::now() - start).count();
-}
 
 void accumulate_phase(PhaseTiming &aggregate, const PhaseTiming &value) {
   aggregate.total_seconds += value.total_seconds;
@@ -71,6 +71,7 @@ void accumulate_timings(EvaluationTimings &aggregate,
   accumulate_phase(aggregate.cuda_p2p_kernel, value.cuda_p2p_kernel);
   accumulate_phase(aggregate.cuda_p2p_d2h, value.cuda_p2p_d2h);
   accumulate_phase(aggregate.cuda_p2p_wait, value.cuda_p2p_wait);
+  accumulate_phase(aggregate.far_field, value.far_field);
   accumulate_phase(aggregate.total, value.total);
   aggregate.evaluations += value.evaluations;
 }
@@ -224,7 +225,9 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
           "CudaFull currently supports field-only evaluation");
     }
     last_timings_ = {};
-    const auto evaluation_start = Clock::now();
+    last_timings_.timing_level = timing_level_;
+    detail::PhaseStopwatch evaluation(coarse_timing());
+    evaluation.start();
     const std::span<const Vec3> fields =
         evaluate_cuda_full(dipole_moments, target_source_indices);
 #pragma omp parallel for schedule(static) if (target_count >= 256)
@@ -234,14 +237,18 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
       result.phi = 0.0;
       result.H = fields[static_cast<std::size_t>(target)];
     }
-    last_timings_.total.add(elapsed_seconds(evaluation_start));
+    evaluation.record(last_timings_.total);
     last_timings_.evaluations = 1;
     accumulate_timings(aggregate_timings_, last_timings_);
     return;
   }
 
   last_timings_ = {};
-  const auto evaluation_start = Clock::now();
+  last_timings_.timing_level = timing_level_;
+  detail::PhaseStopwatch evaluation(coarse_timing());
+  detail::PhaseStopwatch branch(coarse_timing());
+  detail::PhaseStopwatch detailed(detailed_timing());
+  evaluation.start();
   prepare_moments(dipole_moments);
   prepare_self_indices(target_source_indices);
 
@@ -258,14 +265,15 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     p2p_guard.arm();
   }
 
+  branch.start();
   {
     detail::ProfileRange far_range{"cdfmm/far_field"};
     upward_pass_prepared();
     downward_pass_for_output(output, true);
   }
+  branch.record(last_timings_.far_field);
   const auto target_permutation =
       std::span<const int>(topology_->target_permutation);
-  auto phase_start = Clock::now();
 
   if (capture_components_) {
     diagnostic_far_.resize(target_count);
@@ -285,22 +293,16 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     if (use_cuda_p2p) {
       // This is the first point at which final assembly needs the near
       // field, so delaying the wait preserves all available overlap.
-      const auto wait_start = Clock::now();
+      branch.start();
       cuda_p2p_plan_->plan->finish_evaluate(near_fields_);
-      last_timings_.cuda_p2p_wait.add(elapsed_seconds(wait_start));
+      branch.record(last_timings_.cuda_p2p_wait);
       p2p_guard.release();
-      const CudaEvaluationTimings &device = cuda_p2p_plan_->plan->timings();
-      last_timings_.cuda_h2d.add(device.h2d_seconds);
-      last_timings_.cuda_kernel.add(device.kernel_seconds);
-      last_timings_.cuda_d2h.add(device.d2h_seconds);
-      last_timings_.cuda_p2p_h2d.add(device.h2d_seconds);
-      last_timings_.cuda_p2p_kernel.add(device.kernel_seconds);
-      last_timings_.cuda_p2p_d2h.add(device.d2h_seconds);
-      last_timings_.p2p.add(device.h2d_seconds + device.kernel_seconds +
-                            device.d2h_seconds);
+      if (detailed.enabled()) {
+        record_cuda_p2p_timings();
+      }
     } else {
       detail::ProfileRange p2p_range{"cdfmm/near_field/p2p"};
-      const auto p2p_start = Clock::now();
+      branch.start();
       if (p2p_tensor_dictionary_plan_.has_value()) {
         apply_static_p2p_signed_tensor_dictionary_plan(
             *p2p_tensor_dictionary_plan_, sorted_dipole_moments_,
@@ -318,7 +320,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
                                            sorted_dipole_moments_, near_fields_,
                                            sorted_self_indices_);
       }
-      last_timings_.p2p.add(elapsed_seconds(p2p_start));
+      branch.record(last_timings_.p2p);
     }
     for (std::size_t target = 0; target < target_count; ++target) {
       sorted_results_[target].H += near_fields_[target];
@@ -362,7 +364,7 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     }
   }
 
-  phase_start = Clock::now();
+  branch.start();
   detail::ProfileRange output_range{"cdfmm/output_permutation"};
   const OutputFlags reference_near_output =
       periodic_.enabled
@@ -379,12 +381,12 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
         reference_near_output, sorted_results_);
   }
   if (reference_near_output != OutputFlags::None) {
-    last_timings_.p2p.add(elapsed_seconds(phase_start));
+    branch.record(last_timings_.p2p);
   }
 
   // Unpermute into user order and restore the physical potential scale; the
   // field needs no correction because the moments were pre-scaled.
-  phase_start = Clock::now();
+  detailed.start();
 #pragma omp parallel for schedule(static) if (target_count >= 256)
   for (std::ptrdiff_t sorted_index = 0;
        sorted_index < static_cast<std::ptrdiff_t>(target_count);
@@ -396,8 +398,8 @@ void UniformFmm::evaluate_into(std::span<const Vec3> dipole_moments,
     results[static_cast<std::size_t>(original_index)].phi *=
         coordinate_scale_;
   }
-  last_timings_.result_unpermutation.add(elapsed_seconds(phase_start));
-  last_timings_.total.add(elapsed_seconds(evaluation_start));
+  detailed.record(last_timings_.result_unpermutation);
+  evaluation.record(last_timings_.total);
   last_timings_.evaluations = 1;
   accumulate_timings(aggregate_timings_, last_timings_);
 }
@@ -413,9 +415,24 @@ std::span<const int> UniformFmm::stage_self_indices(
   return sorted_self_indices_;
 }
 
+// Map the hybrid backend's device P2P lanes onto the public phase names.
+// They ran on the plan's own stream, overlapping the CPU hierarchy, so `p2p`
+// here is a lane, not an addend of `total`.  Called only at `Detailed`.
+void UniformFmm::record_cuda_p2p_timings() {
+  const CudaEvaluationTimings &device = cuda_p2p_plan_->plan->timings();
+  last_timings_.cuda_h2d.add(device.h2d_seconds);
+  last_timings_.cuda_kernel.add(device.kernel_seconds);
+  last_timings_.cuda_d2h.add(device.d2h_seconds);
+  last_timings_.cuda_p2p_h2d.add(device.h2d_seconds);
+  last_timings_.cuda_p2p_kernel.add(device.kernel_seconds);
+  last_timings_.cuda_p2p_d2h.add(device.d2h_seconds);
+  last_timings_.p2p.add(device.h2d_seconds + device.kernel_seconds +
+                        device.d2h_seconds);
+}
+
 // Map the device event timings onto the public phase names.  The device P2P
 // ran on its own stream and overlaps the far-field phases, so `p2p` here is a
-// lane, not an addend of `total`.
+// lane, not an addend of `total`.  Called only at `Detailed`.
 void UniformFmm::record_cuda_full_timings() {
   const CudaEvaluationTimings &device = cuda_full_plan_->plan->timings();
   last_timings_.cuda_h2d.add(device.h2d_seconds);
@@ -465,7 +482,9 @@ UniformFmm::evaluate_cuda_full(const std::span<const Vec3> dipole_moments,
       diagnostic_far_[topology_->target_permutation[i]] = sorted_far[i];
     }
   }
-  record_cuda_full_timings();
+  if (detailed_timing()) {
+    record_cuda_full_timings();
+  }
   return fields;
 }
 
@@ -504,7 +523,9 @@ std::span<const FloatVec3> UniformFmm::evaluate_cuda_full_float32(
       diagnostic_far_[topology_->target_permutation[i]] = sorted_far[i];
     }
   }
-  record_cuda_full_timings();
+  if (detailed_timing()) {
+    record_cuda_full_timings();
+  }
   return fields;
 }
 
@@ -595,7 +616,9 @@ void UniformFmm::evaluate_into_float32_impl(
           "CudaFull currently supports field-only evaluation");
     }
     last_timings_ = {};
-    const auto evaluation_start = Clock::now();
+    last_timings_.timing_level = timing_level_;
+    detail::PhaseStopwatch evaluation(coarse_timing());
+    evaluation.start();
     const std::span<const FloatVec3> fields =
         evaluate_cuda_full_float32(dipole_moments, target_source_indices);
 #pragma omp parallel for schedule(static) if (target_count >= 256)
@@ -605,14 +628,18 @@ void UniformFmm::evaluate_into_float32_impl(
       result.phi = 0.0F;
       result.H = fields[static_cast<std::size_t>(target)];
     }
-    last_timings_.total.add(elapsed_seconds(evaluation_start));
+    evaluation.record(last_timings_.total);
     last_timings_.evaluations = 1;
     accumulate_timings(aggregate_timings_, last_timings_);
     return;
   }
 
   last_timings_ = {};
-  const auto evaluation_start = Clock::now();
+  last_timings_.timing_level = timing_level_;
+  detail::PhaseStopwatch evaluation(coarse_timing());
+  detail::PhaseStopwatch branch(coarse_timing());
+  detail::PhaseStopwatch detailed(detailed_timing());
+  evaluation.start();
   prepare_moments_float(dipole_moments);
   prepare_self_indices(target_source_indices);
   const bool use_cuda_p2p =
@@ -625,27 +652,29 @@ void UniformFmm::evaluate_into_float32_impl(
                                          sorted_self_indices_);
     p2p_guard.arm();
   }
+  branch.start();
   upward_pass_prepared_float();
   downward_pass_float_for_output(output, true);
+  branch.record(last_timings_.far_field);
 
   const auto target_permutation =
       std::span<const int>(topology_->target_permutation);
-  auto phase_start = Clock::now();
 
   if (has_flag(output, OutputFlags::Field)) {
     std::fill(near_fields_float_.begin(), near_fields_float_.end(),
               FloatVec3{});
     if (use_cuda_p2p) {
+      // The first point at which final assembly needs the near field; see
+      // the FP64 body.
+      branch.start();
       cuda_p2p_plan_->plan->finish_evaluate(near_fields_float_);
+      branch.record(last_timings_.cuda_p2p_wait);
       p2p_guard.release();
-      const CudaEvaluationTimings &device = cuda_p2p_plan_->plan->timings();
-      last_timings_.cuda_h2d.add(device.h2d_seconds);
-      last_timings_.cuda_kernel.add(device.kernel_seconds);
-      last_timings_.cuda_d2h.add(device.d2h_seconds);
-      last_timings_.cuda_p2p_h2d.add(device.h2d_seconds);
-      last_timings_.cuda_p2p_kernel.add(device.kernel_seconds);
-      last_timings_.cuda_p2p_d2h.add(device.d2h_seconds);
+      if (detailed.enabled()) {
+        record_cuda_p2p_timings();
+      }
     } else {
+      branch.start();
       if (p2p_tensor_dictionary_plan_float_.has_value()) {
         apply_static_p2p_signed_tensor_dictionary_plan(
             *p2p_tensor_dictionary_plan_float_, sorted_dipole_moments_float_,
@@ -664,6 +693,7 @@ void UniformFmm::evaluate_into_float32_impl(
                                       sorted_dipole_moments_float_,
                                       near_fields_float_, sorted_self_indices_);
       }
+      branch.record(last_timings_.p2p);
     }
     if (capture_components_) {
       diagnostic_far_.resize(target_count);
@@ -675,7 +705,6 @@ void UniformFmm::evaluate_into_float32_impl(
     for (std::size_t target = 0; target < target_count; ++target) {
       sorted_results_float_[target].H += near_fields_float_[target];
     }
-    last_timings_.p2p.add(elapsed_seconds(phase_start));
   }
 
   if (has_flag(output, OutputFlags::Potential) &&
@@ -726,7 +755,7 @@ void UniformFmm::evaluate_into_float32_impl(
     }
   }
 
-  phase_start = Clock::now();
+  detailed.start();
 #pragma omp parallel for schedule(static) if (target_count >= 256)
   for (std::ptrdiff_t sorted_index = 0;
        sorted_index < static_cast<std::ptrdiff_t>(target_count);
@@ -740,8 +769,8 @@ void UniformFmm::evaluate_into_float32_impl(
     results[static_cast<std::size_t>(original_index)].phi *=
         static_cast<float>(coordinate_scale_);
   }
-  last_timings_.result_unpermutation.add(elapsed_seconds(phase_start));
-  last_timings_.total.add(elapsed_seconds(evaluation_start));
+  detailed.record(last_timings_.result_unpermutation);
+  evaluation.record(last_timings_.total);
   last_timings_.evaluations = 1;
   accumulate_timings(aggregate_timings_, last_timings_);
 }

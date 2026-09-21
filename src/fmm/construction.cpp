@@ -17,7 +17,6 @@
 #include "cdfmm/tree/uniform_topology.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -25,16 +24,11 @@
 #include <utility>
 
 #include "fmm/internal.hpp"
+#include "phase_stopwatch.hpp"
 
 namespace cdfmm {
 
 namespace {
-
-using Clock = std::chrono::steady_clock;
-
-double elapsed_seconds(const Clock::time_point start) {
-  return std::chrono::duration<double>(Clock::now() - start).count();
-}
 
 double canonicalise_normalised_value(const double value) {
   // Keep supplied-topology cuboid sizes on the same canonical grid as the
@@ -176,7 +170,9 @@ struct UniformFmm::NormalisedGeometry {
   Vec3 physical_root_centre{};
   double physical_root_side_length{1.0};
   double normalisation_seconds{0.0};
-  Clock::time_point construction_start{};
+  // The whole-constructor clock (TimingLevel::Coarse) starts before
+  // normalisation, which is why the geometry carries it.
+  detail::PhaseStopwatch construction_clock{false};
 };
 
 // Steps, in order: validate positions and records; bound the geometry
@@ -189,7 +185,15 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
     const std::vector<Vec3>& source_positions,
     const std::vector<Vec3>& target_positions,
     const UniformFmmOptions& options) {
-  const auto normalisation_start = Clock::now();
+  // Two clocks start here: the `Coarse` whole-constructor clock, which the
+  // returned geometry carries into the constructor body, and the `Detailed`
+  // normalisation clock read at the end of this function.
+  detail::PhaseStopwatch construction_clock(
+      options.timing_level != TimingLevel::Off);
+  construction_clock.start();
+  detail::PhaseStopwatch normalisation_clock(
+      options.timing_level == TimingLevel::Detailed);
+  normalisation_clock.start();
   validate_periodic_cell(options.periodic);
 
   const auto finite_position = [](const Vec3& position) {
@@ -312,7 +316,7 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
   }
 
   NormalisedGeometry geometry;
-  geometry.construction_start = normalisation_start;
+  geometry.construction_clock = construction_clock;
   geometry.options = options;
   // The periodic cell *is* the root box: the image topology assumes the unit
   // cell and the root coincide.  Otherwise the root is the caller's explicit
@@ -493,7 +497,7 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
     geometry.options.periodic.centre = {};
     geometry.options.periodic.lengths = {1.0, 1.0, 1.0};
   }
-  geometry.normalisation_seconds = elapsed_seconds(normalisation_start);
+  geometry.normalisation_seconds = normalisation_clock.elapsed();
   return geometry;
 }
 
@@ -532,18 +536,25 @@ UniformFmm::UniformFmm(NormalisedGeometry geometry,
       m2l_backend_(geometry.options.m2l_backend),
       static_matrix_backend_(geometry.options.static_matrix_backend),
       precision_(geometry.options.precision),
-      coordinate_scale_(geometry.physical_root_side_length) {
+      coordinate_scale_(geometry.physical_root_side_length),
+      timing_level_(geometry.options.timing_level) {
   const UniformFmmOptions& options = geometry.options;
-  const auto topology_start = Clock::now();
+  static_plan_statistics_.timing_level = timing_level_;
+  detail::PhaseStopwatch topology_clock(detailed_timing());
+  topology_clock.start();
   topology_ = std::make_shared<const StaticFmmTopology>(build_uniform_fmm_topology(*tree_, periodic_));
-  static_plan_statistics_.topology_construction.add(
-      elapsed_seconds(topology_start));
-  static_plan_statistics_.normalisation.add(geometry.normalisation_seconds);
-  static_plan_statistics_.tree_construction = tree_->build_timings().total;
-  static_plan_statistics_.tree_construction.add(
-      physical_tree_->build_timings().total.total_seconds);
+  topology_clock.record(static_plan_statistics_.topology_construction);
+  if (detailed_timing()) {
+    static_plan_statistics_.normalisation.add(geometry.normalisation_seconds);
+    // The trees keep their own build timings regardless of the level; they
+    // are surfaced here only when the plan collects detailed construction
+    // timings.
+    static_plan_statistics_.tree_construction = tree_->build_timings().total;
+    static_plan_statistics_.tree_construction.add(
+        physical_tree_->build_timings().total.total_seconds);
+  }
   initialise_execution(options);
-  static_plan_statistics_.total_setup.add(elapsed_seconds(geometry.construction_start));
+  geometry.construction_clock.record(static_plan_statistics_.total_setup);
   print_initialisation_summary(physical_options);
 }
 
@@ -559,8 +570,11 @@ UniformFmm::UniformFmm(std::shared_ptr<const StaticFmmTopology> topology,
       expansion_basis_(options.expansion_basis),
       spherical_m2l_backend_(options.spherical_m2l_backend),
       m2l_backend_(options.m2l_backend),
-      static_matrix_backend_(options.static_matrix_backend), precision_(options.precision) {
-  const auto start = Clock::now();
+      static_matrix_backend_(options.static_matrix_backend),
+      precision_(options.precision), timing_level_(options.timing_level) {
+  static_plan_statistics_.timing_level = timing_level_;
+  detail::PhaseStopwatch setup_clock(coarse_timing());
+  setup_clock.start();
   if (!topology_) throw std::invalid_argument("topology must not be null");
   topology_->validate();
   const auto& root = topology_->nodes[topology_->root];
@@ -572,17 +586,17 @@ UniformFmm::UniformFmm(std::shared_ptr<const StaticFmmTopology> topology,
     throw std::invalid_argument(
         "prebuilt topology currently supports only non-periodic execution");
   }
-  const auto normalisation_start = Clock::now();
+  detail::PhaseStopwatch normalisation_clock(detailed_timing());
+  normalisation_clock.start();
   const UniformFmmOptions normalised_options =
       normalise_supplied_topology_options(*topology_, options);
-  static_plan_statistics_.normalisation.add(
-      elapsed_seconds(normalisation_start));
+  normalisation_clock.record(static_plan_statistics_.normalisation);
   physical_root_centre_ = topology_->coordinate_origin +
       root.centre * topology_->coordinate_scale;
   coordinate_scale_ = topology_->coordinate_scale;
   physical_root_side_length_ = coordinate_scale_;
   initialise_execution(normalised_options);
-  static_plan_statistics_.total_setup.add(elapsed_seconds(start));
+  setup_clock.record(static_plan_statistics_.total_setup);
 }
 
 

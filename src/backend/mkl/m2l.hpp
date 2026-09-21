@@ -9,7 +9,8 @@
 
 namespace cdfmm::detail::mkl {
 
-/** Timings for one grouped gather/GEMM/scatter application. */
+/** Timings for one grouped gather/GEMM/scatter application; all zero when
+ *  the application was asked not to collect them. */
 struct M2LApplyTimings {
   double gather_seconds{0.0};
   double multiply_seconds{0.0};
@@ -39,12 +40,16 @@ public:
   M2LExecutor(const M2LExecutor&) = delete;
   M2LExecutor& operator=(const M2LExecutor&) = delete;
 
+  /// Applies one level.  `collect_timings` selects whether the
+  /// gather/multiply/scatter clocks are read at all (TimingLevel::Detailed).
   [[nodiscard]] M2LApplyTimings apply(
       const StaticM2LPlan& plan, int level,
-      std::span<const double> multipoles, std::span<double> locals);
+      std::span<const double> multipoles, std::span<double> locals,
+      bool collect_timings);
   [[nodiscard]] M2LApplyTimings apply(
       const FloatStaticM2LPlan& plan, int level,
-      std::span<const float> multipoles, std::span<float> locals);
+      std::span<const float> multipoles, std::span<float> locals,
+      bool collect_timings);
 
   [[nodiscard]] M2LStorageStatistics statistics() const noexcept;
 

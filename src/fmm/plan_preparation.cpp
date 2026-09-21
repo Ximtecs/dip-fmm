@@ -16,7 +16,6 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
-#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -29,16 +28,15 @@
 #include "cdfmm/plan/static_plan.hpp"
 
 #include "cache/internal.hpp"
+#include "phase_stopwatch.hpp"
+
+// Construction clocks follow the plan's timing level: the static-plan total
+// is a `Coarse` stopwatch, every subphase a `Detailed` one, and a stopwatch
+// below the selected level reads no clock and records nothing.
 
 namespace cdfmm {
 
 namespace {
-
-using Clock = std::chrono::steady_clock;
-
-double elapsed_seconds(const Clock::time_point start) {
-  return std::chrono::duration<double>(Clock::now() - start).count();
-}
 
 /// @brief The failure a parallel endpoint-operator loop reports.
 ///
@@ -213,7 +211,8 @@ void UniformFmm::build_missing_universal_operators(
   constexpr std::size_t class_count =
       StaticPlanStatistics::theoretical_maximum_m2l_classes;
   if (!universal_available) {
-    const auto shared_start = Clock::now();
+    detail::PhaseStopwatch shared_clock(detailed_timing());
+    shared_clock.start();
     constexpr double child_half_width = 0.25;
     for (int child_class = 0; child_class < 8; ++child_class) {
       const Vec3 child_offset{
@@ -241,10 +240,12 @@ void UniformFmm::build_missing_universal_operators(
       ++static_plan_statistics_.m2m_operators;
       ++static_plan_statistics_.l2l_operators;
     }
-    const double shared_seconds = elapsed_seconds(shared_start);
-    static_plan_statistics_.m2m_plan.add(shared_seconds);
-    static_plan_statistics_.l2l_plan.add(shared_seconds);
-    static_plan_statistics_.universal_operator_build.add(shared_seconds);
+    if (shared_clock.enabled()) {
+      const double shared_seconds = shared_clock.elapsed();
+      static_plan_statistics_.m2m_plan.add(shared_seconds);
+      static_plan_statistics_.l2l_plan.add(shared_seconds);
+      static_plan_statistics_.universal_operator_build.add(shared_seconds);
+    }
 
     const std::size_t matrix_values =
         static_cast<std::size_t>(coefficient_count()) * coefficient_count();
@@ -262,7 +263,8 @@ void UniformFmm::build_missing_universal_operators(
         }
       }
     }
-    const auto m2l_start = Clock::now();
+    detail::PhaseStopwatch m2l_clock(detailed_timing());
+    m2l_clock.start();
 #pragma omp parallel for schedule(dynamic) if(class_count >= 8)
     for (std::ptrdiff_t id = 0;
          id < static_cast<std::ptrdiff_t>(class_count); ++id) {
@@ -278,12 +280,12 @@ void UniformFmm::build_missing_universal_operators(
       std::copy(matrix.begin(), matrix.end(),
                 m2l_plan_.matrices.begin() + id * matrix_values);
     }
-    static_plan_statistics_.universal_operator_build.add(
-        elapsed_seconds(m2l_start));
+    m2l_clock.record(static_plan_statistics_.universal_operator_build);
   }
 
   if (periodic_required && !periodic_operator_available_) {
-    const auto periodic_start = Clock::now();
+    detail::PhaseStopwatch periodic_clock(detailed_timing());
+    periodic_clock.start();
     const std::vector<double> matrix =
         expansion_basis_ == ExpansionBasis::Spherical
         ? build_static_periodic_m2l_matrix(spherical_basis_, periodic_)
@@ -291,8 +293,7 @@ void UniformFmm::build_missing_universal_operators(
     m2l_plan_.matrices.insert(m2l_plan_.matrices.end(), matrix.begin(),
                               matrix.end());
     periodic_operator_available_ = true;
-    static_plan_statistics_.periodic_operator_build.add(
-        elapsed_seconds(periodic_start));
+    periodic_clock.record(static_plan_statistics_.periodic_operator_build);
   }
 }
 
@@ -300,7 +301,8 @@ void UniformFmm::build_static_plan() {
   // This is the geometry-dependent half of the evaluator. None of the data
   // built here depends on dipole moments, so it remains valid for every later
   // evaluate() call; see docs/static-architecture.md.
-  const auto total_start = Clock::now();
+  detail::PhaseStopwatch total_clock(coarse_timing());
+  total_clock.start();
   static_plan_statistics_.expansion_order = expansion_order();
   static_plan_statistics_.coefficient_count =
       static_cast<std::size_t>(coefficient_count());
@@ -436,7 +438,8 @@ void UniformFmm::build_static_plan() {
     }
     // A cache hit still derives every execution packing, so the same timers
     // account for it as on a cold build.
-    auto warm_stage_start = Clock::now();
+    detail::PhaseStopwatch warm_stage_clock(detailed_timing());
+    warm_stage_clock.start();
     try {
       build_reduced_symmetry_p2p_packing();
     } catch (const std::invalid_argument &error) {
@@ -477,16 +480,14 @@ void UniformFmm::build_static_plan() {
     // Only the derived-packing timer runs here.  The construction timers,
     // `p2p_tensor_plan` among them, stay at zero calls on a cache hit: that is
     // how a warm plan is distinguished from a rebuilt one.
-    static_plan_statistics_.p2p_derived_packing.add(
-        elapsed_seconds(warm_stage_start));
+    warm_stage_clock.record(static_plan_statistics_.p2p_derived_packing);
     if (precision_ == StaticPrecision::Float32) {
-      warm_stage_start = Clock::now();
+      warm_stage_clock.start();
       quantise_static_plan_to_float();
-      static_plan_statistics_.precision_conversion.add(
-          elapsed_seconds(warm_stage_start));
+      warm_stage_clock.record(static_plan_statistics_.precision_conversion);
     }
     build_backend_packing();
-    static_plan_statistics_.total.add(elapsed_seconds(total_start));
+    total_clock.record(static_plan_statistics_.total);
     return;
   }
   // ---- Cold construction of the geometry plan ------------------------------
@@ -505,7 +506,8 @@ void UniformFmm::build_static_plan() {
   using ClassMap = std::map<Key, std::vector<std::pair<int, int>>>;
   ClassMap classes;
 
-  auto phase_start = Clock::now();
+  detail::PhaseStopwatch phase_clock(detailed_timing());
+  phase_clock.start();
   const std::span<const Vec3> sorted_positions = topology_->sorted_source_positions;
   const std::span<const Vec3> sorted_targets = topology_->sorted_target_positions;
   const std::span<const CuboidSize> source_sizes = sorted_source_sizes_;
@@ -644,9 +646,9 @@ void UniformFmm::build_static_plan() {
     static_plan_statistics_.operator_bytes += bytes;
     static_plan_statistics_.p2m_operator_bytes += bytes;
   }
-  static_plan_statistics_.p2m_plan.add(elapsed_seconds(phase_start));
+  phase_clock.record(static_plan_statistics_.p2m_plan);
 
-  phase_start = Clock::now();
+  phase_clock.start();
   static_plan_statistics_.m2m_theoretical_interactions =
       nodes.empty() ? 0 : nodes.size() - 1;
   static_plan_statistics_.l2l_theoretical_interactions =
@@ -686,17 +688,19 @@ void UniformFmm::build_static_plan() {
     ++static_plan_statistics_.m2m_operators;
     ++static_plan_statistics_.l2l_operators;
   }
-  const double shared_translation_seconds = elapsed_seconds(phase_start);
-  static_plan_statistics_.m2m_plan.add(shared_translation_seconds);
-  if (!universal_cache_hit) {
-    static_plan_statistics_.universal_operator_build.add(
-        shared_translation_seconds);
+  if (phase_clock.enabled()) {
+    const double shared_translation_seconds = phase_clock.elapsed();
+    static_plan_statistics_.m2m_plan.add(shared_translation_seconds);
+    if (!universal_cache_hit) {
+      static_plan_statistics_.universal_operator_build.add(
+          shared_translation_seconds);
+    }
   }
   // The two triangular families are constructed together from each shared
   // parent-child displacement class.
   static_plan_statistics_.l2l_plan = static_plan_statistics_.m2m_plan;
 
-  phase_start = Clock::now();
+  phase_clock.start();
   for (const StaticM2LInteraction& interaction : topology_->m2l_interactions) {
     const auto& target = nodes[static_cast<std::size_t>(interaction.target_node)];
     const auto& source = nodes[static_cast<std::size_t>(interaction.source_node)];
@@ -713,7 +717,7 @@ void UniformFmm::build_static_plan() {
                 interaction.source_to_target_width}].emplace_back(
         interaction.source_node, interaction.target_node);
   }
-  static_plan_statistics_.transfer_discovery.add(elapsed_seconds(phase_start));
+  phase_clock.record(static_plan_statistics_.transfer_discovery);
 
   const int coefficient_count = this->coefficient_count();
   m2l_plan_.coefficient_count = coefficient_count;
@@ -815,7 +819,7 @@ void UniformFmm::build_static_plan() {
     }
   }
 
-  phase_start = Clock::now();
+  phase_clock.start();
   using ClassEntry = ClassMap::value_type;
   std::vector<const ClassEntry*> ordered_classes;
   ordered_classes.reserve(classes.size());
@@ -837,7 +841,8 @@ void UniformFmm::build_static_plan() {
   // preserving the canonical lexicographic matrix-ID ordering.
   const std::ptrdiff_t class_count =
       static_cast<std::ptrdiff_t>(universal_classes.size());
-  const auto universal_m2l_start = Clock::now();
+  detail::PhaseStopwatch universal_m2l_clock(detailed_timing());
+  universal_m2l_clock.start();
 #pragma omp parallel for schedule(dynamic) if (class_count >= 8)
   for (std::ptrdiff_t id = 0; id < class_count; ++id) {
     if (universal_cache_hit && id < 316) {
@@ -865,14 +870,14 @@ void UniformFmm::build_static_plan() {
               m2l_plan_.matrices.begin() + id * matrix_values);
   }
   if (!universal_cache_hit) {
-    static_plan_statistics_.universal_operator_build.add(
-        elapsed_seconds(universal_m2l_start));
+    universal_m2l_clock.record(static_plan_statistics_.universal_operator_build);
   }
 
   if (has_periodic_root && !periodic_operator_available_) {
     // Wrapped traversal resolves the central root and its 26 neighbours. The
     // appended self translation represents every more distant lattice image.
-    const auto periodic_build_start = Clock::now();
+    detail::PhaseStopwatch periodic_build_clock(detailed_timing());
+    periodic_build_clock.start();
     const std::vector<double> matrix =
         expansion_basis_ == ExpansionBasis::Spherical
             ? build_static_periodic_m2l_matrix(spherical_basis_, periodic_)
@@ -882,8 +887,7 @@ void UniformFmm::build_static_plan() {
         m2l_plan_.matrices.begin() +
             static_cast<std::ptrdiff_t>(universal_classes.size() *
                                         matrix_values));
-    static_plan_statistics_.periodic_operator_build.add(
-        elapsed_seconds(periodic_build_start));
+    periodic_build_clock.record(static_plan_statistics_.periodic_operator_build);
     periodic_operator_available_ = true;
   }
 
@@ -934,12 +938,11 @@ void UniformFmm::build_static_plan() {
     m2l_plan_.target_levels[static_cast<std::size_t>(slot)] = 0;
     m2l_plan_.interaction_levels[static_cast<std::size_t>(slot)] = 0;
   }
-  static_plan_statistics_.operator_construction.add(
-      elapsed_seconds(phase_start));
+  phase_clock.record(static_plan_statistics_.operator_construction);
   static_plan_statistics_.m2l_plan =
       static_plan_statistics_.operator_construction;
 
-  phase_start = Clock::now();
+  phase_clock.start();
   const std::size_t matrix_bytes = m2l_plan_.matrices.size() * sizeof(double);
   const std::size_t scaling_bytes =
       (m2l_plan_.multipole_scaling.size() + m2l_plan_.local_scaling.size()) *
@@ -963,8 +966,8 @@ void UniformFmm::build_static_plan() {
   static_plan_statistics_.transfer_classes = universal_classes.size();
   static_plan_statistics_.m2l_operators =
       static_cast<std::size_t>(m2l_plan_.matrix_count);
-  static_plan_statistics_.buffer_allocation.add(elapsed_seconds(phase_start));
-  phase_start = Clock::now();
+  phase_clock.record(static_plan_statistics_.buffer_allocation);
+  phase_clock.start();
   // Target evaluators are independent, so the leaves are built in parallel.
   // The per-target byte accounting is a closed form, so it no longer has to be
   // summed from inside the loop.
@@ -1109,7 +1112,7 @@ void UniformFmm::build_static_plan() {
     static_plan_statistics_.operator_bytes += bytes;
     static_plan_statistics_.l2p_operator_bytes += bytes;
   }
-  static_plan_statistics_.l2p_plan.add(elapsed_seconds(phase_start));
+  phase_clock.record(static_plan_statistics_.l2p_plan);
 
   // Canonical near field: expand the list-1 leaf records into individual
   // (target, source[, image shift, identity marker]) pairs and build one
@@ -1117,8 +1120,9 @@ void UniformFmm::build_static_plan() {
   // The three sub-timers separate record expansion, tensor construction and
   // derived packing so a warm plan, which only pays the last, is
   // distinguishable.
-  phase_start = Clock::now();
-  auto p2p_stage_start = Clock::now();
+  phase_clock.start();
+  detail::PhaseStopwatch p2p_stage_clock(detailed_timing());
+  p2p_stage_clock.start();
   if (periodic_.enabled) {
     std::vector<StaticP2PInteraction> near_interactions;
     for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
@@ -1133,9 +1137,8 @@ void UniformFmm::build_static_plan() {
         }
       }
     }
-    static_plan_statistics_.p2p_interaction_setup.add(
-        elapsed_seconds(p2p_stage_start));
-    p2p_stage_start = Clock::now();
+    p2p_stage_clock.record(static_plan_statistics_.p2p_interaction_setup);
+    p2p_stage_clock.start();
     p2p_operator_ = build_static_p2p_operator(
         sorted_targets, sorted_positions, near_interactions,
         source_geometry_, source_sizes, sorted_source_tetrahedra_,
@@ -1154,18 +1157,16 @@ void UniformFmm::build_static_plan() {
         }
       }
     }
-    static_plan_statistics_.p2p_interaction_setup.add(
-        elapsed_seconds(p2p_stage_start));
-    p2p_stage_start = Clock::now();
+    p2p_stage_clock.record(static_plan_statistics_.p2p_interaction_setup);
+    p2p_stage_clock.start();
     p2p_operator_ = build_static_p2p_operator(
         sorted_targets, sorted_positions, near_interactions,
         source_geometry_, source_sizes, sorted_source_tetrahedra_,
         target_geometry_, target_sizes, sorted_target_tetrahedra_,
         near_field_source_model_, near_field_target_model_);
   }
-  static_plan_statistics_.p2p_canonical_operator.add(
-      elapsed_seconds(p2p_stage_start));
-  p2p_stage_start = Clock::now();
+  p2p_stage_clock.record(static_plan_statistics_.p2p_canonical_operator);
+  p2p_stage_clock.start();
   const bool point_geometry_p2p =
       backend_ == ExecutionBackend::CpuStatic && selects_point_geometry_p2p();
   if (!point_geometry_p2p) {
@@ -1181,8 +1182,7 @@ void UniformFmm::build_static_plan() {
   if (backend_ == ExecutionBackend::CpuStatic) {
     p2p_execution_packing_ = resolve_cpu_p2p_packing();
   }
-  static_plan_statistics_.p2p_derived_packing.add(
-      elapsed_seconds(p2p_stage_start));
+  p2p_stage_clock.record(static_plan_statistics_.p2p_derived_packing);
   static_plan_statistics_.p2p_interactions = p2p_operator_.blocks.size();
   static_plan_statistics_.p2p_value_bytes =
       p2p_operator_.blocks.size() * 6 * sizeof(double);
@@ -1211,8 +1211,8 @@ void UniformFmm::build_static_plan() {
       p2p_operator_.memory_bytes() + p2p_compact_plan_.memory().total_bytes();
   static_plan_statistics_.near_field_operator_bytes =
       p2p_operator_.memory_bytes() + p2p_compact_plan_.memory().total_bytes();
-  static_plan_statistics_.p2p_tensor_plan.add(elapsed_seconds(phase_start));
-  static_plan_statistics_.total.add(elapsed_seconds(total_start));
+  phase_clock.record(static_plan_statistics_.p2p_tensor_plan);
+  total_clock.record(static_plan_statistics_.total);
   ++static_plan_statistics_.construction_count;
 
   detail::cache::write_geometry_cache(
@@ -1220,10 +1220,10 @@ void UniformFmm::build_static_plan() {
       m2l_plan_, l2p_evaluators_, p2p_operator_, static_plan_statistics_);
 
   if (precision_ == StaticPrecision::Float32) {
-    const auto conversion_start = Clock::now();
+    detail::PhaseStopwatch conversion_clock(detailed_timing());
+    conversion_clock.start();
     quantise_static_plan_to_float();
-    static_plan_statistics_.precision_conversion.add(
-        elapsed_seconds(conversion_start));
+    conversion_clock.record(static_plan_statistics_.precision_conversion);
   }
   // oneMKL derives execution-only gather/GEMM/scatter packing from the same
   // canonical target-row metadata used by portable CPU and CUDA.
@@ -1273,7 +1273,8 @@ void UniformFmm::quantise_static_plan_to_float() {
                                     m2l_plan_.matrices.end());
   }
 
-  const auto p2p_packing_start = Clock::now();
+  detail::PhaseStopwatch p2p_packing_clock(detailed_timing());
+  p2p_packing_clock.start();
   const bool uses_cuda_plan = backend_ == ExecutionBackend::CudaM2LP2P ||
       backend_ == ExecutionBackend::CudaFull;
   if (uses_cuda_plan) {
@@ -1307,8 +1308,7 @@ void UniformFmm::quantise_static_plan_to_float() {
     p2p_bsr_plan_float_ = build_static_p2p_bsr_plan(
         p2p_operator_float_, bsr_identities);
   }
-  static_plan_statistics_.backend_packing.add(
-      elapsed_seconds(p2p_packing_start));
+  p2p_packing_clock.record(static_plan_statistics_.backend_packing);
 
   // Recalculate scalar-dependent storage from the representation that will
   // remain alive. Integer metadata is unchanged by precision selection.

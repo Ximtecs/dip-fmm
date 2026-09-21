@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cache/internal.hpp"
+#include "phase_stopwatch.hpp"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -364,7 +364,9 @@ CacheIdentity compute_cache_identity(const bool supplied_topology,
   if (supplied_topology) {
     return {};
   }
-  const auto start = std::chrono::steady_clock::now();
+  detail::PhaseStopwatch clock(
+      statistics.timing_level == TimingLevel::Detailed);
+  clock.start();
   CacheIdentity identity;
   identity.enabled = option_enable_cache && !environment_disables_cache();
   identity.directory = cache_root().string();
@@ -510,9 +512,9 @@ CacheIdentity compute_cache_identity(const bool supplied_topology,
        << (inputs.use_reduced_symmetry_p2p ? "reduced_symmetry" : "canonical")
        << '_' << digest << "_v04.bin";
   identity.geometry_key = plan.str();
-  statistics.geometry_hash.add(
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-          .count());
+  if (clock.enabled()) {
+    statistics.geometry_hash.add(clock.elapsed());
+  }
   return identity;
 }
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cache/internal.hpp"
+#include "phase_stopwatch.hpp"
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -50,7 +50,9 @@ bool load_geometry_cache(
   if (!identity.enabled) {
     return false;
   }
-  const auto start = std::chrono::steady_clock::now();
+  detail::PhaseStopwatch clock(
+      statistics.timing_level == TimingLevel::Detailed);
+  clock.start();
   try {
     const auto file = read_cache(
         cache_path(identity.directory, "plans", identity.geometry_key),
@@ -285,12 +287,12 @@ bool load_geometry_cache(
     }
     reader.require_end();
     statistics.geometry_cache_hit = true;
-    statistics.geometry_cache_load.add(
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-            .count());
-    statistics.geometry_cache_lookup.add(
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-            .count());
+    if (clock.enabled()) {
+      statistics.geometry_cache_load.add(clock.elapsed());
+    }
+    if (clock.enabled()) {
+      statistics.geometry_cache_lookup.add(clock.elapsed());
+    }
     return true;
   } catch (const std::exception&) {
     // Any failure is a miss.  Only the FP32 members are reset because the
@@ -303,9 +305,9 @@ bool load_geometry_cache(
     payload.p2p_compact_plan_float = {};
     payload.p2p_bsr_plan_float = {};
     payload.m2l_plan_float = {};
-    statistics.geometry_cache_lookup.add(
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-            .count());
+    if (clock.enabled()) {
+      statistics.geometry_cache_lookup.add(clock.elapsed());
+    }
     return false;
   }
 }
@@ -319,7 +321,9 @@ void write_geometry_cache(
   if (!identity.enabled) {
     return;
   }
-  const auto start = std::chrono::steady_clock::now();
+  detail::PhaseStopwatch clock(
+      statistics.timing_level == TimingLevel::Detailed);
+  clock.start();
   Writer payload;
   const std::size_t p2p_bytes = checked_bytes(
       p2p_operator.blocks.size(), p2p_record_bytes(identity.precision));
@@ -397,9 +401,9 @@ void write_geometry_cache(
        tree.leaf_level(), identity.geometry_key, identity.geometry_hash_digest},
       payload.bytes());
   statistics.cache_bytes_written += bytes;
-  statistics.geometry_cache_write.add(
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
-          .count());
+  if (clock.enabled()) {
+    statistics.geometry_cache_write.add(clock.elapsed());
+  }
 }
 
 } // namespace cdfmm::detail::cache
