@@ -71,7 +71,7 @@ COLUMNS = [
     "case", "workload", "comparison_group", "comparison_variant",
     "backend", "precision", "sources", "depth", "order",
     "source_geometry", "target_geometry", "irregular_bodies", "regular_grid",
-    "periodic", "layout_hint", "far_field_model",
+    "periodic", "layout_hint", "far_field_model", "timing_level",
     # what the policy resolved to
     "p2p_packing_requested", "p2p_packing",
     "point_expansion_requested", "p2m_execution", "l2p_execution",
@@ -146,6 +146,13 @@ def run_case(binary: str, case: Case, evaluations: int, warmups: int,
             "--threads", str(threads),
             "--no-direct",
             "--no-workload-comparison",
+            # This matrix compares phase columns as well as the evaluation
+            # median, so it asks for the detailed solver timing explicitly.
+            # The retained Phase-3D baseline was measured with the then
+            # unconditional instrumentation, so its rows compare like with
+            # like against a detailed run, and this driver is not the
+            # Article1 protocol (which runs with timing off).
+            "--timing", "detailed",
             "--output", str(output),
         ]
         print(">", case.name, file=sys.stderr, flush=True)

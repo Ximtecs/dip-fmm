@@ -416,6 +416,9 @@ def invoke(executable: Path, output: Path, *, size: int, order: int, depth: int,
                "--order", str(order), "--depth", str(depth), "--threads", str(threads),
                "--evaluations", str(evaluations), "--samples", str(samples),
                "--warmups", str(warmups), "--seed", "314159", "--backend", backend,
+               # The phase plots need the solver's detailed timing; the
+               # evaluation median stays the driver's external clock.
+               "--timing", "detailed",
                "--output", str(output)]
     if accuracy_targets > 0:
         command.extend(["--accuracy-targets", str(accuracy_targets)])

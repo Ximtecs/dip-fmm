@@ -1512,6 +1512,9 @@ void run_p2p(const Options& options, RowSink& sink) {
     auto measure_cuda = [&](cdfmm::CudaP2PPlan& plan, const std::string& name,
                             const bool single, const std::size_t unique,
                             const std::size_t operator_bytes) {
+      // The row's note quotes the device kernel lane, which exists only at
+      // the detailed level; the headline seconds are the external clock.
+      plan.set_timing_level(cdfmm::TimingLevel::Detailed);
       Row row = base;
       row.backend = "cuda";
       row.threads = 1;

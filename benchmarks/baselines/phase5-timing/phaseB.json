@@ -1,0 +1,746 @@
+{
+ "builds": {
+  "start": "/home/mihaa/.claude/jobs/61c9fc2a/tmp/start/build-bench",
+  "hardoff": "/home/mihaa/.claude/jobs/61c9fc2a/tmp/hardoff/build-bench"
+ },
+ "cases": {
+  "cpu-fast/10k/d3/p4/f32": {
+   "start": [
+    {
+     "median": 0.00124221,
+     "mean": 0.00124006,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00125242,
+     "mean": 0.00124959,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0012495,
+     "mean": 0.00124742,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00124772,
+     "mean": 0.00124803,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00125374,
+     "mean": 0.00125496,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 0.00124665,
+     "mean": 0.00124496,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00125182,
+     "mean": 0.00125002,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0012529,
+     "mean": 0.00125595,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0012587,
+     "mean": 0.00125771,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00125442,
+     "mean": 0.00125573,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ]
+  },
+  "cpu-medium/50k/d4/p6/f32": {
+   "start": [
+    {
+     "median": 0.0117027,
+     "mean": 0.0116934,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0117129,
+     "mean": 0.0117131,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.01173,
+     "mean": 0.0117551,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0117352,
+     "mean": 0.0117525,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0117718,
+     "mean": 0.011891,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 0.011752,
+     "mean": 0.0118211,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0117379,
+     "mean": 0.0117991,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0117477,
+     "mean": 0.0117617,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0117432,
+     "mean": 0.0117778,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0117666,
+     "mean": 0.0117596,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ]
+  },
+  "mkl-medium/50k/d4/p6/f32": {
+   "start": [
+    {
+     "median": 0.0155929,
+     "mean": 0.0156316,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0155707,
+     "mean": 0.0155814,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0156984,
+     "mean": 0.0157055,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0157468,
+     "mean": 0.0158292,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0157319,
+     "mean": 0.0158294,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 0.015566,
+     "mean": 0.0156012,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0155884,
+     "mean": 0.015618,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0156178,
+     "mean": 0.0157101,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.0156039,
+     "mean": 0.0156,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.01559,
+     "mean": 0.0156502,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ]
+  },
+  "cuda-full-tiny/4k/d2/p4/f32": {
+   "start": [
+    {
+     "median": 0.0001012,
+     "mean": 0.00010147,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000101734,
+     "mean": 0.00010192,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000101755,
+     "mean": 0.000102007,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000102389,
+     "mean": 0.000103981,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000102384,
+     "mean": 0.00010225,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 8.57625e-05,
+     "mean": 8.59582e-05,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 8.63781e-05,
+     "mean": 8.65456e-05,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 8.62492e-05,
+     "mean": 9.37088e-05,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 8.50864e-05,
+     "mean": 8.57283e-05,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 8.66076e-05,
+     "mean": 8.69041e-05,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ]
+  },
+  "cuda-full-fast/10k/d3/p4/f32": {
+   "start": [
+    {
+     "median": 0.000115311,
+     "mean": 0.000115459,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000115883,
+     "mean": 0.000115969,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000116018,
+     "mean": 0.00011574,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000116032,
+     "mean": 0.000115998,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000116072,
+     "mean": 0.000116237,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 0.000103786,
+     "mean": 0.000103655,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000104586,
+     "mean": 0.000104761,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000103733,
+     "mean": 0.000103899,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000103548,
+     "mean": 0.000103928,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000103751,
+     "mean": 0.000104124,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ]
+  },
+  "cuda-full-medium/50k/d4/p6/f32": {
+   "start": [
+    {
+     "median": 0.000445181,
+     "mean": 0.000454373,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000446972,
+     "mean": 0.000449027,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000447412,
+     "mean": 0.000448628,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000446178,
+     "mean": 0.00044759,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000445955,
+     "mean": 0.000447435,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 0.000430114,
+     "mean": 0.000432372,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000430886,
+     "mean": 0.000432103,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000432311,
+     "mean": 0.000434975,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000431439,
+     "mean": 0.000433714,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000431675,
+     "mean": 0.000455494,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ]
+  },
+  "cuda-full-medium/50k/d4/p6/f64": {
+   "start": [
+    {
+     "median": 0.00273199,
+     "mean": 0.00278199,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00280051,
+     "mean": 0.00281698,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00270532,
+     "mean": 0.00274778,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00278711,
+     "mean": 0.00278361,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00279445,
+     "mean": 0.00279335,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 0.00269089,
+     "mean": 0.00273856,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00269561,
+     "mean": 0.00274292,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00269638,
+     "mean": 0.00276928,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00270678,
+     "mean": 0.00275528,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00269543,
+     "mean": 0.00273598,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ]
+  },
+  "cuda-full-prism/4k/d3/p6/f32": {
+   "start": [
+    {
+     "median": 0.000127302,
+     "mean": 0.000130061,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000127393,
+     "mean": 0.000127231,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000127743,
+     "mean": 0.000127441,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000127583,
+     "mean": 0.000127337,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000127638,
+     "mean": 0.000130675,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 0.000108415,
+     "mean": 0.000108398,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000108578,
+     "mean": 0.000111216,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000107945,
+     "mean": 0.0001081,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000107691,
+     "mean": 0.000107668,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.000107402,
+     "mean": 0.000107613,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ]
+  },
+  "cuda-partial-medium/50k/d4/p6/f32": {
+   "start": [
+    {
+     "median": 0.00106913,
+     "mean": 0.00107016,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00107454,
+     "mean": 0.0011013,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00107262,
+     "mean": 0.00109883,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00106756,
+     "mean": 0.00107008,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00107401,
+     "mean": 0.00108635,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 0.0010644,
+     "mean": 0.00106525,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00106245,
+     "mean": 0.00106453,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00105747,
+     "mean": 0.00105831,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00106382,
+     "mean": 0.00106598,
+     "total_phase": NaN,
+     "timing_level": ""
+    },
+    {
+     "median": 0.00106634,
+     "mean": 0.00114482,
+     "total_phase": NaN,
+     "timing_level": ""
+    }
+   ]
+  },
+  "cuda-p2p-standalone/d3/occ8/cuda-canonical-aos": {
+   "start": [
+    {
+     "median": 0.000182563
+    },
+    {
+     "median": 0.000184077
+    },
+    {
+     "median": 0.000181553
+    },
+    {
+     "median": 0.000182606
+    },
+    {
+     "median": 0.000175951
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 0.000171744
+    },
+    {
+     "median": 0.000172943
+    },
+    {
+     "median": 0.000174993
+    },
+    {
+     "median": 0.000173847
+    },
+    {
+     "median": 0.000175619
+    }
+   ]
+  },
+  "cuda-p2p-standalone/d3/occ8/cuda-particle-row-soa": {
+   "start": [
+    {
+     "median": 0.000271632
+    },
+    {
+     "median": 0.000268205
+    },
+    {
+     "median": 0.000268852
+    },
+    {
+     "median": 0.000274272
+    },
+    {
+     "median": 0.000268422
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 0.000266061
+    },
+    {
+     "median": 0.000266357
+    },
+    {
+     "median": 0.000266002
+    },
+    {
+     "median": 0.000266219
+    },
+    {
+     "median": 0.000265716
+    }
+   ]
+  },
+  "cuda-p2p-standalone/d3/occ8/cuda-leaf-block-compact": {
+   "start": [
+    {
+     "median": 4.8904e-05
+    },
+    {
+     "median": 4.8247e-05
+    },
+    {
+     "median": 4.8165e-05
+    },
+    {
+     "median": 4.3929e-05
+    },
+    {
+     "median": 4.819e-05
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 3.8453e-05
+    },
+    {
+     "median": 3.9539e-05
+    },
+    {
+     "median": 3.797e-05
+    },
+    {
+     "median": 3.9024e-05
+    },
+    {
+     "median": 3.8159e-05
+    }
+   ]
+  },
+  "cuda-p2p-standalone/d3/occ8/cuda-cusparse-bsr3": {
+   "start": [
+    {
+     "median": 6.0332e-05
+    },
+    {
+     "median": 6.1178e-05
+    },
+    {
+     "median": 6.2962e-05
+    },
+    {
+     "median": 6.2862e-05
+    },
+    {
+     "median": 6.0387e-05
+    }
+   ],
+   "hardoff": [
+    {
+     "median": 5.7129e-05
+    },
+    {
+     "median": 6.0506e-05
+    },
+    {
+     "median": 5.6457e-05
+    },
+    {
+     "median": 6.0116e-05
+    },
+    {
+     "median": 5.6843e-05
+    }
+   ]
+  }
+ }
+}

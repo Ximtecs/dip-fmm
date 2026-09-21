@@ -72,6 +72,11 @@ struct Options {
     std::string far_field_model{"point"};
     // Fully periodic cubic cell equal to the root box.
     bool periodic{false};
+    // Internal solver timing: "off" (the production path and the default),
+    // "coarse" or "detailed".  The headline `evaluation_median` is always
+    // this driver's own external clock; the phase columns come from the
+    // solver and are zero below "detailed".
+    std::string timing{"off"};
     std::string precision{"float32"};
     std::string backend{"cpu-static-matrix"};
     std::string expansion_basis{"spherical"};
@@ -189,8 +194,14 @@ Options parse_options(const int argc, char** argv)
         else if (key == "--p2p-packing") options.p2p_packing = value;
         else if (key == "--point-expansion") options.point_expansion = value;
         else if (key == "--far-field-model") options.far_field_model = value;
+        else if (key == "--timing") options.timing = value;
         else if (key == "--output") options.output = value;
         else throw std::invalid_argument("Unknown option: " + key);
+    }
+    if (options.timing != "off" && options.timing != "coarse" &&
+        options.timing != "detailed") {
+        throw std::invalid_argument(
+            "--timing must be off, coarse or detailed");
     }
     if (options.sources < 0 || options.targets < 0 || options.depth < 0 ||
         options.order < 0 || options.evaluations < 1 || options.samples < 1 ||
@@ -264,6 +275,20 @@ std::string_view point_expansion_name(
         return "procedural";
     }
     return "unknown";
+}
+
+cdfmm::TimingLevel parse_timing_level(const std::string& name)
+{
+    if (name == "off") {
+        return cdfmm::TimingLevel::Off;
+    }
+    if (name == "coarse") {
+        return cdfmm::TimingLevel::Coarse;
+    }
+    if (name == "detailed") {
+        return cdfmm::TimingLevel::Detailed;
+    }
+    throw std::invalid_argument("--timing must be off, coarse or detailed");
 }
 
 cdfmm::P2PExecutionPacking parse_p2p_packing(const std::string& name)
@@ -932,6 +957,7 @@ int main(int argc, char** argv)
             ? cdfmm::SpatialLayout::RegularGrid
             : cdfmm::SpatialLayout::General;
         fmm_options.use_reduced_symmetry_p2p = options.reduced_symmetry_p2p;
+        fmm_options.timing_level = parse_timing_level(options.timing);
         fmm_options.cuda_dictionary_target_owned =
             options.dictionary_target_owned;
         fmm_options.cuda_dictionary_power2_microtiles =
@@ -1063,6 +1089,8 @@ int main(int argc, char** argv)
                 target_positions,
                 source_identities
             );
+            cuda_direct_plan->set_timing_level(
+                parse_timing_level(options.timing));
         } else if (selected_backend != BenchmarkBackend::CpuDirect) {
             fmm = std::make_unique<UniformFmm>(
                 source_positions,
@@ -1407,7 +1435,7 @@ int main(int argc, char** argv)
                "near_field_operator_bytes,cuda_p2p_geometry_bytes,"
                "far_field_model,"
                "point_expansion_requested,p2m_execution,l2p_execution,"
-               "p2m_operator_bytes,l2p_operator_bytes\n";
+               "p2m_operator_bytes,l2p_operator_bytes,timing_level\n";
         const char* build_type =
 #ifdef NDEBUG
             "Release";
@@ -1523,7 +1551,7 @@ int main(int argc, char** argv)
             << (fmm ? point_expansion_name(fmm->l2p_execution())
                     : std::string_view{"direct"})
             << ',' << static_plan.p2m_operator_bytes << ','
-            << static_plan.l2p_operator_bytes << '\n';
+            << static_plan.l2p_operator_bytes << ',' << options.timing << '\n';
 
         if (!options.output.empty()) {
             std::cout << "Wrote " << options.output << "\n";

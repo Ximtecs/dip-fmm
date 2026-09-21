@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "cdfmm/core/timing.hpp"
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/uniform_tree.hpp"
 
@@ -46,6 +47,9 @@ struct Options {
   bool irregular{false};
   bool sweep{false};
   bool cuda{false};
+  // Device timing of the CUDA plans; `Off` is the production path and the
+  // headline `host_total_s` is this driver's own external clock regardless.
+  cdfmm::TimingLevel timing{cdfmm::TimingLevel::Off};
   int regular_grid_s{0};
   int cuda_target_tile{128};
   int cuda_targets_per_thread{1};
@@ -220,6 +224,17 @@ struct Result {
       options.sweep = true;
     } else if (option == "--cuda") {
       options.cuda = true;
+    } else if (argument + 1 < argc && option == "--timing") {
+      const std::string_view level(argv[++argument]);
+      if (level == "off") {
+        options.timing = cdfmm::TimingLevel::Off;
+      } else if (level == "coarse") {
+        options.timing = cdfmm::TimingLevel::Coarse;
+      } else if (level == "detailed") {
+        options.timing = cdfmm::TimingLevel::Detailed;
+      } else {
+        throw std::invalid_argument("--timing must be off, coarse or detailed");
+      }
     } else if (argument + 1 < argc && option == "--depth") {
       options.depth = parse_integer(argv[++argument], "--depth");
     } else if (argument + 1 < argc && option == "--occupancy") {
@@ -482,14 +497,19 @@ struct CudaResult {
   double checksum{0.0};
 };
 
+// `host_total_s` is the external clock around the synchronous evaluate();
+// the device lanes are the plan's own and stay zero below `Detailed`.
 template <typename Factory>
 [[nodiscard]] CudaResult measure_cuda(std::string name, GeometryPlan &geometry,
-                                      const int evaluations, Factory factory) {
+                                      const int evaluations,
+                                      const cdfmm::TimingLevel timing,
+                                      Factory factory) {
   CudaResult result;
   result.name = std::move(name);
   auto start = Clock::now();
   std::unique_ptr<cdfmm::CudaP2PPlan> plan = factory();
   result.setup_seconds = elapsed(start);
+  plan->set_timing_level(timing);
 
   std::vector<cdfmm::Vec3> fields(geometry.moments.size());
   plan->evaluate(geometry.moments, geometry.identities, fields);
@@ -519,6 +539,13 @@ template <typename Factory>
   return result;
 }
 
+// Below `Detailed` the device lanes are zero, so the device-derived ratios
+// are reported as zero rather than as a division by zero.
+[[nodiscard]] double safe_ratio(const double numerator,
+                                const double denominator) {
+  return denominator > 0.0 ? numerator / denominator : 0.0;
+}
+
 void print_cuda_result(const CudaResult &result, const std::size_t interactions,
                        const CudaResult &baseline) {
   const cdfmm::CudaPlanStatistics &memory = result.statistics;
@@ -526,9 +553,13 @@ void print_cuda_result(const CudaResult &result, const std::size_t interactions,
             << result.setup_seconds << ',' << result.h2d_seconds << ','
             << result.kernel_seconds << ',' << result.d2h_seconds << ','
             << result.device_total_seconds << ',' << result.host_total_seconds
-            << ',' << baseline.kernel_seconds / result.kernel_seconds << ','
-            << baseline.device_total_seconds / result.device_total_seconds
-            << ',' << static_cast<double>(interactions) / result.kernel_seconds
+            << ',' << safe_ratio(baseline.kernel_seconds, result.kernel_seconds)
+            << ','
+            << safe_ratio(baseline.device_total_seconds,
+                          result.device_total_seconds)
+            << ','
+            << safe_ratio(static_cast<double>(interactions),
+                          result.kernel_seconds)
             << ',' << memory.p2p_tensor_bytes << ',' << memory.p2p_index_bytes
             << ',' << memory.p2p_row_metadata_bytes << ','
             << memory.p2p_leaf_metadata_bytes << ','
@@ -544,22 +575,26 @@ void run_cuda_case(GeometryPlan &geometry, const Options &options,
         "--cuda requested but no CUDA P2P runtime is available");
   }
   const CudaResult canonical =
-      measure_cuda("cuda-canonical-aos", geometry, options.evaluations, [&] {
+      measure_cuda("cuda-canonical-aos", geometry, options.evaluations,
+                   options.timing, [&] {
         return std::make_unique<cdfmm::CudaP2PPlan>(geometry.canonical,
                                                     geometry.identities);
       });
   const CudaResult compact =
-      measure_cuda("cuda-particle-row-soa", geometry, options.evaluations, [&] {
+      measure_cuda("cuda-particle-row-soa", geometry, options.evaluations,
+                   options.timing, [&] {
         return std::make_unique<cdfmm::CudaP2PPlan>(geometry.compact,
                                                     geometry.identities);
       });
   const CudaResult leaf = measure_cuda(
-      "cuda-leaf-block-compact", geometry, options.evaluations, [&] {
+      "cuda-leaf-block-compact", geometry, options.evaluations,
+      options.timing, [&] {
         return std::make_unique<cdfmm::CudaP2PPlan>(geometry.leaf,
                                                     geometry.identities);
       });
   const CudaResult bsr =
-      measure_cuda("cuda-cusparse-bsr3", geometry, options.evaluations, [&] {
+      measure_cuda("cuda-cusparse-bsr3", geometry, options.evaluations,
+                   options.timing, [&] {
         return std::make_unique<cdfmm::CudaP2PPlan>(geometry.bsr);
       });
 
@@ -754,7 +789,12 @@ void run_case(const Options &options, const int occupancy) {
 #else
   std::cout << ",threads=1";
 #endif
-  std::cout << '\n';
+  std::cout << ",timing_level="
+            << (options.timing == cdfmm::TimingLevel::Off
+                    ? "off"
+                    : options.timing == cdfmm::TimingLevel::Coarse ? "coarse"
+                                                                   : "detailed")
+            << '\n';
   std::cout << "implementation,evaluation_s,interactions_per_s,speedup,"
                "tensor_bytes,index_bytes,row_metadata_bytes,"
                "leaf_metadata_bytes,scratch_bytes,total_bytes,checksum\n";

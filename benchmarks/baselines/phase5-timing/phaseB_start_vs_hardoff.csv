@@ -1,0 +1,14 @@
+case,start_us,hardoff_us,hardoff/start
+cpu-fast/10k/d3/p4/f32,1249.5,1252.9,1.0027
+cpu-medium/50k/d4/p6/f32,11730.0,11747.7,1.0015
+mkl-medium/50k/d4/p6/f32,15698.4,15590.0,0.9931
+cuda-full-tiny/4k/d2/p4/f32,101.8,86.2,0.8476
+cuda-full-fast/10k/d3/p4/f32,116.0,103.8,0.8943
+cuda-full-medium/50k/d4/p6/f32,446.2,431.4,0.9670
+cuda-full-medium/50k/d4/p6/f64,2787.1,2695.6,0.9672
+cuda-full-prism/4k/d3/p6/f32,127.6,107.9,0.8461
+cuda-partial-medium/50k/d4/p6/f32,1072.6,1063.8,0.9918
+cuda-p2p-standalone/d3/occ8/cuda-canonical-aos,182.6,173.8,0.9523
+cuda-p2p-standalone/d3/occ8/cuda-particle-row-soa,268.9,266.1,0.9896
+cuda-p2p-standalone/d3/occ8/cuda-leaf-block-compact,48.2,38.5,0.7979
+cuda-p2p-standalone/d3/occ8/cuda-cusparse-bsr3,61.2,57.1,0.9338

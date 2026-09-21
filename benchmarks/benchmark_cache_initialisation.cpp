@@ -114,6 +114,9 @@ int main(int argc, char** argv) {
     options.source_geometry = cdfmm::SourceGeometry::RectangularPrism;
     options.source_sizes = {{spacing, spacing, spacing}};
     options.fixed_target_source_indices = identities;
+    // This driver reports the construction subphases, so it needs them
+    // collected.
+    options.timing_level = cdfmm::TimingLevel::Detailed;
     if (arguments.backend == "onemkl") {
       options.static_matrix_backend = cdfmm::StaticMatrixBackend::OneMkl;
     } else if (arguments.backend == "cuda-full") {
