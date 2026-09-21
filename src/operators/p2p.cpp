@@ -398,7 +398,7 @@ StaticP2POperator build_static_p2p_operator_impl(
             for (std::ptrdiff_t raw_index = 0; raw_index < interaction_count;
                  ++raw_index) {
                 const std::size_t index = static_cast<std::size_t>(raw_index);
-                store_block(index, tensors[classes.class_of_item[index]]);
+                store_block(index, tensors[classes.class_of_pair[index]]);
             }
             return result;
         }
@@ -603,7 +603,7 @@ StaticP2POperator build_static_p2p_operator_impl(
                  ++raw_owner) {
                 const std::size_t owner = static_cast<std::size_t>(raw_owner);
                 store_tensor(static_cast<std::size_t>(owners[owner]),
-                             tensors[classes.class_of_item[owner]]);
+                             tensors[classes.class_of_pair[owner]]);
             }
         } else {
 #pragma omp parallel for schedule(dynamic, 1) if (owner_count >= 8)
@@ -807,7 +807,7 @@ StaticP2POperator build_static_p2p_operator_impl(
         for (std::ptrdiff_t raw_index = 0; raw_index < pair_count;
              ++raw_index) {
             const std::size_t index = static_cast<std::size_t>(raw_index);
-            store_block(index, tensors[classes.class_of_item[index]]);
+            store_block(index, tensors[classes.class_of_pair[index]]);
         }
         return result;
     }

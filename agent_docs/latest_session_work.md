@@ -24,13 +24,15 @@ audit of the five symbols Phase 3D had deferred. Four of the five were dead
 by reference count and went; the fifth — `cuda_policy::resolve_cuda_execution_
 policy` deciding the CPU dictionary too — was a naming complaint, not a
 defect, so it got a comment instead of a rename across a public-adjacent
-surface. The one merge worth doing was the endpoint classifier: it and
-`classify_exact_operators` were the same first-seen-numbering algorithm with
-the same 32-bit abandon guard, differing only in key container and sampling
-gate, so the shared one became generic over the key type with an explicit
-`ExactReuseGate` and the endpoint sites pass their own. A 25-file cache
-corpus was hashed before and after that merge to prove the persisted plans
-did not move.
+surface. The one merge that looked worth doing was the endpoint classifier:
+it and `classify_exact_operators` are the same first-seen-numbering algorithm
+with the same 32-bit abandon guard, differing only in key container and
+sampling gate, so the shared one was made generic over the key type. It
+passed everything locally — four configurations, 244 CTest cases, a 25-file
+cache corpus hashed before and after to prove the persisted plans did not
+move — and then broke CI at link time under GCC 13 (see below). It is
+reverted; the duplication is now a recorded, explained decision instead of an
+unexamined one.
 
 **The 496-second test.** The procedural-expansion suite dominated CTest, and
 the reason was instructive: it proved a *bitwise* property (procedural
@@ -108,6 +110,28 @@ mismatches in 41 cases — and repeated-evaluation medians are 0.98-1.03 of
 baseline. The `p2m + l2p` sum swings more widely (0.63-1.62) because it is
 33-300 us against 0.2-13 ms totals; the totals it sits inside agree within
 1.5 %.
+
+**The CI failure, and why it took controls rather than a guess.** The first
+push failed both CI jobs at the build step. The workflow's annotations showed
+only `collect2: error: ld returned 1 exit status`, because its grep matches
+`: error:` and GCC writes `lto1: fatal error:`; the logs endpoint needs a
+token this environment does not have. Reproducing CI's configuration locally
+with the conda GCC 13.4 toolchain (Unix Makefiles, LTO, `-Werror`, unlimited
+`-j`) reproduced it immediately and produced the real message, `multiple
+prevailing defs for 'allocate'`, and a peak RSS of 394 MB that ruled out the
+obvious memory explanation. Building the start commit the same way passed, so
+the regression was the branch's. The attractive theory — the archive has six
+duplicated member basenames, because `ar` stores basenames and the tree has
+several `dense.cpp`/`p2p.cpp`/`geometry.cpp` — was tested by rebuilding the
+archive with unique names through `gcc-ar` and **refuted**: it fails
+identically. Linking with `-save-temps` kept the plugin's resolution file,
+which named fifteen `std::vector`/`std::array` COMDATs marked
+`PREVAILING_DEF` in two members at once, and mapping those archive offsets
+gave `src/plan/direct/dense.cpp.o` and `src/fmm/plan_preparation.cpp.o` — the
+two translation units the merge had just made share a header. Reverting only
+that merge (five files, now differing from the start commit in comments only)
+builds clean under GCC 13, and the whole local matrix was rerun on the
+reverted tree.
 
 **Unvalidated, as before:** Fortran (no compiler in this environment;
 `fortran/` is byte-identical to `ad48459`), MSVC/Windows, and CUDA

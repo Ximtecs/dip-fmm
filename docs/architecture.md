@@ -213,7 +213,9 @@ normalisation puts body centres on a canonical $10^{-9}$ grid, so equivalent
 interactions agree **bitwise**. Construction therefore classifies by those
 exact bit patterns, builds each distinct operator once, in parallel, and
 scatters it (`src/operators/exact_operator_reuse.hpp`, shared by the
-near-field, the dense all-to-all and the finite endpoint builders). Keys are
+near-field and the dense all-to-all builders; the finite P2M/L2P endpoint
+builders in `src/fmm/plan_preparation.cpp` apply the same rule through their
+own equivalent implementation). Keys are
 never compared with a tolerance, because the exact corner formulas have no
 continuity that would justify one; classes are numbered in first-seen order,
 so a plan does not depend on thread count or hash iteration order;

@@ -455,7 +455,7 @@ TEST_CASE("exact classification abandons unrepresentable pair counts",
             classify_exact_operators(unrepresentable, key_of_pair);
 
         REQUIRE_FALSE(classes.classified);
-        REQUIRE(classes.class_of_item.empty());
+        REQUIRE(classes.class_of_pair.empty());
         REQUIRE(classes.representative.empty());
         REQUIRE(classes.transient_bytes() == 0);
         REQUIRE(keys_requested == 0);
@@ -468,7 +468,7 @@ TEST_CASE("exact classification abandons unrepresentable pair counts",
         const auto classes = classify_exact_operators(4U, key_of_pair);
 
         REQUIRE(classes.classified);
-        REQUIRE(classes.class_of_item.size() == 4U);
+        REQUIRE(classes.class_of_pair.size() == 4U);
         REQUIRE(classes.representative.size() == 4U);
         REQUIRE(keys_requested == 4U);
     }

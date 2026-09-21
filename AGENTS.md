@@ -131,15 +131,23 @@ and documentation cleanup is also COMPLETE.** Nothing executable was removed:
 every backend, P2P packing, dictionary executor, point-expansion
 representation, expansion basis, precision path, explicit override and
 benchmark driver stands as Phase 3D left it. What was pruned is duplication —
-two dead member groups and an unused overload, the endpoint classifier that
-duplicated `operators/exact_operator_reuse.hpp`, 20 of 29 notebooks, and 14 of
+two dead member groups, an unused overload, 20 of 29 notebooks, and 14 of
 28 documentation pages — and what was added is explanation: public headers
 went from 430 undocumented members to none, and `src/` comment density rose by
 44 %. Serial CTest fell from 550 s to 44 s with the same 244 cases. The
 refactor history that used to live in `docs/` is preserved verbatim in
 `agent_docs/architecture_history.md`, and the phase's own audit ledger is
 `agent_docs/phase4_pruning_ledger.md`. No public C++ API, C ABI, Python API,
-Fortran interface, cache format or cache key changed. **The Article1
+Fortran interface, cache format or cache key changed.
+
+One planned merge was **deliberately not taken**: the finite P2M/L2P endpoint
+classifier in `src/fmm/plan_preparation.cpp` duplicates the algorithm of
+`src/operators/exact_operator_reuse.hpp`, but sharing it makes GCC 13's LTO
+plugin mark ordinary `std::vector`/`std::array` COMDATs as prevailing in two
+archive members at once and abort the link (`lto1: fatal error: multiple
+prevailing defs`). GCC 15 links it without complaint; the project's CI is
+GCC 13, so the duplication stays until the supported toolchain moves. Do not
+re-merge it without checking that configuration first. **The Article1
 publication campaign is NEXT**; it runs against this frozen implementation
 with its own measurement protocol. Do not begin benchmark redesign as a side
 effect of another change.

@@ -12,7 +12,11 @@ separate cases after re-reading their bodies (they share a helper, not a
 body; a shared `relative_rms_field_error` helper replaced two inline
 lambdas), and the procedural expansion exactness test was replaced by a
 kernel-level test at every compiled order plus a small plan-level loop rather
-than merely shrunk.
+than merely shrunk. A third row resolved to its own fallback: section 2's
+classifier row said "M only if the merge can be made byte-identical ...;
+otherwise D with a note". The merge was byte-identical on the persisted
+plans, but it broke the GCC 13 LTO link that CI uses, so the row ends as
+**D**, with the note in `project_progress.md` and the warning in `AGENTS.md`.
 
 Worktree-local audit ledger for Phase 4 (repository pruning, test
 rationalisation, notebook consolidation, documentation reduction, source

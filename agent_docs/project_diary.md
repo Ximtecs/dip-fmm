@@ -31,6 +31,20 @@ set by the 1e-9 canonical grid at 6e-9, not by double precision at 1e-15. None
 of those were code defects. All three were beliefs that had never been put in
 front of a kernel.
 
+The classifier merge is the part I would defend and still had to undo. Two
+copies of one algorithm is exactly the duplication this phase existed to
+remove, the merged version was byte-identical on every persisted plan, and it
+passed four configurations and 244 tests locally. It also broke the build on
+the one compiler the project's CI actually uses, through a linker-plugin bug
+that has nothing to do with the merge being right or wrong. What made that
+survivable was refusing to accept the first plausible story: the archive does
+have duplicate member basenames, that is a documented cause of exactly this
+error, and testing it took ten minutes and disproved it. The resolution file
+then answered the question directly instead of persuasively. The outcome —
+keep the duplication, write down why, name the configuration to check before
+trying again — is worse code and better engineering, and it only counts as
+the latter because the reason is recorded where the next person will look.
+
 The last lesson came from the cache corpus. Eight of twenty-five files
 differed after the phase, which looked exactly like a regression, and the
 cheap response would have been to attribute it to the one source change in

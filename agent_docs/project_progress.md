@@ -16,19 +16,30 @@ two dead member groups, a duplicated classifier, 20 notebooks, 14
 documentation pages, and a test that spent 496 s proving less than its 7.5 s
 replacement proves.
 
-**Source (4A).** The five items Phase 3D deferred are resolved.
+**Source (4A).** Four of the five items Phase 3D deferred are resolved and
+the fifth was attempted, measured and deliberately left alone.
 `UniformFmm::use_cuboid_p2m_`/`use_cuboid_l2p_` and
 `CudaExecutionPolicyInputs::{periodic, bsr_estimate_bytes, bsr_budget_bytes}`
 were written and never read, so they are gone; the unused three-argument
 `far_field_stream_priority` overload is gone with its prose moved onto the
-five-argument rule and its test ported; the endpoint classifier in
-`plan_preparation.cpp` was the same algorithm as
-`operators/exact_operator_reuse.hpp` with a different key container, so the
-shared one became generic over the key type with an explicit
-`ExactReuseGate`, and the endpoint call sites pass their own 4096-item gate.
+five-argument rule and its test ported;
 `cuda_policy::resolve_cuda_execution_policy` keeps its name although it also
 settles the CPU dictionary; the ownership is now stated in a comment rather
-than renamed across a public-adjacent surface. `resolve_point_expansion_
+than renamed across a public-adjacent surface.
+
+The fifth was the finite P2M/L2P endpoint classifier in
+`plan_preparation.cpp`, which is the same first-seen-numbering algorithm as
+`operators/exact_operator_reuse.hpp` with a different key container. Merging
+it built and passed everything locally under g++ 15.3 in four
+configurations, and then **failed CI at link time**: with GCC 13 the LTO
+plugin marks ordinary `std::vector`/`std::array` COMDATs as prevailing in two
+archive members at once (`src/plan/direct/dense.cpp.o` and
+`src/fmm/plan_preparation.cpp.o`) and `lto1` aborts with `multiple prevailing
+defs for 'allocate'`. The merge is not what is wrong — the same fifteen
+symbols are emitted by both translation units before and after — but it
+perturbs the plugin's resolution enough to trip the bug. Since the supported
+CI toolchain is GCC 13, the duplication stays and the merge is deferred with
+this note; `AGENTS.md` records what to check before attempting it again. `resolve_point_expansion_
 execution()` moved ahead of `build_static_plan()` so that an impossible
 `Procedural` request is rejected before an order-11 operator bank is built,
 which is also why the procedural validation test fell from 178 s to 0.34 s.
@@ -96,6 +107,20 @@ definition split from its member declaration because Doxygen misparsed it.
 The last skip needs the separate `cdfmm-magtense` environment. The six
 tutorials execute inside each of those pytest runs.
 `sphinx-build -W --keep-going` is clean, and `git diff --check` is clean.
+
+**The one regression this phase caused, and how it was found.** The first
+CI run on the branch failed both jobs at the build step, with only
+`collect2: error: ld returned 1 exit status` visible in the workflow's
+annotations, because the grep that republishes diagnostics does not match
+`lto1: fatal error:`. The failure was reproduced locally by building with the
+conda GCC 13.4 toolchain using CI's exact configuration (Unix Makefiles, LTO,
+`-Werror`, unlimited `-j`), which also ruled out memory exhaustion: peak RSS
+was 394 MB. A control build of the start commit with the same toolchain
+passed, so the regression was the branch's. The duplicate-archive-member
+theory was tested and **refuted** (rebuilding the archive with unique member
+names changes nothing), and the linker's own resolution file then named the
+two conflicting members outright. Reverting only the classifier merge makes
+the GCC 13 build clean again, which is the state this branch ships.
 
 **Nothing in the public or persistent surface changed.** `git diff
 ad48459..HEAD` is empty over `fortran/`, `python/` and

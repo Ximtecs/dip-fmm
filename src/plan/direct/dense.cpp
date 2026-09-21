@@ -547,7 +547,7 @@ DenseDirectPlan::DenseDirectPlan(
                 const std::size_t index =
                     static_cast<std::size_t>(pair_index);
                 const PairTensor& tensor =
-                    tensors[classes.class_of_item[index]];
+                    tensors[classes.class_of_pair[index]];
                 matrices[0][index] = static_cast<Scalar>(tensor.xx);
                 matrices[1][index] = static_cast<Scalar>(tensor.xy);
                 matrices[2][index] = static_cast<Scalar>(tensor.xz);
