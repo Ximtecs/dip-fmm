@@ -52,6 +52,20 @@ enum cdfmm_static_matrix_backend {
     CDFMM_STATIC_MATRIX_ONE_MKL = 1
 };
 
+/**
+ * @brief Internal timing collected by a plan.
+ *
+ * Off is the default and the production path: no diagnostic clock or CUDA
+ * timing event runs.  Coarse records the whole-evaluation wall time, Detailed
+ * every phase.  Additive to ABI version 1: the options structure is
+ * unchanged and the level is set per plan.
+ */
+enum cdfmm_timing_level {
+    CDFMM_TIMING_OFF = 0,
+    CDFMM_TIMING_COARSE = 1,
+    CDFMM_TIMING_DETAILED = 2
+};
+
 /** @brief Stable subset of plan construction options exposed to C callers. */
 typedef struct cdfmm_options {
     uint32_t struct_size;
@@ -125,6 +139,20 @@ CDFMM_C_API int cdfmm_plan_evaluate_f64(
     double* hx, double* hy, double* hz);
 CDFMM_C_API int cdfmm_plan_get_stats(const cdfmm_plan* plan,
                                      cdfmm_plan_stats* stats);
+/**
+ * @brief Selects how much internal timing later evaluations collect.
+ *
+ * Plans start at CDFMM_TIMING_OFF.  Changing the level touches timing state
+ * only: results, the resolved backend and the cache are unaffected.
+ */
+CDFMM_C_API int cdfmm_plan_set_timing_level(cdfmm_plan* plan, int level);
+/**
+ * @brief Wall time of the most recent evaluation.
+ *
+ * Fails with CDFMM_ERROR_UNSUPPORTED while the plan's timing level is
+ * CDFMM_TIMING_OFF, because nothing was measured; select at least
+ * CDFMM_TIMING_COARSE first.
+ */
 CDFMM_C_API int cdfmm_plan_get_last_evaluation_seconds(
     const cdfmm_plan* plan, double* seconds);
 CDFMM_C_API void cdfmm_plan_destroy(cdfmm_plan* plan);

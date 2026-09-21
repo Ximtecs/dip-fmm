@@ -20,6 +20,14 @@ void bind_operators(py::module_& module)
   py::enum_<StaticMatrixBackend>(module, "StaticMatrixBackend")
       .value("PORTABLE", StaticMatrixBackend::Portable)
       .value("ONE_MKL", StaticMatrixBackend::OneMkl);
+  py::enum_<TimingLevel>(module, "TimingLevel",
+                         "How much internal timing a plan collects: OFF (the "
+                         "default production path), COARSE (whole-evaluation "
+                         "and branch wall times) or DETAILED (every phase and "
+                         "the CUDA device lanes).")
+      .value("OFF", TimingLevel::Off)
+      .value("COARSE", TimingLevel::Coarse)
+      .value("DETAILED", TimingLevel::Detailed);
   py::enum_<ExecutionBackend>(module, "ExecutionBackend")
       .value("AUTO", ExecutionBackend::Auto)
       .value("CPU_REFERENCE", ExecutionBackend::CpuReference)

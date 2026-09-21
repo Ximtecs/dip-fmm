@@ -47,8 +47,11 @@ py::dict evaluation_timings_to_dict(const EvaluationTimings& timings)
   add("cuda_p2p_kernel", timings.cuda_p2p_kernel);
   add("cuda_p2p_d2h", timings.cuda_p2p_d2h);
   add("cuda_p2p_wait", timings.cuda_p2p_wait);
+  add("far_field", timings.far_field);
   add("total", timings.total);
   result["evaluations"] = timings.evaluations;
+  // The level tells an uncollected zero from a measured one.
+  result["timing_level"] = timings.timing_level;
   return result;
 }
 

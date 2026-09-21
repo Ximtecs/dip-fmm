@@ -397,12 +397,40 @@ int cdfmm_plan_get_stats(const cdfmm_plan *plan, cdfmm_plan_stats *stats) {
     });
 }
 
+int cdfmm_plan_set_timing_level(cdfmm_plan* plan, const int level)
+{
+    return guarded([&] {
+        if (plan == nullptr)
+            throw std::invalid_argument("plan must not be NULL");
+        switch (level) {
+        case CDFMM_TIMING_OFF:
+            plan->fmm->set_timing_level(cdfmm::TimingLevel::Off);
+            break;
+        case CDFMM_TIMING_COARSE:
+            plan->fmm->set_timing_level(cdfmm::TimingLevel::Coarse);
+            break;
+        case CDFMM_TIMING_DETAILED:
+            plan->fmm->set_timing_level(cdfmm::TimingLevel::Detailed);
+            break;
+        default:
+            throw std::invalid_argument("unknown C ABI timing level");
+        }
+    });
+}
+
 int cdfmm_plan_get_last_evaluation_seconds(const cdfmm_plan* plan,
                                            double* seconds)
 {
     return guarded([&] {
         if (plan == nullptr || seconds == nullptr)
             throw std::invalid_argument("plan and seconds must not be NULL");
+        // An uncollected zero must not look like a measurement: a plan at
+        // CDFMM_TIMING_OFF reads no clock at all.
+        if (plan->fmm->timing_level() == cdfmm::TimingLevel::Off) {
+            throw std::logic_error(
+                "timing is off for this plan; call "
+                "cdfmm_plan_set_timing_level(plan, CDFMM_TIMING_COARSE) first");
+        }
         *seconds = plan->fmm->last_timings().total.total_seconds;
     });
 }

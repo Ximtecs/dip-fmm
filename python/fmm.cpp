@@ -67,7 +67,10 @@ void bind_fmm_options(py::module_& module)
                      &UniformFmmOptions::cuda_dictionary_power2_microtiles)
       .def_readwrite("signed_p2p_target_tile_size",
                      &UniformFmmOptions::signed_p2p_target_tile_size)
-      .def_readwrite("enable_cache", &UniformFmmOptions::enable_cache);
+      .def_readwrite("enable_cache", &UniformFmmOptions::enable_cache)
+      .def_readwrite("timing_level", &UniformFmmOptions::timing_level,
+                     "Internal timing collected by the plan (TimingLevel); "
+                     "OFF by default, which is the production path.");
 }
 
 void bind_fmm(py::module_& module)
@@ -263,6 +266,15 @@ void bind_fmm(py::module_& module)
       .def_property_readonly("aggregate_timings", [](const UniformFmm& fmm) {
         return evaluation_timings_to_dict(fmm.aggregate_timings());
       })
+      .def("reset_timings", &UniformFmm::reset_timings,
+           "Clears the accumulated evaluation timings.")
+      .def_property_readonly("timing_level", &UniformFmm::timing_level,
+                             "Level of internal timing this plan collects.")
+      .def("set_timing_level", &UniformFmm::set_timing_level,
+           py::arg("level"),
+           "Changes the timing level for later evaluations; results, the "
+           "resolved execution policy and the cache are unaffected, and the "
+           "accumulated timings are reset.")
       .def_property_readonly("p2p_execution_packing",
                              &UniformFmm::p2p_execution_packing)
       .def_property_readonly("requested_p2p_packing",
@@ -308,6 +320,8 @@ void bind_fmm(py::module_& module)
       .def_property_readonly("static_plan_statistics", [](const UniformFmm& fmm) {
         const StaticPlanStatistics& statistics = fmm.static_plan_statistics();
         py::dict result;
+        // The level tells an uncollected zero from a measured one.
+        result["timing_level"] = statistics.timing_level;
         result["expansion_order"] = statistics.expansion_order;
         result["coefficient_count"] = statistics.coefficient_count;
         result["spherical"] = statistics.spherical;
