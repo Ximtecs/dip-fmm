@@ -127,8 +127,21 @@ Phase-4 inventory are in `agent_docs/performance_optimization.md`, "Final
 cross-backend integration and production policy (Phase 3D)"; the retained
 numbers are in `benchmarks/baselines/phase3d/` and are an engineering
 regression baseline, not an Article1 benchmark. **Phase 4 repository pruning
-and documentation cleanup is NEXT**, and the Article1 publication campaign
-follows it. Do not begin benchmark redesign or repository pruning as a side
+and documentation cleanup is also COMPLETE.** Nothing executable was removed:
+every backend, P2P packing, dictionary executor, point-expansion
+representation, expansion basis, precision path, explicit override and
+benchmark driver stands as Phase 3D left it. What was pruned is duplication —
+two dead member groups and an unused overload, the endpoint classifier that
+duplicated `operators/exact_operator_reuse.hpp`, 20 of 29 notebooks, and 14 of
+28 documentation pages — and what was added is explanation: public headers
+went from 430 undocumented members to none, and `src/` comment density rose by
+44 %. Serial CTest fell from 550 s to 44 s with the same 244 cases. The
+refactor history that used to live in `docs/` is preserved verbatim in
+`agent_docs/architecture_history.md`, and the phase's own audit ledger is
+`agent_docs/phase4_pruning_ledger.md`. No public C++ API, C ABI, Python API,
+Fortran interface, cache format or cache key changed. **The Article1
+publication campaign is NEXT**; it runs against this frozen implementation
+with its own measurement protocol. Do not begin benchmark redesign as a side
 effect of another change.
 
 The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor
@@ -204,9 +217,11 @@ dip-fmm/
 |-- src/              structured math/geometry/tree/backend plus decomposed
 |                    higher-level FMM orchestration
 |-- tests/            C++ tests and optional Fortran smoke test
-|-- python_tests/     Python, runner, and notebook regression tests
-|-- benchmarks/       C++ benchmarks and Python benchmark runners
-|-- examples/         C++, Fortran, Python, and notebook examples
+|-- python_tests/     Python, runner, and tutorial-execution regression tests
+|-- benchmarks/       C++ benchmarks, Python runners, retained baselines, and
+|                    the external FMM3D comparison material
+|-- examples/         C++/Fortran examples, six notebook tutorials, and the
+|                    MagTense validation notebooks
 |-- python/           pybind11 bindings
 |-- fortran/          ISO_C_BINDING wrapper
 |-- tools/            cache precomputation executable

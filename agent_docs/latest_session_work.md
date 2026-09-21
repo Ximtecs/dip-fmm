@@ -1,5 +1,119 @@
 # Latest session work
 
+## 2026-09-20 — Phase 4 repository pruning and documentation cleanup
+
+Starting HEAD `ad48459` on `refactor/architecture-v0.2`; work on
+`phase4-pruning`. Eight commits: `3244036` source, `7745f82` tests,
+`32afc23` + `2daa833` notebooks and their regression, `242f708` + `c7bcc6c`
+documentation, `fc2e806` + `da08ed3` comments.
+
+Question answered: can a reader who did not live through Phases 1-3 open this
+repository and understand it — without losing anything Article1 will need?
+
+The governing rule was inverted from the usual one. Anything *executable* was
+kept by default and only duplication was removed, because a benchmark that no
+longer has an alternative to measure against is worthless. So the backends,
+the six P2P packings and three dictionary executors, both point-expansion
+representations, both bases, both precisions, every explicit override and
+every driver under `benchmarks/` are exactly as Phase 3D left them; the
+ledger's section 0 lists them as untouchable and it was honoured.
+
+**What the audit actually found.** Three read-only `repo-auditor` passes
+produced the C++ test ledger, the Python/notebook mapping and a reference
+audit of the five symbols Phase 3D had deferred. Four of the five were dead
+by reference count and went; the fifth — `cuda_policy::resolve_cuda_execution_
+policy` deciding the CPU dictionary too — was a naming complaint, not a
+defect, so it got a comment instead of a rename across a public-adjacent
+surface. The one merge worth doing was the endpoint classifier: it and
+`classify_exact_operators` were the same first-seen-numbering algorithm with
+the same 32-bit abandon guard, differing only in key container and sampling
+gate, so the shared one became generic over the key type with an explicit
+`ExactReuseGate` and the endpoint sites pass their own. A 25-file cache
+corpus was hashed before and after that merge to prove the persisted plans
+did not move.
+
+**The 496-second test.** The procedural-expansion suite dominated CTest, and
+the reason was instructive: it proved a *bitwise* property (procedural
+kernels reproduce the precomputed rows) using 2000-point plan comparisons,
+so it paid for an order-10 universal operator bank four times and bought no
+coverage that an 11-point leaf does not. Replacing it with a kernel-level
+comparison at every compiled order 1-10, plus a plan-level loop over {1, 3,
+6} that absorbed the potential test, took the file from 496 s to 7.5 s.
+Separately, moving `resolve_point_expansion_execution()` ahead of
+`build_static_plan()` made the validation test reject an impossible request
+before building an order-11 bank: 178 s to 0.34 s. Serial CTest: 550 s to
+44 s, same 244 cases.
+
+**Notebooks were the largest single reduction.** 29 of them, in three
+directories, of which the README listed 22, three had no Markdown at all, one
+called a removed API and one never imported `cdfmm`. Six tutorials replace
+them. Writing the tutorials found three teaching errors worth recording:
+lattice spacings that divide the root box put every particle on an octree
+corner and made the honest error numbers look terrible (fixed with offset
+roots); a uniformly magnetised periodic cell does **not** give `H = 0` for
+point dipoles but the Lorentz field `+M/3` (cubes filling the cell give 0,
+and both are now verified numerically in the notebook); and the FP64 accuracy
+floor at depth 1 is `6e-9`, set by the 1e-9 canonical coordinate grid, not
+the `1e-15` that had been claimed. `python_tests/test_tutorial_notebooks.py`
+now *executes* every retained tutorial with `nbclient`, which is strictly more
+than the old contract tests did, and the notebooks that no longer exist no
+longer have tests.
+
+**Documentation.** The 85 KB `architecture.md` was roughly 70 % closure
+narrative, and `benchmarks.md` about 35 % historical result tables. Both were
+rewritten to describe the current library, with the history moved verbatim
+into `agent_docs/architecture_history.md` — nothing was summarised away,
+because a closure record is evidence. The mathematics was split into
+`docs/math/` rather than compressed: conventions, spherical expansions and
+finite geometry now hold every normative statement that was spread across
+six pages, including the root normalisation, the FP32 root-width scaling and
+the periodic Ewald construction.
+
+**Comments.** The public headers carried 430 undocumented members, which made
+the generated API reference close to useless; they now carry none. Under
+`src/`, the additions explain the things that cost the most to re-derive: the
+CUDA full-plan event graph and why its phase timings must not be summed, the
+identity marker that every P2P packing carries instead of inferring identity
+from geometry, why exact operator reuse compares bits and never tolerances,
+how the cache container publishes atomically so concurrent writers race
+safely, and the two prism/tetrahedron formulations with their singular-limit
+safeguards.
+
+**Validation.** Four fresh configurations, each with
+`-DCDFMM_WARNINGS_AS_ERRORS=ON`: portable CPU, portable + oneMKL, CUDA, and
+CUDA + oneMKL. Every one built with zero warnings and passed CTest 244/244;
+pytest passed 170/172/175/177 as the optional backends became available, with
+only the MagTense-environment skip left in the last. `sphinx-build -W` is
+clean and `git diff --check` is clean.
+
+**The cache question, answered properly.** The corpus keys were identical
+before and after, but 8 of 25 files differed in content, all of them carrying
+FP64 operator values. Rather than assume, three controls were run: the same
+binary twice (byte-identical, so it is deterministic per binary), the start
+commit built from a clean archive (same eight differ), and — decisively —
+**the same HEAD source built in a second tree** (the same eight differ
+again). So the difference is build-to-build variation of the LTO Release
+build, not a Phase-4 change. Its size was then measured rather than assumed:
+1 ULP on `H`, 2 ULP on `phi`, root multipole bitwise identical. Worth
+recording because it means a shared cache file is portable between builds but
+not bit-reproducible across them.
+
+**Performance.** A 41-case subset of the Phase-3D regression matrix
+(`A-random/S`, `B-lattice-low/occ8`, `D-prism/regular`, covering point and
+finite geometry on all four backends, both precisions and both layout hints)
+was rerun from a fresh `benchmark-all` tree under the baseline's pinning and
+protocol. Every resolved representation column and every retained-byte column
+matches `benchmarks/baselines/phase3d/` exactly — 0 policy mismatches, 0 byte
+mismatches in 41 cases — and repeated-evaluation medians are 0.98-1.03 of
+baseline. The `p2m + l2p` sum swings more widely (0.63-1.62) because it is
+33-300 us against 0.2-13 ms totals; the totals it sits inside agree within
+1.5 %.
+
+**Unvalidated, as before:** Fortran (no compiler in this environment;
+`fortran/` is byte-identical to `ad48459`), MSVC/Windows, and CUDA
+sanitizers, which were not rerun because no CUDA code changed beyond comments
+and three reformatted statements.
+
 ## 2026-09-19 — Pre-pruning closure after Phase 3D
 
 Starting HEAD `51b2434` on `phase3d-final-integration`; work on

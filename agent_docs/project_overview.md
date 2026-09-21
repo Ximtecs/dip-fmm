@@ -24,8 +24,8 @@ full CUDA execution. The primary result is the magnetic field
   the ISO C binding Fortran wrapper are interface layers, with the latter
   optional at build time.
 
-The authoritative support boundary is distributed across `docs/overview.md`,
-`docs/geometry-models.md`, `docs/backends.md`, `docs/periodic-boundaries.md`,
+The authoritative support boundary is distributed across `docs/index.md`,
+`docs/geometry.md`, `docs/backends.md`, `docs/caching-and-periodicity.md`,
 and the tests. In particular, partial periodicity, rectangular periodic cells,
 and runtime MagTense integration are not current API promises.
 
@@ -66,4 +66,5 @@ environment and hardware; they are not implied by a successful CPU build.
 Read `project_core_tech.md` for mathematical and numerical contracts,
 `project_structure.md` for ownership and navigation, and
 `project_progress.md` for the current refactor state. The user-facing build
-and test workflow is in `docs/installation.md` and `docs/validation.md`.
+and test workflow is in `docs/installation.md`; the validation map is in
+`docs/architecture.md`.

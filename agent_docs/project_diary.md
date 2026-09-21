@@ -1,5 +1,47 @@
 # Project diary
 
+## 2026-09-20 — what pruning is actually for
+
+Phase 4 was the phase most likely to do damage, because "remove what is not
+needed" and "keep every alternative a benchmark might measure" pull in
+opposite directions. The rule that made it safe was to invert the default:
+anything executable stays unless it is provably unreferenced, and only
+duplication is fair game. Under that rule the source pruning was tiny — two
+dead member groups, one unused overload, one duplicated classifier — and
+everything that looked prunable by line count turned out to be a deliberate
+alternative: six P2P packings, three dictionary executors, two point-expansion
+representations, two bases, two precisions. The temptation to "simplify" any
+of those would have quietly destroyed the Article1 comparison.
+
+Where the real waste was, it was not where line counts suggested. It was one
+test spending 496 seconds proving a bitwise property with 2000-point plan
+comparisons, when an 11-point leaf proves the same thing better and in
+milliseconds; and it was an operator-bank build paid for by a test whose only
+job was to reject an invalid request. Both are the same mistake in different
+clothes: validating a small, exact claim through a large, expensive
+apparatus. Serial CTest went from 550 s to 44 s without losing a single case.
+
+The notebooks were the humbling part. Writing six tutorials meant actually
+running the library the way a new user would, and that surfaced three things
+the documentation had been asserting without checking: that lattice geometry
+aligned to the root box silently wrecks accuracy (every particle lands on an
+octree corner), that a uniformly magnetised periodic cell of point dipoles
+gives the Lorentz field +M/3 and not zero, and that the FP64 accuracy floor is
+set by the 1e-9 canonical grid at 6e-9, not by double precision at 1e-15. None
+of those were code defects. All three were beliefs that had never been put in
+front of a kernel.
+
+The last lesson came from the cache corpus. Eight of twenty-five files
+differed after the phase, which looked exactly like a regression, and the
+cheap response would have been to attribute it to the one source change in
+that translation unit and move on. Three controls later — same binary twice,
+start commit from a clean archive, and the same HEAD source built in a second
+tree — it was clear the difference is build-to-build variation of the LTO
+Release build, reproducible with no source change at all, and worth 1 ULP on
+the field. The useful output was not the reassurance; it was learning that
+our cache files are portable between builds but not bit-reproducible across
+them, which nobody had written down.
+
 ## 2026-09-17 — the expected answer, and the one place it was close
 
 Phase 3B.5b was asked to confirm something everyone believed: that exact

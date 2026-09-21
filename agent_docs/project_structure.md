@@ -90,13 +90,15 @@ fortran/cdfmm_fortran.f90                                       ISO_C_BINDING wr
 tools/cdfmm_precompute.cpp                                     universal-cache tool
 tests/                                                          Catch2 C++ suite and
                                                                 optional Fortran smoke test
-python_tests/                                                   Python, benchmark, and
-                                                                notebook contract tests
+python_tests/                                                   Python, benchmark-tooling and
+                                                                tutorial-execution tests
 examples/                                                       C++/Fortran examples
-examples/notebooks/                                             interactive comparisons
-benchmarks/                                                     drivers and runners
-docs/                                                           user/math/architecture/
-                                                                validation/performance docs
+examples/tutorials/                                             the six canonical notebooks
+examples/validation/                                            MagTense comparison notebooks
+benchmarks/                                                     drivers, runners, baselines/,
+                                                                external/fmm3d/
+docs/                                                           user guide, architecture,
+                                                                math/ (15 pages)
 ```
 
 `include/cdfmm/` is for deliberate downstream interfaces. Implementation-only
@@ -255,10 +257,12 @@ kernel, `run_operator_representation.py` and
 execution of one operator family, separating construction from repeated
 application (Phase 3B.5b). `python_tests/` checks bindings,
 end-to-end FMM behaviour, precision, geometry, caches, benchmark runners, and
-notebook contracts. `benchmarks/` measures setup separately from repeated
-evaluation and records accuracy/traffic/timing fields. `docs/` is authoritative
-for current support, mathematics, and measured performance; `agent_docs/`
-records repository workflow memory and current state.
+executes the six tutorials under `examples/tutorials/`. `benchmarks/` measures
+setup separately from repeated evaluation and records accuracy/traffic/timing
+fields. `docs/` is authoritative for current support and mathematics (the
+measured performance record is `agent_docs/performance_optimization.md`, the
+pre-Phase-4 architecture history `agent_docs/architecture_history.md`);
+`agent_docs/` records repository workflow memory and current state.
 
 
 ## Compatibility surface — 2026-09-15

@@ -1,5 +1,133 @@
 # Project progress
 
+## Phase 4 repository pruning and documentation cleanup: COMPLETE — 2026-09-20
+
+Starting HEAD `ad48459` on `refactor/architecture-v0.2`; work on
+`phase4-pruning`, eight commits. The last phase before the Article1 campaign:
+make the repository comprehensible without removing anything a benchmark or a
+paper might later need.
+
+**Nothing executable was removed.** Every backend (portable CPU, oneMKL,
+`CudaPartial`, `CudaFull`, dense direct on CPU/oneMKL/CUDA), every P2P
+packing and dictionary executor, both point-expansion representations, both
+expansion bases, both precisions, every explicit override and every benchmark
+driver stands exactly as Phase 3D left it. What was pruned is *duplication*:
+two dead member groups, a duplicated classifier, 20 notebooks, 14
+documentation pages, and a test that spent 496 s proving less than its 7.5 s
+replacement proves.
+
+**Source (4A).** The five items Phase 3D deferred are resolved.
+`UniformFmm::use_cuboid_p2m_`/`use_cuboid_l2p_` and
+`CudaExecutionPolicyInputs::{periodic, bsr_estimate_bytes, bsr_budget_bytes}`
+were written and never read, so they are gone; the unused three-argument
+`far_field_stream_priority` overload is gone with its prose moved onto the
+five-argument rule and its test ported; the endpoint classifier in
+`plan_preparation.cpp` was the same algorithm as
+`operators/exact_operator_reuse.hpp` with a different key container, so the
+shared one became generic over the key type with an explicit
+`ExactReuseGate`, and the endpoint call sites pass their own 4096-item gate.
+`cuda_policy::resolve_cuda_execution_policy` keeps its name although it also
+settles the CPU dictionary; the ownership is now stated in a comment rather
+than renamed across a public-adjacent surface. `resolve_point_expansion_
+execution()` moved ahead of `build_static_plan()` so that an impossible
+`Procedural` request is rejected before an order-11 operator bank is built,
+which is also why the procedural validation test fell from 178 s to 0.34 s.
+
+**Tests (4B).** Serial CTest falls from 550 s to 44 s with the same 244 cases
+and no lost coverage. Almost all of it was one file: the procedural-expansion
+exactness test compared plan output on two 2000-point scenes, which bought
+nothing an 11-point leaf does not, and paid for an order-10 universal bank
+four times over. It is now a kernel-level test of
+`ProceduralPointExpansion::apply_p2m`/`apply_l2p` against the canonical rows
+at *every* compiled order 1-10, plus a plan-level loop over orders {1, 3, 6}
+that absorbed the separate potential test. The per-layer identity and
+finite-self coverage, the nine-pair geometry matrix, the two exact-reuse
+tests and the eight per-header self-containment tests were examined and kept:
+they protect different builders, not the same one twice.
+
+**Notebooks (4C).** 29 notebooks in three directories became six canonical
+tutorials under `examples/tutorials/` (getting started, finite geometry,
+backends and execution, cache and periodicity, trees and parameters, operator
+chain), two MagTense comparisons under `examples/validation/`, and the FMM3D
+comparison material under `benchmarks/external/fmm3d/` where it belongs with
+the other Article1 raw material. Every tutorial runs on the portable build in
+seconds, guards its CUDA/oneMKL cells, uses only the public API, and is
+*executed* by `python_tests/test_tutorial_notebooks.py`; the old
+notebook-contract tests, which parsed notebooks that no longer exist, are
+gone. Three teaching bugs were fixed while merging: lattice points sitting on
+octree box boundaries (which made the reported errors look bad), a claim that
+a uniformly magnetised periodic cell gives `H = 0` for point dipoles (it
+gives the Lorentz field `+M/3`; cubes filling the cell give 0), and an FP64
+accuracy floor quoted as `1e-15` when the canonical 1e-9 grid puts it at
+`6e-9`.
+
+**Documentation (4D).** 28 user/developer pages became 14 plus `api.rst`, and
+281 KB became 134 KB, while every unique mathematical statement was moved
+rather than deleted: `math/conventions.md`, `math/spherical-expansions.md`
+and `math/finite-geometry.md` now hold the normative formulas, including the
+root normalisation, the FP32 root-width scaling and the periodic Ewald
+construction. `architecture.md` is a concise description of the current tree;
+the Phase-1/2 closure narratives, the static-P2P sweep history, the CUDA M2L
+performance report and the v0.1.0 baseline moved verbatim to
+`agent_docs/architecture_history.md`. `backends.md` absorbed the P2P
+capability matrix and the precision table; `benchmarks.md` absorbed
+profiling; the FMM3D/MagTense installation notes point at their new homes.
+
+**Comments and Doxygen (4E).** Public headers went from 430 undocumented
+members to zero, and the comment density under `src/` rose from 2111 to 3044
+lines: file-level explanations of what each unit owns and why (the CUDA event
+graph and its overlap, the identity semantics every P2P packing carries, the
+canonical-grid bitwise reuse, the cache container's atomic publication, the
+prism/tetrahedron formulations and their safeguards), plus the measured
+reasons behind the execution policies. The only non-comment edits are three
+compressed CUDA statements reformatted to the house style and one enum
+definition split from its member declaration because Doxygen misparsed it.
+
+**Validation.** Four configurations, each configured fresh with
+`-DCDFMM_WARNINGS_AS_ERRORS=ON`:
+
+| Configuration | Build warnings | CTest | pytest |
+|---|---|---|---|
+| portable CPU (`dev`) | 0 | 244/244 | 170 passed, 8 skipped |
+| portable CPU + oneMKL | 0 | 244/244 | 172 passed, 6 skipped |
+| CUDA | 0 | 244/244 | 175 passed, 3 skipped |
+| CUDA + oneMKL | 0 | 244/244 | 177 passed, 1 skipped |
+
+The last skip needs the separate `cdfmm-magtense` environment. The six
+tutorials execute inside each of those pytest runs.
+`sphinx-build -W --keep-going` is clean, and `git diff --check` is clean.
+
+**Nothing in the public or persistent surface changed.** `git diff
+ad48459..HEAD` is empty over `fortran/`, `python/` and
+`include/cdfmm/c_api.h`; `src/cache/` and `src/bindings/` have zero
+non-comment changed lines; `libcdfmm_c.so` exports the same fourteen
+`cdfmm_*` symbols against `CDFMM_ABI_VERSION 1`; and `sizeof(UniformFmm)` is
+7416 as before.
+
+**One measured caveat, which predates Phase 4.** A 25-file cache corpus
+produces identical file names — the keys — before and after, and 17 of the 25
+files are byte-identical. The eight that carry FP64 operator values (the four
+universal banks and the four FP64 geometry plans) differ. This is *not* a
+Phase-4 change: building the **same** HEAD source in two different trees with
+the same configure line reproduces exactly the same eight-file difference,
+while running one binary twice is byte-identical, so it is build-to-build
+variation of the LTO Release build, most likely from LTO partitioning
+changing floating-point contraction. The user-visible size of it is 1 ULP on
+`H`, 2 ULP on `phi`, with the root multipole bitwise identical, and the FP32
+plans are byte-identical because quantisation absorbs it. Recorded here
+because it means cache files are portable between builds but not
+bit-reproducible across them.
+
+**Not validated, and recorded as such:** the Fortran interface (no Fortran
+compiler exists in this environment; `fortran/` is byte-identical to
+`ad48459`), MSVC/Windows, and CUDA sanitizers — no CUDA code changed beyond
+comments and three reformatted statements.
+
+**Next: the Article1 publication campaign** against this frozen
+implementation, with its own measurement protocol. The benchmark drivers,
+runners, analysers and `benchmarks/baselines/phase3d/` were deliberately left
+untouched.
+
 ## Pre-pruning closure after Phase 3D: COMPLETE — 2026-09-19
 
 Starting HEAD `51b2434`. Not Phase 4: nothing was pruned. This pass closes the
