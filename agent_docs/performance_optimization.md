@@ -4735,7 +4735,7 @@ STUDY, NOT ARTICLE1); `benchmarks/baselines/phase3d/` is unchanged.
 ### Commits and status
 
 Seven commits: `62e4ce8` CUDA event separation, `776d26a` UniformFmm timing levels, `fa870c6` Python/C ABI, `244b341` benchmark drivers and the overhead record, `7688d6a` tests, `3fb36d2` examples, `62835b5` documentation. The implementation is **FROZEN FOR ARTICLE1 BENCHMARKING** at
-`62835b5`; the agent-documentation commit follows it. CI: the branch was pushed as `phase5-timing-freeze`; the CI result is recorded in the follow-up entry below once the run completes.
+`62835b5`; the agent-documentation commit follows it. CI: green on `5cdfaa8` (run 35571431509), both jobs and every step, including the C++ and Python test steps. The run on `62835b5` shows as cancelled because the workflow sets `cancel-in-progress` per ref and the documentation push superseded it; `5cdfaa8` contains that commit's tree plus the agent docs.
 Next: the Article1 benchmark campaign, with `timing_level = Off` and external
 wall-clock timing of repeated `evaluate_into` calls; detailed timing is a
 separate diagnostic run.

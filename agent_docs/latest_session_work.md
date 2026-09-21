@@ -65,7 +65,7 @@ nothing, Coarse only the coarse fields, Detailed everything, aggregates and
 reset, run-time level changes leave results/policy unchanged, cache keys and
 *persisted bytes* identical across levels, CUDA lanes gated and results
 unchanged across levels. Cache format and keys unchanged; C ABI additive
-(`CDFMM_ABI_VERSION` 1). CI: the branch was pushed as `phase5-timing-freeze`; the CI result is recorded in the follow-up entry below once the run completes.
+(`CDFMM_ABI_VERSION` 1). CI: green on `5cdfaa8` (run 35571431509), both jobs and every step, including the C++ and Python test steps. The run on `62835b5` shows as cancelled because the workflow sets `cancel-in-progress` per ref and the documentation push superseded it; `5cdfaa8` contains that commit's tree plus the agent docs.
 
 **Unvalidated, as before:** Fortran (no compiler here; `fortran/` is
 byte-identical to the start), MSVC/Windows.
