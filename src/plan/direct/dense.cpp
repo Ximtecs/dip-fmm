@@ -8,10 +8,10 @@
 #include "backend/mkl/direct/dense.hpp"
 #include "geometry/primitives/tetrahedron_detail.hpp"
 #include "operators/exact_operator_reuse.hpp"
+#include "phase_stopwatch.hpp"
 #include "plan/direct/construction_statistics.hpp"
 
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <exception>
@@ -25,13 +25,6 @@
 
 namespace cdfmm {
 namespace {
-
-using Clock = std::chrono::steady_clock;
-
-double elapsed_seconds(const Clock::time_point start)
-{
-    return std::chrono::duration<double>(Clock::now() - start).count();
-}
 
 /// @brief Transient bytes held by a set of prepared bodies.
 [[nodiscard]] std::size_t prepared_bytes(
@@ -127,15 +120,25 @@ DenseDirectPlan::DenseDirectPlan(
     const std::span<const Tetrahedron> source_tetrahedra,
     const std::span<const Tetrahedron> target_tetrahedra,
     const SourceModel source_model,
-    const TargetModel target_model)
+    const TargetModel target_model,
+    const TimingLevel timing_level)
     : ns_(source_positions.size()), nt_(target_positions.size()),
       static_precision_(static_precision), impl_(std::make_unique<Impl>())
 {
+    // The construction record follows the level the caller selected: the
+    // whole-constructor clock runs from `Coarse`, the phase clock only at
+    // `Detailed`, and at `Off` neither reads the clock.  Counts and bytes are
+    // filled at every level; they cost no clock.
     detail::dense_direct::ConstructionStatistics& statistics =
         detail::dense_direct::construction_statistics();
     statistics = {};
-    const auto total_start = Clock::now();
-    const auto validation_start = total_start;
+    statistics.timing_level = timing_level;
+    detail::PhaseStopwatch total_clock(
+        detail::timing_includes(timing_level, TimingLevel::Coarse));
+    detail::PhaseStopwatch phase_clock(
+        detail::timing_includes(timing_level, TimingLevel::Detailed));
+    total_clock.start();
+    phase_clock.start();
 
     const SourceGeometry effective_source_geometry =
         source_model == SourceModel::ExactGeometry
@@ -247,15 +250,14 @@ DenseDirectPlan::DenseDirectPlan(
     if (ns_ != 0 && nt_ > std::numeric_limits<std::size_t>::max() / ns_) {
         throw std::overflow_error("dense direct tensor size overflow");
     }
-    statistics.validation.add(elapsed_seconds(validation_start));
+    phase_clock.record(statistics.validation);
 
-    const auto allocation_start = Clock::now();
     std::visit([&](auto& matrices) {
         for (auto& matrix : matrices) {
             matrix.resize(ns_ * nt_);
         }
     }, matrices_);
-    statistics.allocation.add(elapsed_seconds(allocation_start));
+    phase_clock.record(statistics.allocation);
     statistics.pair_count = ns_ * nt_;
     statistics.matrix_bytes = tensor_memory_bytes();
 
@@ -268,7 +270,7 @@ DenseDirectPlan::DenseDirectPlan(
     // no value: `tetrahedron_tetrahedron_tensor` and the mixed polyhedron
     // entry points are exactly "prepare both, then call the prepared form",
     // and preparation is deterministic.
-    const auto preparation_start = Clock::now();
+    phase_clock.start();
     const bool mixed_polyhedron_pair =
         (source_is_prism && target_is_tetrahedron) ||
         (source_is_tetrahedron && target_is_prism);
@@ -332,7 +334,7 @@ DenseDirectPlan::DenseDirectPlan(
             }
         }
     }
-    statistics.geometry_preparation.add(elapsed_seconds(preparation_start));
+    phase_clock.record(statistics.geometry_preparation);
     statistics.prepared_body_count =
         prepared_source_tetrahedra.size() + prepared_target_tetrahedra.size() +
         prepared_source_bodies.size() + prepared_target_bodies.size();
@@ -458,7 +460,7 @@ DenseDirectPlan::DenseDirectPlan(
 
     detail::exact_reuse::ExactOperatorClasses classes;
     if (finite_pair_tensor && pair_count != 0) {
-        const auto classification_start = Clock::now();
+        phase_clock.start();
         // The distinct tensors are held in full until they are scattered, so
         // what has to be bounded is their storage, not the reuse ratio: cap
         // it at half the matrix bytes this plan retains anyway.  Expressing
@@ -498,7 +500,7 @@ DenseDirectPlan::DenseDirectPlan(
                 return key;
             },
             gate);
-        statistics.classification.add(elapsed_seconds(classification_start));
+        phase_clock.record(statistics.classification);
     }
     statistics.classified = classes.classified;
     statistics.class_map_bytes = classes.transient_bytes();
@@ -509,7 +511,7 @@ DenseDirectPlan::DenseDirectPlan(
         // dynamic because an exact finite tensor's cost varies by an order of
         // magnitude between a coincident, an adjacent and a far-separated
         // pair, and a classified build has few, very unequal items.
-        const auto classified_build_start = Clock::now();
+        phase_clock.start();
         const std::ptrdiff_t class_count =
             static_cast<std::ptrdiff_t>(classes.representative.size());
         std::vector<PairTensor> tensors(classes.representative.size());
@@ -528,14 +530,14 @@ DenseDirectPlan::DenseDirectPlan(
             }
         }
         failure.rethrow_any();
-        statistics.tensor_build.add(elapsed_seconds(classified_build_start));
+        phase_clock.record(statistics.tensor_build);
         statistics.built_tensor_count = classes.representative.size();
         statistics.unique_tensor_bytes = tensors.size() * sizeof(PairTensor);
 
         // Each pair owns one fixed entry of each matrix, so the scatter needs
         // no atomics and no reduction; a static schedule gives every thread a
         // contiguous run of all six matrices.
-        const auto materialisation_start = Clock::now();
+        phase_clock.start();
         std::visit([&](auto& matrices) {
             using Scalar = typename std::decay_t<
                 decltype(matrices)>::value_type::value_type;
@@ -556,9 +558,8 @@ DenseDirectPlan::DenseDirectPlan(
                 matrices[5][index] = static_cast<Scalar>(tensor.zz);
             }
         }, matrices_);
-        statistics.materialisation.add(
-            elapsed_seconds(materialisation_start));
-        statistics.total.add(elapsed_seconds(total_start));
+        phase_clock.record(statistics.materialisation);
+        total_clock.record(statistics.total);
         return;
     }
 
@@ -569,7 +570,7 @@ DenseDirectPlan::DenseDirectPlan(
     // Every source-target tensor owns one fixed matrix entry, so building
     // them in parallel preserves the target-major storage order and
     // introduces no floating-point reductions.
-    const auto fused_build_start = Clock::now();
+    phase_clock.start();
     std::visit([&](auto& matrices) {
         using Scalar = typename std::decay_t<
             decltype(matrices)>::value_type::value_type;
@@ -600,9 +601,9 @@ DenseDirectPlan::DenseDirectPlan(
         }
     }, matrices_);
     failure.rethrow_any();
-    statistics.tensor_build.add(elapsed_seconds(fused_build_start));
+    phase_clock.record(statistics.tensor_build);
     statistics.built_tensor_count = pair_count;
-    statistics.total.add(elapsed_seconds(total_start));
+    total_clock.record(statistics.total);
 }
 
 std::vector<Vec3> DenseDirectPlan::evaluate(

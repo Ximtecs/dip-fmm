@@ -34,7 +34,9 @@ void bind_tree(py::module_& module)
                      &UniformTreeOptions::include_empty_nodes)
       .def_readwrite("cubic_root_box", &UniformTreeOptions::cubic_root_box)
       .def_readwrite("root_centre", &UniformTreeOptions::root_centre)
-      .def_readwrite("root_half_width", &UniformTreeOptions::root_half_width);
+      .def_readwrite("root_half_width", &UniformTreeOptions::root_half_width)
+      .def_readwrite("collect_build_timings",
+                     &UniformTreeOptions::collect_build_timings);
 
   py::enum_<PeriodicConvention>(module, "PeriodicConvention")
       .value("ZeroK0", PeriodicConvention::ZeroK0);

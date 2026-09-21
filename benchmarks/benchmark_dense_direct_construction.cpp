@@ -820,12 +820,15 @@ Row measure_host_backend(
     const SourceModel source_model = SourceModel::ExactGeometry;
     const TargetModel target_model = TargetModel::ExactGeometry;
 
+    // This driver exists to attribute setup cost by phase, so it asks for the
+    // detailed internal record; `construction_seconds` itself is the external
+    // clock around the constructor and would be the same at `Off`.
     const auto build = [&]() {
         return DenseDirectPlan(
             sources.positions, targets.positions, source_geometry,
             target_geometry, sources.sizes, targets.sizes, identities,
             precision, sources.tetrahedra, targets.tetrahedra, source_model,
-            target_model);
+            target_model, cdfmm::TimingLevel::Detailed);
     };
 
     // The fastest of several cold builds is reported: each one constructs a
@@ -920,7 +923,8 @@ Row measure_cuda_backend(
             sources.positions, targets.positions, source_geometry,
             target_geometry, sources.sizes, targets.sizes, identities,
             precision, sources.tetrahedra, targets.tetrahedra,
-            SourceModel::ExactGeometry, TargetModel::ExactGeometry);
+            SourceModel::ExactGeometry, TargetModel::ExactGeometry,
+            cdfmm::TimingLevel::Detailed);
         const double seconds = elapsed_seconds(start);
         if (seconds < best) {
             best = seconds;

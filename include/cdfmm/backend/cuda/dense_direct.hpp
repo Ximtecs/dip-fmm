@@ -26,8 +26,10 @@ public:
   /**
    * @brief Builds the six matrices on the host and uploads them.
    *
-   * Arguments and semantics match DenseDirectPlan; construction throws when
-   * no CUDA device is available.
+   * Arguments and semantics match DenseDirectPlan, including `timing_level`,
+   * which is forwarded to the host plan and also gates this plan's own
+   * internal setup record (host build, context, allocation, upload).  `Off`
+   * reads no clock.  Construction throws when no CUDA device is available.
    */
   CudaDenseDirectPlan(
       std::span<const Vec3> source_positions,
@@ -41,7 +43,8 @@ public:
       std::span<const Tetrahedron> source_tetrahedra = {},
       std::span<const Tetrahedron> target_tetrahedra = {},
       SourceModel source_model = SourceModel::ExactGeometry,
-      TargetModel target_model = TargetModel::ExactGeometry
+      TargetModel target_model = TargetModel::ExactGeometry,
+      TimingLevel timing_level = TimingLevel::Off
   );
 
   ~CudaDenseDirectPlan();

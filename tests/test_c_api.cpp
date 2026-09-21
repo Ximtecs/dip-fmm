@@ -50,6 +50,24 @@ TEST_CASE("C ABI creates, reuses, diagnoses, and destroys a point plan") {
     REQUIRE(cdfmm_plan_get_last_evaluation_seconds(plan, &seconds) ==
             CDFMM_SUCCESS);
     REQUIRE(seconds >= 0.0);
+    // Detailed is a measurement too, and switching back to Off makes the
+    // accessor unsupported again rather than replaying a stale value: the
+    // v0.2 contract is that a C caller selects a level before reading time.
+    REQUIRE(cdfmm_plan_set_timing_level(plan, CDFMM_TIMING_DETAILED) ==
+            CDFMM_SUCCESS);
+    REQUIRE(cdfmm_plan_evaluate_f64(plan, mx, my, mz, hx, hy, hz) ==
+            CDFMM_SUCCESS);
+    seconds = -1.0;
+    REQUIRE(cdfmm_plan_get_last_evaluation_seconds(plan, &seconds) ==
+            CDFMM_SUCCESS);
+    REQUIRE(seconds >= 0.0);
+    REQUIRE(cdfmm_plan_set_timing_level(plan, CDFMM_TIMING_OFF) ==
+            CDFMM_SUCCESS);
+    REQUIRE(cdfmm_plan_evaluate_f64(plan, mx, my, mz, hx, hy, hz) ==
+            CDFMM_SUCCESS);
+    REQUIRE(hz[1] == Catch::Approx(1.0 / (2.0 * std::acos(-1.0))));
+    REQUIRE(cdfmm_plan_get_last_evaluation_seconds(plan, &seconds) ==
+            CDFMM_ERROR_UNSUPPORTED);
     cdfmm_plan_destroy(plan);
     cdfmm_plan_destroy(nullptr);
 }

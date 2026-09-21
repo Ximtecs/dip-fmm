@@ -37,6 +37,18 @@ struct UniformTreeOptions {
     std::optional<Vec3> root_centre{};
     /// @brief Optional positive root half-width; otherwise inferred.
     std::optional<double> root_half_width{};
+    /**
+     * @brief Whether construction reads the clock to fill `build_timings()`.
+     *
+     * A standalone tree keeps the historical behaviour and collects its
+     * per-phase wall times (thirteen `steady_clock` reads per build).  When
+     * false no clock is read and `build_timings()` stays at its zero
+     * defaults; the topology, permutations and interaction lists are
+     * unaffected.  `UniformFmm` sets this from its own `timing_level` (only
+     * `TimingLevel::Detailed` collects) on the trees it builds, so the flag
+     * a caller places in `UniformFmmOptions::tree` is overridden there.
+     */
+    bool collect_build_timings{true};
 };
 
 /** @brief Retained storage owned by one immutable uniform tree. */

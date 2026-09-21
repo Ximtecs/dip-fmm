@@ -62,7 +62,7 @@ CudaDenseDirectPlan::CudaDenseDirectPlan(
     TargetGeometry, std::span<const CuboidSize>,
     std::span<const CuboidSize>, std::span<const int>, StaticPrecision,
     std::span<const Tetrahedron>, std::span<const Tetrahedron>, SourceModel,
-    TargetModel) {
+    TargetModel, TimingLevel) {
   throw std::runtime_error(
       "CUDA dense direct backend requested, but CDFMM_ENABLE_CUDA is OFF");
 }

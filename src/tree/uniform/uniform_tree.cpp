@@ -3,9 +3,9 @@
 #include "cdfmm/tree/uniform_tree.hpp"
 
 #include "../common/root_box.hpp"
+#include "phase_stopwatch.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <stdexcept>
 #include <tuple>
@@ -52,23 +52,27 @@ UniformTree::UniformTree(const std::vector<Vec3>& source_positions, const std::v
 
 void UniformTree::build(const std::vector<Vec3>& source_positions, const std::vector<Vec3>& target_positions, const UniformTreeOptions& options)
 {
-    using Clock = std::chrono::steady_clock;
-    const auto total_start = Clock::now();
+    // Construction timing is opt-in through `options.collect_build_timings`.
+    // When it is off neither stopwatch reads the clock and `build_timings_`
+    // keeps its zero defaults; `UniformFmm` switches it off below
+    // `TimingLevel::Detailed`.  The phase clock brackets each phase exactly
+    // as before, so an enabled build reads the clock the same number of times.
+    detail::PhaseStopwatch total_clock(options.collect_build_timings);
+    detail::PhaseStopwatch phase_clock(options.collect_build_timings);
+    total_clock.start();
     if (options.max_level < 0) {
         throw std::invalid_argument("UniformTreeOptions.max_level must be >= 0");
     }
 
     max_level_ = options.max_level;
-    const auto bounds_start = Clock::now();
+    phase_clock.start();
 
     const RootBox root_box = resolve_root_box(
         source_positions, target_positions,
         options.root_centre, options.root_half_width);
     root_centre_ = root_box.centre;
     root_half_width_ = root_box.half_width;
-    build_timings_.root_bounds.add(
-        std::chrono::duration<double>(Clock::now() - bounds_start).count()
-    );
+    phase_clock.record(build_timings_.root_bounds);
 
     const auto assign_leaf = [&](const Vec3& point) {
         if (max_level_ == 0) {
@@ -95,7 +99,7 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
 
     // Materialise every box, including empty boxes.  Consequently a flat node
     // index is computable directly, with no sparse lookup table.
-    const auto nodes_start = Clock::now();
+    phase_clock.start();
     nodes_.assign(total_nodes(max_level_), TreeNode{});
     for (int level = 0; level <= max_level_; ++level) {
         const int n = boxes_per_dim(level);
@@ -127,12 +131,10 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
             }
         }
     }
-    build_timings_.node_construction.add(
-        std::chrono::duration<double>(Clock::now() - nodes_start).count()
-    );
+    phase_clock.record(build_timings_.node_construction);
 
     // Child slot bits encode local (dx,dy,dz), matching Morton bit order.
-    const auto topology_start = Clock::now();
+    phase_clock.start();
     #pragma omp parallel for schedule(static) if(nodes_.size() >= 512)
     for (std::ptrdiff_t node_index_value = 0;
          node_index_value < static_cast<std::ptrdiff_t>(nodes_.size());
@@ -154,9 +156,7 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
             }
         }
     }
-    build_timings_.topology.add(
-        std::chrono::duration<double>(Clock::now() - topology_start).count()
-    );
+    phase_clock.record(build_timings_.topology);
 
     // Sort each population independently by leaf Morton index.  Stable sorting
     // preserves user order for points sharing a leaf, making the convention
@@ -171,7 +171,7 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
         PhaseTiming& morton_timing,
         PhaseTiming& sorting_timing
     ) {
-        const auto morton_phase_start = Clock::now();
+        phase_clock.start();
         std::vector<std::tuple<std::uint64_t, int, int>> keyed;
         keyed.reserve(original.size());
         for (std::size_t i = 0; i < original.size(); ++i) {
@@ -180,10 +180,8 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
             const int leaf_index = node_index(max_level_, ijk[0], ijk[1], ijk[2]);
             keyed.emplace_back(morton, static_cast<int>(i), leaf_index);
         }
-        morton_timing.add(
-            std::chrono::duration<double>(Clock::now() - morton_phase_start).count()
-        );
-        const auto sorting_phase_start = Clock::now();
+        // `record` restarts the clock, so the sort phase begins here.
+        phase_clock.record(morton_timing);
         std::stable_sort(
             keyed.begin(),
             keyed.end(),
@@ -191,9 +189,7 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
                 return std::get<0>(a) < std::get<0>(b);
             }
         );
-        sorting_timing.add(
-            std::chrono::duration<double>(Clock::now() - sorting_phase_start).count()
-        );
+        phase_clock.record(sorting_timing);
 
         sorted.resize(original.size());
         permutation.resize(original.size());
@@ -229,7 +225,7 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
 
     // Empty ranges use [population_size, population_size).  Non-empty leaf
     // ranges overwrite these sentinels before ranges are propagated upwards.
-    const auto ranges_start = Clock::now();
+    phase_clock.start();
     #pragma omp parallel for schedule(static) if(nodes_.size() >= 512)
     for (std::ptrdiff_t node_index_value = 0;
          node_index_value < static_cast<std::ptrdiff_t>(nodes_.size());
@@ -304,9 +300,7 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
 
     assign_ranges(source_leaf_indices_, true);
     assign_ranges(target_leaf_indices_, false);
-    build_timings_.ranges.add(
-        std::chrono::duration<double>(Clock::now() - ranges_start).count()
-    );
+    phase_clock.record(build_timings_.ranges);
 
     const int leaf_begin = level_offset(max_level_);
     const int leaf_end = static_cast<int>(nodes_.size());
@@ -326,7 +320,7 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
     // list1 is the clipped 3x3x3 same-level neighbourhood.  It includes the
     // node itself and has fewer than 27 entries at physical root boundaries.
     // These boxes define the direct near field in a uniform FMM.
-    const auto lists_start = Clock::now();
+    phase_clock.start();
     for (int level = 0; level <= max_level_; ++level) {
         const int begin = level_offset(level);
         const int end = level_offset(level + 1);
@@ -385,12 +379,8 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
             );
         }
     }
-    build_timings_.interaction_lists.add(
-        std::chrono::duration<double>(Clock::now() - lists_start).count()
-    );
-    build_timings_.total.add(
-        std::chrono::duration<double>(Clock::now() - total_start).count()
-    );
+    phase_clock.record(build_timings_.interaction_lists);
+    total_clock.record(build_timings_.total);
 }
 
 //------------------------------------------------------------------------------

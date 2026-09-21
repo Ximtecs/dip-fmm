@@ -14,10 +14,14 @@ namespace cdfmm::detail::dense_direct {
  * plan's interface.  `DenseDirectPlan` fills the thread-local instance below
  * on every construction so the in-tree construction benchmark can attribute
  * setup cost without the public header, the C ABI or the Python API growing a
- * measurement-only surface.  Filling it costs a handful of clock reads per
- * plan, never per pair.
+ * measurement-only surface.  The `PhaseTiming` fields follow the
+ * constructor's `TimingLevel`: none at `Off` (no clock is read), `total` at
+ * `Coarse`, every phase at `Detailed`; a handful of clock reads per plan,
+ * never per pair.  Counts and bytes are filled at every level.
  */
 struct ConstructionStatistics {
+    /// @brief Level the timing fields below were collected at.
+    TimingLevel timing_level{TimingLevel::Off};
     /// @brief Time spent validating the supplied geometry records.
     PhaseTiming validation{};
     /// @brief Time spent sizing and zeroing the six dense matrices.

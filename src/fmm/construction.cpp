@@ -476,6 +476,14 @@ UniformFmm::NormalisedGeometry UniformFmm::normalise_geometry(
   geometry.physical_tree_options.root_centre = geometry.physical_root_centre;
   geometry.physical_tree_options.root_half_width =
       0.5 * geometry.physical_root_side_length;
+  // The plan owns both trees, so their construction clocks follow the plan's
+  // timing level rather than the tree option's standalone default: only
+  // `Detailed` copies the tree breakdown into `StaticPlanStatistics`, so
+  // below it no tree clock is read at all.
+  const bool collect_tree_timings =
+      options.timing_level == TimingLevel::Detailed;
+  geometry.physical_tree_options.collect_build_timings = collect_tree_timings;
+  geometry.options.tree.collect_build_timings = collect_tree_timings;
   normalise_sizes(geometry.options.source_sizes);
   normalise_sizes(geometry.options.target_sizes);
   normalise_tetrahedra(geometry.options.source_tetrahedra);
@@ -546,9 +554,9 @@ UniformFmm::UniformFmm(NormalisedGeometry geometry,
   topology_clock.record(static_plan_statistics_.topology_construction);
   if (detailed_timing()) {
     static_plan_statistics_.normalisation.add(geometry.normalisation_seconds);
-    // The trees keep their own build timings regardless of the level; they
-    // are surfaced here only when the plan collects detailed construction
-    // timings.
+    // `normalise_geometry` enabled the trees' construction clocks only at
+    // this level, so the breakdown copied here was measured; below it the
+    // trees read no clock and `tree_construction` stays at its default.
     static_plan_statistics_.tree_construction = tree_->build_timings().total;
     static_plan_statistics_.tree_construction.add(
         physical_tree_->build_timings().total.total_seconds);

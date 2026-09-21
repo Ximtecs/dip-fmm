@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "cdfmm/core/precision.hpp"
+#include "cdfmm/core/timing.hpp"
 #include "cdfmm/geometry/models.hpp"
 #include "cdfmm/geometry/primitives/rectangular_prism.hpp"
 #include "cdfmm/geometry/primitives/tetrahedron.hpp"
@@ -46,6 +47,15 @@ public:
      * a point at its representative.  `target_source_indices` (target i ->
      * source j, or -1) omits the singular point self pairs and is fixed for
      * the plan's lifetime.
+     *
+     * `timing_level` selects the internal construction timing, exactly as
+     * `UniformFmmOptions::timing_level` does for the solver.  `Off`, the
+     * default and the benchmark configuration, reads no clock; `Coarse`
+     * records the whole constructor; `Detailed` records every construction
+     * phase.  The record is internal (`src/plan/direct/
+     * construction_statistics.hpp`) and is read by the in-tree construction
+     * benchmark; the level never changes the matrices, the backend selection
+     * or the pair, body and byte counts, which are always filled.
      */
     DenseDirectPlan(
         std::span<const Vec3> source_positions,
@@ -59,7 +69,8 @@ public:
         std::span<const Tetrahedron> source_tetrahedra = {},
         std::span<const Tetrahedron> target_tetrahedra = {},
         SourceModel source_model = SourceModel::ExactGeometry,
-        TargetModel target_model = TargetModel::ExactGeometry
+        TargetModel target_model = TargetModel::ExactGeometry,
+        TimingLevel timing_level = TimingLevel::Off
     );
 
     /// @brief Deep-copies the matrices; the private staging is recreated.

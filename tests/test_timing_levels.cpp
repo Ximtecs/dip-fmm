@@ -9,6 +9,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -21,8 +22,15 @@
 #include <vector>
 #include <unistd.h>
 
+#include "cdfmm/backend/cuda/dense_direct.hpp"
 #include "cdfmm/backend/cuda/direct.hpp"
+#include "cdfmm/plan/direct/dense.hpp"
 #include "cdfmm/uniform_fmm.hpp"
+
+// Internal construction records: the dense plans' timing has no public
+// surface, so the level is observed where the benchmark observes it.
+#include "backend/cuda/direct/dense_construction_statistics.hpp"
+#include "plan/direct/construction_statistics.hpp"
 
 using namespace cdfmm;
 
@@ -186,10 +194,16 @@ TEST_CASE("TimingLevel::Off is the default and collects nothing", "[timing]") {
   REQUIRE(statistics.total_setup.calls == 0);
   REQUIRE(statistics.total.calls == 0);
   REQUIRE(construction_subphases_empty(statistics));
+  // The plan's own trees read no construction clock either: `Off` covers
+  // the trees `UniformFmm` builds, not just the phases it times itself.
+  REQUIRE(plan.tree().build_timings().total.calls == 0);
+  REQUIRE(plan.tree().build_timings().interaction_lists.calls == 0);
+  REQUIRE(plan.tree().build_timings().source_sorting.calls == 0);
   // The byte, count and policy statistics do not depend on the level.
   REQUIRE(statistics.operator_bytes > 0);
   REQUIRE(statistics.p2p_interactions > 0);
   REQUIRE(statistics.construction_count == 1);
+  REQUIRE(plan.tree().memory_statistics().total_bytes() > 0);
 
   (void)plan.evaluate(moments, OutputFlags::Field, identities);
   const EvaluationTimings &last = plan.last_timings();
@@ -223,6 +237,9 @@ TEST_CASE("TimingLevel::Coarse populates only the coarse fields", "[timing]") {
   REQUIRE(statistics.total_setup.total_seconds >=
           statistics.total.total_seconds);
   REQUIRE(construction_subphases_empty(statistics));
+  // The tree breakdown is a detailed construction subphase, so Coarse does
+  // not switch the trees' clocks on.
+  REQUIRE(plan.tree().build_timings().total.calls == 0);
 
   (void)plan.evaluate(moments, OutputFlags::Field, identities);
   const EvaluationTimings &last = plan.last_timings();
@@ -253,7 +270,20 @@ TEST_CASE("TimingLevel::Detailed populates every host phase", "[timing]") {
   REQUIRE(statistics.total.calls == 1);
   REQUIRE(statistics.topology_construction.calls == 1);
   REQUIRE(statistics.normalisation.calls == 1);
-  REQUIRE(statistics.tree_construction.calls >= 1);
+  // Both trees the plan builds (normalised and physical) were timed and
+  // their totals folded into one construction subphase.
+  REQUIRE(statistics.tree_construction.calls == 2);
+  REQUIRE(plan.tree().build_timings().total.calls == 1);
+  REQUIRE(plan.tree().build_timings().root_bounds.calls == 1);
+  REQUIRE(plan.tree().build_timings().node_construction.calls == 1);
+  REQUIRE(plan.tree().build_timings().topology.calls == 1);
+  REQUIRE(plan.tree().build_timings().source_morton.calls == 1);
+  REQUIRE(plan.tree().build_timings().source_sorting.calls == 1);
+  REQUIRE(plan.tree().build_timings().target_morton.calls == 1);
+  REQUIRE(plan.tree().build_timings().target_sorting.calls == 1);
+  REQUIRE(plan.tree().build_timings().ranges.calls == 1);
+  REQUIRE(plan.tree().build_timings().interaction_lists.calls == 1);
+  REQUIRE(plan.tree().build_timings().total.total_seconds > 0.0);
   REQUIRE(statistics.p2m_plan.calls == 1);
   REQUIRE(statistics.l2p_plan.calls == 1);
   REQUIRE(statistics.p2p_tensor_plan.calls == 1);
@@ -540,4 +570,185 @@ TEST_CASE("the CUDA direct plan records device lanes only when detailed",
   REQUIRE(plan.evaluation_timings().kernel_seconds >= 0.0);
   REQUIRE(plan.evaluation_timings().total_seconds >=
           plan.evaluation_timings().kernel_seconds);
+}
+
+namespace {
+
+// A point plan with the identity map and a prism-lattice plan with one shared
+// body record: the two construction paths of the dense builder (fused loop
+// and exact classification).
+struct DenseScene {
+  std::vector<Vec3> positions;
+  std::vector<int> identities;
+  std::vector<RectangularPrism> sizes;
+};
+
+DenseScene point_scene() {
+  DenseScene scene;
+  scene.positions = make_positions(64);
+  scene.identities = identity_map(64);
+  return scene;
+}
+
+DenseScene prism_scene() {
+  DenseScene scene;
+  for (int iz = 0; iz < 4; ++iz) {
+    for (int iy = 0; iy < 4; ++iy) {
+      for (int ix = 0; ix < 4; ++ix) {
+        scene.positions.push_back({0.5 * ix, 0.5 * iy, 0.5 * iz});
+      }
+    }
+  }
+  scene.sizes = {RectangularPrism{0.4, 0.4, 0.4}};
+  return scene;
+}
+
+DenseDirectPlan build_dense(const DenseScene &scene, const TimingLevel level) {
+  const bool finite = !scene.sizes.empty();
+  return DenseDirectPlan(
+      scene.positions, scene.positions,
+      finite ? SourceGeometry::RectangularPrism : SourceGeometry::PointDipole,
+      finite ? TargetGeometry::RectangularPrism : TargetGeometry::Point,
+      scene.sizes, scene.sizes, scene.identities, StaticPrecision::Float64,
+      {}, {}, SourceModel::ExactGeometry, TargetModel::ExactGeometry, level);
+}
+
+bool same_vectors(const std::vector<Vec3> &left,
+                  const std::vector<Vec3> &right) {
+  if (left.size() != right.size()) {
+    return false;
+  }
+  for (std::size_t index = 0; index < left.size(); ++index) {
+    if (left[index].x != right[index].x || left[index].y != right[index].y ||
+        left[index].z != right[index].z) {
+      return false;
+    }
+  }
+  return true;
+}
+
+} // namespace
+
+TEST_CASE("DenseDirectPlan timing level gates only its construction record",
+          "[timing][dense]") {
+  using detail::dense_direct::ConstructionStatistics;
+  using detail::dense_direct::construction_statistics;
+  for (const DenseScene &scene : {point_scene(), prism_scene()}) {
+    const auto moments = make_moments(static_cast<int>(scene.positions.size()));
+
+    const DenseDirectPlan off = build_dense(scene, TimingLevel::Off);
+    const ConstructionStatistics off_record = construction_statistics();
+    REQUIRE(off_record.timing_level == TimingLevel::Off);
+    REQUIRE(off_record.total.calls == 0);
+    REQUIRE(off_record.validation.calls == 0);
+    REQUIRE(off_record.allocation.calls == 0);
+    REQUIRE(off_record.geometry_preparation.calls == 0);
+    REQUIRE(off_record.classification.calls == 0);
+    REQUIRE(off_record.tensor_build.calls == 0);
+    REQUIRE(off_record.materialisation.calls == 0);
+    // Counts and bytes cost no clock and are filled at every level.
+    REQUIRE(off_record.pair_count == scene.positions.size() * scene.positions.size());
+    REQUIRE(off_record.built_tensor_count > 0);
+    REQUIRE(off_record.matrix_bytes == off.tensor_memory_bytes());
+    REQUIRE(off_record.classified == !scene.sizes.empty());
+
+    const DenseDirectPlan coarse = build_dense(scene, TimingLevel::Coarse);
+    const ConstructionStatistics coarse_record = construction_statistics();
+    REQUIRE(coarse_record.timing_level == TimingLevel::Coarse);
+    REQUIRE(coarse_record.total.calls == 1);
+    REQUIRE(coarse_record.total.total_seconds > 0.0);
+    REQUIRE(coarse_record.validation.calls == 0);
+    REQUIRE(coarse_record.tensor_build.calls == 0);
+
+    const DenseDirectPlan detailed = build_dense(scene, TimingLevel::Detailed);
+    const ConstructionStatistics detailed_record = construction_statistics();
+    REQUIRE(detailed_record.timing_level == TimingLevel::Detailed);
+    REQUIRE(detailed_record.total.calls == 1);
+    REQUIRE(detailed_record.validation.calls == 1);
+    REQUIRE(detailed_record.allocation.calls == 1);
+    REQUIRE(detailed_record.geometry_preparation.calls == 1);
+    REQUIRE(detailed_record.tensor_build.calls == 1);
+    // The classified (finite) path records the split phases; the fused point
+    // path records neither, as its record documents.
+    REQUIRE(detailed_record.classification.calls ==
+            (detailed_record.classified ? 1U : 0U));
+    REQUIRE(detailed_record.materialisation.calls ==
+            (detailed_record.classified ? 1U : 0U));
+    REQUIRE(detailed_record.classified == off_record.classified);
+    REQUIRE(detailed_record.built_tensor_count == off_record.built_tensor_count);
+
+    // Same matrices bit for bit, same results, same backend resolution.
+    REQUIRE(off.matrices() == coarse.matrices());
+    REQUIRE(off.matrices() == detailed.matrices());
+    const auto expected = off.evaluate(moments);
+    REQUIRE(same_vectors(expected, coarse.evaluate(moments)));
+    REQUIRE(same_vectors(expected, detailed.evaluate(moments)));
+    REQUIRE(same_vectors(off.evaluate(moments, DenseDirectBackend::Portable),
+                         detailed.evaluate(moments, DenseDirectBackend::Portable)));
+  }
+}
+
+TEST_CASE("CudaDenseDirectPlan timing level gates its setup record only",
+          "[timing][dense][cuda]") {
+  if (!cuda_dense_direct_available()) {
+    SUCCEED("CUDA dense direct backend is unavailable");
+    return;
+  }
+  using detail::cuda_dense_direct::cuda_construction_statistics;
+  const DenseScene scene = prism_scene();
+  const auto moments = make_moments(static_cast<int>(scene.positions.size()));
+  const auto build = [&](const TimingLevel level) {
+    return CudaDenseDirectPlan(
+        scene.positions, scene.positions, SourceGeometry::RectangularPrism,
+        TargetGeometry::RectangularPrism, scene.sizes, scene.sizes, {},
+        StaticPrecision::Float64, {}, {}, SourceModel::ExactGeometry,
+        TargetModel::ExactGeometry, level);
+  };
+
+  CudaDenseDirectPlan off = build(TimingLevel::Off);
+  const auto off_record = cuda_construction_statistics();
+  REQUIRE(off_record.timing_level == TimingLevel::Off);
+  REQUIRE(off_record.total.calls == 0);
+  REQUIRE(off_record.host_construction.calls == 0);
+  REQUIRE(off_record.context_creation.calls == 0);
+  REQUIRE(off_record.allocation.calls == 0);
+  REQUIRE(off_record.upload.calls == 0);
+  REQUIRE(off_record.upload_bytes == off.tensor_memory_bytes());
+  REQUIRE(off_record.persistent_device_bytes > 0);
+  // The level was forwarded to the host plan underneath.
+  REQUIRE(detail::dense_direct::construction_statistics().timing_level ==
+          TimingLevel::Off);
+  REQUIRE(detail::dense_direct::construction_statistics().total.calls == 0);
+
+  CudaDenseDirectPlan detailed = build(TimingLevel::Detailed);
+  const auto detailed_record = cuda_construction_statistics();
+  REQUIRE(detailed_record.timing_level == TimingLevel::Detailed);
+  REQUIRE(detailed_record.total.calls == 1);
+  REQUIRE(detailed_record.host_construction.calls == 1);
+  REQUIRE(detailed_record.context_creation.calls == 1);
+  REQUIRE(detailed_record.allocation.calls == 1);
+  REQUIRE(detailed_record.upload.calls == 1);
+  REQUIRE(detailed_record.total.total_seconds >=
+          detailed_record.host_construction.total_seconds);
+  REQUIRE(detail::dense_direct::construction_statistics().timing_level ==
+          TimingLevel::Detailed);
+  REQUIRE(detail::dense_direct::construction_statistics().total.calls == 1);
+
+  // The GEMV is the same device work on the same uploaded matrices; agreement
+  // is asserted to the backend's own reproducibility, as for the FMM plans.
+  const auto expected = off.evaluate(moments);
+  const auto repeat = off.evaluate(moments);
+  const auto other = detailed.evaluate(moments);
+  if (same_vectors(expected, repeat)) {
+    REQUIRE(same_vectors(expected, other));
+  } else {
+    for (std::size_t index = 0; index < expected.size(); ++index) {
+      const double scale = std::max(
+          1.0, std::abs(expected[index].x) + std::abs(expected[index].y) +
+                   std::abs(expected[index].z));
+      REQUIRE(std::abs(other[index].x - expected[index].x) <= 1.0e-9 * scale);
+      REQUIRE(std::abs(other[index].y - expected[index].y) <= 1.0e-9 * scale);
+      REQUIRE(std::abs(other[index].z - expected[index].z) <= 1.0e-9 * scale);
+    }
+  }
 }

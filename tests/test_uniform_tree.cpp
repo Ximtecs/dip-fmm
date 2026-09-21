@@ -205,3 +205,110 @@ TEST_CASE("Uniform tree validates requested root bounds", "[uniform_tree][root_b
         UniformTree(std::vector<Vec3>{{1.0 + 2.0e-12, 0.0, 0.0}}, requested_box),
         "Point lies outside the requested root box");
 }
+
+TEST_CASE("Uniform tree build timings are opt-out and change nothing else",
+          "[uniform_tree][timing]")
+{
+    // Scattered points so that every level has occupied and empty boxes and
+    // the sorts actually permute.
+    std::vector<Vec3> sources;
+    std::vector<Vec3> targets;
+    for (int index = 0; index < 150; ++index) {
+        sources.push_back({
+            -0.9 + 1.8 * static_cast<double>((index * 17) % 61) / 60.0,
+            -0.9 + 1.8 * static_cast<double>((index * 29) % 67) / 66.0,
+            -0.9 + 1.8 * static_cast<double>((index * 43) % 71) / 70.0});
+    }
+    for (int index = 0; index < 90; ++index) {
+        targets.push_back({
+            -0.9 + 1.8 * static_cast<double>((index * 31) % 59) / 58.0,
+            -0.9 + 1.8 * static_cast<double>((index * 37) % 53) / 52.0,
+            -0.9 + 1.8 * static_cast<double>((index * 41) % 47) / 46.0});
+    }
+    UniformTreeOptions timed;
+    timed.max_level = 3;
+    REQUIRE(timed.collect_build_timings);
+    UniformTreeOptions silent = timed;
+    silent.collect_build_timings = false;
+
+    const UniformTree with_timings(sources, targets, timed);
+    const UniformTree without_timings(sources, targets, silent);
+
+    // The historical default fills every phase once; the opt-out fills none.
+    const TreeBuildTimings& collected = with_timings.build_timings();
+    REQUIRE(collected.total.calls == 1);
+    REQUIRE(collected.root_bounds.calls == 1);
+    REQUIRE(collected.node_construction.calls == 1);
+    REQUIRE(collected.topology.calls == 1);
+    REQUIRE(collected.source_morton.calls == 1);
+    REQUIRE(collected.source_sorting.calls == 1);
+    REQUIRE(collected.target_morton.calls == 1);
+    REQUIRE(collected.target_sorting.calls == 1);
+    REQUIRE(collected.ranges.calls == 1);
+    REQUIRE(collected.interaction_lists.calls == 1);
+    REQUIRE(collected.total.total_seconds > 0.0);
+    const TreeBuildTimings& uncollected = without_timings.build_timings();
+    REQUIRE(uncollected.total.calls == 0);
+    REQUIRE(uncollected.total.total_seconds == 0.0);
+    REQUIRE(uncollected.root_bounds.calls == 0);
+    REQUIRE(uncollected.node_construction.calls == 0);
+    REQUIRE(uncollected.topology.calls == 0);
+    REQUIRE(uncollected.source_morton.calls == 0);
+    REQUIRE(uncollected.source_sorting.calls == 0);
+    REQUIRE(uncollected.target_morton.calls == 0);
+    REQUIRE(uncollected.target_sorting.calls == 0);
+    REQUIRE(uncollected.ranges.calls == 0);
+    REQUIRE(uncollected.interaction_lists.calls == 0);
+
+    // Everything the tree is for is identical: geometry, every node record
+    // including both interaction lists, both permutations and the leaf maps.
+    REQUIRE(with_timings.max_level() == without_timings.max_level());
+    REQUIRE(with_timings.root_centre().x == without_timings.root_centre().x);
+    REQUIRE(with_timings.root_centre().y == without_timings.root_centre().y);
+    REQUIRE(with_timings.root_centre().z == without_timings.root_centre().z);
+    REQUIRE(with_timings.root_half_width() == without_timings.root_half_width());
+    const auto nodes_a = with_timings.nodes();
+    const auto nodes_b = without_timings.nodes();
+    REQUIRE(nodes_a.size() == nodes_b.size());
+    for (std::size_t index = 0; index < nodes_a.size(); ++index) {
+        const TreeNode& a = nodes_a[index];
+        const TreeNode& b = nodes_b[index];
+        REQUIRE(a.index == b.index);
+        REQUIRE(a.level == b.level);
+        REQUIRE(a.parent == b.parent);
+        REQUIRE(a.children == b.children);
+        REQUIRE(a.morton_index == b.morton_index);
+        REQUIRE(a.source_begin == b.source_begin);
+        REQUIRE(a.source_end == b.source_end);
+        REQUIRE(a.target_begin == b.target_begin);
+        REQUIRE(a.target_end == b.target_end);
+        REQUIRE(a.list1 == b.list1);
+        REQUIRE(a.list2 == b.list2);
+    }
+    const auto same_ints = [](std::span<const int> a, std::span<const int> b) {
+        return std::vector<int>(a.begin(), a.end()) ==
+            std::vector<int>(b.begin(), b.end());
+    };
+    REQUIRE(same_ints(with_timings.source_permutation(),
+                      without_timings.source_permutation()));
+    REQUIRE(same_ints(with_timings.source_inverse_permutation(),
+                      without_timings.source_inverse_permutation()));
+    REQUIRE(same_ints(with_timings.target_permutation(),
+                      without_timings.target_permutation()));
+    REQUIRE(same_ints(with_timings.target_inverse_permutation(),
+                      without_timings.target_inverse_permutation()));
+    REQUIRE(same_ints(with_timings.leaf_indices(),
+                      without_timings.leaf_indices()));
+    REQUIRE(same_ints(with_timings.occupied_source_leaves(),
+                      without_timings.occupied_source_leaves()));
+    REQUIRE(same_ints(with_timings.occupied_target_leaves(),
+                      without_timings.occupied_target_leaves()));
+    const auto sorted_a = with_timings.sorted_source_positions();
+    const auto sorted_b = without_timings.sorted_source_positions();
+    REQUIRE(sorted_a.size() == sorted_b.size());
+    for (std::size_t index = 0; index < sorted_a.size(); ++index) {
+        REQUIRE(sorted_a[index].x == sorted_b[index].x);
+        REQUIRE(sorted_a[index].y == sorted_b[index].y);
+        REQUIRE(sorted_a[index].z == sorted_b[index].z);
+    }
+}

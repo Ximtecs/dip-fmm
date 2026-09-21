@@ -15,8 +15,13 @@ namespace cdfmm::detail::cuda_dense_direct {
  * delegates its exact tensors to a host `DenseDirectPlan`, so the host record
  * describes the construction and this one describes only what the device
  * setup adds: stream and handle creation, device allocation, and the upload.
+ * The timing fields follow the constructor's `TimingLevel` exactly as the
+ * host record does: nothing at `Off`, `total` at `Coarse`, every phase at
+ * `Detailed`; the byte fields are always filled.
  */
 struct CudaConstructionStatistics {
+    /// @brief Level the timing fields below were collected at.
+    TimingLevel timing_level{TimingLevel::Off};
     /// @brief Time spent building the exact tensors on the host.
     PhaseTiming host_construction{};
     /// @brief Time spent creating the stream and the cuBLAS handle.

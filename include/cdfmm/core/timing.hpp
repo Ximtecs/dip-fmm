@@ -37,7 +37,16 @@ struct PhaseTiming {
  *   far-field hierarchy and the CPU near field, and at construction the whole
  *   setup and the static-plan build.
  * - `Detailed`: every phase, including the CUDA device-stream lanes, the
- *   oneMKL gather/multiply/scatter split and the construction subphases.
+ *   oneMKL gather/multiply/scatter split and the construction subphases,
+ *   among them the build breakdown of the trees the plan constructs.
+ *
+ * The level governs everything a plan owns.  For `UniformFmm` that is
+ * normalisation, the two uniform trees it builds, topology, every operator
+ * and static-plan build, cache access, backend setup and every evaluation;
+ * the dense direct plans take the same level as a constructor argument.  A
+ * `UniformTree` built standalone collects its own `build_timings()` unless
+ * `UniformTreeOptions::collect_build_timings` is false, and `AdaptiveTree`
+ * always records its two coarse construction times.
  *
  * NVTX ranges (`CDFMM_ENABLE_PROFILING`) are a separate, compile-time
  * mechanism for external profilers and are unaffected by this level.
