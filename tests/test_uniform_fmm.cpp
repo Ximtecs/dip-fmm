@@ -1474,6 +1474,8 @@ TEST_CASE("Evaluation timings aggregate and reset", "[uniform_fmm][timing]") {
   options.expansion_basis = ExpansionBasis::Cartesian;
   options.backend = ExecutionBackend::CpuStatic;
   options.tree.max_level = 2;
+  // Timing is off by default; this test is about the collected phases.
+  options.timing_level = TimingLevel::Detailed;
   UniformFmm fmm(distributed_positions, distributed_positions, options);
   std::vector<PotentialField> results(distributed_positions.size());
 

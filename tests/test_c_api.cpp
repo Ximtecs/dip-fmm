@@ -34,6 +34,22 @@ TEST_CASE("C ABI creates, reuses, diagnoses, and destroys a point plan") {
     REQUIRE(cdfmm_plan_get_stats(plan, &stats) == CDFMM_SUCCESS);
     REQUIRE(stats.source_count == 2);
     REQUIRE(stats.host_persistent_bytes > 0);
+    // Timing is off by default, so the wall time is unavailable rather than
+    // a misleading zero; selecting a level makes it a measurement.
+    double seconds = -1.0;
+    REQUIRE(cdfmm_plan_get_last_evaluation_seconds(plan, &seconds) ==
+            CDFMM_ERROR_UNSUPPORTED);
+    REQUIRE(cdfmm_get_last_error()[0] != '\0');
+    REQUIRE(cdfmm_plan_set_timing_level(plan, 7) ==
+            CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cdfmm_plan_set_timing_level(plan, CDFMM_TIMING_COARSE) ==
+            CDFMM_SUCCESS);
+    REQUIRE(cdfmm_plan_evaluate_f64(plan, mx, my, mz, hx, hy, hz) ==
+            CDFMM_SUCCESS);
+    REQUIRE(hz[1] == Catch::Approx(1.0 / (2.0 * std::acos(-1.0))));
+    REQUIRE(cdfmm_plan_get_last_evaluation_seconds(plan, &seconds) ==
+            CDFMM_SUCCESS);
+    REQUIRE(seconds >= 0.0);
     cdfmm_plan_destroy(plan);
     cdfmm_plan_destroy(nullptr);
 }

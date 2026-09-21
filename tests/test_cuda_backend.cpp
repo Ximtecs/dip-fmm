@@ -114,6 +114,8 @@ TEST_CASE("full CUDA FMM is device resident across evaluations", "[cuda][manual]
     cpu_options.backend = ExecutionBackend::CpuStatic;
     UniformFmmOptions cuda_options = cpu_options;
     cuda_options.backend = ExecutionBackend::CudaFull;
+    // The device lanes asserted below exist only at the detailed level.
+    cuda_options.timing_level = TimingLevel::Detailed;
     UniformFmm cpu(positions, positions, cpu_options);
     UniformFmm cuda(positions, positions, cuda_options);
     const auto expected = cpu.evaluate(moments, OutputFlags::Field, identities);
@@ -326,6 +328,8 @@ TEST_CASE("CUDA static P2P packings agree with canonical CPU rows",
 
   const auto verify = [&](CudaP2PPlan &plan) {
     std::vector<Vec3> actual(positions.size());
+    // The kernel lane asserted below is recorded only at the detailed level.
+    plan.set_timing_level(TimingLevel::Detailed);
     plan.evaluate(moments, identities, actual);
     for (std::size_t target = 0; target < actual.size(); ++target) {
       REQUIRE(actual[target].x ==
@@ -354,6 +358,7 @@ TEST_CASE("CUDA static P2P packings agree with canonical CPU rows",
   verify(bsr_cuda);
   const auto verify_dictionary = [&](CudaP2PPlan &plan) {
     std::vector<Vec3> actual(positions.size());
+    plan.set_timing_level(TimingLevel::Detailed);
     plan.evaluate(moments, identities, actual);
     for (std::size_t target = 0; target < actual.size(); ++target) {
       REQUIRE(actual[target].x ==
@@ -416,6 +421,8 @@ TEST_CASE("CUDA M2L/P2P hybrid agrees with CPU static", "[cuda][manual]")
     cpu_options.backend = ExecutionBackend::CpuStatic;
     UniformFmmOptions cuda_options = cpu_options;
     cuda_options.backend = ExecutionBackend::CudaM2LP2P;
+    // The device lanes asserted below exist only at the detailed level.
+    cuda_options.timing_level = TimingLevel::Detailed;
 
     UniformFmm cpu(positions, positions, cpu_options);
     UniformFmm cuda(positions, positions, cuda_options);
@@ -645,6 +652,8 @@ TEST_CASE("CUDA partial and full share canonical static plan behaviour",
         options.backend = ExecutionBackend::CpuStatic;
         UniformFmm cpu(sources, targets, options);
         options.fixed_target_source_indices = identities;
+        // The M2L lane call counts asserted below need detailed timing.
+        options.timing_level = TimingLevel::Detailed;
         options.backend = ExecutionBackend::CudaPartial;
         UniformFmm partial(sources, targets, options);
         options.backend = ExecutionBackend::CudaFull;
@@ -1596,10 +1605,12 @@ TEST_CASE("CUDA M2L/P2P accepts empty geometry", "[cuda][manual]")
     options.expansion_basis = ExpansionBasis::Cartesian;
     options.precision = StaticPrecision::Float64;
     options.backend = ExecutionBackend::CudaM2LP2P;
+    options.timing_level = TimingLevel::Coarse;
     UniformFmm fmm(std::vector<Vec3>{}, std::vector<Vec3>{}, options);
     const auto result = fmm.evaluate({}, OutputFlags::Field);
 
     REQUIRE(result.empty());
+    // The wait for the device near field is a coarse host clock.
     REQUIRE(fmm.last_timings().cuda_p2p_wait.calls == 1);
 }
 
@@ -1613,6 +1624,7 @@ TEST_CASE("full CUDA accepts empty geometry", "[cuda][manual]")
     UniformFmmOptions options;
     options.expansion_basis = ExpansionBasis::Cartesian;
     options.backend = ExecutionBackend::CudaFull;
+    options.timing_level = TimingLevel::Detailed;
     UniformFmm fmm(std::vector<Vec3>{}, std::vector<Vec3>{}, options);
     const auto result = fmm.evaluate({}, OutputFlags::Field);
 

@@ -58,6 +58,9 @@ UniformFmmOptions cache_options() {
   options.precision = StaticPrecision::Float64;
   options.tree.max_level = 2;
   options.enable_cache = true;
+  // The cache tests read construction call counts to tell a warm load from
+  // a rebuild, so they need the detailed construction timing.
+  options.timing_level = TimingLevel::Detailed;
   return options;
 }
 
