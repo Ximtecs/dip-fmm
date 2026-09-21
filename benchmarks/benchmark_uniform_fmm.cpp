@@ -73,9 +73,17 @@ struct Options {
     // Fully periodic cubic cell equal to the root box.
     bool periodic{false};
     // Internal solver timing: "off" (the production path and the default),
-    // "coarse" or "detailed".  The headline `evaluation_median` is always
-    // this driver's own external clock; the phase columns come from the
-    // solver and are zero below "detailed".
+    // "coarse" or "detailed".  Two clocks are kept strictly apart in the CSV:
+    // the headline columns (`fmm_setup_seconds`, `evaluation_median`,
+    // `evaluation_mean`, `direct_seconds`, the workload medians) are always
+    // this driver's own external clock, whatever the level; the internal
+    // columns (the tree breakdown, the evaluation phases, the CUDA lanes and
+    // the static-plan phases) are copied from the solver's own records, obey
+    // the level exactly and stay zero when it did not collect them.  The
+    // direct reference backends have no `UniformFmm`-style collector: the CPU
+    // reference has none at all and the CUDA direct plan has only its device
+    // lanes, so their phase columns are never filled from this driver's
+    // clock.  `internal_timing_source` names which collector fed a row.
     std::string timing{"off"};
     std::string precision{"float32"};
     std::string backend{"cpu-static-matrix"};
@@ -1113,8 +1121,13 @@ int main(int argc, char** argv)
                 );
                 return;
             }
+            // The direct references are timed only by the sample loop's
+            // external clock (`evaluation_median`).  `direct_timings` holds
+            // solver-internal values alone: the CPU reference has none, the
+            // CUDA direct plan contributes its device lanes when it collected
+            // them.  Nothing from this driver's clock is written into it, so
+            // an `Off` row never shows a phase that was not measured.
             if (selected_backend == BenchmarkBackend::CpuDirect) {
-                const auto evaluation_start = Clock::now();
                 result = direct_p2p_reference(
                     target_positions,
                     source_positions,
@@ -1122,29 +1135,29 @@ int main(int argc, char** argv)
                     OutputFlags::Field,
                     source_identities
                 );
-                const double elapsed = std::chrono::duration<double>(
-                    Clock::now() - evaluation_start
-                ).count();
-                direct_timings.p2p.add(elapsed);
-                direct_timings.total.add(elapsed);
                 ++direct_timings.evaluations;
                 return;
             }
-            const auto evaluation_start = Clock::now();
             cuda_direct_plan->evaluate(
                 moments,
                 result,
                 OutputFlags::Field
             );
             const auto& device = cuda_direct_plan->evaluation_timings();
-            direct_timings.cuda_h2d.add(device.h2d_seconds);
-            direct_timings.cuda_kernel.add(device.kernel_seconds);
-            direct_timings.cuda_d2h.add(device.d2h_seconds);
-            direct_timings.total.add(std::chrono::duration<double>(
-                Clock::now() - evaluation_start
-            ).count());
+            if (device.timing_level == TimingLevel::Detailed) {
+                direct_timings.cuda_h2d.add(device.h2d_seconds);
+                direct_timings.cuda_kernel.add(device.kernel_seconds);
+                direct_timings.cuda_d2h.add(device.d2h_seconds);
+            }
             ++direct_timings.evaluations;
         };
+        // Names the solver-internal collector behind the phase columns, so a
+        // reader never mistakes an absent collector for a measured zero.
+        const std::string internal_timing_source =
+            fmm ? "uniform_fmm"
+                : (selected_backend == BenchmarkBackend::CudaDirect
+                       ? "cuda_direct_plan"
+                       : "none");
         if (options.warmups > 0) {
             std::cerr << "Warm-up evaluations: " << options.warmups << "\n";
         }
@@ -1156,6 +1169,9 @@ int main(int argc, char** argv)
             fmm->reset_timings();
         }
         direct_timings = {};
+        if (cuda_direct_plan) {
+            direct_timings.timing_level = cuda_direct_plan->timing_level();
+        }
         std::vector<double> sample_seconds;
         sample_seconds.reserve(static_cast<std::size_t>(options.samples));
         for (int sample = 0; sample < options.samples; ++sample) {
@@ -1435,7 +1451,8 @@ int main(int argc, char** argv)
                "near_field_operator_bytes,cuda_p2p_geometry_bytes,"
                "far_field_model,"
                "point_expansion_requested,p2m_execution,l2p_execution,"
-               "p2m_operator_bytes,l2p_operator_bytes,timing_level\n";
+               "p2m_operator_bytes,l2p_operator_bytes,timing_level,"
+               "internal_timing_source\n";
         const char* build_type =
 #ifdef NDEBUG
             "Release";
@@ -1551,7 +1568,8 @@ int main(int argc, char** argv)
             << (fmm ? point_expansion_name(fmm->l2p_execution())
                     : std::string_view{"direct"})
             << ',' << static_plan.p2m_operator_bytes << ','
-            << static_plan.l2p_operator_bytes << ',' << options.timing << '\n';
+            << static_plan.l2p_operator_bytes << ',' << options.timing << ','
+            << internal_timing_source << '\n';
 
         if (!options.output.empty()) {
             std::cout << "Wrote " << options.output << "\n";

@@ -201,7 +201,21 @@ are the same at every level.
 |---|---|---|
 | `Off` (default) | Nothing. Only the functional CUDA events remain (two cross-stream dependencies and the completion point, created without timestamps). Every `PhaseTiming` keeps its default and the records say `timing_level == Off`. | The production path and the Article1 configuration; indistinguishable from a build with no instrumentation. |
 | `Coarse` | Whole host wall times: `total`, and on the CPU hierarchy `far_field` and `p2p` (`cuda_p2p_wait` for the hybrid backend); at construction `total_setup` and the static-plan `total`. No device event is recorded. | A handful of `steady_clock` reads per evaluation. |
-| `Detailed` | Every phase: the host phases, the oneMKL gather/multiply/scatter split, the CUDA device lanes (`CudaEvaluationTimings`, up to sixteen event records and twelve elapsed-time queries per full-plan evaluation) and the construction subphases including cache lookup, load and write. | Measured 3–15 % of a sub-millisecond CUDA evaluation, at noise level on the CPU (`agent_docs/performance_optimization.md`, Phase 5). |
+| `Detailed` | Every phase: the host phases, the oneMKL gather/multiply/scatter split, the CUDA device lanes (`CudaEvaluationTimings`, up to sixteen event records and twelve elapsed-time queries per full-plan evaluation) and the construction subphases including cache lookup, load and write, and the breakdown of the two uniform trees the plan builds (`UniformTree::build_timings`, copied into `tree_construction`). | Measured 3–15 % of a sub-millisecond CUDA evaluation, at noise level on the CPU (`agent_docs/performance_optimization.md`, Phase 5). |
+
+What `Off` covers is exactly the code a `UniformFmm` owns: geometry
+normalisation, the two uniform trees it constructs, topology, every operator
+and static-plan build, cache lookup and load, backend setup and upload, and
+every evaluation. The exact dense baselines take the same switch as a
+constructor argument (`DenseDirectPlan(..., timing_level)` and
+`CudaDenseDirectPlan(..., timing_level)`, default `Off`), which gates their
+internal construction records the same way; the Python dense plans are always
+`Off`. Two standalone tree objects are outside a plan and keep their own
+behaviour: a `UniformTree` you construct yourself collects
+`build_timings()` unless `UniformTreeOptions::collect_build_timings` is
+false (a plan sets it from its level), and `AdaptiveTree` always records its
+two coarse numbers (`tree_seconds`, `interaction_seconds`; three clock reads
+per build, measured below 0.1 µs). Cache files carry no timing.
 
 A region above the selected level is never entered by a clock, so a zero in
 `last_timings` at `Off` is an uncollected default, not a measurement; read the
@@ -210,13 +224,52 @@ record's `timing_level` first. The NVTX ranges
 profilers and do not depend on the timing level, so a profiling build can run
 `Off` under Nsight. The C ABI exposes the same switch through
 `cdfmm_plan_set_timing_level`; `cdfmm_plan_get_last_evaluation_seconds` fails
-rather than returning zero while a plan is `Off`.
+rather than returning zero while a plan is `Off` (see
+[C and Fortran](c-and-fortran.md) for the compatibility status of that
+change).
 
-For a performance measurement, run with timing `Off` and time complete
-`evaluate`/`evaluate_into` calls with an external clock; every driver here
-does so (`evaluation_median`) and records the level it ran at
-(`--timing off|coarse|detailed`, default `off`, column `timing_level`). Use
-`Detailed` in a separate diagnostic run when the phase split is the question.
+### External clock versus internal timing
+
+Every driver keeps two clocks apart, and a CSV column belongs to exactly one
+of them.
+
+- **External benchmark wall clock**: the driver's own `steady_clock` around
+  complete constructor or `evaluate`/`evaluate_into` calls. These are the
+  headline columns and are measured at every level: in
+  `benchmark_uniform_fmm` `fmm_setup_seconds`, `evaluation_median`,
+  `evaluation_mean`, `evaluations_per_second`, `amortised_seconds`,
+  `direct_seconds`, `accuracy_reference_seconds` and the
+  `workload_*_median` columns; in `benchmark_p2p` `setup_s` and
+  `host_total_s`; in `benchmark_dense_direct_construction`
+  `construction_seconds`, `first_evaluation_seconds` and
+  `evaluation_seconds`.
+- **Internal solver timing**: values copied from the solver's own records
+  (`EvaluationTimings`, `StaticPlanStatistics`, `TreeBuildTimings`,
+  `CudaEvaluationTimings`, the dense construction records). They obey the
+  timing level exactly and stay zero when the level did not collect them:
+  the tree breakdown (`tree_total` … `interaction_lists`), the evaluation
+  phases (`moment_permutation` … `result_unpermutation`), the CUDA lanes
+  (`cuda_*`), the static-plan phases (`static_plan_seconds` …
+  `p2p_tensor_plan_seconds`), the P2P driver's `h2d_s`/`kernel_s`/`d2h_s`,
+  and the dense driver's phase columns (that driver requests `Detailed`,
+  because the phase split is what it exists to report).
+
+The direct reference backends of `benchmark_uniform_fmm` have no
+`UniformFmm`-style collector: the CPU all-to-all reference has none, and the
+CUDA direct plan has only its device lanes. Their phase columns are therefore
+never filled from the driver's clock, so an `Off` row for `cpu-direct` or
+`cuda-direct` carries a measured `evaluation_median` and zeros everywhere
+else. The trailing column `internal_timing_source` (`uniform_fmm`,
+`cuda_direct_plan` or `none`) names the collector behind a row's internal
+columns; it was added after the Phase-3D baseline, whose CSVs and analysers
+(which read columns by name) are unaffected.
+
+For a performance measurement, run with timing `Off` and read the external
+columns; every driver records the level it ran at (`--timing
+off|coarse|detailed`, default `off`, column `timing_level`). The Article1
+campaign uses `TimingLevel::Off` and external wall-clock timing of repeated
+`evaluate_into` calls only. Use `Detailed` in a separate diagnostic run when
+the phase split is the question.
 
 ## Reading the numbers
 
