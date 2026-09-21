@@ -55,8 +55,9 @@ void UniformTree::build(const std::vector<Vec3>& source_positions, const std::ve
     // Construction timing is opt-in through `options.collect_build_timings`.
     // When it is off neither stopwatch reads the clock and `build_timings_`
     // keeps its zero defaults; `UniformFmm` switches it off below
-    // `TimingLevel::Detailed`.  The phase clock brackets each phase exactly
-    // as before, so an enabled build reads the clock the same number of times.
+    // `TimingLevel::Detailed`.  The phase clock brackets the same phases as
+    // before; an enabled build reads the clock 18 times (a record that is
+    // immediately followed by the next phase shares one read).
     detail::PhaseStopwatch total_clock(options.collect_build_timings);
     detail::PhaseStopwatch phase_clock(options.collect_build_timings);
     total_clock.start();
