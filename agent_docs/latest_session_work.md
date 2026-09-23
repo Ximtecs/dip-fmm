@@ -1,5 +1,34 @@
 # Latest session work
 
+## 2026-09-24 — Open defect: exact tetrahedron pair near a shared edge
+
+Found by Article1's `finite_endpoint` campaign, not fixed. On
+`tetra_mesh_irregular_8` (a conforming Kuhn mesh with jittered nodes) the
+error sat at 1.5e-2 for every order, depth and endpoint model. It is not the
+FMM: `tetrahedron_tetrahedron_tensor` itself is wrong when two tetrahedra
+nearly -- but not exactly -- share an edge. For the Article1 pair (bodies 363
+and 359), moving one shared vertex off the edge by 3e-14 to 1e-5 changes the
+tensor by up to 73 % (and by factors of hundreds from 1e-6 to 1e-5); from
+1e-4 on it agrees with an independent reference again. The exactly-shared
+value is right: the source's tetrahedron-to-point field averaged over the
+target by Monte Carlo (a different closed form) gives
+H = [-0.1428, 0.1136, -0.0777] against the kernel's [-0.142762, 0.113629,
+-0.077636], and is continuous under the same skews. Cause, as far as read:
+in the triangle-triangle recursion (`src/geometry/primitives/tetrahedron.cpp`)
+the Gram-Schmidt rank test drops a direction below sqrt(256 eps) relative
+while the residual height is snapped only below 256 eps absolute, so a
+reduced basis meets a nonzero height; above the rank threshold the full-rank
+closed forms cancel catastrophically. The FMM's coordinate normalisation
+creates such ulp-level mismatches whenever it cannot scale a conforming mesh
+exactly; power-of-two lattices (every regular Kuhn mesh Article1 uses)
+normalise exactly and are unaffected -- their references are correct.
+Pinned by `tests/test_tetrahedron.cpp`, "exact tetrahedron pair is
+continuous as a shared edge stops coinciding" (`[!shouldfail]`: all five
+skews fail today, the case passes CTest, and Catch2 flags the tag once a fix
+lands). A fix needs the near-degenerate branches of the recursion reworked
+with an error analysis; snapping alone would cost up to 1e-4 in exact FP64
+references, so it was not attempted unattended.
+
 ## 2026-09-23 — Near-field construction memory and persisted dictionaries
 
 Starting HEAD `d745503`. Branch `article1-benchmark-fixes`. The Article1

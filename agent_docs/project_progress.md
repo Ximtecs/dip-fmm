@@ -1,5 +1,12 @@
 # Project progress
 
+## Open: exact tetrahedron pair near a shared edge — found 2026-09-24
+
+`tetrahedron_tetrahedron_tensor` is wrong by up to 73 % (and by factors of
+hundreds) when two tetrahedra nearly share an edge (skews 3e-14 to 1e-5);
+exactly shared and clearly separated pairs are right. Pinned by a
+`[!shouldfail]` test; details in `latest_session_work.md`.
+
 ## Near-field construction memory and persisted dictionaries: COMPLETE — 2026-09-23
 
 Chunked near-field construction, streamed geometry-cache writes, an
