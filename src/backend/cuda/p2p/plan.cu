@@ -1775,38 +1775,34 @@ void upload_cuda_leaf_typed(const Plan &leaf,
          block_leaf_bytes);
   upload(device.leaf_blocks, leaf.blocks.data(), block_bytes);
 
-  std::array<std::vector<Scalar>, 6> transposed;
-  for (auto &component : transposed) {
-    component.resize(leaf.tensors[0].size());
-  }
-  for (std::size_t target_leaf = 0; target_leaf < leaf.target_begins.size();
-       ++target_leaf) {
-    const int target_count = leaf.target_counts[target_leaf];
-    for (int block_index = leaf.leaf_row_offsets[target_leaf];
-         block_index < leaf.leaf_row_offsets[target_leaf + 1]; ++block_index) {
-      const StaticP2PLeafBlock &block =
-          leaf.blocks[static_cast<std::size_t>(block_index)];
-      for (int local_target = 0; local_target < target_count; ++local_target) {
-        for (int local_source = 0; local_source < block.source_count;
-             ++local_source) {
-          const std::size_t source_index = block.tensor_offset +
-              static_cast<std::size_t>(local_target) * block.source_count +
-              local_source;
-          const std::size_t destination_index = block.tensor_offset +
-              static_cast<std::size_t>(local_source) * target_count +
-              local_target;
-          for (std::size_t component = 0; component < 6; ++component) {
-            transposed[component][destination_index] =
-                leaf.tensors[component][source_index];
+  // Each component plane is transposed into one reused staging buffer and
+  // uploaded before the next, so the host holds one plane rather than a
+  // second copy of all six; the uploads and the device layout are unchanged.
+  std::vector<Scalar> transposed(leaf.tensors[0].size());
+  for (std::size_t component = 0; component < 6; ++component) {
+    for (std::size_t target_leaf = 0; target_leaf < leaf.target_begins.size();
+         ++target_leaf) {
+      const int target_count = leaf.target_counts[target_leaf];
+      for (int block_index = leaf.leaf_row_offsets[target_leaf];
+           block_index < leaf.leaf_row_offsets[target_leaf + 1]; ++block_index) {
+        const StaticP2PLeafBlock &block =
+            leaf.blocks[static_cast<std::size_t>(block_index)];
+        for (int local_target = 0; local_target < target_count; ++local_target) {
+          for (int local_source = 0; local_source < block.source_count;
+               ++local_source) {
+            const std::size_t source_index = block.tensor_offset +
+                static_cast<std::size_t>(local_target) * block.source_count +
+                local_source;
+            const std::size_t destination_index = block.tensor_offset +
+                static_cast<std::size_t>(local_source) * target_count +
+                local_target;
+            transposed[destination_index] = leaf.tensors[component][source_index];
           }
         }
       }
     }
-  }
-  for (std::size_t component = 0; component < 6; ++component) {
     upload(device.tensors + component * leaf.tensors[0].size(),
-           transposed[component].data(),
-           transposed[component].size() * sizeof(Scalar));
+           transposed.data(), transposed.size() * sizeof(Scalar));
   }
 
   const std::size_t total_bytes = target_metadata_bytes + row_bytes +
