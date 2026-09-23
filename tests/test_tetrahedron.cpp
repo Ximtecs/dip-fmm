@@ -981,3 +981,52 @@ TEST_CASE("tetrahedron point tensor is continuous across an edge-line extension"
     REQUIRE(maximum_component_difference(far_nearby, far_exact) <
             1.0e-7 * std::abs(far_exact.xx));
 }
+
+TEST_CASE("exact tetrahedron pair is continuous as a shared edge stops coinciding",
+          "[tetrahedron][!shouldfail]")
+{
+    // FIXME(cdfmm): two tetrahedra of a conforming mesh that share an edge
+    // are evaluated correctly while the edge coincides exactly (checked
+    // against the source's point field averaged over the target, which does
+    // not use this kernel). Moving one shared vertex off the edge by 3e-14 to
+    // 1e-5 changes the tensor by up to 73 % -- and from 1e-6 to 1e-5 by
+    // factors of hundreds -- where the physical field moves by roughly the
+    // skew itself; from 1e-4 on it agrees again. Two branches of the
+    // triangle-triangle recursion are responsible: below the Gram-Schmidt
+    // rank tolerance (sqrt(256 eps) relative) a direction is dropped while its
+    // residual height, snapped only below 256 eps absolute, is kept; above it
+    // the full-rank closed forms cancel catastrophically. The FMM's coordinate
+    // normalisation creates such ulp-level mismatches on a conforming mesh
+    // whose coordinates it cannot scale exactly, which is how Article1's
+    // irregular Kuhn mesh found it. Expected to fail until the recursion
+    // handles near-degenerate pairs; Catch2 then reports the tag as stale.
+    //
+    // Bodies 363 (source) and 359 (target) of Article1's
+    // tetra_mesh_irregular_8, as offsets from their representatives.
+    const Tetrahedron source{{{{-0.25, -0.75, -0.5},
+                               {-0.25, 0.25, -0.5},
+                               {-0.25, 0.25, 0.5},
+                               {0.75, 0.25, 0.5}}}};
+    const Tetrahedron target{{{{-0.25, -0.5, -0.75},
+                               {-0.25, -0.5, 0.25},
+                               {-0.25, 0.5, 0.25},
+                               {0.75, 0.5, 0.25}}}};
+    const Vec3 displacement{0.0, -0.25, -0.75};
+    const PairTensor shared =
+        tetrahedron_tetrahedron_tensor(displacement, source, target);
+    const double scale = std::sqrt(
+        shared.xx * shared.xx + shared.yy * shared.yy + shared.zz * shared.zz +
+        2.0 * (shared.xy * shared.xy + shared.xz * shared.xz +
+               shared.yz * shared.yz));
+    const double length = std::sqrt(0.6 * 0.6 + 0.3 * 0.3 + 0.74 * 0.74);
+    const Vec3 direction = Vec3{0.6, -0.3, 0.74} * (1.0 / length);
+    for (const double skew : {1.0e-13, 1.0e-10, 1.0e-7, 1.0e-6, 1.0e-5}) {
+        INFO("skew " << skew);
+        Tetrahedron moved = source;
+        moved.vertices[0] = moved.vertices[0] + direction * skew;
+        const PairTensor value =
+            tetrahedron_tetrahedron_tensor(displacement, moved, target);
+        // A skew of delta moves the tensor by O(delta log delta).
+        CHECK(maximum_component_difference(value, shared) <= 1.0e-3 * scale);
+    }
+}
