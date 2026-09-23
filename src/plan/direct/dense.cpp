@@ -11,6 +11,7 @@
 #include "phase_stopwatch.hpp"
 #include "plan/direct/construction_statistics.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -475,6 +476,15 @@ DenseDirectPlan::DenseDirectPlan(
                 ? sizeof(float) : sizeof(double);
         detail::exact_reuse::ExactReuseGate gate;
         gate.sample_reuse_factor = 2;
+        // Pairs are visited target-major, and the pairs of one target row
+        // all have distinct displacements (the sources sit at distinct
+        // places), so reuse only appears between rows. The sample must
+        // therefore span several rows: with the default window alone, a plan
+        // with 32768 or more sources samples at most two rows and abandons
+        // classification even on a perfect lattice.
+        constexpr std::size_t sampled_target_rows = 16;
+        gate.sample_pairs =
+            std::max(gate.sample_pairs, sampled_target_rows * ns_);
         gate.max_classes =
             3 * pair_count * scalar_bytes / sizeof(PairTensor);
         classes = detail::exact_reuse::classify_exact_operators(

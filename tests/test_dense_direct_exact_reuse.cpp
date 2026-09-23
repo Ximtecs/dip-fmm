@@ -33,6 +33,7 @@
 #include "cdfmm/geometry/primitives/tetrahedron.hpp"
 #include "cdfmm/operators/p2p.hpp"
 #include "cdfmm/plan/direct/dense.hpp"
+#include "plan/direct/construction_statistics.hpp"
 
 using namespace cdfmm;
 
@@ -471,6 +472,54 @@ TEST_CASE("dense reuse is independent of thread count",
             for (std::size_t index = 0; index < expected.size(); ++index) {
                 REQUIRE(same_bits(expected[index], actual[index]));
             }
+        }
+    }
+}
+
+TEST_CASE("dense reuse is found when a target row exceeds the reuse sample",
+          "[dense_direct][exact_reuse]")
+{
+    // Pairs are classified target-major, and one target row never repeats a
+    // displacement. With 65536 sources a single row fills the default
+    // 65536-pair sample, so the gate must look across rows or it abandons
+    // reuse on a perfect lattice. Four targets on the lattice share almost
+    // every displacement with each other.
+    constexpr int nx = 64;
+    constexpr int ny = 32;
+    constexpr int nz = 32;
+    const double h = 1.0 / 32.0;
+    std::vector<Vec3> sources;
+    sources.reserve(static_cast<std::size_t>(nx) * ny * nz);
+    for (int k = 0; k < nz; ++k) {
+        for (int j = 0; j < ny; ++j) {
+            for (int i = 0; i < nx; ++i) {
+                sources.push_back({(i + 0.5) * h, (j + 0.5) * h, (k + 0.5) * h});
+            }
+        }
+    }
+    const std::vector<Vec3> targets(sources.begin(), sources.begin() + 4);
+    const std::vector<CuboidSize> sizes{{0.9 * h, 0.9 * h, 0.9 * h}};
+
+    const DenseDirectPlan plan(
+        sources, targets, SourceGeometry::RectangularPrism,
+        TargetGeometry::Point, sizes, {}, {}, StaticPrecision::Float64);
+    const detail::dense_direct::ConstructionStatistics record =
+        detail::dense_direct::construction_statistics();
+    REQUIRE(record.pair_count == sources.size() * targets.size());
+    REQUIRE(record.classified);
+    REQUIRE(record.built_tensor_count < record.pair_count / 3);
+
+    // Reuse never changes a value: spot-check entries against the per-pair
+    // geometry function, bit for bit.
+    for (const std::size_t source : {std::size_t{0}, std::size_t{1},
+                                     std::size_t{4097}, sources.size() - 1}) {
+        for (std::size_t target = 0; target < targets.size(); ++target) {
+            require_same_bits(
+                entry_of(plan, target, source),
+                components_of(operators::p2p::build_pair(
+                    targets[target], sources[source],
+                    SourceGeometry::RectangularPrism, TargetGeometry::Point,
+                    sizes[0], CuboidSize{})));
         }
     }
 }
