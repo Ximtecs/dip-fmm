@@ -556,6 +556,101 @@ TEST_CASE("explicit P2P packing requests resolve and agree on CpuStatic",
     }
 }
 
+TEST_CASE("explicit CpuStatic P2P packing outranks the regular-grid hint",
+          "[uniform_fmm][p2p][packing]")
+{
+    // A cubic point lattice with a fixed identity map is where the layout hint
+    // selects the signed dictionary automatically. An explicit non-dictionary
+    // request must win over the hint and over `use_reduced_symmetry_p2p`, and
+    // must not derive the dictionary at all.
+    constexpr int side = 8;
+    std::vector<Vec3> positions;
+    positions.reserve(side * side * side);
+    for (int k = 0; k < side; ++k) {
+        for (int j = 0; j < side; ++j) {
+            for (int i = 0; i < side; ++i) {
+                positions.push_back({(i + 0.5) / side - 0.5,
+                                     (j + 0.5) / side - 0.5,
+                                     (k + 0.5) / side - 0.5});
+            }
+        }
+    }
+    std::vector<Vec3> moments(positions.size());
+    for (std::size_t index = 0; index < moments.size(); ++index) {
+        const double value = static_cast<double>(index);
+        moments[index] = {std::sin(value), std::cos(1.3 * value),
+                          std::sin(0.7 * value)};
+    }
+    std::vector<int> identities(positions.size());
+    std::iota(identities.begin(), identities.end(), 0);
+
+    for (const StaticPrecision precision :
+         {StaticPrecision::Float64, StaticPrecision::Float32}) {
+        UniformFmmOptions options;
+        options.backend = ExecutionBackend::CpuStatic;
+        options.precision = precision;
+        options.expansion_order = 3;
+        options.tree.max_level = 2;
+        options.spatial_layout = SpatialLayout::RegularGrid;
+        options.fixed_target_source_indices = identities;
+        options.enable_cache = false;
+
+        UniformFmm automatic(positions, positions, options);
+        REQUIRE(automatic.p2p_execution_packing() ==
+                P2PExecutionPacking::TensorDictionary);
+        const auto expected = automatic.evaluate(moments, OutputFlags::Field);
+        const double tolerance =
+            precision == StaticPrecision::Float32 ? 5.0e-5 : 1.0e-12;
+
+        for (const bool reduced_symmetry : {false, true}) {
+            options.use_reduced_symmetry_p2p = reduced_symmetry;
+            for (const P2PExecutionPacking packing :
+                 {P2PExecutionPacking::CanonicalAos,
+                  P2PExecutionPacking::ParticleRowSoa,
+                  P2PExecutionPacking::PointGeometry}) {
+                options.p2p_packing = packing;
+                UniformFmm forced(positions, positions, options);
+                REQUIRE(forced.p2p_execution_packing() == packing);
+                REQUIRE(forced.static_plan_statistics()
+                            .p2p_dictionary_total_bytes == 0);
+                require_fields_close(
+                    forced.evaluate(moments, OutputFlags::Field), expected,
+                    tolerance);
+            }
+        }
+    }
+
+    // Finite lattice bodies: the hint selects the dictionary, the stored-row
+    // requests still win.
+    UniformFmmOptions prism_options;
+    prism_options.backend = ExecutionBackend::CpuStatic;
+    prism_options.precision = StaticPrecision::Float64;
+    prism_options.expansion_order = 3;
+    prism_options.tree.max_level = 2;
+    prism_options.spatial_layout = SpatialLayout::RegularGrid;
+    prism_options.source_geometry = SourceGeometry::RectangularPrism;
+    prism_options.source_sizes = {
+        RectangularPrism{1.0 / side, 1.0 / side, 1.0 / side}};
+    prism_options.far_field_source_model = SourceModel::PointDipole;
+    prism_options.enable_cache = false;
+    UniformFmm prism_automatic(positions, positions, prism_options);
+    REQUIRE(prism_automatic.p2p_execution_packing() ==
+            P2PExecutionPacking::TensorDictionary);
+    const auto prism_expected =
+        prism_automatic.evaluate(moments, OutputFlags::Field);
+    for (const P2PExecutionPacking packing :
+         {P2PExecutionPacking::CanonicalAos,
+          P2PExecutionPacking::ParticleRowSoa}) {
+        prism_options.p2p_packing = packing;
+        UniformFmm forced(positions, positions, prism_options);
+        REQUIRE(forced.p2p_execution_packing() == packing);
+        REQUIRE(forced.static_plan_statistics().p2p_dictionary_total_bytes ==
+                0);
+        require_fields_close(forced.evaluate(moments, OutputFlags::Field),
+                             prism_expected, 1.0e-12);
+    }
+}
+
 TEST_CASE("periodic point geometry P2P matches the stored rows for field and potential",
           "[uniform_fmm][p2p][packing][periodic]")
 {

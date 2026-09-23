@@ -537,9 +537,14 @@ void UniformFmm::apply_p2p_packing_request(
 
   const bool cuda_backend = inputs.cuda_backend;
   if (!cuda_backend) {
+    // NOTE(cdfmm): a non-dictionary request is recorded as an explicit policy
+    // packing so that neither the regular-grid hint nor
+    // `use_reduced_symmetry_p2p` can still select, and then derive, the
+    // dictionary, which `resolve_cpu_p2p_packing` would otherwise prefer.
     switch (requested) {
     case P2PExecutionPacking::CanonicalAos:
     case P2PExecutionPacking::ParticleRowSoa:
+      inputs.explicit_packing = CudaP2PPacking::CanonicalRows;
       return;
     case P2PExecutionPacking::PointGeometry:
       if (!inputs.effective_point_source || !effective_point_target) {
@@ -551,6 +556,7 @@ void UniformFmm::apply_p2p_packing_request(
       // Periodic image records carry their source shift and identity
       // marker, which the position-based executor folds into the gathered
       // neighbourhood, so periodic plans are accepted.
+      inputs.explicit_packing = CudaP2PPacking::PointGeometry;
       return;
     case P2PExecutionPacking::TensorDictionary: {
       const char *reason = cuda_policy::explicit_packing_rejection(

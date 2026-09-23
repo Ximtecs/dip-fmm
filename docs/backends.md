@@ -159,9 +159,10 @@ not selected BSR(3) since leaf blocks became the general default.
 |---|---|---|
 | explicit `p2p_packing` (valid for the plan) | the requested packing | `cuda_dictionary_target_owned` > `cuda_dictionary_power2_microtiles` > source-warp |
 | explicit `use_reduced_symmetry_p2p` (valid) | signed tensor dictionary | as above |
-| point sources and point targets on the CPU, or FP32 point pairs on CUDA, any layout | `PointGeometry`: sorted positions and list-1 records, no pair tensors | — |
-| `RegularGrid` layout, any other plan (FP64 points need a fixed identity map), built dictionary with one- or two-byte tokens | signed tensor dictionary | explicit executor flag if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned from 48 to below 72, source-warp from 72 upwards |
+| FP32 point pairs on CUDA, any layout | `PointGeometry`: sorted positions and list-1 records, no pair tensors | — |
+| `RegularGrid` layout, any other plan (point sources need a fixed identity map), built dictionary with one- or two-byte tokens | signed tensor dictionary | explicit executor flag if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned from 48 to below 72, source-warp from 72 upwards |
 | `RegularGrid` whose built dictionary needs four-byte tokens (more than 65535 variants) | falls back to the `General` rule | — |
+| point sources and point targets on the CPU, otherwise (`General`, no fixed identity map, or four-byte dictionary tokens) | `PointGeometry`: sorted positions and list-1 records, no pair tensors | — |
 | `General`, finite geometry or FP64 points on CUDA | dense leaf blocks | — |
 | `General`, finite geometry on the CPU | particle-row SoA tensors | — |
 
