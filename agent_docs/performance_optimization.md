@@ -2928,6 +2928,26 @@ cache key that distinguishes a plan without a stored near field, or a header
 flag saying the section is unpopulated -- is a persistent-cache change. Phase
 3C is not authorised to make one, so the subtask stops here.
 
+**Resolved later (Article1 preparation, explicitly requested).** The first
+framing was taken. `UniformFmm::position_based_near_field()` is true when the
+policy resolved before preparation guarantees `PointGeometry` (CPU: the
+automatic or explicit point executor without a layout-selected dictionary,
+which is only a prediction; CUDA: `CudaP2PPacking::PointGeometry`). Such a
+plan skips the pair list, the canonical operator, the compact rows and the
+speculative FP32 BSR; `p2p_interactions` is counted from the leaf records.
+Its geometry key gains a `_p2p_positions_` segment and a conditionally hashed
+`"POSG"` marker, so stored-tensor keys are byte-identical and older binaries
+never read the empty P2P section; the load rejects a positions-keyed file
+holding tensors. The same 64^3 point-lattice construction (64 per leaf,
+order 6, FP64 `CpuStatic`, cache disabled, eight E-cores) measured with the
+unmodified `aa9d75f` module and with the change: peak RSS 66.6 GB -> 1.46 GB,
+construction 63.8 s -> 2.4 s, identical resolved packing. At 512 per leaf,
+previously infeasible (about 300 GB), the plan needs 1.26 GB on `CpuStatic`
+and 1.98 GB host memory on `CudaFull` FP32. Every stored-tensor geometry key
+was checked byte-identical against the unmodified module (points with
+explicit rows or AoS, the layout dictionary, reduced symmetry, prisms, a
+periodic prism plan).
+
 ### Cache behaviour
 
 Three states of the same plan, spherical, FP32, eight threads: cold with

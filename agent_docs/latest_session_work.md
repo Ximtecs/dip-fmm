@@ -1,5 +1,71 @@
 # Latest session work
 
+## 2026-09-23 — Article1 preparation: four defects found while benchmarking, position-based point plans
+
+Starting HEAD `aa9d75f` (the frozen Phase-5 SHA). Branch
+`article1-benchmark-fixes`. The Article1 campaign exposed four defects and
+one construction limit; each was fixed at the lowest layer with a regression
+test that fails on `aa9d75f`. No public API, C ABI, Python API, Fortran
+interface or cache format changed; the one cache-key change is additive (below).
+
+**1. Explicit CPU `p2p_packing` lost to the regular-grid hint.** On
+`CpuStatic`, `CanonicalAos`, `ParticleRowSoa` and `PointGeometry` requests
+returned from `apply_p2p_packing_request` without being recorded, so the
+`RegularGrid` layout rule still selected, derived and then preferred the
+signed dictionary (resolved `TensorDictionary` for a `CanonicalAos` request).
+The requests now set `explicit_packing`, which the resolver honours verbatim,
+as the public header already promised. `docs/backends.md`'s policy table also
+listed CPU point pairs above the layout rule; the order now matches the code.
+
+**2. `benchmark_uniform_fmm` measured warm CUDA builds as cold.** The CUDA
+runtime warm-up construction, and every workload-comparison construction,
+used the default cache, so an empty `CDFMM_CACHE_DIR` was filled before the
+timed construction read it. Both are now cache-free. Cold `CudaFull` setup of
+a 32^3 lattice is 3.97 s against 3.70 s on `CpuStatic`; warm 0.47 s.
+
+**3. Finite-body accuracy used a point-dipole reference.** The driver's
+`--direct`/`--accuracy-targets` compared exact finite near fields with a
+point-dipole sum. Finite bodies now use an FP64 `DenseDirectPlan` reference
+built in blocks (exact pair tensors, physical self terms). Order 4 on a
+32^3 prism lattice: 2.4e-3 RMS.
+
+**4. The dense exact-reuse gate could never see reuse above 32768 sources.**
+`DenseDirectPlan` classifies pairs target-major and decided from the first
+65536 pairs; one target row has only distinct displacements, so with
+`N_s >= 32768` the sample held at most two rows and classification was always
+abandoned, even on a perfect lattice. The sample now spans at least sixteen
+target rows (`max(65536, 16 N_s)`, identical below 4096 sources, so Phase-3C.5
+numbers are unaffected). 512 targets x 32768 prisms: 271 s -> 3.5 s,
+bit-identical by construction.
+
+**5. `PointGeometry` plans no longer build stored pair tensors.** Recorded as
+Phase-3C lead 7 in `performance_optimization.md`, now resolved there: a plan
+whose policy guarantees `PointGeometry` before preparation skips the pair
+list, canonical operator, compact rows and speculative FP32 BSR, counts
+`p2p_interactions` from the leaf records, and keys its geometry file with
+`_p2p_positions_` plus a conditionally hashed `"POSG"` marker. Stored-tensor
+keys were verified byte-identical against the `aa9d75f` module. 64^3 points
+at 64 per leaf: 66.6 GB / 63.8 s -> 1.46 GB / 2.4 s; 512 per leaf now fits in
+about 1.3 GB (CPU) and 2.0 GB (CudaFull FP32 host).
+
+**Validation (this machine, E-cores 16-31, concurrent single_grain job).**
+CUDA + oneMKL + OpenMP Release build (`build-all`, g++ 15.3, nvcc 13.3,
+RTX 5090): CTest 260/260; `python_tests` 186 passed, 1 skipped, module
+imported from `build-all` via `PYTHONPATH`. Each new test was re-run against
+the reverted source and fails there. The portable CI configuration (GCC 13)
+and the Fortran interface were not built locally.
+
+**Measured, not changed.** With packings honoured, the dictionary reduced the
+P2P operator 20-29x (host) and total device memory 5-11x, but was only
+1.2-1.3x faster than the SoA rows on the CPU; an explicit dictionary request
+without an executor flag runs the source-warp kernel, 1.9x slower than leaf
+blocks for FP64 at 8 per leaf on CUDA (the documented caveat). A CPU point
+lattice with a fixed identity map still selects the dictionary automatically,
+and here it was 1.4x slower than `PointGeometry`, which contradicts the
+Phase-3D ledger; it needs a P-core re-measurement before any policy change.
+Host memory still holds the canonical and row operators beside the dictionary,
+because the free-space potential path reads them.
+
 ## 2026-09-21 — Phase 5 closure follow-up: residual construction clocks, benchmark semantics, C accessor
 
 Starting HEAD `d691830` (tip of `phase5-timing-freeze`, the agent-record

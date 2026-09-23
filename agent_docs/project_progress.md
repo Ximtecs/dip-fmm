@@ -1,5 +1,16 @@
 # Project progress
 
+## Article1 preparation fixes: COMPLETE — 2026-09-23
+
+Branch `article1-benchmark-fixes` from `aa9d75f`. Four defects found while
+preparing Article1 (explicit CPU packing lost to the layout hint; CUDA
+warm-up polluting cold-construction measurements; point reference for
+finite-body accuracy; dense exact-reuse sampling blind above 32768 sources)
+and the Phase-3C lead-7 limit (`PointGeometry` plans built the full stored
+tensor list) are fixed with regression tests. Evidence and numbers are in
+`latest_session_work.md` (2026-09-23). The Article1 campaign must be rebuilt
+from the resulting SHA.
+
 ## Phase 5 low-overhead timing and implementation freeze: COMPLETE — 2026-09-21
 
 Starting HEAD `8f54e6f` (tip of `phase4-pruning`); work on
