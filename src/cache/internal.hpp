@@ -5,6 +5,8 @@
 #include "cdfmm/geometry/primitives/rectangular_prism.hpp"
 #include "cdfmm/geometry/primitives/tetrahedron.hpp"
 #include "cdfmm/periodic.hpp"
+#include "cdfmm/plan/p2p/compact.hpp"
+#include "cdfmm/plan/p2p/signed_dictionary.hpp"
 #include "cdfmm/plan/static_plan.hpp"
 #include "cdfmm/precision.hpp"
 #include "cdfmm/timings.hpp"
@@ -19,6 +21,7 @@
 #include <cstring>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -308,6 +311,52 @@ std::size_t write_cache(const std::filesystem::path& path,
                         const CacheDescriptor& descriptor,
                         const std::vector<unsigned char>& payload);
 
+// Incremental form of the payload checksum: feeding the payload in any split
+// gives exactly the value one call over the whole payload gives.
+class StreamingChecksum {
+public:
+  void update(const void* data, std::size_t size) noexcept;
+  [[nodiscard]] std::uint64_t finish() const noexcept;
+
+private:
+  void block(const unsigned char* bytes) noexcept;
+
+  std::uint64_t a_{0x9e3779b97f4a7c15ULL};
+  std::uint64_t b_{0xd1b54a32d192ed03ULL};
+  std::uint64_t c_{0x94d049bb133111ebULL};
+  std::uint64_t d_{0x243f6a8885a308d3ULL};
+  unsigned char carry_[32]{};
+  std::size_t carry_size_{0};
+  std::size_t total_{0};
+};
+
+// The one-shot payload checksum the container records (exposed for tests).
+[[nodiscard]] std::uint64_t payload_checksum(const void* data,
+                                             std::size_t size) noexcept;
+
+// A cache file written incrementally: payload bytes are appended as they are
+// produced and the header -- which records the payload size and checksum --
+// is written last, so a producer never holds the whole payload in memory.
+// The file is byte-identical to `write_cache` of the concatenated payload,
+// with the same atomic temporary-file protocol; a failed append makes the
+// commit a silent zero-byte result, and an uncommitted stream leaves nothing.
+class CacheFileStream {
+public:
+  CacheFileStream(const std::filesystem::path& path, CacheDescriptor descriptor);
+  ~CacheFileStream();
+  CacheFileStream(const CacheFileStream&) = delete;
+  CacheFileStream& operator=(const CacheFileStream&) = delete;
+
+  void append(const void* data, std::size_t bytes) noexcept;
+  void append(const Writer& writer) noexcept;
+  /// Writes the header, syncs and renames; returns the bytes written or 0.
+  [[nodiscard]] std::size_t commit() noexcept;
+
+private:
+  struct State;
+  std::unique_ptr<State> state_;
+};
+
 // Payload records for the persisted solver types, in format.cpp. These are the
 // facilities shared by the universal and geometry payloads; the file container
 // itself is owned by io.cpp.
@@ -370,6 +419,15 @@ struct CacheIdentityInputs {
   // is empty, and a stored-tensor plan (or an older binary, which never
   // computes this key) must never read it as a complete near field.
   bool position_based_p2p;
+  // True when the plan's near field is the signed tensor dictionary. Its file
+  // persists the dictionary itself (and the point potential rows built beside
+  // it) instead of the canonical records, so it is keyed apart. The target
+  // tile shapes the stored dictionary, and a dictionary chosen from the
+  // RegularGrid hint may fall back to canonical rows where an explicit one
+  // never does, so both are part of that key.
+  bool dictionary_p2p;
+  int dictionary_target_tile_size;
+  bool dictionary_from_layout;
   const PeriodicCellOptions& periodic;
   const UniformTree& tree;
   std::span<const CuboidSize> sorted_source_sizes;
@@ -464,6 +522,10 @@ struct GeometryCacheIdentity {
   // rejects any other file under its key as a miss (see
   // `CacheIdentityInputs::position_based_p2p`).
   bool position_based_p2p{false};
+  // A dictionary plan's file ends with a dictionary section (see
+  // geometry.cpp), which the load reads back and validates.
+  bool dictionary_p2p{false};
+  int dictionary_target_tile_size{0};
 };
 
 // Mutable references to exactly the geometry-dependent plan state this
@@ -483,6 +545,13 @@ struct GeometryCachePayload {
   StaticP2PCompactPlan& p2p_compact_plan;
   FloatStaticP2PCompactPlan& p2p_compact_plan_float;
   FloatStaticP2PBsrPlan& p2p_bsr_plan_float;
+  // Set only by a dictionary-keyed file whose plan kept its dictionary, in
+  // the plan's precision (the FP32 dictionary is the one an FP32 plan
+  // executes, so a warm plan does not convert it again); the point potential
+  // rows beside it arrive in `p2p_compact_plan` (FP64) and
+  // `p2p_compact_plan_float` (FP32).
+  std::optional<StaticP2PSignedTensorDictionaryPlan>& p2p_dictionary;
+  std::optional<FloatStaticP2PSignedTensorDictionaryPlan>& p2p_dictionary_float;
 };
 
 // Loads a geometry plan, validating every cached tree/topology invariant
@@ -510,5 +579,50 @@ void write_geometry_cache(
     const std::vector<P2MPlan>& p2m_plans, const StaticM2LPlan& m2l_plan,
     const std::vector<StaticL2PEvaluator>& l2p_evaluators,
     const StaticP2POperator& p2p_operator, StaticPlanStatistics& statistics);
+
+// The same geometry payload, streamed: everything before the canonical P2P
+// records is written at construction (the P2P row offsets and record count
+// are known from the topology before any record exists), the records are
+// appended in canonical order as the near field is built, and `finish`
+// commits the file. `write_geometry_cache` is this with one append, so the
+// two are byte-identical. A disabled identity makes every call a no-op.
+class GeometryCacheWriter {
+public:
+  GeometryCacheWriter(
+      const GeometryCacheIdentity& identity, const UniformTree& tree,
+      const std::optional<std::vector<int>>& fixed_target_source_indices,
+      const std::vector<P2MPlan>& p2m_plans, const StaticM2LPlan& m2l_plan,
+      const std::vector<StaticL2PEvaluator>& l2p_evaluators,
+      int p2p_source_count, int p2p_target_count,
+      std::span<const int> p2p_row_offsets, std::uint64_t p2p_block_count,
+      StaticPlanStatistics& statistics);
+  ~GeometryCacheWriter();
+  GeometryCacheWriter(const GeometryCacheWriter&) = delete;
+  GeometryCacheWriter& operator=(const GeometryCacheWriter&) = delete;
+
+  void append_p2p_blocks(std::span<const StaticDipoleBlock> blocks);
+  // Closes a dictionary-keyed file: the plan's signed dictionary in its own
+  // precision (`dictionary` for FP64, `dictionary_float` for FP32) and its
+  // point potential rows, or, with neither, the marker that the canonical
+  // records already appended are its near field. `finish` drops a
+  // dictionary-keyed file without this section.
+  void append_dictionary_section(
+      const StaticP2PSignedTensorDictionaryPlan* dictionary,
+      const FloatStaticP2PSignedTensorDictionaryPlan* dictionary_float,
+      const StaticP2PCompactPlan& potential_rows,
+      const FloatStaticP2PCompactPlan& potential_rows_float);
+  void finish();
+
+private:
+  StaticPrecision precision_{};
+  bool dictionary_p2p_{false};
+  bool dictionary_section_written_{false};
+  std::uint64_t expected_blocks_{0};
+  std::uint64_t written_blocks_{0};
+  double seconds_{0.0};
+  bool timed_{false};
+  StaticPlanStatistics& statistics_;
+  std::unique_ptr<CacheFileStream> stream_{};
+};
 
 } // namespace cdfmm::detail::cache

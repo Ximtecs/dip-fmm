@@ -2,6 +2,9 @@
 
 #include "cache/internal.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cstring>
 #include <atomic>
 #include <bit>
 #include <cerrno>
@@ -226,15 +229,92 @@ CachePayload read_cache(const std::filesystem::path& path,
 // plan may race harmlessly (the loser removes its temporary and reports the
 // winner's bytes), and any failure returns 0 bytes rather than throwing,
 // because a failed cache write must never fail a construction.
-std::size_t write_cache(const std::filesystem::path& path,
-                        const CacheDescriptor& descriptor,
-                        const std::vector<unsigned char>& payload) {
-  std::error_code error;
-  std::filesystem::create_directories(path.parent_path(), error);
-  if (error) {
-    return 0;
-  }
+void StreamingChecksum::block(const unsigned char* bytes) noexcept {
+  const std::uint64_t x0 = load_unaligned<std::uint64_t>(bytes);
+  const std::uint64_t x1 = load_unaligned<std::uint64_t>(bytes + 8);
+  const std::uint64_t x2 = load_unaligned<std::uint64_t>(bytes + 16);
+  const std::uint64_t x3 = load_unaligned<std::uint64_t>(bytes + 24);
+  a_ += x0;
+  b_ ^= std::rotl(x1, 17);
+  c_ += x2;
+  d_ ^= std::rotl(x3, 31);
+  b_ += a_;
+  d_ += c_;
+}
 
+// Full 32-byte blocks are consumed as they arrive; fewer than 32 trailing
+// bytes wait in `carry_`, and `finish` treats them exactly as the one-shot
+// checksum treats its tail.
+void StreamingChecksum::update(const void* data, std::size_t size) noexcept {
+  const auto* bytes = static_cast<const unsigned char*>(data);
+  total_ += size;
+  if (carry_size_ != 0) {
+    const std::size_t take = std::min<std::size_t>(32 - carry_size_, size);
+    std::memcpy(carry_ + carry_size_, bytes, take);
+    carry_size_ += take;
+    bytes += take;
+    size -= take;
+    if (carry_size_ < 32) {
+      return;
+    }
+    block(carry_);
+    carry_size_ = 0;
+  }
+  while (size >= 32) {
+    block(bytes);
+    bytes += 32;
+    size -= 32;
+  }
+  if (size != 0) {
+    std::memcpy(carry_, bytes, size);
+    carry_size_ = size;
+  }
+}
+
+std::uint64_t StreamingChecksum::finish() const noexcept {
+  std::uint64_t a = a_;
+  std::uint64_t b = b_;
+  std::uint64_t c = c_;
+  std::uint64_t d = d_;
+  std::size_t offset = 0;
+  while (offset + 8 <= carry_size_) {
+    a += load_unaligned<std::uint64_t>(carry_ + offset);
+    b += a;
+    offset += 8;
+  }
+  if (offset != carry_size_) {
+    std::uint64_t tail = 0;
+    std::memcpy(&tail, carry_ + offset, carry_size_ - offset);
+    c += tail;
+    d += c;
+  }
+  return checksum_avalanche(a ^ std::rotl(b, 13) ^ std::rotl(c, 29) ^
+                            std::rotl(d, 47) ^ total_);
+}
+
+std::uint64_t payload_checksum(const void* data, const std::size_t size) noexcept {
+  return fast_checksum64(data, size);
+}
+
+struct CacheFileStream::State {
+  std::filesystem::path path{};
+  std::filesystem::path temporary{};
+  CacheDescriptor descriptor{};
+  std::uint64_t payload_offset{0};
+  std::uint64_t payload_size{0};
+  StreamingChecksum checksum{};
+  int fd{-1};
+  bool failed{false};
+  bool committed{false};
+};
+
+namespace {
+
+// The container header in front of the payload; its size depends only on the
+// descriptor, so the payload can be written first at that offset.
+[[nodiscard]] Writer container_header(const CacheDescriptor& descriptor,
+                                      const std::uint64_t payload_size,
+                                      const std::uint64_t checksum) {
   Writer header;
   header.reserve(256 + descriptor.key.size() + descriptor.geometry_hash.size());
   const std::array<unsigned char, 8> magic{
@@ -252,56 +332,144 @@ std::size_t write_cache(const std::filesystem::path& path,
   header.scalar(kChecksumAlgorithm);
   header.string(descriptor.key);
   header.string(descriptor.geometry_hash);
-
   constexpr std::size_t fixed_header_bytes =
       8 + 10 * sizeof(std::uint32_t) + 4 * sizeof(std::uint64_t) +
       sizeof(std::uint64_t);
   const std::uint64_t payload_offset = fixed_header_bytes +
       descriptor.key.size() + descriptor.geometry_hash.size();
   header.scalar(payload_offset);
-  header.scalar<std::uint64_t>(payload.size());
-  header.scalar(fast_checksum64(payload.data(), payload.size()));
+  header.scalar<std::uint64_t>(payload_size);
+  header.scalar(checksum);
   if (header.bytes().size() != payload_offset) {
     throw std::runtime_error("internal cache header size mismatch");
   }
+  return header;
+}
 
+bool pwrite_all_fd(const int fd, const void* data, std::size_t bytes,
+                   off_t offset) noexcept {
+  const auto* input = static_cast<const unsigned char*>(data);
+  while (bytes != 0) {
+    const ssize_t count = ::pwrite(fd, input, bytes, offset);
+    if (count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return false;
+    }
+    input += count;
+    bytes -= static_cast<std::size_t>(count);
+    offset += count;
+  }
+  return true;
+}
+
+} // namespace
+
+CacheFileStream::CacheFileStream(const std::filesystem::path& path,
+                                 CacheDescriptor descriptor)
+    : state_(std::make_unique<State>()) {
+  State& state = *state_;
+  state.path = path;
+  state.descriptor = std::move(descriptor);
+  state.payload_offset = container_header(state.descriptor, 0, 0).bytes().size();
+  std::error_code error;
+  std::filesystem::create_directories(path.parent_path(), error);
+  if (error) {
+    state.failed = true;
+    return;
+  }
   static std::atomic<std::uint64_t> temporary_counter{0};
   const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-  const std::uint64_t unique = temporary_counter.fetch_add(
-      1, std::memory_order_relaxed);
-  const std::filesystem::path temporary =
-      path.string() + ".tmp." + std::to_string(::getpid()) + "." +
+  const std::uint64_t unique =
+      temporary_counter.fetch_add(1, std::memory_order_relaxed);
+  state.temporary = path.string() + ".tmp." + std::to_string(::getpid()) + "." +
       std::to_string(stamp) + "." + std::to_string(unique);
-  const int descriptor_fd =
-      ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
-  if (descriptor_fd < 0) {
+  state.fd = ::open(state.temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (state.fd < 0) {
+    state.failed = true;
+    return;
+  }
+  // The payload follows the header, which is written once its size and
+  // checksum are known.
+  if (::lseek(state.fd, static_cast<off_t>(state.payload_offset), SEEK_SET) < 0) {
+    state.failed = true;
+  }
+}
+
+CacheFileStream::~CacheFileStream() {
+  State& state = *state_;
+  if (state.fd >= 0) {
+    (void)::close(state.fd);
+  }
+  if (!state.committed && !state.temporary.empty()) {
+    std::error_code error;
+    std::filesystem::remove(state.temporary, error);
+  }
+}
+
+void CacheFileStream::append(const void* data, const std::size_t bytes) noexcept {
+  State& state = *state_;
+  if (state.failed || bytes == 0) {
+    return;
+  }
+  if (!write_all_fd(state.fd, data, bytes)) {
+    state.failed = true;
+    return;
+  }
+  state.checksum.update(data, bytes);
+  state.payload_size += bytes;
+}
+
+void CacheFileStream::append(const Writer& writer) noexcept {
+  append(writer.bytes().data(), writer.bytes().size());
+}
+
+std::size_t CacheFileStream::commit() noexcept {
+  State& state = *state_;
+  if (state.failed || state.fd < 0) {
     return 0;
   }
-
-  const bool write_ok =
-      write_all_fd(descriptor_fd, header.bytes().data(), header.bytes().size()) &&
-      write_all_fd(descriptor_fd, payload.data(), payload.size());
-  const bool fsync_ok = write_ok && ::fsync(descriptor_fd) == 0;
-  const bool close_ok = ::close(descriptor_fd) == 0;
-  if (!write_ok || !fsync_ok || !close_ok) {
-    std::filesystem::remove(temporary, error);
+  std::error_code error;
+  try {
+    const Writer header = container_header(state.descriptor, state.payload_size,
+                                           state.checksum.finish());
+    if (!pwrite_all_fd(state.fd, header.bytes().data(), header.bytes().size(), 0)) {
+      return 0;
+    }
+  } catch (...) {
     return 0;
   }
-
-  std::filesystem::rename(temporary, path, error);
+  const bool fsync_ok = ::fsync(state.fd) == 0;
+  const bool close_ok = ::close(state.fd) == 0;
+  state.fd = -1;
+  if (!fsync_ok || !close_ok) {
+    return 0;
+  }
+  const std::size_t total = state.payload_offset + state.payload_size;
+  std::filesystem::rename(state.temporary, state.path, error);
   if (error) {
     // Another process may have completed the same valid cache first.
-    std::filesystem::remove(temporary, error);
-    return std::filesystem::exists(path)
-        ? header.bytes().size() + payload.size()
-        : 0;
+    return std::filesystem::exists(state.path) ? total : 0;
   }
-  const int directory_fd = ::open(path.parent_path().c_str(), O_RDONLY);
+  state.committed = true;
+  const int directory_fd = ::open(state.path.parent_path().c_str(), O_RDONLY);
   if (directory_fd >= 0) {
     (void)::fsync(directory_fd);
     (void)::close(directory_fd);
   }
-  return header.bytes().size() + payload.size();
+  return total;
+}
+
+// Atomicity and concurrency: see CacheFileStream. A failed write returns 0
+// bytes rather than throwing, because a failed cache write must never fail a
+// construction.
+std::size_t write_cache(const std::filesystem::path& path,
+                        const CacheDescriptor& descriptor,
+                        const std::vector<unsigned char>& payload) {
+  CacheFileStream stream(path, descriptor);
+  stream.append(payload.data(), payload.size());
+  return stream.commit();
 }
 
 } // namespace cdfmm::detail::cache

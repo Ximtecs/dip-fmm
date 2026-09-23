@@ -33,6 +33,12 @@ namespace cuda_policy {
 struct CudaExecutionPolicyInputs;
 } // namespace cuda_policy
 
+namespace detail::cache {
+// Internal streamed geometry-cache writer (src/cache/internal.hpp); named
+// here only so plan preparation can hand it to the near-field build.
+class GeometryCacheWriter;
+} // namespace detail::cache
+
 /** @brief Implemented M2L strategy for real spherical expansions. */
 enum class SphericalM2LBackend {
     /// Reusable dense real matrix for each integer displacement class.
@@ -539,6 +545,24 @@ private:
   void build_cpu_far_field_packing();
   [[nodiscard]] bool selects_point_geometry_p2p() const noexcept;
   [[nodiscard]] bool position_based_near_field() const noexcept;
+  [[nodiscard]] bool dictionary_near_field() const noexcept;
+  [[nodiscard]] StaticP2POperator build_chunked_canonical_operator(
+      std::span<const Vec3> sorted_targets,
+      std::span<const Vec3> sorted_positions,
+      std::span<const CuboidSize> source_sizes,
+      std::span<const CuboidSize> target_sizes);
+  void build_general_near_field(
+      std::span<const Vec3> sorted_targets,
+      std::span<const Vec3> sorted_positions,
+      std::span<const CuboidSize> source_sizes,
+      std::span<const CuboidSize> target_sizes,
+      detail::cache::GeometryCacheWriter *cache_writer = nullptr);
+  [[nodiscard]] bool build_dictionary_near_field(
+      std::span<const Vec3> sorted_targets,
+      std::span<const Vec3> sorted_positions,
+      std::span<const CuboidSize> source_sizes,
+      std::span<const CuboidSize> target_sizes);
+  void release_unread_near_field();
   [[nodiscard]] P2PExecutionPacking resolve_cpu_p2p_packing() const noexcept;
   void quantise_static_plan_to_float();
   void initialise_source_geometry(const UniformFmmOptions &options);
@@ -553,8 +577,8 @@ private:
   void print_initialisation_summary(const UniformFmmOptions &options) const;
   void build_cuda_p2p_plan();
   void build_cuda_full_plan();
-  [[nodiscard]] StaticP2PLeafPlan build_cuda_leaf_plan() const;
-  [[nodiscard]] FloatStaticP2PLeafPlan build_cuda_leaf_plan_float() const;
+  [[nodiscard]] StaticP2PLeafPlan build_cuda_leaf_plan();
+  [[nodiscard]] FloatStaticP2PLeafPlan build_cuda_leaf_plan_float();
   [[nodiscard]] int coefficient_degree(int coefficient) const;
   void prepare_moments(std::span<const Vec3> dipole_moments);
   void prepare_moments_float(std::span<const Vec3> dipole_moments);
@@ -688,6 +712,13 @@ private:
   std::optional<FloatStaticP2PSignedTensorDictionaryPlan>
       p2p_tensor_dictionary_plan_float_{};
   FloatStaticP2PBsrPlan p2p_bsr_plan_float_{};
+  // CUDA leaf blocks built with the near field (chunk by chunk), consumed by
+  // the device plan; empty when the leaf packing is not used.
+  StaticP2PLeafPlan p2p_leaf_plan_{};
+  FloatStaticP2PLeafPlan p2p_leaf_plan_float_{};
+  // An FP32 plan whose FP32 near-field representations were built directly
+  // from the FP64 chunks, so the FP32 conversion does not derive them.
+  bool p2p_float_prebuilt_{false};
   FloatStaticM2LPlan m2l_plan_float_{};
   StaticPlanStatistics static_plan_statistics_{};
   // Mutable coefficient and result storage makes one evaluator non-reentrant.

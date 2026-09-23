@@ -410,6 +410,14 @@ CacheIdentity compute_cache_identity(const bool supplied_topology,
   if (inputs.position_based_p2p) {
     hash_value(hash, std::uint32_t{0x504f5347U}); // "POSG"
   }
+  // Likewise for a dictionary near field, which persists the dictionary
+  // instead of the canonical records; its tile and its origin shape that
+  // payload (see `CacheIdentityInputs::dictionary_p2p`).
+  if (inputs.dictionary_p2p) {
+    hash_value(hash, std::uint32_t{0x44494354U}); // "DICT"
+    hash_value(hash, inputs.dictionary_target_tile_size);
+    hash_value(hash, inputs.dictionary_from_layout);
+  }
   hash_value(hash, inputs.periodic.enabled);
   hash_value(hash, inputs.periodic.axes);
   hash_value(hash, static_cast<std::uint32_t>(inputs.periodic.convention));
@@ -517,8 +525,10 @@ CacheIdentity compute_cache_identity(const bool supplied_topology,
        << inputs.tree.sorted_source_positions().size() << "_p2p_"
        << (inputs.position_based_p2p
                ? "positions"
-               : (inputs.use_reduced_symmetry_p2p ? "reduced_symmetry"
-                                                  : "canonical"))
+               : (inputs.dictionary_p2p
+                      ? "dictionary"
+                      : (inputs.use_reduced_symmetry_p2p ? "reduced_symmetry"
+                                                         : "canonical")))
        << '_' << digest << "_v04.bin";
   identity.geometry_key = plan.str();
   if (clock.enabled()) {

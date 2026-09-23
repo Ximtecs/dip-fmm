@@ -92,6 +92,7 @@ add_library(cdfmm_core
     src/fmm/execution_setup.cpp
     src/fmm/far_field.cpp
     src/fmm/plan_preparation.cpp
+    src/fmm/p2p_construction.cpp
     src/fmm/uniform_fmm.cpp
     src/cache/io.cpp
     src/cache/format.cpp

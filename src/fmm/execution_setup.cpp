@@ -42,63 +42,14 @@
 #include "backend/cuda/fmm/internal.hpp"
 #include "cache/internal.hpp"
 #include "fmm/internal.hpp"
+#include "fmm/p2p_construction.hpp"
 #include "phase_stopwatch.hpp"
 
 namespace cdfmm {
 
 namespace {
 
-// Dense leaf rectangles of the canonical list-1 topology, in canonical order.
-// A periodic topology lists one record per image of a (target leaf, source
-// leaf) pair; the canonical rows order the images of a source by their shift,
-// so each record is tagged with its ordinal in that order.
-std::vector<StaticP2PLeafPair> leaf_pairs_from_topology(
-    const StaticFmmTopology &topology) {
-  const auto &records = topology.p2p_leaf_records;
-  std::vector<StaticP2PLeafPair> leaf_pairs(records.size());
-  for (std::size_t row = 0; row < records.size(); ++row) {
-    const StaticP2PLeafRecord &record = records[row];
-    leaf_pairs[row] = {static_cast<int>(record.target_begin),
-                       static_cast<int>(record.target_count),
-                       static_cast<int>(record.source_begin),
-                       static_cast<int>(record.source_count), 0, 1};
-  }
-  const auto &offsets = topology.p2p_target_leaf_offsets;
-  std::vector<std::size_t> group;
-  for (std::size_t leaf = 0; leaf + 1 < offsets.size(); ++leaf) {
-    const int begin = offsets[leaf];
-    const int end = offsets[leaf + 1];
-    for (int first = begin; first < end; ++first) {
-      const StaticP2PLeafRecord &lead = records[static_cast<std::size_t>(first)];
-      group.clear();
-      for (int row = begin; row < end; ++row) {
-        const StaticP2PLeafRecord &other =
-            records[static_cast<std::size_t>(row)];
-        if (other.source_begin == lead.source_begin &&
-            other.source_count == lead.source_count) {
-          group.push_back(static_cast<std::size_t>(row));
-        }
-      }
-      if (group.size() <= 1 ||
-          group.front() != static_cast<std::size_t>(first)) {
-        continue;
-      }
-      // Same comparison as the canonical builder's interaction sort.
-      std::sort(group.begin(), group.end(),
-                [&](const std::size_t left, const std::size_t right) {
-                  const Vec3 &a = records[left].source_shift;
-                  const Vec3 &b = records[right].source_shift;
-                  return std::tie(a.x, a.y, a.z) < std::tie(b.x, b.y, b.z);
-                });
-      for (std::size_t ordinal = 0; ordinal < group.size(); ++ordinal) {
-        leaf_pairs[group[ordinal]].image_ordinal = static_cast<int>(ordinal);
-        leaf_pairs[group[ordinal]].image_count =
-            static_cast<int>(group.size());
-      }
-    }
-  }
-  return leaf_pairs;
-}
+using detail::p2p_construction::leaf_pairs_from_topology;
 
 // FP32 plans retain no FP64 canonical operator; the leaf builder is FP64-only,
 // so widen the stored values without changing them.
@@ -318,6 +269,9 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
         far_field_target_model_,
         use_reduced_symmetry_p2p_,
         position_based_near_field(),
+        dictionary_near_field(),
+        signed_p2p_target_tile_size_,
+        dictionary_near_field() && cuda_policy_->policy.dictionary_from_layout,
         periodic_,
         *tree_,
         sorted_source_sizes_,
@@ -403,6 +357,7 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
     // of the level; hand it over once they exist.
     propagate_timing_level();
   }
+  release_unread_near_field();
 }
 
 // Copy the P2P-related options, validate and sort a fixed identity map, and
@@ -888,12 +843,22 @@ void UniformFmm::build_cuda_p2p_plan() {
   p2p_execution_packing_ = P2PExecutionPacking::CanonicalAos;
 }
 
-StaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan() const {
+StaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan() {
+  // Built with the near field when the plan was prepared cold.
+  if (!p2p_leaf_plan_.leaf_row_offsets.empty()) {
+    return std::move(p2p_leaf_plan_);
+  }
   return build_static_p2p_leaf_plan(p2p_operator_,
                                     leaf_pairs_from_topology(*topology_));
 }
 
-FloatStaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan_float() const {
+FloatStaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan_float() {
+  // Built with the near field when the plan was prepared cold, from the FP64
+  // chunk tensors: float(v) is exactly what the widen-and-requantise path
+  // below produces from the stored FP32 rows.
+  if (!p2p_leaf_plan_float_.leaf_row_offsets.empty()) {
+    return std::move(p2p_leaf_plan_float_);
+  }
   // An FP32 plan keeps no FP64 operator after quantisation, so the FP64-only
   // leaf builder runs on the widened FP32 values; quantising the result back
   // reproduces the stored FP32 tensors exactly.
@@ -1029,6 +994,26 @@ bool UniformFmm::position_based_near_field() const noexcept {
   default:
     return false;
   }
+}
+
+bool UniformFmm::dictionary_near_field() const noexcept {
+  // True when the plan's near field is the signed tensor dictionary (an
+  // explicit request, `use_reduced_symmetry_p2p`, or the RegularGrid hint on
+  // a production backend). Such a plan derives the dictionary chunk by chunk
+  // from the topology and never holds the canonical operator; point sources
+  // need a fixed identity map, as the dictionary encodes their self pairs.
+  if (!cuda_policy_ || backend_ == ExecutionBackend::CpuReference ||
+      position_based_near_field()) {
+    return false;
+  }
+  if (cuda_policy_->policy.p2p_packing !=
+      cuda_policy::CudaP2PPacking::SignedDictionary) {
+    return false;
+  }
+  const bool effective_point_source =
+      source_geometry_ == SourceGeometry::PointDipole ||
+      near_field_source_model_ == SourceModel::PointDipole;
+  return !effective_point_source || fixed_target_source_indices_.has_value();
 }
 
 P2PExecutionPacking UniformFmm::resolve_cpu_p2p_packing() const noexcept {
@@ -1206,6 +1191,116 @@ void UniformFmm::build_cpu_far_field_packing() {
   clock.record(static_plan_statistics_.far_field_packing);
 }
 
+// After backend setup, release every host near-field representation that
+// evaluation never reads. What stays is the executor's own representation on
+// the CPU and the point potential rows (`OutputFlags::Potential`, which exact
+// finite near fields reject): FP32 potential reads the SoA rows when they are
+// resident and the canonical rows otherwise, FP64 potential reads the SoA rows
+// on a periodic plan and the topology in free space. CudaFull evaluates field
+// only; the CUDA plans copy what they execute to the device. The resident
+// accounting follows what is actually kept.
+void UniformFmm::release_unread_near_field() {
+  const bool cpu = backend_ == ExecutionBackend::CpuStatic;
+  const bool partial = backend_ == ExecutionBackend::CudaM2LP2P;
+  const bool full = backend_ == ExecutionBackend::CudaFull;
+  if (!cpu && !partial && !full) {
+    return;
+  }
+  const bool fp32 = precision_ == StaticPrecision::Float32;
+  const bool point_near_field =
+      (source_geometry_ == SourceGeometry::PointDipole ||
+       near_field_source_model_ == SourceModel::PointDipole) &&
+      (target_geometry_ == TargetGeometry::Point ||
+       near_field_target_model_ == TargetModel::Point);
+  const bool potential_rows = point_near_field && !full &&
+      p2p_execution_packing_ != P2PExecutionPacking::PointGeometry;
+  bool keep_canonical =
+      cpu && p2p_execution_packing_ == P2PExecutionPacking::CanonicalAos;
+  const bool compact_executor =
+      cpu && p2p_execution_packing_ == P2PExecutionPacking::ParticleRowSoa;
+  bool keep_compact = compact_executor;
+  if (potential_rows) {
+    if (fp32) {
+      if (!keep_canonical) {
+        // A cold build derives these rows beside the executor's; a warm plan
+        // derives them here from the records it loaded, so both hold the
+        // same rows. Canonical rows serve potential only when neither exists.
+        if (p2p_compact_plan_float_.row_offsets.empty() &&
+            !p2p_operator_float_.row_offsets.empty()) {
+          p2p_compact_plan_float_ =
+              build_static_p2p_compact_plan(p2p_operator_float_);
+        }
+        if (!p2p_compact_plan_float_.row_offsets.empty()) {
+          keep_compact = true;
+        } else {
+          keep_canonical = true;
+        }
+      }
+    } else if (periodic_.enabled) {
+      keep_compact = true;
+    }
+  }
+  if (keep_compact && !compact_executor) {
+    // Potential output reads the indices and the potential coefficients
+    // only; the field tensors belong to the SoA executor.
+    for (auto &component : p2p_compact_plan_.tensors) {
+      component = {};
+    }
+    for (auto &component : p2p_compact_plan_float_.tensors) {
+      component = {};
+    }
+  }
+  if (!keep_canonical) {
+    p2p_operator_ = {};
+    p2p_operator_float_ = {};
+  }
+  if (!keep_compact) {
+    p2p_compact_plan_ = {};
+    p2p_compact_plan_float_ = {};
+  }
+  p2p_bsr_plan_float_ = {};
+  p2p_leaf_plan_ = {};
+  p2p_leaf_plan_float_ = {};
+  if (full) {
+    // CudaFull runs P2M and L2P on the device from its own copies; the host
+    // endpoint maps are not read after upload.
+    p2m_plans_.clear();
+    p2m_plans_.shrink_to_fit();
+    p2m_plans_float_.clear();
+    p2m_plans_float_.shrink_to_fit();
+    l2p_evaluators_.clear();
+    l2p_evaluators_.shrink_to_fit();
+    l2p_evaluators_float_.clear();
+    l2p_evaluators_float_.shrink_to_fit();
+  }
+  if (!cpu) {
+    // The device plans own their copy of the dictionary.
+    p2p_tensor_dictionary_plan_.reset();
+    p2p_tensor_dictionary_plan_float_.reset();
+  }
+  const std::size_t resident = p2p_operator_.memory_bytes() +
+      p2p_operator_float_.memory_bytes() +
+      p2p_compact_plan_.memory().total_bytes() +
+      p2p_compact_plan_float_.memory().total_bytes();
+  const std::size_t recorded = static_plan_statistics_.near_field_operator_bytes;
+  static_plan_statistics_.operator_bytes =
+      static_plan_statistics_.operator_bytes -
+      std::min(static_plan_statistics_.operator_bytes, recorded) + resident;
+  static_plan_statistics_.near_field_operator_bytes = resident;
+  // The index bytes follow the kept containers by the formula the plan
+  // preparation uses for its precision, so a warm plan, which decodes more
+  // rows than it keeps, reports what a cold plan does.
+  static_plan_statistics_.p2p_index_bytes = fp32
+      ? p2p_operator_float_.row_offsets.size() * sizeof(int) +
+            p2p_operator_float_.blocks.size() * 2 * sizeof(int) +
+            p2p_compact_plan_float_.source_indices.size() * sizeof(int) +
+            p2p_compact_plan_float_.skip_for_identity.size() *
+                sizeof(unsigned char)
+      : p2p_compact_plan_.row_offsets.size() * sizeof(int) +
+            p2p_compact_plan_.source_indices.size() * sizeof(int) +
+            p2p_compact_plan_.skip_for_identity.size() * sizeof(unsigned char);
+}
+
 void UniformFmm::release_stored_p2p_tensors() {
   // A position-based executor (CPU or CUDA) keeps no pair tensors resident.
   // The statistics attributed exactly `near_field_operator_bytes` of the
@@ -1360,7 +1455,9 @@ void UniformFmm::build_cuda_full_plan() {
       data.use_p2p_bsr = true;
       data.p2p_bsr = std::move(p2p_bsr_plan_float_);
     } else {
-      data.p2p = p2p_operator_float_;
+      // The host rows are not read after upload (CudaFull is field-only).
+      data.p2p = std::move(p2p_operator_float_);
+      p2p_operator_float_ = {};
     }
     p2p_execution_packing_ = data.use_p2p_point_geometry
         ? P2PExecutionPacking::PointGeometry
@@ -1489,7 +1586,9 @@ void UniformFmm::build_cuda_full_plan() {
     data.p2p_bsr = build_static_p2p_bsr_plan(p2p_operator_, bsr_identities);
     data.use_p2p_bsr = true;
   } else {
-    data.p2p = p2p_operator_;
+    // The host rows are not read after upload (CudaFull is field-only).
+    data.p2p = std::move(p2p_operator_);
+    p2p_operator_ = {};
   }
   p2p_execution_packing_ = data.use_p2p_point_geometry
       ? P2PExecutionPacking::PointGeometry

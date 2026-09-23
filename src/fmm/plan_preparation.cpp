@@ -14,12 +14,14 @@
 #include "cdfmm/uniform_fmm.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <bit>
 #include <cstdint>
 #include <exception>
 #include <limits>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <tuple>
 #include <unordered_map>
@@ -28,6 +30,9 @@
 #include "cdfmm/plan/static_plan.hpp"
 
 #include "cache/internal.hpp"
+#include "fmm/p2p_construction.hpp"
+#include "fmm/internal.hpp"
+#include "plan/p2p/signed_dictionary_builder.hpp"
 #include "phase_stopwatch.hpp"
 
 // Construction clocks follow the plan's timing level: the static-plan total
@@ -49,6 +54,17 @@ namespace {
     pairs += record.target_count * record.source_count;
   }
   return pairs;
+}
+
+/// @brief Bytes of the SoA particle rows of `pairs` list-1 pairs: row offsets,
+///        source index, identity marker, three potential and six tensor
+///        values per pair (StaticP2PCompactPlan). Reported as the baseline of
+///        the dictionary comparisons whether or not the plan keeps the rows.
+[[nodiscard]] std::size_t baseline_row_bytes(const std::size_t pairs,
+                                             const std::size_t targets,
+                                             const std::size_t scalar) {
+  return pairs * (9 * scalar + sizeof(int) + sizeof(unsigned char)) +
+         (targets + 1) * sizeof(int);
 }
 
 /// @brief The failure a parallel endpoint-operator loop reports.
@@ -191,22 +207,6 @@ template <typename KeyOfItem>
   }
   result.classified = true;
   return result;
-}
-
-// Size of the FP32 BSR(3) plan that `quantise_static_plan_to_float` prebuilds
-// speculatively; `cuda_p2p_bsr_max_bytes` bounds that prebuild only.
-template <typename Operator>
-std::size_t estimate_bsr_bytes(const Operator& p2p,
-                               const std::size_t scalar_bytes) {
-  const std::size_t interactions = p2p.blocks.size();
-  const std::size_t tensor_bytes = 9 * interactions * scalar_bytes;
-  const std::size_t index_bytes = interactions * sizeof(int);
-  // StaticP2PBsrPlan stores one identity entry per target, including -1
-  // entries when no self exclusion is requested.
-  const std::size_t metadata_bytes =
-      (p2p.row_offsets.size() +
-       static_cast<std::size_t>(p2p.target_count)) * sizeof(int);
-  return tensor_bytes + index_bytes + metadata_bytes;
 }
 
 } // namespace
@@ -375,7 +375,8 @@ void UniformFmm::build_static_plan() {
   const detail::cache::GeometryCacheIdentity geometry_identity{
       cache_enabled_,    cache_directory_, geometry_cache_key_,
       geometry_hash_digest_, expansion_basis_, precision_, expansion_order(),
-      position_based_near_field()};
+      position_based_near_field(), dictionary_near_field(),
+      signed_p2p_target_tile_size_};
   if (universal_available &&
       (!periodic_required || periodic_operator_available_) &&
       detail::cache::load_geometry_cache(
@@ -383,7 +384,8 @@ void UniformFmm::build_static_plan() {
           {p2m_plans_, p2m_plans_float_, m2l_plan_, m2l_plan_float_,
            l2p_evaluators_, l2p_evaluators_float_, p2p_operator_,
            p2p_operator_float_, p2p_compact_plan_, p2p_compact_plan_float_,
-           p2p_bsr_plan_float_},
+           p2p_bsr_plan_float_, p2p_tensor_dictionary_plan_,
+           p2p_tensor_dictionary_plan_float_},
           geometry_cache_loaded_direct_float_, static_plan_statistics_)) {
     static_plan_statistics_.m2l_operators =
         static_cast<std::size_t>(precision_ == StaticPrecision::Float32
@@ -395,7 +397,9 @@ void UniformFmm::build_static_plan() {
         precision_ == StaticPrecision::Float32
             ? m2l_plan_float_.source_nodes.size()
             : m2l_plan_.source_nodes.size();
-    static_plan_statistics_.p2p_interactions = position_based_near_field()
+    static_plan_statistics_.p2p_interactions =
+        position_based_near_field() || p2p_tensor_dictionary_plan_.has_value() ||
+            p2p_tensor_dictionary_plan_float_.has_value()
         ? list1_pair_count(*topology_)
         : (precision_ == StaticPrecision::Float32
                ? p2p_operator_float_.blocks.size()
@@ -452,25 +456,32 @@ void UniformFmm::build_static_plan() {
       record_m2l_metadata(m2l_plan_);
     }
     // A cache hit still derives every execution packing, so the same timers
-    // account for it as on a cold build.
+    // account for it as on a cold build. A dictionary plan's file holds the
+    // dictionary it executes (or, when the RegularGrid hint's dictionary did
+    // not compress, the canonical records it fell back to), so nothing here
+    // rebuilds a pair tensor.
     detail::PhaseStopwatch warm_stage_clock(detailed_timing());
     warm_stage_clock.start();
-    try {
-      build_reduced_symmetry_p2p_packing();
-    } catch (const std::invalid_argument &error) {
-      throw std::runtime_error(
-          std::string("reduced-symmetry P2P topology is not representable: ") +
-          error.what());
+    if (!dictionary_near_field()) {
+      try {
+        build_reduced_symmetry_p2p_packing();
+      } catch (const std::invalid_argument &error) {
+        throw std::runtime_error(
+            std::string("reduced-symmetry P2P topology is not representable: ") +
+            error.what());
+      }
     }
     if (precision_ == StaticPrecision::Float64) {
       static_plan_statistics_.p2p_value_bytes =
-          p2p_operator_.blocks.size() * 6 * sizeof(double);
+          static_plan_statistics_.p2p_interactions * 6 * sizeof(double);
       static_plan_statistics_.p2p_index_bytes =
           p2p_compact_plan_.row_offsets.size() * sizeof(int) +
           p2p_compact_plan_.source_indices.size() * sizeof(int) +
           p2p_compact_plan_.skip_for_identity.size() * sizeof(unsigned char);
       static_plan_statistics_.p2p_canonical_total_bytes =
-          p2p_compact_plan_.memory().total_bytes();
+          baseline_row_bytes(static_plan_statistics_.p2p_interactions,
+                             topology_->sorted_target_positions.size(),
+                             sizeof(double));
       if (p2p_tensor_dictionary_plan_.has_value()) {
         static_plan_statistics_.p2p_unique_tensors =
             p2p_tensor_dictionary_plan_->tensors[0].size();
@@ -596,8 +607,15 @@ void UniformFmm::build_static_plan() {
   // instead of from inside the loop, which is what previously tied the loop to
   // one thread.  Exact finite sources make each leaf expensive and unequal, so
   // the schedule is dynamic.
-  p2m_plans_.assign(topology_->source_leaves.size(), P2MPlan{});
-  {
+  // A procedural P2M stage evaluates the expansion from the positions and
+  // never reads these maps. They are still built when the geometry cache
+  // persists them (its key does not carry the execution choice) and for the
+  // reference backend, which may apply them regardless of the flag.
+  const bool endpoint_maps_persisted =
+      cache_enabled_ || backend_ == ExecutionBackend::CpuReference;
+  p2m_plans_.clear();
+  if (!procedural_p2m_ || endpoint_maps_persisted) {
+    p2m_plans_.assign(topology_->source_leaves.size(), P2MPlan{});
     const std::size_t leaf_total = topology_->source_leaves.size();
     const EndpointOperatorClasses classes =
         classify_endpoint_operators(leaf_total, leaf_operator_key);
@@ -1070,8 +1088,10 @@ void UniformFmm::build_static_plan() {
   // The byte accounting is a closed form, so it no longer has to be summed
   // from inside the loop.  An exact finite target makes each evaluator
   // expensive and unequal, so the schedule is dynamic.
-  l2p_evaluators_.resize(sorted_targets.size());
-  {
+  // As for P2M: a procedural L2P stage never reads the evaluators.
+  l2p_evaluators_.clear();
+  if (!procedural_l2p_ || endpoint_maps_persisted) {
+    l2p_evaluators_.resize(sorted_targets.size());
     const std::size_t evaluator_count = evaluated_targets.size();
     const EndpointOperatorClasses classes =
         classify_endpoint_operators(evaluator_count, target_operator_key);
@@ -1144,82 +1164,75 @@ void UniformFmm::build_static_plan() {
   phase_clock.start();
   detail::PhaseStopwatch p2p_stage_clock(detailed_timing());
   const bool position_based = position_based_near_field();
-  p2p_stage_clock.start();
+  // A dictionary plan builds its dictionary chunk by chunk and holds no
+  // canonical operator; when the RegularGrid hint's dictionary does not
+  // compress it falls back to the general representation.
+  bool dictionary_path = false;
+  p2p_float_prebuilt_ = false;
+  std::unique_ptr<detail::cache::GeometryCacheWriter> canonical_cache_stream;
+  std::unique_ptr<detail::cache::GeometryCacheWriter> dictionary_cache_stream;
+  // A file that receives the canonical records as the near field is built:
+  // their row offsets and count are known from the list-1 records first.
+  const auto make_canonical_cache_stream = [&]() {
+    return std::make_unique<detail::cache::GeometryCacheWriter>(
+        geometry_identity, *tree_, fixed_target_source_indices_, p2m_plans_,
+        m2l_plan_, l2p_evaluators_, static_cast<int>(sorted_positions.size()),
+        static_cast<int>(sorted_targets.size()),
+        detail::p2p_construction::canonical_row_offsets(*topology_,
+                                                        sorted_targets.size()),
+        list1_pair_count(*topology_), static_plan_statistics_);
+  };
   if (position_based) {
     p2p_operator_ = {};
-  } else if (periodic_.enabled) {
-    std::vector<StaticP2PInteraction> near_interactions;
-    for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
-      for (int target = static_cast<int>(record.target_begin);
-           target < static_cast<int>(record.target_begin + record.target_count);
-           ++target) {
-        for (int source = static_cast<int>(record.source_begin);
-             source < static_cast<int>(record.source_begin + record.source_count);
-             ++source) {
-          near_interactions.push_back({target, source, record.source_shift,
-                                       record.skip_for_identity});
-        }
+  } else if (dictionary_near_field()) {
+    dictionary_path = true;
+    if (!build_dictionary_near_field(sorted_targets, sorted_positions,
+                                     source_sizes, target_sizes)) {
+      // The fallback persists its canonical records as a canonical-keyed
+      // plan would, so a warm plan loads rather than rebuilds them.
+      if (cache_enabled_) {
+        canonical_cache_stream = make_canonical_cache_stream();
       }
+      build_general_near_field(sorted_targets, sorted_positions, source_sizes,
+                               target_sizes, canonical_cache_stream.get());
     }
-    p2p_stage_clock.record(static_plan_statistics_.p2p_interaction_setup);
-    p2p_stage_clock.start();
-    p2p_operator_ = build_static_p2p_operator(
-        sorted_targets, sorted_positions, near_interactions,
-        source_geometry_, source_sizes, sorted_source_tetrahedra_,
-        target_geometry_, target_sizes, sorted_target_tetrahedra_,
-        near_field_source_model_, near_field_target_model_);
+  } else if (cache_enabled_ && backend_ != ExecutionBackend::CpuReference) {
+    // A canonical-keyed file receives the records as they are built, so the
+    // full FP64 operator never has to exist for the cache's sake.
+    canonical_cache_stream = make_canonical_cache_stream();
+    build_general_near_field(sorted_targets, sorted_positions, source_sizes,
+                             target_sizes, canonical_cache_stream.get());
   } else {
-    std::vector<std::array<int, 2>> near_interactions;
-    for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
-      for (int target = static_cast<int>(record.target_begin);
-           target < static_cast<int>(record.target_begin + record.target_count);
-           ++target) {
-        for (int source = static_cast<int>(record.source_begin);
-             source < static_cast<int>(record.source_begin + record.source_count);
-             ++source) {
-          near_interactions.push_back({target, source});
-        }
-      }
-    }
-    p2p_stage_clock.record(static_plan_statistics_.p2p_interaction_setup);
-    p2p_stage_clock.start();
-    p2p_operator_ = build_static_p2p_operator(
-        sorted_targets, sorted_positions, near_interactions,
-        source_geometry_, source_sizes, sorted_source_tetrahedra_,
-        target_geometry_, target_sizes, sorted_target_tetrahedra_,
-        near_field_source_model_, near_field_target_model_);
-  }
-  if (!position_based) {
-    p2p_stage_clock.record(static_plan_statistics_.p2p_canonical_operator);
+    build_general_near_field(sorted_targets, sorted_positions, source_sizes,
+                             target_sizes);
   }
   p2p_stage_clock.start();
-  const bool point_geometry_p2p = position_based ||
-      (backend_ == ExecutionBackend::CpuStatic && selects_point_geometry_p2p());
-  if (!point_geometry_p2p) {
-    p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
-  }
-  try {
-    build_reduced_symmetry_p2p_packing();
-  } catch (const std::invalid_argument &error) {
-    throw std::runtime_error(
-        std::string("reduced-symmetry P2P topology is not representable: ") +
-        error.what());
+  if (!dictionary_path) {
+    try {
+      build_reduced_symmetry_p2p_packing();
+    } catch (const std::invalid_argument &error) {
+      throw std::runtime_error(
+          std::string("reduced-symmetry P2P topology is not representable: ") +
+          error.what());
+    }
   }
   if (backend_ == ExecutionBackend::CpuStatic) {
     p2p_execution_packing_ = resolve_cpu_p2p_packing();
   }
   p2p_stage_clock.record(static_plan_statistics_.p2p_derived_packing);
-  static_plan_statistics_.p2p_interactions = position_based
+  static_plan_statistics_.p2p_interactions = p2p_operator_.blocks.empty()
       ? list1_pair_count(*topology_)
       : p2p_operator_.blocks.size();
   static_plan_statistics_.p2p_value_bytes =
-      p2p_operator_.blocks.size() * 6 * sizeof(double);
+      static_plan_statistics_.p2p_interactions * 6 * sizeof(double);
   static_plan_statistics_.p2p_index_bytes =
       p2p_compact_plan_.row_offsets.size() * sizeof(int) +
       p2p_compact_plan_.source_indices.size() * sizeof(int) +
       p2p_compact_plan_.skip_for_identity.size() * sizeof(unsigned char);
   static_plan_statistics_.p2p_canonical_total_bytes =
-      p2p_compact_plan_.memory().total_bytes();
+      baseline_row_bytes(static_plan_statistics_.p2p_interactions,
+                         topology_->sorted_target_positions.size(),
+                         sizeof(double));
   if (p2p_tensor_dictionary_plan_.has_value()) {
     static_plan_statistics_.p2p_unique_tensors =
         p2p_tensor_dictionary_plan_->tensors[0].size();
@@ -1243,9 +1256,35 @@ void UniformFmm::build_static_plan() {
   total_clock.record(static_plan_statistics_.total);
   ++static_plan_statistics_.construction_count;
 
-  detail::cache::write_geometry_cache(
-      geometry_identity, *tree_, fixed_target_source_indices_, p2m_plans_,
-      m2l_plan_, l2p_evaluators_, p2p_operator_, static_plan_statistics_);
+  if (canonical_cache_stream) {
+    // A dictionary plan that fell back marks its records as the near field.
+    canonical_cache_stream->append_dictionary_section(nullptr, nullptr, {}, {});
+    canonical_cache_stream->finish();
+    canonical_cache_stream.reset();
+  } else if (dictionary_near_field()) {
+    // The dictionary and the point potential rows built beside it are the
+    // whole near field; the canonical section stays empty. The header goes
+    // out now, while the FP64 far-field operators exist; the dictionary
+    // follows in the plan's precision once an FP32 plan has converted it.
+    if (cache_enabled_ && p2p_tensor_dictionary_plan_.has_value()) {
+      dictionary_cache_stream = std::make_unique<detail::cache::GeometryCacheWriter>(
+          geometry_identity, *tree_, fixed_target_source_indices_, p2m_plans_,
+          m2l_plan_, l2p_evaluators_, 0, 0, std::span<const int>{}, 0,
+          static_plan_statistics_);
+    }
+  } else {
+    // A position-based plan persists an empty P2P section.
+    detail::cache::write_geometry_cache(
+        geometry_identity, *tree_, fixed_target_source_indices_, p2m_plans_,
+        m2l_plan_, l2p_evaluators_,
+        position_based_near_field() ? StaticP2POperator{} : p2p_operator_,
+        static_plan_statistics_);
+  }
+  if (p2p_float_prebuilt_) {
+    // The FP32 representations exist already; the FP64 rows were kept only
+    // for the cache file.
+    p2p_operator_ = {};
+  }
 
   if (precision_ == StaticPrecision::Float32) {
     detail::PhaseStopwatch conversion_clock(detailed_timing());
@@ -1253,9 +1292,371 @@ void UniformFmm::build_static_plan() {
     quantise_static_plan_to_float();
     conversion_clock.record(static_plan_statistics_.precision_conversion);
   }
+  if (dictionary_cache_stream) {
+    dictionary_cache_stream->append_dictionary_section(
+        p2p_tensor_dictionary_plan_ ? &*p2p_tensor_dictionary_plan_ : nullptr,
+        p2p_tensor_dictionary_plan_float_ ? &*p2p_tensor_dictionary_plan_float_
+                                          : nullptr,
+        p2p_compact_plan_, p2p_compact_plan_float_);
+    dictionary_cache_stream->finish();
+    dictionary_cache_stream.reset();
+  }
   // oneMKL derives execution-only gather/GEMM/scatter packing from the same
   // canonical target-row metadata used by portable CPU and CUDA.
   build_backend_packing();
+}
+
+// General near field, built chunk by chunk into exactly the representations
+// the resolved plan reads: its executor's rows in its own precision (the
+// canonical rows, the SoA rows or the CUDA leaf blocks) and, for a point near
+// field, the SoA rows its potential output reads (FP32; FP64 on a periodic
+// plan; never on CudaFull, which is field-only). The FP64 canonical operator
+// is kept in full only when the cache persists it. CpuReference keeps the
+// historical FP64 canonical and SoA pair. Every representation is derived
+// from the same FP64 chunk rows, so it is bitwise what the one-shot
+// derivation from the full operator produced.
+void UniformFmm::build_general_near_field(
+    const std::span<const Vec3> sorted_targets,
+    const std::span<const Vec3> sorted_positions,
+    const std::span<const CuboidSize> source_sizes,
+    const std::span<const CuboidSize> target_sizes,
+    detail::cache::GeometryCacheWriter *const cache_writer) {
+  namespace chunked = detail::p2p_construction;
+  const bool fp32 = precision_ == StaticPrecision::Float32;
+  const bool cpu = backend_ == ExecutionBackend::CpuStatic;
+  const bool cuda = backend_ == ExecutionBackend::CudaM2LP2P ||
+      backend_ == ExecutionBackend::CudaFull;
+  const bool full = backend_ == ExecutionBackend::CudaFull;
+  const bool point_near_field =
+      (source_geometry_ == SourceGeometry::PointDipole ||
+       near_field_source_model_ == SourceModel::PointDipole) &&
+      (target_geometry_ == TargetGeometry::Point ||
+       near_field_target_model_ == TargetModel::Point);
+  const bool point_geometry_p2p = cpu && selects_point_geometry_p2p();
+
+  bool canonical = false;
+  bool compact = false;
+  bool leaf = false;
+  bool historical = !cpu && !cuda;  // CpuReference
+  if (cpu && !point_geometry_p2p) {
+    if (requested_p2p_packing_ == P2PExecutionPacking::CanonicalAos) {
+      canonical = true;
+    } else {
+      compact = true;
+    }
+  } else if (cuda) {
+    const cuda_policy::CudaP2PPacking packing = cuda_policy_->policy.p2p_packing;
+    if (dictionary_near_field()) {
+      // A RegularGrid-hint dictionary that did not compress: the device
+      // packing is re-resolved later from the General rules.
+      canonical = true;
+    } else if (packing == cuda_policy::CudaP2PPacking::LeafBlock) {
+      leaf = true;
+    } else if (packing != cuda_policy::CudaP2PPacking::PointGeometry) {
+      canonical = true;
+    }
+  }
+  const bool potential_rows = point_near_field && !full && !point_geometry_p2p &&
+      !(cuda && cuda_policy_->policy.p2p_packing ==
+                    cuda_policy::CudaP2PPacking::PointGeometry);
+  if (potential_rows) {
+    if (fp32) {
+      compact = compact || !canonical;
+    } else if (periodic_.enabled) {
+      compact = true;
+    }
+  }
+  if (historical) {
+    p2p_operator_ = build_chunked_canonical_operator(
+        sorted_targets, sorted_positions, source_sizes, target_sizes);
+    p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
+    return;
+  }
+
+  // The cache receives the FP64 records chunk by chunk (`cache_writer`), so
+  // the full FP64 operator is kept only when the plan executes it.
+  const bool canonical64 = !fp32 && canonical;
+  const bool compact64 = !fp32 && compact;
+  const bool leaf64 = !fp32 && leaf;
+  const bool canonical32 = fp32 && canonical;
+  const bool compact32 = fp32 && compact;
+  const bool leaf32 = fp32 && leaf;
+  // SoA rows kept only for potential output hold no tensor planes.
+  const bool compact_tensors =
+      cpu && !point_geometry_p2p &&
+      requested_p2p_packing_ != P2PExecutionPacking::CanonicalAos;
+  p2p_float_prebuilt_ = fp32;
+
+  const chunked::CanonicalInputs inputs{
+      sorted_targets,          sorted_positions,  source_geometry_,
+      source_sizes,            sorted_source_tetrahedra_, target_geometry_,
+      target_sizes,            sorted_target_tetrahedra_, near_field_source_model_,
+      near_field_target_model_, periodic_.enabled};
+  const std::vector<chunked::Chunk> chunks =
+      chunked::plan_chunks(*topology_, chunked::chunk_pair_budget());
+  const int source_count = static_cast<int>(sorted_positions.size());
+  const int target_count = static_cast<int>(sorted_targets.size());
+  const std::size_t pairs = chunked::total_pairs(chunks);
+  if (chunks.empty()) {
+    // Validate the body records exactly as the one-shot build does.
+    static_cast<void>(build_static_p2p_operator(
+        sorted_targets, sorted_positions, std::span<const StaticP2PInteraction>{},
+        source_geometry_, source_sizes, sorted_source_tetrahedra_,
+        target_geometry_, target_sizes, sorted_target_tetrahedra_,
+        near_field_source_model_, near_field_target_model_));
+  }
+  p2p_operator_ = {};
+  p2p_compact_plan_ = {};
+  p2p_operator_float_ = {};
+  p2p_compact_plan_float_ = {};
+  p2p_leaf_plan_ = {};
+  p2p_leaf_plan_float_ = {};
+  if (canonical64) {
+    chunked::start_rows(p2p_operator_, source_count, target_count, pairs);
+  }
+  if (compact64) {
+    chunked::start_rows(p2p_compact_plan_, source_count, target_count, pairs,
+                        compact_tensors);
+  }
+  if (canonical32) {
+    chunked::start_rows(p2p_operator_float_, source_count, target_count, pairs);
+  }
+  if (compact32) {
+    chunked::start_rows(p2p_compact_plan_float_, source_count, target_count, pairs,
+                        compact_tensors);
+  }
+  p2p_leaf_plan_.source_count = source_count;
+  p2p_leaf_plan_.target_count = target_count;
+  p2p_leaf_plan_float_.source_count = source_count;
+  p2p_leaf_plan_float_.target_count = target_count;
+
+  const chunked::ChunkBuilder builder(*topology_, inputs);
+  PhaseTiming interaction_setup{};
+  PhaseTiming tensor_build{};
+  const bool timed = detailed_timing();
+  for (const chunked::Chunk &chunk : chunks) {
+    const StaticP2POperator part =
+        builder.build(chunk, interaction_setup, tensor_build, timed);
+    if (cache_writer != nullptr) {
+      cache_writer->append_p2p_blocks(part.blocks);
+    }
+    if (canonical64) {
+      chunked::append_rows(p2p_operator_, part, chunk);
+    }
+    if (compact64) {
+      chunked::append_compact_rows(p2p_compact_plan_,
+                                   build_static_p2p_compact_plan(part), chunk,
+                                   compact_tensors);
+    }
+    if (leaf64) {
+      chunked::append_leaf_blocks(
+          p2p_leaf_plan_, build_static_p2p_leaf_plan(part, builder.leaf_pairs(chunk)));
+    }
+    if (canonical32 || compact32) {
+      const FloatStaticP2POperator part32 = quantise_static_p2p_operator(part);
+      if (canonical32) {
+        chunked::append_rows(p2p_operator_float_, part32, chunk);
+      }
+      if (compact32) {
+        chunked::append_compact_rows(p2p_compact_plan_float_,
+                                     build_static_p2p_compact_plan(part32), chunk,
+                                     compact_tensors);
+      }
+    }
+    if (leaf32) {
+      chunked::append_leaf_blocks(
+          p2p_leaf_plan_float_,
+          quantise_static_p2p_leaf_plan(
+              build_static_p2p_leaf_plan(part, builder.leaf_pairs(chunk))));
+    }
+  }
+  if (canonical64) {
+    chunked::finish_rows(p2p_operator_);
+  }
+  if (compact64) {
+    chunked::finish_rows(p2p_compact_plan_);
+  }
+  if (canonical32) {
+    chunked::finish_rows(p2p_operator_float_);
+  }
+  if (compact32) {
+    chunked::finish_rows(p2p_compact_plan_float_);
+  }
+  if (leaf64) {
+    chunked::finish_leaf_plan(p2p_leaf_plan_);
+  }
+  if (leaf32) {
+    chunked::finish_leaf_plan(p2p_leaf_plan_float_);
+  }
+  if (timed) {
+    static_plan_statistics_.p2p_interaction_setup.add(
+        interaction_setup.total_seconds);
+    static_plan_statistics_.p2p_canonical_operator.add(tensor_build.total_seconds);
+  }
+}
+
+// Dictionary near field, built chunk by chunk: each chunk's canonical rows
+// become dense leaf blocks, the blocks become tokens, and nothing larger
+// than a chunk is ever resident besides the tokens. A point plan also keeps
+// the SoA rows its potential output reads (FP32, or FP64 on a periodic
+// plan), assembled from the same chunks; CudaFull evaluates field only.
+// Returns false, keeping nothing, when a RegularGrid-hint dictionary needs
+// wider tokens than the hint allows, so the caller builds the general form.
+bool UniformFmm::build_dictionary_near_field(
+    const std::span<const Vec3> sorted_targets,
+    const std::span<const Vec3> sorted_positions,
+    const std::span<const CuboidSize> source_sizes,
+    const std::span<const CuboidSize> target_sizes) {
+  namespace chunked = detail::p2p_construction;
+  using Clock = std::chrono::steady_clock;
+  const bool point_near_field =
+      (source_geometry_ == SourceGeometry::PointDipole ||
+       near_field_source_model_ == SourceModel::PointDipole) &&
+      (target_geometry_ == TargetGeometry::Point ||
+       near_field_target_model_ == TargetModel::Point);
+  const bool potential_rows =
+      point_near_field && backend_ != ExecutionBackend::CudaFull;
+  const bool rows64 = potential_rows &&
+      precision_ == StaticPrecision::Float64 && periodic_.enabled;
+  const bool rows32 = potential_rows && precision_ == StaticPrecision::Float32;
+  const int source_count = static_cast<int>(sorted_positions.size());
+  const int target_count = static_cast<int>(sorted_targets.size());
+
+  const chunked::CanonicalInputs inputs{
+      sorted_targets,          sorted_positions,  source_geometry_,
+      source_sizes,            sorted_source_tetrahedra_, target_geometry_,
+      target_sizes,            sorted_target_tetrahedra_, near_field_source_model_,
+      near_field_target_model_, periodic_.enabled};
+  const std::vector<chunked::Chunk> chunks =
+      chunked::plan_chunks(*topology_, chunked::chunk_pair_budget());
+  if (chunks.empty()) {
+    // Validate the body records exactly as the general build does.
+    static_cast<void>(build_static_p2p_operator(
+        sorted_targets, sorted_positions, std::span<const StaticP2PInteraction>{},
+        source_geometry_, source_sizes, sorted_source_tetrahedra_,
+        target_geometry_, target_sizes, sorted_target_tetrahedra_,
+        near_field_source_model_, near_field_target_model_));
+  }
+  const chunked::ChunkBuilder builder(*topology_, inputs);
+  detail::SignedTensorDictionaryBuilder dictionary(
+      source_count, target_count, fixed_sorted_self_indices_,
+      signed_p2p_target_tile_size_);
+  p2p_operator_ = {};
+  p2p_compact_plan_ = {};
+  p2p_compact_plan_float_ = {};
+  // These rows serve potential output only, which never reads the tensors.
+  if (rows64) {
+    chunked::start_rows(p2p_compact_plan_, source_count, target_count,
+                        chunked::total_pairs(chunks), false);
+  }
+  if (rows32) {
+    chunked::start_rows(p2p_compact_plan_float_, source_count, target_count,
+                        chunked::total_pairs(chunks), false);
+  }
+  PhaseTiming interaction_setup{};
+  PhaseTiming tensor_build{};
+  double packing_seconds = 0.0;
+  const bool timed = detailed_timing();
+  for (const chunked::Chunk &chunk : chunks) {
+    const StaticP2POperator part =
+        builder.build(chunk, interaction_setup, tensor_build, timed);
+    const auto packing_start = timed ? Clock::now() : Clock::time_point{};
+    try {
+      dictionary.append(build_static_p2p_leaf_plan(part, builder.leaf_pairs(chunk)));
+    } catch (const std::invalid_argument &error) {
+      throw std::runtime_error(
+          std::string("reduced-symmetry P2P topology is not representable: ") +
+          error.what());
+    }
+    if (rows64) {
+      chunked::append_compact_rows(p2p_compact_plan_,
+                                   build_static_p2p_compact_plan(part), chunk, false);
+    }
+    if (rows32) {
+      chunked::append_compact_rows(
+          p2p_compact_plan_float_,
+          build_static_p2p_compact_plan(quantise_static_p2p_operator(part)), chunk,
+          false);
+    }
+    if (timed) {
+      packing_seconds +=
+          std::chrono::duration<double>(Clock::now() - packing_start).count();
+    }
+  }
+  if (rows64) {
+    chunked::finish_rows(p2p_compact_plan_);
+  }
+  if (rows32) {
+    chunked::finish_rows(p2p_compact_plan_float_);
+  }
+  const auto finish_start = timed ? Clock::now() : Clock::time_point{};
+  p2p_tensor_dictionary_plan_ = dictionary.finish();
+  if (timed) {
+    packing_seconds +=
+        std::chrono::duration<double>(Clock::now() - finish_start).count();
+    static_plan_statistics_.p2p_interaction_setup.add(
+        interaction_setup.total_seconds);
+    static_plan_statistics_.p2p_canonical_operator.add(tensor_build.total_seconds);
+    static_plan_statistics_.p2p_derived_packing.add(packing_seconds);
+  }
+  // A dictionary chosen from the layout hint is a prediction; the built plan
+  // is the measurement (as in build_reduced_symmetry_p2p_packing).
+  if (cuda_policy_->policy.dictionary_from_layout &&
+      p2p_tensor_dictionary_plan_->token_width_bytes >
+          cuda_policy::dictionary_layout_max_token_width_bytes()) {
+    p2p_tensor_dictionary_plan_.reset();
+    p2p_compact_plan_ = {};
+    p2p_compact_plan_float_ = {};
+    return false;
+  }
+  return true;
+}
+
+// Canonical near field, built one chunk of target leaves at a time
+// (src/fmm/p2p_construction.hpp): the rows are bitwise the monolithic
+// build's, but the pair list, the builder's sorted copy and its
+// classification maps exist for one chunk only. The two sub-timers are
+// summed over the chunks and recorded once.
+StaticP2POperator UniformFmm::build_chunked_canonical_operator(
+    const std::span<const Vec3> sorted_targets,
+    const std::span<const Vec3> sorted_positions,
+    const std::span<const CuboidSize> source_sizes,
+    const std::span<const CuboidSize> target_sizes) {
+  namespace chunked = detail::p2p_construction;
+  const chunked::CanonicalInputs inputs{
+      sorted_targets,          sorted_positions,  source_geometry_,
+      source_sizes,            sorted_source_tetrahedra_, target_geometry_,
+      target_sizes,            sorted_target_tetrahedra_, near_field_source_model_,
+      near_field_target_model_, periodic_.enabled};
+  const std::vector<chunked::Chunk> chunks =
+      chunked::plan_chunks(*topology_, chunked::chunk_pair_budget());
+  if (chunks.empty()) {
+    // No list-1 pair: one empty build still validates the body records.
+    return build_static_p2p_operator(
+        sorted_targets, sorted_positions, std::span<const StaticP2PInteraction>{},
+        source_geometry_, source_sizes, sorted_source_tetrahedra_,
+        target_geometry_, target_sizes, sorted_target_tetrahedra_,
+        near_field_source_model_, near_field_target_model_);
+  }
+  const chunked::ChunkBuilder builder(*topology_, inputs);
+  StaticP2POperator canonical;
+  chunked::start_rows(canonical, static_cast<int>(sorted_positions.size()),
+                      static_cast<int>(sorted_targets.size()),
+                      chunked::total_pairs(chunks));
+  PhaseTiming interaction_setup{};
+  PhaseTiming tensor_build{};
+  for (const chunked::Chunk &chunk : chunks) {
+    const StaticP2POperator part =
+        builder.build(chunk, interaction_setup, tensor_build, detailed_timing());
+    chunked::append_rows(canonical, part, chunk);
+  }
+  chunked::finish_rows(canonical);
+  if (detailed_timing()) {
+    static_plan_statistics_.p2p_interaction_setup.add(
+        interaction_setup.total_seconds);
+    static_plan_statistics_.p2p_canonical_operator.add(tensor_build.total_seconds);
+  }
+  return canonical;
 }
 
 // FP32 plans: quantise every completed FP64 operator once into its FP32
@@ -1270,7 +1671,22 @@ void UniformFmm::quantise_static_plan_to_float() {
       near_field_source_model_ == SourceModel::PointDipole;
   const bool bsr_identity_compatible =
       !effective_point_source || fixed_target_source_indices_.has_value();
-  if (!geometry_cache_loaded_direct_float_) {
+  // A procedural stage reads neither the FP64 nor the FP32 maps (the
+  // reference backend never reaches this conversion with them unused).
+  const bool convert_p2m = !procedural_p2m_ || backend_ == ExecutionBackend::CpuReference;
+  const bool convert_l2p = !procedural_l2p_ || backend_ == ExecutionBackend::CpuReference;
+  // A direct FP32 load brings the maps a shared geometry file holds; a
+  // procedural stage reads neither, so they go exactly as a cold plan never
+  // converts them.
+  if (!convert_p2m) {
+    p2m_plans_float_.clear();
+    p2m_plans_float_.shrink_to_fit();
+  }
+  if (!convert_l2p) {
+    l2p_evaluators_float_.clear();
+    l2p_evaluators_float_.shrink_to_fit();
+  }
+  if (!geometry_cache_loaded_direct_float_ && convert_p2m) {
     p2m_plans_float_.reserve(p2m_plans_.size());
     for (const P2MPlan &plan : p2m_plans_) {
       p2m_plans_float_.push_back(
@@ -1287,12 +1703,16 @@ void UniformFmm::quantise_static_plan_to_float() {
   }
 
   if (!geometry_cache_loaded_direct_float_) {
-    l2p_evaluators_float_.reserve(l2p_evaluators_.size());
-    for (const StaticL2PEvaluator &evaluator : l2p_evaluators_) {
-      l2p_evaluators_float_.push_back(
-          quantise_static_l2p_evaluator(evaluator));
+    if (convert_l2p) {
+      l2p_evaluators_float_.reserve(l2p_evaluators_.size());
+      for (const StaticL2PEvaluator &evaluator : l2p_evaluators_) {
+        l2p_evaluators_float_.push_back(
+            quantise_static_l2p_evaluator(evaluator));
+      }
     }
-    p2p_operator_float_ = quantise_static_p2p_operator(p2p_operator_);
+    if (!p2p_float_prebuilt_) {
+      p2p_operator_float_ = quantise_static_p2p_operator(p2p_operator_);
+    }
     m2l_plan_float_ = quantise_static_m2l_plan(m2l_plan_);
   } else {
     // Universal matrices are stored separately from the geometry plan. Only
@@ -1305,8 +1725,17 @@ void UniformFmm::quantise_static_plan_to_float() {
   p2p_packing_clock.start();
   const bool uses_cuda_plan = backend_ == ExecutionBackend::CudaM2LP2P ||
       backend_ == ExecutionBackend::CudaFull;
+  // A warm dictionary plan loads the FP32 dictionary it executes; a cold one
+  // converts its FP64 dictionary below.
+  const bool dictionary_plan = p2p_tensor_dictionary_plan_.has_value() ||
+      p2p_tensor_dictionary_plan_float_.has_value();
   if (uses_cuda_plan) {
-    p2p_compact_plan_float_ = {};
+    // Only a dictionary plan's point potential rows are built before this
+    // point (CudaPartial evaluates potential on the host); nothing else here
+    // uses the SoA rows.
+    if (!dictionary_plan && !p2p_float_prebuilt_) {
+      p2p_compact_plan_float_ = {};
+    }
     // The FP64 dictionary exists only when the CUDA execution policy (an
     // explicit option or the regular-grid hint) selected it.
     if (p2p_tensor_dictionary_plan_.has_value()) {
@@ -1315,7 +1744,14 @@ void UniformFmm::quantise_static_plan_to_float() {
               *p2p_tensor_dictionary_plan_);
     }
   } else {
-    if (p2p_execution_packing_ != P2PExecutionPacking::PointGeometry) {
+    // The SoA rows are the FP32 executor of every CPU plan except a
+    // position-based, a CanonicalAos (which reads its canonical rows for
+    // potential as well) and a dictionary plan (whose point potential rows
+    // were built with the dictionary).
+    if (p2p_execution_packing_ != P2PExecutionPacking::PointGeometry &&
+        p2p_execution_packing_ != P2PExecutionPacking::CanonicalAos &&
+        !dictionary_plan && !p2p_float_prebuilt_ &&
+        p2p_compact_plan_float_.row_offsets.empty()) {
       p2p_compact_plan_float_ =
           build_static_p2p_compact_plan(p2p_operator_float_);
     }
@@ -1323,12 +1759,15 @@ void UniformFmm::quantise_static_plan_to_float() {
       auto dictionary = quantise_static_p2p_signed_tensor_dictionary_plan(
           *p2p_tensor_dictionary_plan_);
       p2p_tensor_dictionary_plan_float_ = std::move(dictionary);
+    }
+    if (dictionary_plan) {
       p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     }
   }
-  if (bsr_identity_compatible && !position_based_near_field() &&
-      estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
-          cuda_p2p_bsr_max_bytes_) {
+  // BSR(3) is explicit-only and CUDA-only: build it when the plan executes
+  // it, whatever `cuda_p2p_bsr_max_bytes` says (docs/backends.md).
+  if (bsr_identity_compatible && uses_cuda_plan && cuda_policy_ &&
+      cuda_policy_->policy.p2p_packing == cuda_policy::CudaP2PPacking::Bsr3) {
     const std::span<const int> bsr_identities =
         fixed_target_source_indices_.has_value()
             ? std::span<const int>(fixed_sorted_self_indices_)
@@ -1380,25 +1819,19 @@ void UniformFmm::quantise_static_plan_to_float() {
   static_plan_statistics_.l2p_operator_bytes = l2p_bytes;
   static_plan_statistics_.near_field_operator_bytes = near_field_bytes;
   static_plan_statistics_.p2p_value_bytes =
-      p2p_operator_float_.blocks.size() * 6 * sizeof(float);
+      static_plan_statistics_.p2p_interactions * 6 * sizeof(float);
   static_plan_statistics_.p2p_index_bytes =
       p2p_operator_float_.row_offsets.size() * sizeof(int) +
       p2p_operator_float_.blocks.size() * 2 * sizeof(int) +
       p2p_compact_plan_float_.source_indices.size() * sizeof(int) +
       p2p_compact_plan_float_.skip_for_identity.size() *
           sizeof(unsigned char);
-  if (uses_cuda_plan) {
-    // CUDA does not retain the CPU compact plan. Still report its equivalent
-    // baseline footprint so reduced-symmetry memory comparisons remain valid
-    // without constructing and immediately discarding that packing.
-    static_plan_statistics_.p2p_canonical_total_bytes =
-        p2p_operator_float_.blocks.size() *
-            (9 * sizeof(float) + sizeof(int) + sizeof(unsigned char)) +
-        p2p_operator_float_.row_offsets.size() * sizeof(int);
-  } else {
-    static_plan_statistics_.p2p_canonical_total_bytes =
-        p2p_compact_plan_float_.memory().total_bytes();
-  }
+  // The SoA-row footprint of the pairs, whether or not the plan keeps those
+  // rows, so the dictionary and stored-tensor memory stays comparable.
+  static_plan_statistics_.p2p_canonical_total_bytes =
+      baseline_row_bytes(static_plan_statistics_.p2p_interactions,
+                         topology_->sorted_target_positions.size(),
+                         sizeof(float));
   if (p2p_tensor_dictionary_plan_float_.has_value()) {
     static_plan_statistics_.p2p_unique_tensors =
         p2p_tensor_dictionary_plan_float_->tensors[0].size();
