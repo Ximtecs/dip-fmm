@@ -184,6 +184,39 @@ outputs, otherwise 4); the resolved choices appear as `spatial_layout` and
 enters the persistent cache. The measurements are recorded in
 `agent_docs/performance_optimization.md`.
 
+### Construction and resident memory
+
+The near field is built one chunk of consecutive target leaves at a time
+(about 4.2 M list-1 pairs per chunk), and each chunk is turned straight into
+the representations the resolved plan keeps; no representation the plan
+does not read is materialised. Chunking never changes a value: every pair
+tensor is a pure function of its displacement and body records, and the rows
+are ordered by target, so the chunked result is bitwise the one-shot result
+(tetrahedron self-systems, which share each tensor with its reciprocal pair,
+are handled by building the reverse pairs a chunk depends on).
+
+| Resolved near field | Built during construction | Resident afterwards |
+|---|---|---|
+| `PointGeometry` (CPU or CUDA) | nothing per pair | nothing per pair |
+| `TensorDictionary` | tokens, chunk by chunk | the dictionary (CPU), nothing on the host (CUDA); point plans also keep the rows their potential output reads |
+| CPU `ParticleRowSoa` | SoA rows in the plan's precision | the SoA rows |
+| CPU `CanonicalAos` | canonical rows in the plan's precision | the canonical rows |
+| CUDA `LeafBlock` | leaf blocks in the plan's precision | nothing on the host |
+| CUDA `CanonicalAos` / `CudaBsr3` | canonical rows in the plan's precision | nothing on the host |
+
+A point near field additionally keeps the SoA rows its `OutputFlags::Potential`
+evaluation reads (FP32 always, FP64 on a periodic plan) except on `CudaFull`,
+which is field-only; exact finite near fields reject potential output. With
+the geometry cache enabled, the FP64 canonical records are streamed into the
+cache file as they are built rather than held in full, and a dictionary plan
+persists the dictionary it executes (in its own precision) with the rows
+beside it, so a warm construction loads every stored representation and
+builds no pair tensor. A procedural point-expansion stage reads no P2M or
+L2P map: those maps are built only for a shared cache file and are not kept;
+`CudaFull` releases its host far-field maps after upload. The plan statistics
+count what the plan keeps, and are identical for a cold, a warm and an
+uncached construction.
+
 ### Explicit selection
 
 `UniformFmmOptions::p2p_packing` (default `Auto`) forces one packing and takes

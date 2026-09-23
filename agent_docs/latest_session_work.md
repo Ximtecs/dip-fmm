@@ -1,5 +1,65 @@
 # Latest session work
 
+## 2026-09-23 — Near-field construction memory and persisted dictionaries
+
+Starting HEAD `d745503`. Branch `article1-benchmark-fixes`. The Article1
+stored-tensor tracks were bounded by construction peaks, not by the plan they
+left behind, so construction was restructured without changing any value.
+Governing rule, set by the user: nothing a plan reads, and nothing that makes
+it faster, may go unbuilt or unstored to save memory; warm plans load every
+stored representation and cold/warm logic is unchanged.
+
+**Chunked construction.** `src/fmm/p2p_construction.{hpp,cpp}` builds the
+near field one chunk of consecutive target leaves at a time (2^22, about
+4.2 M list-1 pairs; the header comment records why 2^22 beat 2^24), and each
+chunk goes straight into the representations the plan keeps. Tetrahedron
+self-systems add the reverse pairs a chunk depends on, so reciprocity holds
+across chunks. The signed dictionary is tokenised incrementally
+(`src/plan/p2p/signed_dictionary_builder.hpp`), holding two-byte tokens
+until a variant id needs four. Results are bitwise the one-chunk build
+(`tests/test_p2p_chunked_construction.cpp`, one-pair budget).
+
+**Streamed cache writes.** `CacheFileStream`/`GeometryCacheWriter`
+(`src/cache/`) append the canonical records as they are built and write the
+header last; canonical-keyed files are byte-identical to `d745503` and both
+builds read each other's files (8/8 files).
+
+**Persisted dictionary.** A dictionary plan keys its file
+`_p2p_dictionary_` (tile size and RegularGrid origin hashed) and stores the
+dictionary in the plan's precision plus its point potential rows; a
+RegularGrid fallback stores the canonical records instead. A warm plan builds
+no pair tensor, asserted through the construction timers. 262,144 points,
+64 per leaf, CPU FP32: warm 120.5 s (`d745503`, reads 18.9 GB and rebuilds and
+converts the dictionary) -> 5.8 s (reads 7.8 GB, mostly the FP32 potential
+rows); cold 219 s -> 161 s.
+
+**Released, not skipped.** Representations the resolved executor never reads
+are not built (BSR unless it executes, SoA rows for `PointGeometry`/
+`CanonicalAos`, P2M/L2P maps of procedural stages unless a shared cache file
+needs them); host copies are released after a CUDA upload. The CUDA leaf
+upload transposes one component plane at a time instead of copying all six.
+
+**Statistics.** An intermediate state rewrote statistics after the release
+and disagreed between cold and warm plans. Fixed: 90 configurations (point,
+prism, periodic x `CpuStatic`/`CudaM2LP2P`/`CudaFull` x FP32/FP64 x every
+packing) report identical statistics uncached, cold and warm, and no
+statistic exceeds `d745503` (the one exception, `p2p_canonical_total_bytes`,
+was 0 cold and 56 MB warm there). `StaticP2PCompactPlan::memory()` now counts
+potential coefficients of rows that hold no field tensors.
+
+**Peaks.** 32^3 at 64 per leaf: CPU FP32 rows 12.4 -> 4.3 GB, FP64 point
+dictionary 9.6 -> 3.0 GB, `CudaFull` FP32 10.8 -> 3.7 GB, `PointGeometry`
+far-field plan 2.7 -> 1.4 GB. 262,144 prisms at depth 4 (3.99e8 pairs, FP32):
+dictionary 113 -> 4.93 GB, SoA rows 17.2 GB, `CudaFull` leaf 19.9 ->
+12.5 GB. Evaluation unchanged in an interleaved A/B against `d745503`.
+
+**Validation.** `build-all` (CUDA + oneMKL + OpenMP, g++ 15.3, nvcc 13.3):
+serial CTest 265/265 in 127 s (142 s before the dictionary was persisted);
+`python_tests` 186 passed, 1 skipped (module from `build-all` via
+`PYTHONPATH`); Sphinx `-W` clean. GCC 13 / portable CI and Fortran not built
+locally. Open: the pre-existing CudaPartial periodic packing test fails under
+four concurrent GPU processes on `d745503` too.
+
 ## 2026-09-23 — Article1 preparation: four defects found while benchmarking, position-based point plans
 
 Starting HEAD `aa9d75f` (the frozen Phase-5 SHA). Branch

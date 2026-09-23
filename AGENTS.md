@@ -87,7 +87,11 @@ under a key that distinguishes neither packing nor backend. (It has since been
 removed for plans whose policy resolves to `PointGeometry` before preparation:
 such a plan builds and persists no pair tensors and keys its geometry file
 with a separate `_p2p_positions_` segment, so every stored-tensor key is
-unchanged; see `src/cache/AGENTS.md`.) **Phase 3C.5
+unchanged; see `src/cache/AGENTS.md`. The near field is now built in chunks
+of target leaves, bitwise equal to one chunk, and a dictionary plan persists
+its dictionary under `_p2p_dictionary_`, so a warm plan builds no pair
+tensor; see `agent_docs/performance_optimization.md`, "Construction memory
+and persisted dictionaries".) **Phase 3C.5
 (dense/all-to-all construction) is also COMPLETE.** The same invariant carries
 to the exact dense baseline, which Phase 3C had not touched: a dense pair
 tensor is a pure function of the displacement, the two body records and

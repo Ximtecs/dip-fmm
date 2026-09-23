@@ -1,5 +1,16 @@
 # Project progress
 
+## Near-field construction memory and persisted dictionaries: COMPLETE — 2026-09-23
+
+Chunked near-field construction, streamed geometry-cache writes, an
+incrementally tokenised signed dictionary persisted under `_p2p_dictionary_`
+in the plan's precision, and per-plane CUDA leaf uploads. Canonical-keyed
+cache files are byte-identical to `d745503`; cold, warm and uncached plans
+report identical statistics over 90 configurations; warm dictionary plans
+build no pair tensor. Details and numbers: `latest_session_work.md` and
+`performance_optimization.md`, "Construction memory and persisted
+dictionaries".
+
 ## Article1 preparation fixes: COMPLETE — 2026-09-23
 
 Branch `article1-benchmark-fixes` from `aa9d75f`. Four defects found while

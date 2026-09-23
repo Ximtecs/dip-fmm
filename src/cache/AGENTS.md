@@ -86,6 +86,24 @@ value, never by their now-relocated name.
   tensors as a miss. Never persist an empty P2P section under a stored-tensor
   key: nothing validates the section against the topology, so a later
   stored-tensor plan would silently evaluate without a near field.
+- A dictionary plan (`CacheIdentityInputs::dictionary_p2p`) is keyed apart in
+  the same way, with the `_p2p_dictionary_` segment and the `"DICT"` marker,
+  target tile size and RegularGrid origin hashed only for such plans. Its
+  file ends with a dictionary section (`geometry.cpp`): either the dictionary
+  in the plan's precision plus the FP64/FP32 point potential rows (with an
+  empty canonical section), or, when a RegularGrid-hint dictionary fell back
+  to rows, a marker saying the canonical records are the near field. A warm
+  plan loads every stored representation and builds no pair tensor; the
+  cold/warm test in `tests/test_p2p_chunked_construction.cpp` asserts that
+  through the construction timers. The section is bounds-checked against the
+  live topology on load, so a mismatch is a miss.
+- `CacheFileStream` and `GeometryCacheWriter` write a file incrementally: the
+  payload goes to the temporary file first at the header's offset, the
+  streaming checksum (`StreamingChecksum`, bitwise the one-shot
+  `payload_checksum`) accumulates it, and the header is written last before
+  the usual fsync and rename. `write_cache` and `write_geometry_cache` are one
+  append of the same streams, so every file is byte-identical to the
+  pre-streaming writer; keep it so.
 - Cache misses are non-fatal. A missing, truncated, corrupt, mismatched, or
   incompatible file must remain a rebuildable miss, and a failed write must
   remain a silent zero-byte result. A cache failure cannot alter an evaluation

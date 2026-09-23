@@ -1,5 +1,17 @@
 # Project diary
 
+## 2026-09-23 — memory is not a reason to forget
+
+The construction-memory work began as "build less" and had to be pulled back
+to "build the same, hold it less at once". The first version saved memory by
+rebuilding the dictionary on every warm construction, which is exactly what
+the framework exists to avoid, and it rewrote the plan statistics after
+releasing host copies so that cold and warm plans reported different numbers.
+The correction was to treat both as contracts: whatever a plan stores it
+persists, and whatever it reports is the same however it was built. Checked
+over 90 configurations, the result is not a compromise: the warm dictionary
+plan is 20x faster than before and still at a fraction of the old peak.
+
 ## 2026-09-20 — what pruning is actually for
 
 Phase 4 was the phase most likely to do damage, because "remove what is not

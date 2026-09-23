@@ -4906,3 +4906,28 @@ frozen implementation is `48c2142`; CI green on `d989270` (run 35578346697, both
 Next: the Article1 benchmark campaign, with `timing_level = Off` and external
 wall-clock timing of repeated `evaluate_into` calls; detailed timing is a
 separate diagnostic run.
+
+## Construction memory and persisted dictionaries (2026-09-23)
+
+Question: the Article1 stored-tensor tracks stopped at the construction peak
+(about 300 B/pair for FP32 rows, 280 B/pair for a dictionary), far above what
+the finished plan holds. Constraint: no value changes, and nothing the plan
+reads or that speeds it up goes unbuilt or unstored.
+
+| Change | Mechanism | Evidence |
+|---|---|---|
+| chunked construction | 2^22 list-1 pairs per chunk of target leaves, straight into the kept representations | bitwise equal to one chunk; 4e8 prism pairs: dictionary 113 -> 4.93 GB |
+| chunk budget | 2^22 against 2^24 at 4e8 pairs: rows 17.2 vs 18.9 GB, 99 vs 105 s; dictionary 4.93 vs 5.49 GB, 136 vs 135 s | kept 2^22 |
+| streamed cache writes | records appended as built, header last | files byte-identical to `d745503` |
+| persisted dictionary | stored in the plan's precision with its potential rows | warm 120.5 -> 5.8 s at 262,144 points |
+| narrow tokens during build | two bytes until an id needs four | not visible at 4e8 (chunk state dominates) |
+| per-plane CUDA leaf upload | one staging plane instead of six | `CudaFull` leaf 19.9 -> 12.5 GB |
+
+Rejected: loading the tree from the cache. The key hashes the tree's
+permutations and leaf level, so the tree must exist to find the file; the
+rebuild costs 0.2 s of a 5.8 s warm setup at 262,144 points, and the stored
+copy is the collision guard.
+
+Remaining: the FP32 point potential rows are 17 B/pair and dominate both the
+dictionary plan's resident size and its warm read; serving FP32 potential from
+positions would change results and is not attempted here.

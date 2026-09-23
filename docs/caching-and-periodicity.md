@@ -13,7 +13,8 @@ cell. Tutorial 4 demonstrates both.
 | universal operator bank: eight M2M and eight L2L templates, the 316-class M2L bank | basis, order, precision | yes | never |
 | periodic root operator | basis, order, precision, cell tolerance | yes | never |
 | geometry plan: tree topology and permutations, self metadata, P2M, M2L connectivity and level scaling, L2P, exact canonical `list1` P2P tensors | normalised geometry, records, model selectors, identities, depth, periodicity, basis, order, precision | yes | never |
-| derived execution packing (SoA rows, leaf blocks, dictionary, BSR), CPU far-field packing, device uploads | backend and packing options | no: rebuilt per process | never |
+| derived execution packing (SoA rows, leaf blocks, BSR), CPU far-field packing, device uploads | backend and packing options | no: rebuilt per process | never |
+| signed tensor dictionary of a dictionary plan, with its point potential rows | geometry, precision, dictionary tile and origin | yes, in place of the canonical records | geometry key |
 | moments, expansion coefficients, near/far scratch, results | the `evaluate` call | no | every call |
 
 ## The persistent cache
@@ -47,7 +48,18 @@ duplicate the universal matrices. A point plan whose P2P resolves to
 dictionary, and FP32 point pairs on CUDA) recomputes every pair from the
 positions, so it never builds pair tensors: its geometry file carries an empty
 P2P section and is named with `_p2p_positions_` instead of `_p2p_canonical_`,
-which keeps it apart from a stored-tensor plan of the same geometry. The selected execution packing is
+which keeps it apart from a stored-tensor plan of the same geometry. A plan
+whose near field is the signed tensor dictionary is keyed `_p2p_dictionary_`
+(the key also covers the dictionary's target tile and whether it came from
+the `RegularGrid` hint) and persists the dictionary itself, in the plan's
+precision, with the point potential rows built beside it, in place of the
+canonical records: a warm construction loads it and builds no pair tensor.
+When a `RegularGrid`-hint dictionary does not compress and the plan falls
+back to rows, the same file persists the canonical records instead.
+Canonical-keyed files are written incrementally: the payload
+before the P2P records is written first, the records are appended in
+canonical order as they are built, and the header (payload size and
+checksum) is written last; the file is byte-identical to a one-shot write. The selected execution packing is
 deliberately not stored: each process derives it for its backend, and CUDA
 uploads that derived representation to the device. FP32 geometry files are
 decoded directly into canonical FP32 operators, without widening to FP64.
