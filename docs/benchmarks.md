@@ -81,8 +81,8 @@ explicit identity map, so `--sources` and `--targets` must be equal.
 | `--regular-grid`, `--periodic` | the layout hint; a fully periodic cubic cell equal to the root box |
 | `--precision`, `--order`, `--depth`, `--threads` | plan parameters and OpenMP threads |
 | `--warmups`, `--evaluations`, `--samples` | measurement policy; `--profile` sets one warm-up, one sample and ten consecutive evaluations for profiler timelines |
-| `--direct`, `--accuracy-targets N` | exact-reference validation on all or on `N` deterministically spaced targets |
-| `--cache-dir`, `CDFMM_DISABLE_CACHE` | cache control |
+| `--direct`, `--accuracy-targets N` | exact-reference validation on all or on `N` deterministically spaced targets; point bodies are compared with the point-dipole sum, finite bodies with the exact FP64 all-pairs sum of their pair tensors (`DenseDirectPlan`, built in blocks), so the error is the FMM's and not the geometry-model difference |
+| `CDFMM_CACHE_DIR`, `CDFMM_DISABLE_CACHE` | cache control for the timed construction only; the untimed CUDA runtime warm-up and the workload-comparison constructions never read or write the cache, so an empty cache directory gives a cold `fmm_setup_seconds` on every backend |
 
 Every automated row records two end-to-end workloads (one construction plus
 one evaluation, and one construction plus ten evaluations with changing
