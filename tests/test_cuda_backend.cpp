@@ -1631,3 +1631,74 @@ TEST_CASE("full CUDA accepts empty geometry", "[cuda][manual]")
     REQUIRE(result.empty());
     REQUIRE(fmm.last_timings().cuda_p2p_kernel.calls == 1);
 }
+
+TEST_CASE("position-based CUDA plans build no stored pair tensors", "[cuda]")
+{
+    if (!cuda_m2l_p2p_available() || !cuda_full_available()) {
+        SUCCEED("CUDA FMM backends are unavailable");
+        return;
+    }
+    // FP32 point pairs on CUDA recompute from the resident positions, so
+    // the plan never builds the canonical near-field operator; FP64 keeps
+    // its stored leaf blocks and therefore still builds it.
+    std::vector<Vec3> positions;
+    std::vector<Vec3> moments;
+    for (int index = 0; index < 256; ++index) {
+        const double value = static_cast<double>(index);
+        positions.push_back({
+            -0.95 + 1.9 * static_cast<double>((index * 17) % 67) / 66.0,
+            -0.95 + 1.9 * static_cast<double>((index * 29) % 71) / 70.0,
+            -0.95 + 1.9 * static_cast<double>((index * 43) % 73) / 72.0
+        });
+        moments.push_back({std::sin(value), std::cos(value),
+                           std::sin(0.25 * value)});
+    }
+    std::vector<int> identities(positions.size());
+    std::iota(identities.begin(), identities.end(), 0);
+    UniformFmmOptions options;
+    options.precision = StaticPrecision::Float32;
+    options.expansion_order = 4;
+    options.tree.max_level = 2;
+    options.tree.root_centre = Vec3{};
+    options.tree.root_half_width = 1.0;
+    options.enable_cache = false;
+    options.timing_level = TimingLevel::Detailed;
+    options.fixed_target_source_indices = identities;
+    options.backend = ExecutionBackend::CpuStatic;
+    UniformFmm cpu(positions, positions, options);
+    const auto expected = cpu.evaluate(moments, OutputFlags::Field);
+    double scale = 0.0;
+    for (const PotentialField& value : expected) {
+        scale = std::max({scale, std::abs(value.H.x), std::abs(value.H.y),
+                          std::abs(value.H.z)});
+    }
+
+    for (const ExecutionBackend backend :
+         {ExecutionBackend::CudaPartial, ExecutionBackend::CudaFull}) {
+        options.backend = backend;
+        UniformFmm cuda(positions, positions, options);
+        REQUIRE(cuda.p2p_execution_packing() ==
+                P2PExecutionPacking::PointGeometry);
+        const StaticPlanStatistics& statistics = cuda.static_plan_statistics();
+        REQUIRE(statistics.p2p_canonical_operator.calls == 0);
+        REQUIRE(statistics.p2p_interaction_setup.calls == 0);
+        REQUIRE(statistics.near_field_operator_bytes == 0);
+        REQUIRE(statistics.p2p_interactions ==
+                cpu.static_plan_statistics().p2p_interactions);
+        const auto actual = cuda.evaluate(moments, OutputFlags::Field);
+        for (std::size_t index = 0; index < actual.size(); ++index) {
+            REQUIRE(std::abs(actual[index].H.x - expected[index].H.x) <=
+                    5.0e-5 * scale);
+            REQUIRE(std::abs(actual[index].H.y - expected[index].H.y) <=
+                    5.0e-5 * scale);
+            REQUIRE(std::abs(actual[index].H.z - expected[index].H.z) <=
+                    5.0e-5 * scale);
+        }
+    }
+
+    options.precision = StaticPrecision::Float64;
+    options.backend = ExecutionBackend::CudaFull;
+    UniformFmm stored(positions, positions, options);
+    REQUIRE(stored.p2p_execution_packing() == P2PExecutionPacking::LeafBlock);
+    REQUIRE(stored.static_plan_statistics().p2p_canonical_operator.calls == 1);
+}

@@ -76,6 +76,16 @@ value, never by their now-relocated name.
   permutation-layout recognition, and the digest representation determine which
   files an existing installation can still read. Filename padding and the
   `_v02`/`_v04` suffixes are part of that identity.
+- A plan whose near field is position-based (`PointGeometry`, resolved before
+  preparation; `CacheIdentityInputs::position_based_p2p`) builds no pair
+  tensors and writes an empty, format-valid P2P section. It is keyed apart:
+  the filename segment is `_p2p_positions_` and the `"POSG"` marker is hashed
+  after `use_reduced_symmetry_p2p` **only** for such plans, so every
+  stored-tensor key and digest is byte-identical to before and no older
+  binary ever looks such a file up. Its load treats any file holding pair
+  tensors as a miss. Never persist an empty P2P section under a stored-tensor
+  key: nothing validates the section against the topology, so a later
+  stored-tensor plan would silently evaluate without a near field.
 - Cache misses are non-fatal. A missing, truncated, corrupt, mismatched, or
   incompatible file must remain a rebuildable miss, and a failed write must
   remain a silent zero-byte result. A cache failure cannot alter an evaluation

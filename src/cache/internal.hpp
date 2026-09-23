@@ -364,6 +364,12 @@ struct CacheIdentityInputs {
   SourceModel far_field_source_model;
   TargetModel far_field_target_model;
   bool use_reduced_symmetry_p2p;
+  // True when the resolved near field recomputes every list-1 pair from the
+  // positions (`PointGeometry`), so the plan builds and persists no pair
+  // tensors. Such a plan keys its geometry file separately: its P2P section
+  // is empty, and a stored-tensor plan (or an older binary, which never
+  // computes this key) must never read it as a complete near field.
+  bool position_based_p2p;
   const PeriodicCellOptions& periodic;
   const UniformTree& tree;
   std::span<const CuboidSize> sorted_source_sizes;
@@ -454,6 +460,10 @@ struct GeometryCacheIdentity {
   ExpansionBasis basis{};
   StaticPrecision precision{};
   int order{0};
+  // A position-based plan's file holds an empty P2P section; the load
+  // rejects any other file under its key as a miss (see
+  // `CacheIdentityInputs::position_based_p2p`).
+  bool position_based_p2p{false};
 };
 
 // Mutable references to exactly the geometry-dependent plan state this

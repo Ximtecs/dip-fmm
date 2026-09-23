@@ -39,6 +39,8 @@ namespace cdfmm::detail::cache {
 //   M2L plan metadata: counts, scaling tables, CSR rows and level schedule
 //   L2P evaluators: potential row and three field rows each
 //   canonical P2P operator: counts, row offsets, block count, blocks
+//     (empty -- zero counts and blocks -- for a position-based plan, which
+//     builds no pair tensors and is keyed separately for that reason)
 // The tree and identity sections are compared against the live objects on
 // load rather than trusted, so a key collision can never yield a wrong plan.
 bool load_geometry_cache(
@@ -236,6 +238,9 @@ bool load_geometry_cache(
       payload.p2p_operator_float.target_count = reader.scalar<int>();
       payload.p2p_operator_float.row_offsets = reader.vector<int>();
       const auto block_count = reader.scalar<std::uint64_t>();
+      if (identity.position_based_p2p && block_count != 0) {
+        throw std::runtime_error("position-based plan holds pair tensors");
+      }
       read_p2p_blocks_float(reader, block_count, payload.p2p_operator_float);
       validate_cached_m2l(payload.m2l_plan_float);
       geometry_cache_loaded_direct_float = true;
@@ -281,6 +286,9 @@ bool load_geometry_cache(
       payload.p2p_operator.target_count = reader.scalar<int>();
       payload.p2p_operator.row_offsets = reader.vector<int>();
       const auto block_count = reader.scalar<std::uint64_t>();
+      if (identity.position_based_p2p && block_count != 0) {
+        throw std::runtime_error("position-based plan holds pair tensors");
+      }
       read_p2p_blocks(reader, block_count, identity.precision,
                       payload.p2p_operator, payload.p2p_compact_plan);
       validate_cached_m2l(payload.m2l_plan);

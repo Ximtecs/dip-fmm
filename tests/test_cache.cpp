@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <thread>
 #include <vector>
 #include <unistd.h>
@@ -143,6 +144,57 @@ TEST_CASE("cold and warm binary caches preserve complete plan results",
   REQUIRE(warm.static_plan_statistics().total_bytes() ==
           cold.static_plan_statistics().total_bytes());
   require_same_fields(cold_result, warm_result);
+}
+
+TEST_CASE("position-based and stored-tensor plans keep separate geometry files",
+          "[cache]") {
+  // A PointGeometry plan persists an empty P2P section, so it is keyed
+  // apart from a stored-tensor plan of the same geometry: neither may load
+  // the other's file, and both stay correct cold and warm. Stored-tensor
+  // keys keep their established spelling.
+  TemporaryCache cache;
+  const UniformFmmOptions position_options = cache_options();
+  UniformFmm position_cold(positions, targets, position_options);
+  REQUIRE(position_cold.p2p_execution_packing() ==
+          P2PExecutionPacking::PointGeometry);
+  REQUIRE(position_cold.geometry_cache_key().find("_p2p_positions_") !=
+          std::string::npos);
+  REQUIRE_FALSE(position_cold.static_plan_statistics().geometry_cache_hit);
+  const auto position_expected = position_cold.evaluate_float64(moments);
+
+  UniformFmmOptions stored_options = position_options;
+  stored_options.p2p_packing = P2PExecutionPacking::ParticleRowSoa;
+  UniformFmm stored_cold(positions, targets, stored_options);
+  REQUIRE(stored_cold.geometry_cache_key().find("_p2p_canonical_") !=
+          std::string::npos);
+  REQUIRE(stored_cold.geometry_cache_key() !=
+          position_cold.geometry_cache_key());
+  REQUIRE_FALSE(stored_cold.static_plan_statistics().geometry_cache_hit);
+  REQUIRE(stored_cold.static_plan_statistics().p2p_interactions ==
+          position_cold.static_plan_statistics().p2p_interactions);
+  const auto stored_expected = stored_cold.evaluate_float64(moments);
+  REQUIRE(stored_expected.size() == position_expected.size());
+  for (std::size_t index = 0; index < stored_expected.size(); ++index) {
+    REQUIRE(position_expected[index].H.x ==
+            Catch::Approx(stored_expected[index].H.x).margin(1.0e-12));
+    REQUIRE(position_expected[index].H.y ==
+            Catch::Approx(stored_expected[index].H.y).margin(1.0e-12));
+    REQUIRE(position_expected[index].H.z ==
+            Catch::Approx(stored_expected[index].H.z).margin(1.0e-12));
+  }
+
+  UniformFmm position_warm(positions, targets, position_options);
+  REQUIRE(position_warm.static_plan_statistics().geometry_cache_hit);
+  REQUIRE(position_warm.static_plan_statistics().p2p_interactions ==
+          position_cold.static_plan_statistics().p2p_interactions);
+  require_same_fields(position_expected,
+                      position_warm.evaluate_float64(moments));
+
+  UniformFmm stored_warm(positions, targets, stored_options);
+  REQUIRE(stored_warm.static_plan_statistics().geometry_cache_hit);
+  REQUIRE(stored_warm.static_plan_statistics().p2p_interactions ==
+          stored_cold.static_plan_statistics().p2p_interactions);
+  require_same_fields(stored_expected, stored_warm.evaluate_float64(moments));
 }
 
 TEST_CASE("warm FP32 caches preserve the canonical plan exactly", "[cache]") {

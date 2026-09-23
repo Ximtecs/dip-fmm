@@ -317,6 +317,7 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
         far_field_source_model_,
         far_field_target_model_,
         use_reduced_symmetry_p2p_,
+        position_based_near_field(),
         periodic_,
         *tree_,
         sorted_source_sizes_,
@@ -830,8 +831,9 @@ void UniformFmm::build_cuda_p2p_plan() {
     return;
   }
   if (policy.p2p_packing == CudaP2PPacking::PointGeometry) {
-    // Positions replace the stored pair tensors on the device as well; the
-    // canonical operator is already in the cache, so release it here.
+    // Positions replace the stored pair tensors on the device as well. A
+    // plan resolved to this packing before preparation never built them;
+    // release whatever a layout-hint fallback may still hold.
     cuda_p2p_plan_ = std::make_unique<CudaP2PPlanOwner>(
         std::make_unique<CudaP2PPlan>(*topology_, precision_,
                                       fixed_identities));
@@ -1006,6 +1008,29 @@ bool UniformFmm::selects_point_geometry_p2p() const noexcept {
          !use_reduced_symmetry_p2p_;
 }
 
+bool UniformFmm::position_based_near_field() const noexcept {
+  // True when the policy resolved before plan preparation already guarantees
+  // that every list-1 pair is recomputed from the positions, so the plan
+  // never needs, builds or persists a stored pair tensor. A layout-selected
+  // dictionary is only a prediction: it is derived from the canonical
+  // operator and may fall back to `PointGeometry` afterwards, so that plan
+  // still builds the canonical operator and is not position-based here.
+  if (!cuda_policy_) {
+    return false;
+  }
+  const cuda_policy::CudaP2PPacking packing = cuda_policy_->policy.p2p_packing;
+  switch (backend_) {
+  case ExecutionBackend::CudaM2LP2P:
+  case ExecutionBackend::CudaFull:
+    return packing == cuda_policy::CudaP2PPacking::PointGeometry;
+  case ExecutionBackend::CpuStatic:
+    return selects_point_geometry_p2p() &&
+           packing != cuda_policy::CudaP2PPacking::SignedDictionary;
+  default:
+    return false;
+  }
+}
+
 P2PExecutionPacking UniformFmm::resolve_cpu_p2p_packing() const noexcept {
   // The dictionary exists only when it was selected (explicitly or through
   // the reduced-symmetry option) and could be derived; it then wins.
@@ -1140,8 +1165,10 @@ void UniformFmm::build_cpu_far_field_packing() {
         owner->m2l_schedule.memory_bytes();
   }
   if (p2p_execution_packing_ == P2PExecutionPacking::PointGeometry) {
-    // Positions replace the stored pair tensors; release the canonical and
-    // row operators (the cache is already written) and account the scratch.
+    // Positions replace the stored pair tensors. A plan resolved to this
+    // packing before preparation never built them; one that fell back from
+    // a layout-selected dictionary releases its canonical and row operators
+    // here (its cache entry is already written). Account the scratch.
     int thread_capacity = 1;
 #ifdef CDFMM_USE_OPENMP
     thread_capacity = omp_get_max_threads();

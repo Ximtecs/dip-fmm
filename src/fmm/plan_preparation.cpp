@@ -38,6 +38,19 @@ namespace cdfmm {
 
 namespace {
 
+/// @brief Number of list-1 (target, source) pairs the leaf records describe.
+///
+/// This is the pair count of the canonical near-field operator, which holds
+/// exactly one block per pair, so a position-based plan that never builds
+/// that operator still reports the same interaction count.
+[[nodiscard]] std::size_t list1_pair_count(const StaticFmmTopology& topology) {
+  std::size_t pairs = 0;
+  for (const StaticP2PLeafRecord& record : topology.p2p_leaf_records) {
+    pairs += record.target_count * record.source_count;
+  }
+  return pairs;
+}
+
 /// @brief The failure a parallel endpoint-operator loop reports.
 ///
 /// The lowest failing index wins, because that is the leaf or target a serial
@@ -361,7 +374,8 @@ void UniformFmm::build_static_plan() {
   }
   const detail::cache::GeometryCacheIdentity geometry_identity{
       cache_enabled_,    cache_directory_, geometry_cache_key_,
-      geometry_hash_digest_, expansion_basis_, precision_, expansion_order()};
+      geometry_hash_digest_, expansion_basis_, precision_, expansion_order(),
+      position_based_near_field()};
   if (universal_available &&
       (!periodic_required || periodic_operator_available_) &&
       detail::cache::load_geometry_cache(
@@ -381,10 +395,11 @@ void UniformFmm::build_static_plan() {
         precision_ == StaticPrecision::Float32
             ? m2l_plan_float_.source_nodes.size()
             : m2l_plan_.source_nodes.size();
-    static_plan_statistics_.p2p_interactions =
-        precision_ == StaticPrecision::Float32
-            ? p2p_operator_float_.blocks.size()
-            : p2p_operator_.blocks.size();
+    static_plan_statistics_.p2p_interactions = position_based_near_field()
+        ? list1_pair_count(*topology_)
+        : (precision_ == StaticPrecision::Float32
+               ? p2p_operator_float_.blocks.size()
+               : p2p_operator_.blocks.size());
     static_plan_statistics_.m2m_theoretical_interactions =
         topology_->nodes.empty() ? 0 : topology_->nodes.size() - 1;
     static_plan_statistics_.l2l_theoretical_interactions =
@@ -1120,10 +1135,19 @@ void UniformFmm::build_static_plan() {
   // The three sub-timers separate record expansion, tensor construction and
   // derived packing so a warm plan, which only pays the last, is
   // distinguishable.
+  //
+  // A position-based near field (`PointGeometry` on the CPU or CUDA) reads
+  // only the leaf records and the sorted positions, so neither the pair list
+  // nor the canonical operator is built: at N x 27 x occupancy pairs that is
+  // what bounded the reachable leaf occupancy. Its sub-timers then record
+  // nothing, as nothing ran.
   phase_clock.start();
   detail::PhaseStopwatch p2p_stage_clock(detailed_timing());
+  const bool position_based = position_based_near_field();
   p2p_stage_clock.start();
-  if (periodic_.enabled) {
+  if (position_based) {
+    p2p_operator_ = {};
+  } else if (periodic_.enabled) {
     std::vector<StaticP2PInteraction> near_interactions;
     for (const StaticP2PLeafRecord& record : topology_->p2p_leaf_records) {
       for (int target = static_cast<int>(record.target_begin);
@@ -1165,10 +1189,12 @@ void UniformFmm::build_static_plan() {
         target_geometry_, target_sizes, sorted_target_tetrahedra_,
         near_field_source_model_, near_field_target_model_);
   }
-  p2p_stage_clock.record(static_plan_statistics_.p2p_canonical_operator);
+  if (!position_based) {
+    p2p_stage_clock.record(static_plan_statistics_.p2p_canonical_operator);
+  }
   p2p_stage_clock.start();
-  const bool point_geometry_p2p =
-      backend_ == ExecutionBackend::CpuStatic && selects_point_geometry_p2p();
+  const bool point_geometry_p2p = position_based ||
+      (backend_ == ExecutionBackend::CpuStatic && selects_point_geometry_p2p());
   if (!point_geometry_p2p) {
     p2p_compact_plan_ = build_static_p2p_compact_plan(p2p_operator_);
   }
@@ -1183,7 +1209,9 @@ void UniformFmm::build_static_plan() {
     p2p_execution_packing_ = resolve_cpu_p2p_packing();
   }
   p2p_stage_clock.record(static_plan_statistics_.p2p_derived_packing);
-  static_plan_statistics_.p2p_interactions = p2p_operator_.blocks.size();
+  static_plan_statistics_.p2p_interactions = position_based
+      ? list1_pair_count(*topology_)
+      : p2p_operator_.blocks.size();
   static_plan_statistics_.p2p_value_bytes =
       p2p_operator_.blocks.size() * 6 * sizeof(double);
   static_plan_statistics_.p2p_index_bytes =
@@ -1298,7 +1326,7 @@ void UniformFmm::quantise_static_plan_to_float() {
       p2p_execution_packing_ = P2PExecutionPacking::TensorDictionary;
     }
   }
-  if (bsr_identity_compatible &&
+  if (bsr_identity_compatible && !position_based_near_field() &&
       estimate_bsr_bytes(p2p_operator_float_, sizeof(float)) <=
           cuda_p2p_bsr_max_bytes_) {
     const std::span<const int> bsr_identities =

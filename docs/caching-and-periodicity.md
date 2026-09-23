@@ -42,7 +42,12 @@ bank, and the eight L2L templates. Periodic root operators are separate
 because their setup tolerance is independently selectable. Geometry files
 contain tree topology and Morton permutations, self metadata, P2M, M2L
 connectivity and level scaling, L2P, and exact canonical P2P data; they do not
-duplicate the universal matrices. The selected execution packing is
+duplicate the universal matrices. A point plan whose P2P resolves to
+`PointGeometry` before construction (the automatic CPU choice without a
+dictionary, and FP32 point pairs on CUDA) recomputes every pair from the
+positions, so it never builds pair tensors: its geometry file carries an empty
+P2P section and is named with `_p2p_positions_` instead of `_p2p_canonical_`,
+which keeps it apart from a stored-tensor plan of the same geometry. The selected execution packing is
 deliberately not stored: each process derives it for its backend, and CUDA
 uploads that derived representation to the device. FP32 geometry files are
 decoded directly into canonical FP32 operators, without widening to FP64.

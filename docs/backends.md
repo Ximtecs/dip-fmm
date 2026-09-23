@@ -135,7 +135,7 @@ production backend accepts and why the exclusions exist.
 | `CpuStatic` (portable, oneMKL) | `CanonicalAos` | any | none |
 | `CpuStatic` | `ParticleRowSoa` | any | none; the default for finite near fields on a `General` layout |
 | `CpuStatic` | `TensorDictionary` | any | point sources need `fixed_target_source_indices` (the self pair is encoded at construction); automatic on `RegularGrid` when the built dictionary has one- or two-byte tokens |
-| `CpuStatic` | `PointGeometry` | point → point only | the fused point executor and the default for point pairs, free-space or periodic; finite geometry is rejected |
+| `CpuStatic` | `PointGeometry` | point → point only | the fused point executor and the default for point pairs, free-space or periodic; finite geometry is rejected; the plan builds no pair tensors, so construction memory does not grow with the list-1 pair count |
 | `CudaPartial`, `CudaFull` | `CanonicalAos` | any | explicit only |
 | `CudaPartial`, `CudaFull` | `LeafBlock` | any | the general default for every geometry (one warp per leaf pair) |
 | `CudaPartial`, `CudaFull` | `CudaBsr3` | any | point sources need `fixed_target_source_indices`; explicit only |

@@ -404,6 +404,12 @@ CacheIdentity compute_cache_identity(const bool supplied_topology,
   // canonical operator remains reusable, while the cache key prevents a
   // reduced-symmetry request from being reported as a default packing.
   hash_value(hash, inputs.use_reduced_symmetry_p2p);
+  // A position-based near field persists no pair tensors. The marker is
+  // hashed only in that case, so every stored-tensor key -- and therefore
+  // every file an existing installation already holds -- is unchanged.
+  if (inputs.position_based_p2p) {
+    hash_value(hash, std::uint32_t{0x504f5347U}); // "POSG"
+  }
   hash_value(hash, inputs.periodic.enabled);
   hash_value(hash, inputs.periodic.axes);
   hash_value(hash, static_cast<std::uint32_t>(inputs.periodic.convention));
@@ -509,7 +515,10 @@ CacheIdentity compute_cache_identity(const bool supplied_topology,
        << std::setw(2) << inputs.tree.leaf_level() << '_'
        << precision_name(inputs.precision) << "_N_"
        << inputs.tree.sorted_source_positions().size() << "_p2p_"
-       << (inputs.use_reduced_symmetry_p2p ? "reduced_symmetry" : "canonical")
+       << (inputs.position_based_p2p
+               ? "positions"
+               : (inputs.use_reduced_symmetry_p2p ? "reduced_symmetry"
+                                                  : "canonical"))
        << '_' << digest << "_v04.bin";
   identity.geometry_key = plan.str();
   if (clock.enabled()) {

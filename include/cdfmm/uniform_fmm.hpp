@@ -538,6 +538,7 @@ private:
   void build_backend_packing();
   void build_cpu_far_field_packing();
   [[nodiscard]] bool selects_point_geometry_p2p() const noexcept;
+  [[nodiscard]] bool position_based_near_field() const noexcept;
   [[nodiscard]] P2PExecutionPacking resolve_cpu_p2p_packing() const noexcept;
   void quantise_static_plan_to_float();
   void initialise_source_geometry(const UniformFmmOptions &options);

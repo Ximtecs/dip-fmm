@@ -651,6 +651,93 @@ TEST_CASE("explicit CpuStatic P2P packing outranks the regular-grid hint",
     }
 }
 
+TEST_CASE("a position-based CpuStatic plan builds no stored pair tensors",
+          "[uniform_fmm][p2p][packing]")
+{
+    // PointGeometry recomputes every list-1 pair from the positions, so the
+    // canonical near-field operator is never built: no pair list, no tensor
+    // construction, no retained near-field bytes. The interaction count and
+    // the field still agree with a stored-tensor plan of the same geometry,
+    // for the free-space and the periodic topology, field and potential.
+    const std::vector<Vec3> positions = packing_test_positions(96, 11U);
+    std::vector<Vec3> moments(positions.size());
+    for (std::size_t index = 0; index < moments.size(); ++index) {
+        const double value = static_cast<double>(index);
+        moments[index] = {std::cos(value), std::sin(0.6 * value),
+                          std::cos(1.9 * value + 0.3)};
+    }
+    std::vector<int> identities(positions.size());
+    std::iota(identities.begin(), identities.end(), 0);
+
+    for (const StaticPrecision precision :
+         {StaticPrecision::Float64, StaticPrecision::Float32}) {
+        for (const bool periodic : {false, true}) {
+            UniformFmmOptions options;
+            options.backend = ExecutionBackend::CpuStatic;
+            options.precision = precision;
+            options.expansion_order = 4;
+            options.tree.max_level = 2;
+            options.enable_cache = false;
+            options.timing_level = TimingLevel::Detailed;
+            options.fixed_target_source_indices = identities;
+            if (periodic) {
+                options.periodic.enabled = true;
+                options.periodic.centre = Vec3{};
+                options.periodic.lengths = Vec3{2.0, 2.0, 2.0};
+            }
+
+            UniformFmm positions_plan(positions, positions, options);
+            REQUIRE(positions_plan.p2p_execution_packing() ==
+                    P2PExecutionPacking::PointGeometry);
+            const StaticPlanStatistics& statistics =
+                positions_plan.static_plan_statistics();
+            REQUIRE(statistics.p2p_interaction_setup.calls == 0);
+            REQUIRE(statistics.p2p_canonical_operator.calls == 0);
+            REQUIRE(statistics.p2p_tensor_plan.calls == 1);
+            REQUIRE(statistics.near_field_operator_bytes == 0);
+            REQUIRE(statistics.p2p_value_bytes == 0);
+
+            options.p2p_packing = P2PExecutionPacking::ParticleRowSoa;
+            UniformFmm stored(positions, positions, options);
+            REQUIRE(stored.static_plan_statistics()
+                        .p2p_canonical_operator.calls == 1);
+            REQUIRE(statistics.p2p_interactions > 0);
+            REQUIRE(statistics.p2p_interactions ==
+                    stored.static_plan_statistics().p2p_interactions);
+
+            const double tolerance =
+                precision == StaticPrecision::Float32 ? 5.0e-5 : 1.0e-11;
+            const OutputFlags output =
+                OutputFlags::Field | OutputFlags::Potential;
+            const auto expected = stored.evaluate(moments, output);
+            const auto actual = positions_plan.evaluate(moments, output);
+            require_fields_close(actual, expected, tolerance);
+            double potential_scale = 0.0;
+            for (const PotentialField& value : expected) {
+                potential_scale = std::max(potential_scale, std::abs(value.phi));
+            }
+            for (std::size_t index = 0; index < actual.size(); ++index) {
+                REQUIRE(std::abs(actual[index].phi - expected[index].phi) <=
+                        tolerance * potential_scale);
+            }
+        }
+    }
+
+    // A layout-selected dictionary is only a prediction, so that plan still
+    // derives it from the canonical operator.
+    UniformFmmOptions hinted;
+    hinted.backend = ExecutionBackend::CpuStatic;
+    hinted.expansion_order = 4;
+    hinted.tree.max_level = 2;
+    hinted.enable_cache = false;
+    hinted.timing_level = TimingLevel::Detailed;
+    hinted.fixed_target_source_indices = identities;
+    hinted.spatial_layout = SpatialLayout::RegularGrid;
+    UniformFmm hinted_plan(positions, positions, hinted);
+    REQUIRE(hinted_plan.static_plan_statistics()
+                .p2p_canonical_operator.calls == 1);
+}
+
 TEST_CASE("periodic point geometry P2P matches the stored rows for field and potential",
           "[uniform_fmm][p2p][packing][periodic]")
 {
