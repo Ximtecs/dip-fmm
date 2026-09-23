@@ -29,7 +29,9 @@ std::size_t FloatStaticP2POperator::memory_bytes() const noexcept
 StaticP2PMemory StaticP2PCompactPlan::memory() const noexcept
 {
     StaticP2PMemory result;
-    result.tensor_bytes = tensors[0].size() * 9 * sizeof(double);
+    // Rows kept for potential output alone hold no field tensors.
+    result.tensor_bytes =
+        (tensors[0].size() * 6 + potential[0].size() * 3) * sizeof(double);
     result.index_bytes = source_indices.size() * sizeof(int) +
         skip_for_identity.size() * sizeof(unsigned char);
     result.row_metadata_bytes = row_offsets.size() * sizeof(int);
@@ -39,7 +41,9 @@ StaticP2PMemory StaticP2PCompactPlan::memory() const noexcept
 StaticP2PMemory FloatStaticP2PCompactPlan::memory() const noexcept
 {
     StaticP2PMemory result;
-    result.tensor_bytes = tensors[0].size() * 9 * sizeof(float);
+    // Rows kept for potential output alone hold no field tensors.
+    result.tensor_bytes =
+        (tensors[0].size() * 6 + potential[0].size() * 3) * sizeof(float);
     result.index_bytes = source_indices.size() * sizeof(int) +
         skip_for_identity.size() * sizeof(unsigned char);
     result.row_metadata_bytes = row_offsets.size() * sizeof(int);
