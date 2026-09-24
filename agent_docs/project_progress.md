@@ -1,11 +1,15 @@
 # Project progress
 
-## Open: exact tetrahedron pair near a shared edge — found 2026-09-24
+## Exact tetrahedron pair tensors near degeneracy and at separation: COMPLETE — 2026-09-24
 
-`tetrahedron_tetrahedron_tensor` is wrong by up to 73 % (and by factors of
-hundreds) when two tetrahedra nearly share an edge (skews 3e-14 to 1e-5);
-exactly shared and clearly separated pairs are right. Pinned by a
-`[!shouldfail]` test; details in `latest_session_work.md`.
+The analytical triangle-triangle reduction returned up to 73 % errors (and
+hundreds of times the tensor) for nearly coplanar or nearly touching faces,
+and up to 1.5e-5 for separated irregular pairs below eight circumradii.
+Nearly parallel faces are projected onto parallel planes, ulp heights snap to
+zero, the rank threshold is 1e-4, and pairs from 1.5 circumradii are averaged
+by a graded Gauss ladder. Remaining documented limit: about 3e-4 for bodies
+separated by gaps of 1e-5 to 1e-3 of their size. Details in
+`latest_session_work.md`; mathematics in `docs/math/finite-geometry.md`.
 
 ## Near-field construction memory and persisted dictionaries: COMPLETE — 2026-09-23
 

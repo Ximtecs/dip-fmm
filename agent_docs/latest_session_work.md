@@ -1,33 +1,58 @@
 # Latest session work
 
-## 2026-09-24 — Open defect: exact tetrahedron pair near a shared edge
+## 2026-09-24 — Exact tetrahedron pair tensors: near-degenerate and separated pairs fixed
 
-Found by Article1's `finite_endpoint` campaign, not fixed. On
-`tetra_mesh_irregular_8` (a conforming Kuhn mesh with jittered nodes) the
-error sat at 1.5e-2 for every order, depth and endpoint model. It is not the
-FMM: `tetrahedron_tetrahedron_tensor` itself is wrong when two tetrahedra
-nearly -- but not exactly -- share an edge. For the Article1 pair (bodies 363
-and 359), moving one shared vertex off the edge by 3e-14 to 1e-5 changes the
-tensor by up to 73 % (and by factors of hundreds from 1e-6 to 1e-5); from
-1e-4 on it agrees with an independent reference again. The exactly-shared
-value is right: the source's tetrahedron-to-point field averaged over the
-target by Monte Carlo (a different closed form) gives
-H = [-0.1428, 0.1136, -0.0777] against the kernel's [-0.142762, 0.113629,
--0.077636], and is continuous under the same skews. Cause, as far as read:
-in the triangle-triangle recursion (`src/geometry/primitives/tetrahedron.cpp`)
-the Gram-Schmidt rank test drops a direction below sqrt(256 eps) relative
-while the residual height is snapped only below 256 eps absolute, so a
-reduced basis meets a nonzero height; above the rank threshold the full-rank
-closed forms cancel catastrophically. The FMM's coordinate normalisation
-creates such ulp-level mismatches whenever it cannot scale a conforming mesh
-exactly; power-of-two lattices (every regular Kuhn mesh Article1 uses)
-normalise exactly and are unaffected -- their references are correct.
-Pinned by `tests/test_tetrahedron.cpp`, "exact tetrahedron pair is
-continuous as a shared edge stops coinciding" (`[!shouldfail]`: all five
-skews fail today, the case passes CTest, and Catch2 flags the tag once a fix
-lands). A fix needs the near-degenerate branches of the recursion reworked
-with an error analysis; snapping alone would cost up to 1e-4 in exact FP64
-references, so it was not attempted unattended.
+Found by Article1's `finite_endpoint` campaign: on `tetra_mesh_irregular_8`
+(a conforming Kuhn mesh with jittered nodes) the error sat at 1.5e-2 for
+every order, depth and endpoint model. Three defects of
+`src/geometry/primitives/tetrahedron.cpp`, all in the analytical
+triangle-triangle reduction (Gumerov, Kaneko and Duraiswami), were
+responsible; `d745503` and `7bbb268` behave identically, so none is a
+regression of the construction work.
+
+1. **Nearly coplanar faces.** The parallel branch was taken only for normals
+   equal to 1e-14 while the Gram-Schmidt rank test dropped directions below
+   sqrt(256 eps) = 2.4e-7, so tilts of 1e-14 to 2.4e-7 ran the general branch
+   on a rank-deficient basis (a steady 73 % error) and larger tilts cancelled
+   catastrophically (hundreds of times the tensor at 1e-6). Face pairs within
+   1e-3 of parallel are now projected onto planes normal to their mean normal
+   (each through its own centroid; symmetric in the two faces) and take the
+   parallel branch; heights below 1e-10 are zero, which removes 1e-7 errors
+   from nearly shared vertices.
+2. **Nearly dependent directions.** The rank threshold is now 1e-4 of the
+   basis scale. Raised on its own it broke a separated pair (a 0.005 tensor
+   became -158), which is why it is safe only together with 3.
+3. **Separated pairs.** The reduction was only switched off beyond eight
+   summed circumradii, but it is ill-conditioned well before: on random
+   irregular tetrahedra its error grows from a median of 3e-11 at 1.5
+   circumradii to 2e-8 at eight, with outliers of 1.5e-5 (nearly parallel
+   edges). From 1.5 circumradii pairs are now averaged by collapsed Gauss
+   quadrature of the exact source point field: seven points from 1.5, six
+   from 2, five from 4 (each below about 2e-10; 6e-11 measured).
+
+Why the FMM exposed it: its normalisation and the dataset's
+centroid-plus-offset records turn exactly shared edges into ulp-level near
+misses, while the dense reference happened to see some of them differently;
+the frozen build's FMM and dense plans disagreed by 1.5e-2 even on isolated
+irregular tetrahedra.
+
+Evidence (all FP64). Shared-edge sweep: ulp-level mismatches now evaluate as
+the exact mesh (worst excess 6.7e-12, was 0.73); genuinely near-touching
+bodies (gaps 1e-5 to 1e-3 of their size) stay within 3.4e-4 of the physical
+change (was 3.1e3) -- the one documented remaining limit. 200 random
+separated pairs, ratio 3-8, against a 12^3 Gauss reference: worst 6.0e-11
+(was 6.5e-5). Self tensors: V trace = -1 to 6e-15. FMM against freshly
+computed dense references: irregular Kuhn mesh 8.5e-4 / 3.3e-5 / 1.9e-5 at
+p = 4 / 8 / 10, depth 2 (was 1.5e-2 flat; depth 3 converges more slowly,
+to 1.1e-4, because jittered bodies overhang one-cell leaves); isolated
+irregular tetrahedra to 1e-7 (was 1.5e-2); regular 8^3 mesh unchanged
+(5e-6). Cold construction, 8 P-cores, against `7bbb268`: isolated irregular
+tetrahedra 0.71x, mixed prism-tetrahedron 0.96x, regular 16^3 mesh 1.13x,
+irregular mesh 1.21x (depth 2) and 1.01x (depth 3); evaluation is unchanged.
+Tests: the shared-edge regression (no longer `[!shouldfail]`), a separated
+pair against a 16-point reference, and the far-switch test moved onto the
+ladder boundaries. CTest 267/267 (build-all and the portable
+warnings-as-errors build), `python_tests` 186 passed, 1 skipped.
 
 ## 2026-09-23 — Near-field construction memory and persisted dictionaries
 
