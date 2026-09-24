@@ -94,18 +94,37 @@ Gumerov, Kaneko and Duraiswami (2024). Tetrahedron-to-point and
 point-to-tetrahedron tensors use the analytical point field of a uniformly
 magnetised polyhedron.
 
-Two numerical safeguards keep these analytical kernels well conditioned:
+Four numerical safeguards keep these analytical kernels well conditioned:
 
 - the point-field edge primitives use the closed form of the atanh
   difference in which the logarithms of the perpendicular edge distance
   cancel, and the normal component is the signed solid angle of the face
   (Van Oosterom–Strackee), so evaluation points on the line through an edge
-  outside the body are regular; and
-- beyond eight summed circumradii of separation a body pair averages the
-  exact source point tensor over the target with a six-point Gauss rule
-  instead of cancelling large face integrals (the surface form loses about
-  five digits at fifty body sizes and all of them at one hundred). The switch
-  is continuous to the working precision and is exercised by the tests.
+  outside the body are regular;
+- from 1.5 summed circumradii of separation a body pair averages the exact
+  source point tensor over the target by collapsed Gauss quadrature instead
+  of forming the surface integrals, with seven points per direction from 1.5,
+  six from 2 and five from 4 circumradii. The analytical reduction is
+  ill-conditioned for separated irregular bodies well before it loses all
+  digits: on random irregular tetrahedra its error grows from a median of
+  3e-11 at 1.5 circumradii to 2e-8 at eight, with outliers up to 1.5e-5 where
+  edges are nearly parallel, whereas each rule of the ladder stays below
+  about 2e-10 in its range (6e-11 measured over random pairs from three to
+  eight circumradii). The switch is continuous to that precision and is
+  exercised by the tests;
+- in the triangle-pair reduction, face pairs within 1e-3 of parallel are
+  projected onto parallel planes and evaluated by the parallel branch, and
+  heights below 1e-10 of the pair's scale are zero. A conforming mesh whose
+  coordinates the FMM rounds (so that shared edges and coplanar faces miss by
+  a few ulps) then evaluates as the exactly conforming one; before, such near
+  misses returned errors of up to 73 %; and
+- a direction of the reduction's expansion basis whose independent part is
+  below 1e-4 of the basis scale is treated as dependent. This bounds the
+  error of genuinely near-touching bodies (gaps of 1e-5 to 1e-3 of their
+  size) near 3e-4 relative on that pair, where the reduction otherwise
+  returned up to hundreds of times the tensor. It is the one remaining
+  accuracy limit of the exact kernel; removing it needs first-order
+  corrections to the degenerate limits of the reduction.
 
 For a tetrahedron point evaluation on a face, the analytical boundary value
 uses the MagTense-compatible one-sided limiting convention; edge and vertex
