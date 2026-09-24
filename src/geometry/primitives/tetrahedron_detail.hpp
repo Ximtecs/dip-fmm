@@ -47,16 +47,30 @@ struct PolyhedronBody {
 
 /**
  * @brief Separation, in units of the summed circumradii, from which the pair
- * tensor is formed by averaging the exact source point tensor over the target
- * instead of the analytical surface integrals.
+ * tensor is averaged by Gauss quadrature of the exact source point tensor
+ * over the target instead of formed from the analytical surface integrals.
  *
- * The analytical triangle-pair integrals cancel catastrophically when the
- * separation greatly exceeds the face sizes (relative error about 1e-9 at
- * twelve body sizes, 1e-5 at fifty, and no valid digits at one hundred).
- * Beyond this factor the exact source field varies smoothly over the target,
- * so the fixed Gauss rule below is converged to double precision.
+ * The analytical reduction is ill-conditioned for separated irregular pairs:
+ * on random irregular tetrahedra its error grows from a median of 3e-11 at
+ * 1.5 circumradii to 2e-8 at eight, with outliers up to 1.5e-5 where edges
+ * are nearly parallel, and it loses all digits by a hundred body sizes. Below
+ * 1.5 the source's singularity is too close for a fixed rule and the
+ * analytical integral is the more accurate one.
  */
-inline constexpr double polyhedron_far_separation_factor = 8.0;
+inline constexpr double polyhedron_near_quadrature_factor = 1.5;
+
+/**
+ * @brief The quadrature ladder: from each separation (summed circumradii) the
+ * one-dimensional collapsed Gauss rule of that many points is used.
+ *
+ * Each rule is the cheapest whose worst relative error over random irregular
+ * tetrahedra in its range, against a 16-point rule, is at most about 2e-10:
+ * seven points from 1.5 (1.8e-10), six from 2 (1.3e-10) and five from 4
+ * (4.4e-11, 1.5e-13 beyond 8). That is 100 to 1000 times below the worst
+ * error of the analytical reduction in the same ranges, at a cost below it.
+ */
+inline constexpr double polyhedron_quadrature_six_point_factor = 2.0;
+inline constexpr double polyhedron_quadrature_five_point_factor = 4.0;
 
 /**
  * @brief Exact pair tensor of two prepared bodies, choosing the analytical

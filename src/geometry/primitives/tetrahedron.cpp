@@ -15,14 +15,18 @@
 //     double surface integral, where each face pair contributes the exact
 //     integral of 1/|x - y| over two triangles (Gumerov, Kaneko and
 //     Duraiswami, SIAM J. Sci. Comput. 46 (2024)) times the outer product
-//     of the outward normals.  Far-separated pairs switch to a converged
-//     Gauss rule over the target of the exact source field, because the
-//     analytical reduction loses accuracy through cancellation exactly where
-//     quadrature becomes trivially accurate.
+//     of the outward normals.  Separated pairs (from 1.5 summed
+//     circumradii) switch to a converged Gauss rule over the target of the
+//     exact source field, because the analytical reduction loses accuracy
+//     through cancellation exactly where quadrature becomes accurate.
 //
 // Vertices are representative-relative.  Degenerate faces, evaluation on an
 // edge or vertex, and a lost rank in the dimensional reduction are reported
-// as exceptions rather than patched with a limiting value.  The `Prepared*`
+// as exceptions rather than patched with a limiting value.  Near-degenerate
+// configurations are different: nearly parallel face pairs, nearly dependent
+// expansion directions and ulp-level heights are resolved to the exactly
+// degenerate case they approximate (docs/math/finite-geometry.md), because
+// the reduction's general branches cancel catastrophically there.  The `Prepared*`
 // records hoist everything that depends on the body alone (frames, normals,
 // circumradius) so that a body used in many pairs derives it once.
 
@@ -499,8 +503,18 @@ ExpansionProjection expand_gram_schmidt(
         vector_scale = std::max(vector_scale, length);
         basis_scale = std::max(basis_scale, length);
     }
-    const double rank_tolerance = 256.0 *
-        std::numeric_limits<double>::epsilon() *
+    // A direction whose independent part is below `kRelativeRank` of the
+    // basis scale is treated as dependent. Keeping such a direction makes the
+    // expansion coefficients grow like its inverse and the reduction cancels
+    // catastrophically: two tetrahedra that nearly share an edge measured
+    // errors of hundreds of times the tensor. Dropping it perturbs the
+    // geometry by at most that part. Only close pairs reach this reduction
+    // (separated ones are averaged by quadrature, see pair_evaluation), and
+    // for them 1e-4 bounds the error of genuinely near-touching bodies near
+    // 3e-4 relative while leaving every measured separated or exactly
+    // conforming configuration unchanged.
+    constexpr double kRelativeRank = 1.0e-4;
+    const double rank_tolerance = kRelativeRank * kRelativeRank *
         std::max(std::numeric_limits<double>::min(), basis_scale * basis_scale);
 
     double coefficient_matrix[4][4]{};
@@ -563,8 +577,15 @@ ExpansionProjection expand_gram_schmidt(
                 static_cast<std::size_t>(index)];
     }
     result.residual = norm(value - result.projected);
-    const double residual_tolerance = 256.0 *
-        std::numeric_limits<double>::epsilon() * std::max(1.0, vector_scale);
+    // Heights below `kRelativeResidual` are zero. A nearly shared vertex
+    // leaves heights of a few ulps, for which the one-dimensional closed forms
+    // combine logarithms of the height that cancel only approximately (1e-7
+    // errors at 1e-13 heights); snapping them costs O(h log h), about 2e-9
+    // at the threshold, and makes an FMM-rounded conforming mesh evaluate as
+    // the exactly conforming one.
+    constexpr double kRelativeResidual = 1.0e-10;
+    const double residual_tolerance =
+        kRelativeResidual * std::max(1.0, vector_scale);
     if (result.residual <= residual_tolerance) {
         result.residual = 0.0;
     }
@@ -863,6 +884,30 @@ double triangle_triangle_integral_core(
         norm(first_normal + second_normal),
         norm(first_normal - second_normal));
     constexpr double zero_tolerance = 1.0e-14;
+    // Nearly parallel faces (two coplanar faces of a conforming mesh after the
+    // FMM rounds their coordinates, or genuinely almost parallel ones) are
+    // where the general branch is worst conditioned: its error grows like
+    // eps / angle^3. Below `kNearParallel` both triangles are projected onto
+    // planes normal to their mean normal, each through its own centroid, and
+    // the parallel branch evaluates them. That costs O(angle) -- measured
+    // below 0.1 x angle -- and is symmetric in the two triangles.
+    constexpr double kNearParallel = 1.0e-3;
+    if (parallel_measure > zero_tolerance && parallel_measure <= kNearParallel) {
+        const double sign = dot(first_normal, second_normal) >= 0.0 ? 1.0 : -1.0;
+        const Vec3 mean_normal = first_normal + sign * second_normal;
+        const Vec3 normal = scale(mean_normal, 1.0 / norm(mean_normal));
+        const auto project = [&normal](const std::array<Vec3, 3> &triangle) {
+            const Vec3 centroid =
+                scale(triangle[0] + triangle[1] + triangle[2], 1.0 / 3.0);
+            std::array<Vec3, 3> projected{};
+            for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+                projected[vertex] = triangle[vertex] -
+                    dot(triangle[vertex] - centroid, normal) * normal;
+            }
+            return projected;
+        };
+        return triangle_triangle_integral_core(project(first), project(second));
+    }
     double reduced = 0.0;
     if (parallel_measure > zero_tolerance) {
         const double h4 = 0.0;
@@ -1213,10 +1258,7 @@ PairTensor polyhedron_polyhedron_tensor(
 
 namespace {
 
-// Six-point Gauss-Legendre rule on [0, 1].  With the far-separation factor
-// above, the exact source field is analytic on a Bernstein ellipse of
-// parameter rho > 10 around the target, so the rule is converged well below
-// 1e-12 relative error.
+// Six-point Gauss-Legendre rule on [0, 1], one step of the quadrature ladder.
 constexpr std::array<double, 6> gauss6_node{{
     0.033765242898423986, 0.169395306766867743,
     0.380690406958401546, 0.619309593041598454,
@@ -1225,6 +1267,23 @@ constexpr std::array<double, 6> gauss6_weight{{
     0.085662246189585173, 0.180380786524069304,
     0.233956967286345524, 0.233956967286345524,
     0.180380786524069304, 0.085662246189585173}};
+
+// Five- and seven-point Gauss-Legendre rules on [0, 1], the rest of the
+// quadrature ladder (tetrahedron_detail.hpp).
+constexpr std::array<double, 5> gauss5_node{{
+    0.046910077030668018, 0.230765344947158446, 0.500000000000000000,
+    0.769234655052841498, 0.953089922969331926}};
+constexpr std::array<double, 5> gauss5_weight{{
+    0.118463442528094640, 0.239314335249683152, 0.284444444444444333,
+    0.239314335249683152, 0.118463442528094640}};
+constexpr std::array<double, 7> gauss7_node{{
+    0.025446043828620701, 0.129234407200302770, 0.297077424311301408,
+    0.500000000000000000, 0.702922575688698537, 0.870765592799697230,
+    0.974553956171379299}};
+constexpr std::array<double, 7> gauss7_weight{{
+    0.064742483084434865, 0.139852695744638433, 0.190915025252559351,
+    0.208979591836734646, 0.190915025252559351, 0.139852695744638433,
+    0.064742483084434865}};
 
 void accumulate_scaled(PairTensor& sum, const PairTensor& value,
                        const double weight) noexcept
@@ -1272,26 +1331,30 @@ private:
 
 // Volume average of the source point tensor over the target body, using a
 // collapsed-cube (Duffy) map for a tetrahedron and a tensor-product rule for
-// a prism.  Only used when the separation makes the integrand smooth.
+// a prism, with the given one-dimensional Gauss rule on [0, 1].  Only used
+// when the separation makes the integrand smooth.
+template <std::size_t Points>
 PairTensor average_source_tensor_over_target(
     const Vec3& target_minus_source_representative,
     const PolyhedronBody& source,
-    const PolyhedronBody& target)
+    const PolyhedronBody& target,
+    const std::array<double, Points>& gauss_node,
+    const std::array<double, Points>& gauss_weight)
 {
     PairTensor result{};
     const Vec3& d = target_minus_source_representative;
     const SourcePointField source_field(source);
     if (const auto* prism = std::get_if<RectangularPrism>(&target.record)) {
-        for (std::size_t i = 0; i < 6; ++i) {
-            const double x = (gauss6_node[i] - 0.5) * prism->hx;
-            for (std::size_t j = 0; j < 6; ++j) {
-                const double y = (gauss6_node[j] - 0.5) * prism->hy;
-                for (std::size_t k = 0; k < 6; ++k) {
-                    const double z = (gauss6_node[k] - 0.5) * prism->hz;
+        for (std::size_t i = 0; i < Points; ++i) {
+            const double x = (gauss_node[i] - 0.5) * prism->hx;
+            for (std::size_t j = 0; j < Points; ++j) {
+                const double y = (gauss_node[j] - 0.5) * prism->hy;
+                for (std::size_t k = 0; k < Points; ++k) {
+                    const double z = (gauss_node[k] - 0.5) * prism->hz;
                     accumulate_scaled(
                         result,
                         source_field(d + Vec3{x, y, z}),
-                        gauss6_weight[i] * gauss6_weight[j] * gauss6_weight[k]);
+                        gauss_weight[i] * gauss_weight[j] * gauss_weight[k]);
                 }
             }
         }
@@ -1301,19 +1364,19 @@ PairTensor average_source_tensor_over_target(
     const Vec3 edge_b = tetrahedron.vertices[1] - tetrahedron.vertices[0];
     const Vec3 edge_c = tetrahedron.vertices[2] - tetrahedron.vertices[0];
     const Vec3 edge_d = tetrahedron.vertices[3] - tetrahedron.vertices[0];
-    for (std::size_t i = 0; i < 6; ++i) {
-        const double u = gauss6_node[i];
-        for (std::size_t j = 0; j < 6; ++j) {
-            const double v = gauss6_node[j];
-            for (std::size_t k = 0; k < 6; ++k) {
-                const double w = gauss6_node[k];
+    for (std::size_t i = 0; i < Points; ++i) {
+        const double u = gauss_node[i];
+        for (std::size_t j = 0; j < Points; ++j) {
+            const double v = gauss_node[j];
+            for (std::size_t k = 0; k < Points; ++k) {
+                const double w = gauss_node[k];
                 const Vec3 offset = tetrahedron.vertices[0] + edge_b * u +
                     edge_c * ((1.0 - u) * v) +
                     edge_d * ((1.0 - u) * (1.0 - v) * w);
                 // The Jacobian of the collapsed cube is 6 V (1-u)^2 (1-v);
                 // dividing by V gives the volume average directly.
-                const double weight = 6.0 * gauss6_weight[i] *
-                    gauss6_weight[j] * gauss6_weight[k] * (1.0 - u) *
+                const double weight = 6.0 * gauss_weight[i] *
+                    gauss_weight[j] * gauss_weight[k] * (1.0 - u) *
                     (1.0 - u) * (1.0 - v);
                 accumulate_scaled(result, source_field(d + offset),
                                   weight);
@@ -1323,13 +1386,49 @@ PairTensor average_source_tensor_over_target(
     return result;
 }
 
-bool far_separated(const Vec3& target_minus_source_representative,
-                   const double source_circumradius,
-                   const double target_circumradius) noexcept
+// Which evaluation a pair takes, by its separation in summed circumradii:
+// the analytical surface integral when close, otherwise the rule of the
+// quadrature ladder (tetrahedron_detail.hpp) for that separation, which is
+// the cheapest one converged there.
+enum class PairEvaluation { Analytical, Gauss7, Gauss6, Gauss5 };
+
+PairEvaluation pair_evaluation(const Vec3& target_minus_source_representative,
+                               const double source_circumradius,
+                               const double target_circumradius) noexcept
 {
-    return norm(target_minus_source_representative) >
-        polyhedron_far_separation_factor *
-        (source_circumradius + target_circumradius);
+    const double separation = norm(target_minus_source_representative);
+    const double radii = source_circumradius + target_circumradius;
+    if (separation >= polyhedron_quadrature_five_point_factor * radii) {
+        return PairEvaluation::Gauss5;
+    }
+    if (separation >= polyhedron_quadrature_six_point_factor * radii) {
+        return PairEvaluation::Gauss6;
+    }
+    if (separation >= polyhedron_near_quadrature_factor * radii) {
+        return PairEvaluation::Gauss7;
+    }
+    return PairEvaluation::Analytical;
+}
+
+PairTensor averaged_pair_tensor(const PairEvaluation evaluation,
+                                const Vec3& target_minus_source_representative,
+                                const PolyhedronBody& source,
+                                const PolyhedronBody& target)
+{
+    switch (evaluation) {
+    case PairEvaluation::Gauss5:
+        return average_source_tensor_over_target(
+            target_minus_source_representative, source, target, gauss5_node,
+            gauss5_weight);
+    case PairEvaluation::Gauss6:
+        return average_source_tensor_over_target(
+            target_minus_source_representative, source, target, gauss6_node,
+            gauss6_weight);
+    default:
+        return average_source_tensor_over_target(
+            target_minus_source_representative, source, target, gauss7_node,
+            gauss7_weight);
+    }
 }
 
 } // namespace
@@ -1353,11 +1452,13 @@ PairTensor polyhedron_pair_tensor(
     const PolyhedronBody& source,
     const PolyhedronBody& target)
 {
-    if (far_separated(target_minus_source_representative,
-                      source.surface.circumradius,
-                      target.surface.circumradius)) {
-        return average_source_tensor_over_target(
-            target_minus_source_representative, source, target);
+    const PairEvaluation evaluation = pair_evaluation(
+        target_minus_source_representative, source.surface.circumradius,
+        target.surface.circumradius);
+    if (evaluation != PairEvaluation::Analytical) {
+        return averaged_pair_tensor(evaluation,
+                                    target_minus_source_representative,
+                                    source, target);
     }
     return polyhedron_polyhedron_tensor(
         target_minus_source_representative, source.surface.faces,
@@ -1372,13 +1473,15 @@ PairTensor tetrahedron_tetrahedron_tensor_prepared(
     const PreparedTetrahedron& target,
     const bool coincident_same_geometry)
 {
-    if (!coincident_same_geometry &&
-        far_separated(target_minus_source_representative, source.circumradius,
-                      target.circumradius)) {
-        // Widely separated pairs average the exact source field over the
-        // target instead of cancelling large face integrals.
-        return average_source_tensor_over_target(
-            target_minus_source_representative,
+    const PairEvaluation evaluation = coincident_same_geometry
+        ? PairEvaluation::Analytical
+        : pair_evaluation(target_minus_source_representative,
+                          source.circumradius, target.circumradius);
+    if (evaluation != PairEvaluation::Analytical) {
+        // Separated pairs average the exact source field over the target
+        // instead of cancelling large face integrals.
+        return averaged_pair_tensor(
+            evaluation, target_minus_source_representative,
             PolyhedronBody{{}, Tetrahedron{source.vertices}},
             PolyhedronBody{{}, Tetrahedron{target.vertices}});
     }

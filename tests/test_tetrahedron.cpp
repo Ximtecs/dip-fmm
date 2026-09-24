@@ -868,13 +868,13 @@ TEST_CASE("prism tetrahedron pair has far-field and shrinking limits")
     }
 }
 
-TEST_CASE("polyhedron pair tensors stay accurate across the far-separation switch")
+TEST_CASE("polyhedron pair tensors stay accurate across the quadrature ladder")
 {
-    // The analytical surface integrals lose relative accuracy when the
-    // separation greatly exceeds the face size; beyond
-    // `polyhedron_far_separation_factor` summed circumradii the exact source
-    // field is averaged over the target instead.  Both branches must agree
-    // with the independent 8^3 quadrature on either side of the switch.
+    // The analytical surface integrals lose relative accuracy as the
+    // separation grows; from `polyhedron_near_quadrature_factor` summed
+    // circumradii the exact source field is averaged over the target with
+    // the ladder's rule instead. Every branch must agree with the independent
+    // 8^3 quadrature on either side of every switch.
     const RectangularPrism prism{0.6, 0.4, 0.5};
     const Tetrahedron tetrahedron = reference_tetrahedron();
     const detail::PolyhedronBody prism_body =
@@ -887,9 +887,8 @@ TEST_CASE("polyhedron pair tensors stay accurate across the far-separation switc
             Catch::Approx(0.5 * std::sqrt(0.36 + 0.16 + 0.25)));
     const Vec3 direction{0.6, -0.4, 0.5};
     const Vec3 unit = direction * (1.0 / std::sqrt(dot(direction, direction)));
-    for (const double factor : {0.9, 1.1, 3.0, 30.0}) {
-        const Vec3 displacement =
-            unit * (factor * detail::polyhedron_far_separation_factor * radii);
+    for (const double separation : {1.3, 1.6, 2.2, 3.4, 5.5, 8.8, 24.0, 240.0}) {
+        const Vec3 displacement = unit * (separation * radii);
         const PairTensor prism_tet = rectangular_prism_tetrahedron_tensor(
             displacement, prism, tetrahedron);
         const PairTensor prism_tet_quadrature = average_over_tetrahedron(
@@ -983,23 +982,19 @@ TEST_CASE("tetrahedron point tensor is continuous across an edge-line extension"
 }
 
 TEST_CASE("exact tetrahedron pair is continuous as a shared edge stops coinciding",
-          "[tetrahedron][!shouldfail]")
+          "[tetrahedron]")
 {
-    // FIXME(cdfmm): two tetrahedra of a conforming mesh that share an edge
-    // are evaluated correctly while the edge coincides exactly (checked
-    // against the source's point field averaged over the target, which does
-    // not use this kernel). Moving one shared vertex off the edge by 3e-14 to
-    // 1e-5 changes the tensor by up to 73 % -- and from 1e-6 to 1e-5 by
-    // factors of hundreds -- where the physical field moves by roughly the
-    // skew itself; from 1e-4 on it agrees again. Two branches of the
-    // triangle-triangle recursion are responsible: below the Gram-Schmidt
-    // rank tolerance (sqrt(256 eps) relative) a direction is dropped while its
-    // residual height, snapped only below 256 eps absolute, is kept; above it
-    // the full-rank closed forms cancel catastrophically. The FMM's coordinate
-    // normalisation creates such ulp-level mismatches on a conforming mesh
-    // whose coordinates it cannot scale exactly, which is how Article1's
-    // irregular Kuhn mesh found it. Expected to fail until the recursion
-    // handles near-degenerate pairs; Catch2 then reports the tag as stale.
+    // Two tetrahedra of a conforming mesh share an edge and have coplanar
+    // faces on either side of it. Moving one shared vertex off the edge by
+    // delta must move the tensor by about delta: the kernel used to return up
+    // to 73 % errors for 3e-14 <= delta <= 3e-7 and hundreds of times the
+    // tensor for 5e-7 <= delta <= 1e-5, because the triangle-triangle
+    // reduction took the general branch for nearly parallel faces, kept
+    // nearly dependent directions and kept ulp-level heights. The FMM's
+    // coordinate normalisation produces exactly these mismatches, so an FMM
+    // on a jittered conforming mesh disagreed with the dense plan by 1.5e-2.
+    // The exactly shared value is independently correct: the source's point
+    // field averaged over the target (a separate closed form) matches it.
     //
     // Bodies 363 (source) and 359 (target) of Article1's
     // tetra_mesh_irregular_8, as offsets from their representatives.
@@ -1020,13 +1015,115 @@ TEST_CASE("exact tetrahedron pair is continuous as a shared edge stops coincidin
                shared.yz * shared.yz));
     const double length = std::sqrt(0.6 * 0.6 + 0.3 * 0.3 + 0.74 * 0.74);
     const Vec3 direction = Vec3{0.6, -0.3, 0.74} * (1.0 / length);
-    for (const double skew : {1.0e-13, 1.0e-10, 1.0e-7, 1.0e-6, 1.0e-5}) {
+    // FMM rounding regime: ulp-level mismatches evaluate as the exact mesh.
+    for (const double skew : {1.0e-16, 1.0e-15, 1.0e-14, 1.0e-13, 1.0e-12, 1.0e-11}) {
         INFO("skew " << skew);
         Tetrahedron moved = source;
         moved.vertices[0] = moved.vertices[0] + direction * skew;
         const PairTensor value =
             tetrahedron_tetrahedron_tensor(displacement, moved, target);
-        // A skew of delta moves the tensor by O(delta log delta).
-        CHECK(maximum_component_difference(value, shared) <= 1.0e-3 * scale);
+        CHECK(maximum_component_difference(value, shared) <= 1.0e-8 * scale);
+    }
+    // Genuine near contact: the physical slope (about 2 relative per unit
+    // skew) plus the documented bound of the double-precision reduction for
+    // bodies separated by 1e-5 to 1e-3 of their size (about 3e-4).
+    for (const double skew : {1.0e-9, 1.0e-7, 1.0e-6, 1.0e-5, 3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3}) {
+        INFO("skew " << skew);
+        Tetrahedron moved = source;
+        moved.vertices[0] = moved.vertices[0] + direction * skew;
+        const PairTensor value =
+            tetrahedron_tetrahedron_tensor(displacement, moved, target);
+        CHECK(maximum_component_difference(value, shared) <=
+              (3.0 * skew + 6.0e-4) * scale);
+    }
+}
+
+TEST_CASE("separated tetrahedron pairs agree with an independent high-order average",
+          "[tetrahedron]")
+{
+    // Two isolated tetrahedra of Article1's tetra_irregular_16 (bodies 2488
+    // and 1704): scaled regular tetrahedra of slightly different proportions,
+    // so their faces are nearly parallel. At 7.1 summed circumradii the
+    // analytical reduction was 1e-4 wrong for this pair (and returned -158
+    // for a 0.005 tensor under a tighter rank test); separated pairs are now
+    // averaged by quadrature from 1.5 circumradii. The reference is a 16-point
+    // collapsed Gauss average of the source's exact point field, independent
+    // of the rule the kernel uses.
+    const Tetrahedron source{{{{0.11957920876647252, 0.11551705408881155, 0.11504439842692081},
+                               {0.11957920876647252, -0.11551705408881155, -0.11504439842692081},
+                               {-0.11957920876647252, 0.11551705408881155, -0.11504439842692081},
+                               {-0.11957920876647252, -0.11551705408881155, 0.11504439842692081}}}};
+    const Tetrahedron target{{{{0.11395452789383706, 0.13076417209859112, 0.1302018580099357},
+                               {0.11395452789383706, -0.13076417209859112, -0.1302018580099357},
+                               {-0.11395452789383706, 0.13076417209859112, -0.1302018580099357},
+                               {-0.11395452789383706, -0.13076417209859112, 0.1302018580099357}}}};
+    const Vec3 displacement{-2.8534375848814926, -0.8995244289949396, -0.05519820792474639};
+
+    // Gauss-Legendre nodes and weights on [0, 1] by Newton iteration.
+    constexpr int points = 16;
+    std::array<double, points> node{};
+    std::array<double, points> weight{};
+    for (int i = 0; i < points; ++i) {
+        double x = std::cos(std::numbers::pi * (i + 0.75) / (points + 0.5));
+        double derivative = 0.0;
+        for (int iteration = 0; iteration < 100; ++iteration) {
+            double previous = 1.0;
+            double current = x;
+            for (int degree = 2; degree <= points; ++degree) {
+                const double next = ((2.0 * degree - 1.0) * x * current -
+                                     (degree - 1.0) * previous) / degree;
+                previous = current;
+                current = next;
+            }
+            derivative = points * (x * current - previous) / (x * x - 1.0);
+            const double step = current / derivative;
+            x -= step;
+            if (std::abs(step) < 1.0e-16) {
+                break;
+            }
+        }
+        node[static_cast<std::size_t>(i)] = 0.5 * (x + 1.0);
+        weight[static_cast<std::size_t>(i)] =
+            1.0 / ((1.0 - x * x) * derivative * derivative);
+    }
+    const auto reference = [&](const Vec3& d) {
+        const Vec3 b = target.vertices[1] - target.vertices[0];
+        const Vec3 c = target.vertices[2] - target.vertices[0];
+        const Vec3 e = target.vertices[3] - target.vertices[0];
+        PairTensor sum{};
+        for (int i = 0; i < points; ++i) {
+            const double u = node[static_cast<std::size_t>(i)];
+            for (int j = 0; j < points; ++j) {
+                const double v = node[static_cast<std::size_t>(j)];
+                for (int k = 0; k < points; ++k) {
+                    const double w = node[static_cast<std::size_t>(k)];
+                    const Vec3 offset = target.vertices[0] + b * u +
+                        c * ((1.0 - u) * v) + e * ((1.0 - u) * (1.0 - v) * w);
+                    const PairTensor value = tetrahedron_point_tensor(d + offset, source);
+                    const double scale_weight = 6.0 * weight[static_cast<std::size_t>(i)] *
+                        weight[static_cast<std::size_t>(j)] *
+                        weight[static_cast<std::size_t>(k)] * (1.0 - u) * (1.0 - u) * (1.0 - v);
+                    sum.xx += scale_weight * value.xx;
+                    sum.xy += scale_weight * value.xy;
+                    sum.xz += scale_weight * value.xz;
+                    sum.yy += scale_weight * value.yy;
+                    sum.yz += scale_weight * value.yz;
+                    sum.zz += scale_weight * value.zz;
+                }
+            }
+        }
+        return sum;
+    };
+    // The measured pair (ratio 7.1) and the same pair at ratio 2, where the
+    // eight-point tier is at its closest.
+    for (const double factor : {1.0, 2.0 / 7.1}) {
+        INFO("displacement factor " << factor);
+        const Vec3 d = displacement * factor;
+        const PairTensor expected = reference(d);
+        const PairTensor value = tetrahedron_tetrahedron_tensor(d, source, target);
+        const double scale = std::max({std::abs(expected.xx), std::abs(expected.yy),
+                                       std::abs(expected.zz)});
+        // The ladder's documented bound is about 2e-10 (tetrahedron_detail.hpp).
+        CHECK(maximum_component_difference(value, expected) <= 1.0e-9 * scale);
     }
 }
