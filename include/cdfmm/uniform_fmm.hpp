@@ -216,7 +216,8 @@ struct UniformFmmOptions {
      * streams the coefficient rows built at construction; `Procedural`
      * recomputes the point operators from the sorted positions during every
      * evaluation and retains no rows. Procedural execution exists for the
-     * spherical basis at orders 1 to 10 on the static backends; a stage with
+     * spherical basis at orders 1 to 15 on the static backends (`Auto`
+     * selects it only up to order 10, the measured range); a stage with
      * a finite far-field model keeps its precomputed rows in every mode, and
      * an explicit `Procedural` request that no stage can honour throws
      * `std::invalid_argument` at construction. The result is identical for

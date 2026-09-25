@@ -14,6 +14,10 @@ namespace cdfmm::detail::cpu {
 
 namespace {
 
+static_assert(ProceduralPointExpansion<double>::max_order ==
+                  operators::point_expansion::max_procedural_order,
+              "the CPU executor and the shared kernels compile the same orders");
+
 // Runs `f(std::integral_constant<int, P>{})` for the compiled order P.
 template <typename F>
 void dispatch_order(const int order, F&& f) {
@@ -28,6 +32,11 @@ void dispatch_order(const int order, F&& f) {
   case 8: f(std::integral_constant<int, 8>{}); return;
   case 9: f(std::integral_constant<int, 9>{}); return;
   case 10: f(std::integral_constant<int, 10>{}); return;
+  case 11: f(std::integral_constant<int, 11>{}); return;
+  case 12: f(std::integral_constant<int, 12>{}); return;
+  case 13: f(std::integral_constant<int, 13>{}); return;
+  case 14: f(std::integral_constant<int, 14>{}); return;
+  case 15: f(std::integral_constant<int, 15>{}); return;
   default:
     throw std::logic_error(
         "procedural point expansion order is outside the compiled range");
@@ -56,7 +65,7 @@ ProceduralPointExpansion<Scalar>::ProceduralPointExpansion(const int order)
           operators::point_expansion::l2p_potential_mode_factors(order))) {
   if (order < 1 || order > max_order) {
     throw std::invalid_argument(
-        "procedural point expansion supports orders 1 to 10");
+        "procedural point expansion supports orders 1 to 15");
   }
 }
 

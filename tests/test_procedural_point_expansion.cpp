@@ -4,7 +4,7 @@
 // contribution and the point-target local evaluation from the positions
 // during every evaluation must reproduce the precomputed coefficient rows.
 // The CPU kernel is checked against the canonical rows at every compiled
-// order (1..10) on one leaf, which needs no plan and no operator bank; the
+// order (1..15) on one leaf, which needs no plan and no operator bank; the
 // complete plans are then compared on every static backend, in both
 // precisions and at a low, a middle and a high order (the order-10 universal
 // M2L bank alone costs over a minute to build cold, so the maximum-order
@@ -360,11 +360,13 @@ TEST_CASE("procedural point expansion requests are validated",
     REQUIRE_THROWS_AS(UniformFmm(scene.positions, scene.positions, cartesian),
                       std::invalid_argument);
 
-    // Orders above the compiled range keep the precomputed rows.
+    // Orders above the compiled range (1..15) are rejected before the
+    // operator bank is built, so this costs nothing.
+    REQUIRE(detail::cpu::ProceduralPointExpansion<double>::max_order == 15);
     REQUIRE_THROWS_AS(
         UniformFmm(scene.positions, scene.positions,
                    plan_options(ExecutionBackend::CpuStatic,
-                                StaticPrecision::Float64, 11,
+                                StaticPrecision::Float64, 16,
                                 PointExpansionExecution::Procedural)),
         std::invalid_argument);
 

@@ -63,7 +63,7 @@ struct CudaFullPlanData {
    *  procedural point P2M/L2P read positions and leaf ranges from it during
    *  construction only. */
   const StaticFmmTopology *topology{nullptr};
-  /** @brief Procedural point P2M/L2P (spherical basis, orders 1..10):
+  /** @brief Procedural point P2M/L2P (spherical basis, orders 1..15):
    *  recompute the operator from the positions instead of streaming the
    *  entry lists, which are then left empty. */
   bool procedural_p2m{false};
@@ -109,7 +109,7 @@ struct FloatCudaFullPlanData {
    *  procedural point P2M/L2P read positions and leaf ranges from it during
    *  construction only. */
   const StaticFmmTopology *topology{nullptr};
-  /** @brief Procedural point P2M/L2P (spherical basis, orders 1..10):
+  /** @brief Procedural point P2M/L2P (spherical basis, orders 1..15):
    *  recompute the operator from the positions instead of streaming the
    *  entry lists, which are then left empty. */
   bool procedural_p2m{false};

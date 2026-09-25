@@ -47,7 +47,7 @@ template <typename Entry> struct CudaFarFieldStaticData {
   int l2l_matrix_count{0};
   /// Procedural point P2M/L2P: when set, the corresponding entry span is
   /// ignored and the executor recomputes the operator from the positions of
-  /// `topology` during every evaluation (spherical basis, orders 1..10).
+  /// `topology` during every evaluation (spherical basis, orders 1..15).
   bool procedural_p2m{false};
   bool procedural_l2p{false};
   int expansion_order{0};
