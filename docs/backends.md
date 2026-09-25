@@ -266,7 +266,9 @@ rows built at construction (`3 C` scalars per source and per target,
 recomputes the operator from the sorted positions during every evaluation with
 the allocation-free solid-harmonic recurrence and retains three `C`-entry
 factor tables instead of the rows. It exists for the spherical basis at orders
-1 to 10 on the static backends; the Cartesian basis keeps its precomputed
+1 to 15 on the static backends (orders 11 to 15 only on explicit request: the
+`Auto` policy below was measured to order 10 and stays precomputed above it);
+the Cartesian basis keeps its precomputed
 rows, a stage whose far-field model is a finite body keeps its exact
 precomputed rows in every mode, and an explicit `Procedural` request that no
 stage can honour throws `std::invalid_argument` at construction.
