@@ -1,5 +1,10 @@
 # Project progress
 
+## Procedural point expansions to order 15: COMPLETE — 2026-09-25
+
+Compiled orders 1-15 on CPU and CUDA for explicit requests; `Auto` unchanged
+(procedural only to order 10). Details in `latest_session_work.md`.
+
 ## Exact tetrahedron pair tensors near degeneracy and at separation: COMPLETE — 2026-09-24
 
 The analytical triangle-triangle reduction returned up to 73 % errors (and

@@ -1,5 +1,23 @@
 # Latest session work
 
+## 2026-09-25 — Procedural point expansions compiled to order 15
+
+For Article1's FMM3D comparison at p = 15 (FMM3D reaches ~1e-7; dip-fmm at
+p = 10 stops near 1e-5 in FP32), the procedural point-source P2M and
+point-target L2P are now compiled for orders 1 to 15 on the CPU and CUDA
+(`max_procedural_order`, the CPU executor's `max_order`, both dispatch
+switches, and the solid-harmonic recurrence bound, raised from 12). The
+automatic policy is unchanged: its measurements cover orders up to 10, so
+`Auto` stays precomputed above 10 and orders 11-15 are procedural on explicit
+request only; nothing at orders 1-10 changes. The explicit-request bound is 15
+(validated before the operator bank is built; the resolved choice is read by
+neither the static plan nor the cache, so no cache key or format changes).
+Tests: the kernel test now reproduces the canonical rows at every order 1-15
+in FP64 and FP32 (5e-5 of the field scale), and the validation test rejects
+order 16. CTest 267/267 (portable warnings-as-errors build; CPU procedural
+tests in the CUDA build with the device hidden); the CUDA procedural tests run
+as a scheduler job so they never overlap a timed benchmark.
+
 ## 2026-09-24 — Exact tetrahedron pair tensors: near-degenerate and separated pairs fixed
 
 Found by Article1's `finite_endpoint` campaign: on `tetra_mesh_irregular_8`
