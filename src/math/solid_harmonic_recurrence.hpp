@@ -60,7 +60,7 @@
 namespace cdfmm::solid_harmonics {
 
 /// Largest expansion order the fixed-size recurrence rows are compiled for.
-inline constexpr int max_recurrence_order = 15;
+inline constexpr int max_recurrence_order = 17;
 
 /**
  * @brief Streams the Q-normalised regular solid harmonics of degree <= P at

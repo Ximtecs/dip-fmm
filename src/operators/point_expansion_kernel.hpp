@@ -30,9 +30,9 @@ namespace cdfmm::operators::point_expansion {
 
 /// Largest order the procedural executors are compiled for (both targets).
 /// The automatic policy is measured only to order 10
-/// (`UniformFmm::resolve_point_expansion_execution`); orders 11 to 15 are
-/// procedural on explicit request.
-inline constexpr int max_procedural_order = 15;
+/// (`UniformFmm::resolve_point_expansion_execution`); orders 11 to 17 are
+/// procedural on explicit request. 17 is FMM3D's order at eps = 1e-4.
+inline constexpr int max_procedural_order = 17;
 
 /**
  * @brief Adds `m . grad Q_index(d)` to `acc[index]` for every real mode.

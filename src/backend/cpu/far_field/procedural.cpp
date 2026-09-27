@@ -37,6 +37,8 @@ void dispatch_order(const int order, F&& f) {
   case 13: f(std::integral_constant<int, 13>{}); return;
   case 14: f(std::integral_constant<int, 14>{}); return;
   case 15: f(std::integral_constant<int, 15>{}); return;
+  case 16: f(std::integral_constant<int, 16>{}); return;
+  case 17: f(std::integral_constant<int, 17>{}); return;
   default:
     throw std::logic_error(
         "procedural point expansion order is outside the compiled range");
@@ -65,7 +67,7 @@ ProceduralPointExpansion<Scalar>::ProceduralPointExpansion(const int order)
           operators::point_expansion::l2p_potential_mode_factors(order))) {
   if (order < 1 || order > max_order) {
     throw std::invalid_argument(
-        "procedural point expansion supports orders 1 to 15");
+        "procedural point expansion supports orders 1 to 17");
   }
 }
 

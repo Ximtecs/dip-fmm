@@ -30,7 +30,7 @@ public:
   static constexpr int lanes = sizeof(Scalar) == 8 ? 4 : 8;
   // Equal to operators::point_expansion::max_procedural_order (checked in
   // procedural.cpp, which includes the kernels).
-  static constexpr int max_order = 15;
+  static constexpr int max_order = 17;
 
   ProceduralPointExpansion() = default;
   explicit ProceduralPointExpansion(int order);

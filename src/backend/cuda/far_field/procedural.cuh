@@ -171,6 +171,8 @@ void launch_procedural_p2m(const int order, const ProceduralLeaf *leaves,
     CDFMM_PROCEDURAL_P2M_CASE(13)
     CDFMM_PROCEDURAL_P2M_CASE(14)
     CDFMM_PROCEDURAL_P2M_CASE(15)
+    CDFMM_PROCEDURAL_P2M_CASE(16)
+    CDFMM_PROCEDURAL_P2M_CASE(17)
 #undef CDFMM_PROCEDURAL_P2M_CASE
   default:
     throw std::logic_error(
@@ -213,6 +215,8 @@ void launch_procedural_l2p(const int order, const ProceduralLeaf *leaves,
     CDFMM_PROCEDURAL_L2P_CASE(13)
     CDFMM_PROCEDURAL_L2P_CASE(14)
     CDFMM_PROCEDURAL_L2P_CASE(15)
+    CDFMM_PROCEDURAL_L2P_CASE(16)
+    CDFMM_PROCEDURAL_L2P_CASE(17)
 #undef CDFMM_PROCEDURAL_L2P_CASE
   default:
     throw std::logic_error(
