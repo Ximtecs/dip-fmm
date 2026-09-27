@@ -1,5 +1,17 @@
 # Latest session work
 
+## 2026-09-27 — Procedural point expansions compiled to order 17
+
+FMM3D chooses its expansion order from eps with `l3dterms` (worst-case decay
+(sqrt(3)/2)^j / 1.5^(j+1) < eps, the same order at every level): 17 at
+eps = 1e-4 and 25 at eps = 1e-6, while both reach ~1e-7. Article1 compares
+dip-fmm at FMM3D's eps = 1e-4 order, so the procedural P2M/L2P are now
+compiled to order 17 (both targets; recurrence bound 17). As at order 15,
+`Auto` is unchanged (procedural only to order 10); nothing at orders 1-15
+changes. Order 25 was not pursued: its universal bank would take days to build.
+Tests: the kernel test covers orders 1-17 in FP64 and FP32; the validation
+test rejects order 18.
+
 ## 2026-09-25 — Procedural point expansions compiled to order 15
 
 For Article1's FMM3D comparison at p = 15 (FMM3D reaches ~1e-7; dip-fmm at

@@ -1,9 +1,10 @@
 # Project progress
 
-## Procedural point expansions to order 15: COMPLETE — 2026-09-25
+## Procedural point expansions to order 17: COMPLETE — 2026-09-27
 
-Compiled orders 1-15 on CPU and CUDA for explicit requests; `Auto` unchanged
-(procedural only to order 10). Details in `latest_session_work.md`.
+Compiled orders 1-17 on CPU and CUDA for explicit requests (17 = FMM3D's
+order at eps = 1e-4); `Auto` unchanged (procedural only to order 10).
+Details in `latest_session_work.md`.
 
 ## Exact tetrahedron pair tensors near degeneracy and at separation: COMPLETE — 2026-09-24
 
