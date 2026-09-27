@@ -56,7 +56,7 @@ choice, not a mathematical requirement (`docs/architecture.md`, "Precomputed
 and procedural representations"); the position-based `PointGeometry` P2P now
 runs on the CUDA backends too and is the FP32 default for point pairs, and
 the point-source P2M / point-target L2P have a procedural representation
-(`UniformFmmOptions::point_expansion_execution`, spherical basis, orders 1-15;
+(`UniformFmmOptions::point_expansion_execution`, spherical basis, orders 1-17;
 `Auto` selects it only to order 10, the measured range) that is the default on the CPU hierarchy and for FP32 `CudaFull`; finite
 tiles keep their exact precomputed operators. **Phase 3B.5b is also
 COMPLETE**: the finite half of that sentence is now measured rather than
