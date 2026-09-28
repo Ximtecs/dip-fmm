@@ -77,16 +77,22 @@ public:
   /// @brief Returns the multi-index at a linear storage position.
   const MultiIndex &operator[](int i) const { return indices_.at(i); }
 
-  /// @brief Maps a multi-index to its linear storage position.
+  /**
+   * @brief Maps a multi-index to its linear storage position.
+   *
+   * Closed form of the storage order built by the constructor: the
+   * `d (d + 1) (d + 2) / 6` entries of lower total degree come first, then,
+   * within degree `d`, each smaller `alpha_x = ax'` contributes the
+   * `d - ax' + 1` entries of its `alpha_y` sweep. Constant time, where a
+   * linear search cost O(p^3) per call inside O(p^8) operator construction.
+   * A multi-index outside the set throws `std::out_of_range` as before.
+   */
   int index(const MultiIndex &a) const {
-    for (int i = 0; i < size(); ++i) {
-      if (indices_[i].ax == a.ax && indices_[i].ay == a.ay &&
-          indices_[i].az == a.az) {
-        return i;
-      }
+    const int d = a.ax + a.ay + a.az;
+    if (a.ax < 0 || a.ay < 0 || a.az < 0 || d > p_) {
+      throw std::out_of_range("multi-index not found");
     }
-
-    throw std::out_of_range("multi-index not found");
+    return d * (d + 1) * (d + 2) / 6 + a.ax * (d + 1) - a.ax * (a.ax - 1) / 2 + a.ay;
   }
 
   /// @brief Returns `n!` as a floating-point value.
