@@ -26,6 +26,13 @@ visible and in the portable warnings-as-errors build (its four oneMKL/CUDA
 cases skip); pytest 186 passed,
 1 skipped (MagTense not installed).
 
+CI (GCC 13) then failed "M2P output flags control potential and field
+evaluation" by one ulp: with the transparent `index()`, GCC 13 contracted
+the flag-specialised clones of `m2p::evaluate` differently (GCC 15 did not).
+`05ba73b` accumulates M2P with explicit `std::fma`; CTest 269/269 with
+conda-forge GCC 13.4. M2P is the validation-only `m2p_eval`, so Article1's
+frozen `ee80109` runtime, which lacks this commit, measures the same.
+
 ## 2026-09-27 — Procedural point expansions compiled to order 17
 
 FMM3D chooses its expansion order from eps with `l3dterms` (worst-case decay
