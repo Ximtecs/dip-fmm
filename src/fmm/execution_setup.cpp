@@ -26,6 +26,7 @@
 #include <cmath>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "cdfmm/backend/cuda/m2l.hpp"
@@ -869,7 +870,8 @@ FloatStaticP2PLeafPlan UniformFmm::build_cuda_leaf_plan_float() {
 
 void UniformFmm::resolve_point_expansion_execution() {
   // Explicit override > measured policy > precomputed rows. Procedural
-  // execution exists for the spherical basis at orders 1..17 on the static
+  // execution exists for the spherical basis at the compiled orders
+  // (1..CDFMM_PROCEDURAL_MAX_ORDER, default 10) on the static
   // backends and applies to a stage whose far-field model is a point; a
   // finite far-field model keeps its exact precomputed rows whatever the
   // request, because evaluating the prism or tetrahedron expansion integrals
@@ -896,8 +898,10 @@ void UniformFmm::resolve_point_expansion_execution() {
     if (!procedural_available || (!point_p2m && !point_l2p)) {
       throw std::invalid_argument(
           "UniformFmmOptions::point_expansion_execution = Procedural needs the "
-          "spherical basis, an expansion order between 1 and 17, a static "
-          "backend and at least one point far-field model");
+          "spherical basis, an expansion order between 1 and " +
+          std::to_string(max_order) +
+          " (the CMake option CDFMM_PROCEDURAL_MAX_ORDER), a static backend "
+          "and at least one point far-field model");
     }
     procedural_p2m_ = point_p2m;
     procedural_l2p_ = point_l2p;
@@ -916,7 +920,7 @@ void UniformFmm::resolve_point_expansion_execution() {
   // points and p = 6); the FP64 device kernels are slower than the streamed
   // rows, so FP64 CudaFull keeps them.
   // NOTE(cdfmm): the measurements behind this policy cover orders up to 10,
-  // the compiled range until the executors were extended (now to order 17) for the
+  // the compiled range until the executors were extended (now up to order 20) for the
   // high-order comparison; above 10 the automatic choice stays precomputed
   // and procedural execution is an explicit request.
   constexpr int max_measured_order = 10;

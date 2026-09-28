@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 
 #include "cdfmm/math/potential_field.hpp"
@@ -21,25 +22,7 @@ static_assert(ProceduralPointExpansion<double>::max_order ==
 // Runs `f(std::integral_constant<int, P>{})` for the compiled order P.
 template <typename F>
 void dispatch_order(const int order, F&& f) {
-  switch (order) {
-  case 1: f(std::integral_constant<int, 1>{}); return;
-  case 2: f(std::integral_constant<int, 2>{}); return;
-  case 3: f(std::integral_constant<int, 3>{}); return;
-  case 4: f(std::integral_constant<int, 4>{}); return;
-  case 5: f(std::integral_constant<int, 5>{}); return;
-  case 6: f(std::integral_constant<int, 6>{}); return;
-  case 7: f(std::integral_constant<int, 7>{}); return;
-  case 8: f(std::integral_constant<int, 8>{}); return;
-  case 9: f(std::integral_constant<int, 9>{}); return;
-  case 10: f(std::integral_constant<int, 10>{}); return;
-  case 11: f(std::integral_constant<int, 11>{}); return;
-  case 12: f(std::integral_constant<int, 12>{}); return;
-  case 13: f(std::integral_constant<int, 13>{}); return;
-  case 14: f(std::integral_constant<int, 14>{}); return;
-  case 15: f(std::integral_constant<int, 15>{}); return;
-  case 16: f(std::integral_constant<int, 16>{}); return;
-  case 17: f(std::integral_constant<int, 17>{}); return;
-  default:
+  if (!operators::point_expansion::dispatch_procedural_order(order, f)) {
     throw std::logic_error(
         "procedural point expansion order is outside the compiled range");
   }
@@ -67,7 +50,9 @@ ProceduralPointExpansion<Scalar>::ProceduralPointExpansion(const int order)
           operators::point_expansion::l2p_potential_mode_factors(order))) {
   if (order < 1 || order > max_order) {
     throw std::invalid_argument(
-        "procedural point expansion supports orders 1 to 17");
+        "procedural point expansion supports orders 1 to " +
+        std::to_string(max_order) +
+        " in this build (CMake option CDFMM_PROCEDURAL_MAX_ORDER)");
   }
 }
 

@@ -7,6 +7,10 @@
 
 #include "cdfmm/math/vec3.hpp"
 
+#ifndef CDFMM_PROCEDURAL_MAX_ORDER
+#error "CDFMM_PROCEDURAL_MAX_ORDER is defined by CMakeLists.txt"
+#endif
+
 namespace cdfmm::detail::cpu {
 
 /**
@@ -28,9 +32,9 @@ template <typename Scalar>
 class ProceduralPointExpansion {
 public:
   static constexpr int lanes = sizeof(Scalar) == 8 ? 4 : 8;
-  // Equal to operators::point_expansion::max_procedural_order (checked in
-  // procedural.cpp, which includes the kernels).
-  static constexpr int max_order = 17;
+  // The build option; equal to operators::point_expansion::max_procedural_order
+  // (checked in procedural.cpp, which includes the kernels).
+  static constexpr int max_order = CDFMM_PROCEDURAL_MAX_ORDER;
 
   ProceduralPointExpansion() = default;
   explicit ProceduralPointExpansion(int order);

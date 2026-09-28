@@ -22,17 +22,40 @@
 
 #include <cstddef>
 #include <numbers>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "math/solid_harmonic_recurrence.hpp"
 
 namespace cdfmm::operators::point_expansion {
 
-/// Largest order the procedural executors are compiled for (both targets).
+#ifndef CDFMM_PROCEDURAL_MAX_ORDER
+#error "CDFMM_PROCEDURAL_MAX_ORDER is defined by CMakeLists.txt"
+#endif
+
+/// Largest order the procedural executors are compiled for (both targets):
+/// the build option CDFMM_PROCEDURAL_MAX_ORDER, 10 by default and at most 20.
 /// The automatic policy is measured only to order 10
-/// (`UniformFmm::resolve_point_expansion_execution`); orders 11 to 17 are
-/// procedural on explicit request. 17 is FMM3D's order at eps = 1e-4.
-inline constexpr int max_procedural_order = 17;
+/// (`UniformFmm::resolve_point_expansion_execution`); higher compiled orders
+/// are procedural on explicit request (17 is FMM3D's order at eps = 1e-4).
+inline constexpr int max_procedural_order = CDFMM_PROCEDURAL_MAX_ORDER;
+static_assert(max_procedural_order >= 1 &&
+                  max_procedural_order <= solid_harmonics::max_recurrence_order,
+              "CDFMM_PROCEDURAL_MAX_ORDER exceeds the solid-harmonic recurrence");
+
+/// Calls `f(std::integral_constant<int, P>{})` for the compiled order
+/// `P == order` and returns true, or returns false when `order` is outside
+/// 1..max_procedural_order. The one place the compiled orders are enumerated,
+/// so the CPU executor and the CUDA launchers instantiate the same set.
+template <typename F>
+bool dispatch_procedural_order(const int order, F &&f) {
+  return [&]<int... I>(std::integer_sequence<int, I...>) {
+    return ((order == I + 1 ? (f(std::integral_constant<int, I + 1>{}), true)
+                            : false) ||
+            ...);
+  }(std::make_integer_sequence<int, max_procedural_order>{});
+}
 
 /**
  * @brief Adds `m . grad Q_index(d)` to `acc[index]` for every real mode.

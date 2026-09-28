@@ -148,33 +148,14 @@ void launch_procedural_p2m(const int order, const ProceduralLeaf *leaves,
     return;
   }
   const int blocks = procedural_blocks(leaf_count, lanes_per_leaf);
-  switch (order) {
-#define CDFMM_PROCEDURAL_P2M_CASE(P)                                         \
-  case P:                                                                    \
-    procedural_p2m_kernel<P, Scalar, Vector>                                 \
-        <<<blocks, procedural_threads, 0, stream>>>(                         \
-            leaves, leaf_count, lanes_per_leaf, displacements, moments,      \
-            factors, multipoles);                                            \
-    break;
-    CDFMM_PROCEDURAL_P2M_CASE(1)
-    CDFMM_PROCEDURAL_P2M_CASE(2)
-    CDFMM_PROCEDURAL_P2M_CASE(3)
-    CDFMM_PROCEDURAL_P2M_CASE(4)
-    CDFMM_PROCEDURAL_P2M_CASE(5)
-    CDFMM_PROCEDURAL_P2M_CASE(6)
-    CDFMM_PROCEDURAL_P2M_CASE(7)
-    CDFMM_PROCEDURAL_P2M_CASE(8)
-    CDFMM_PROCEDURAL_P2M_CASE(9)
-    CDFMM_PROCEDURAL_P2M_CASE(10)
-    CDFMM_PROCEDURAL_P2M_CASE(11)
-    CDFMM_PROCEDURAL_P2M_CASE(12)
-    CDFMM_PROCEDURAL_P2M_CASE(13)
-    CDFMM_PROCEDURAL_P2M_CASE(14)
-    CDFMM_PROCEDURAL_P2M_CASE(15)
-    CDFMM_PROCEDURAL_P2M_CASE(16)
-    CDFMM_PROCEDURAL_P2M_CASE(17)
-#undef CDFMM_PROCEDURAL_P2M_CASE
-  default:
+  const bool launched = operators::point_expansion::dispatch_procedural_order(
+      order, [&](auto compiled_order) {
+        procedural_p2m_kernel<decltype(compiled_order)::value, Scalar, Vector>
+            <<<blocks, procedural_threads, 0, stream>>>(
+                leaves, leaf_count, lanes_per_leaf, displacements, moments,
+                factors, multipoles);
+      });
+  if (!launched) {
     throw std::logic_error(
         "procedural CUDA P2M order is outside the compiled range");
   }
@@ -192,33 +173,14 @@ void launch_procedural_l2p(const int order, const ProceduralLeaf *leaves,
     return;
   }
   const int blocks = procedural_blocks(leaf_count, lanes_per_leaf);
-  switch (order) {
-#define CDFMM_PROCEDURAL_L2P_CASE(P)                                         \
-  case P:                                                                    \
-    procedural_l2p_kernel<P, Scalar, Vector>                                 \
-        <<<blocks, procedural_threads, 0, stream>>>(                         \
-            leaves, leaf_count, lanes_per_leaf, displacements, locals,       \
-            factors, fields);                                                \
-    break;
-    CDFMM_PROCEDURAL_L2P_CASE(1)
-    CDFMM_PROCEDURAL_L2P_CASE(2)
-    CDFMM_PROCEDURAL_L2P_CASE(3)
-    CDFMM_PROCEDURAL_L2P_CASE(4)
-    CDFMM_PROCEDURAL_L2P_CASE(5)
-    CDFMM_PROCEDURAL_L2P_CASE(6)
-    CDFMM_PROCEDURAL_L2P_CASE(7)
-    CDFMM_PROCEDURAL_L2P_CASE(8)
-    CDFMM_PROCEDURAL_L2P_CASE(9)
-    CDFMM_PROCEDURAL_L2P_CASE(10)
-    CDFMM_PROCEDURAL_L2P_CASE(11)
-    CDFMM_PROCEDURAL_L2P_CASE(12)
-    CDFMM_PROCEDURAL_L2P_CASE(13)
-    CDFMM_PROCEDURAL_L2P_CASE(14)
-    CDFMM_PROCEDURAL_L2P_CASE(15)
-    CDFMM_PROCEDURAL_L2P_CASE(16)
-    CDFMM_PROCEDURAL_L2P_CASE(17)
-#undef CDFMM_PROCEDURAL_L2P_CASE
-  default:
+  const bool launched = operators::point_expansion::dispatch_procedural_order(
+      order, [&](auto compiled_order) {
+        procedural_l2p_kernel<decltype(compiled_order)::value, Scalar, Vector>
+            <<<blocks, procedural_threads, 0, stream>>>(
+                leaves, leaf_count, lanes_per_leaf, displacements, locals,
+                factors, fields);
+      });
+  if (!launched) {
     throw std::logic_error(
         "procedural CUDA L2P order is outside the compiled range");
   }

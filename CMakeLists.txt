@@ -25,6 +25,18 @@ option(CDFMM_ENABLE_NATIVE_ARCH
        "Optimise CPU code for the architecture of the build machine" ON)
 option(CDFMM_ENABLE_FAST_MATH
        "Enable non-IEEE fast floating-point transformations" OFF)
+# Each procedural order is its own fully unrolled kernel, and its code grows
+# roughly as p**3: compiling orders 11-20 multiplied the build of the core,
+# and CI time, several times over. The automatic policy uses procedural
+# execution only to order 10, so that is the default; builds that request it
+# explicitly at higher order (the Article1 FMM3D comparison) raise it.
+set(CDFMM_PROCEDURAL_MAX_ORDER 10 CACHE STRING
+    "Highest order the procedural point P2M/L2P kernels are compiled for (1-20)")
+if(NOT CDFMM_PROCEDURAL_MAX_ORDER MATCHES "^[0-9]+$"
+   OR CDFMM_PROCEDURAL_MAX_ORDER LESS 1 OR CDFMM_PROCEDURAL_MAX_ORDER GREATER 20)
+  message(FATAL_ERROR
+    "CDFMM_PROCEDURAL_MAX_ORDER must be an integer from 1 to 20, not '${CDFMM_PROCEDURAL_MAX_ORDER}'")
+endif()
 set(CDFMM_EXTRA_COMPILE_OPTIONS "" CACHE STRING
     "Additional semicolon-separated C++ compile options")
 option(CDFMM_ENABLE_WARNINGS
@@ -151,6 +163,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|IntelLLVM")
 endif()
 target_compile_definitions(cdfmm_core PRIVATE
   CDFMM_DEFAULT_CACHE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/caches")
+# PUBLIC: the tests and bindings read the compiled range from the same headers.
+target_compile_definitions(cdfmm_core PUBLIC
+  CDFMM_PROCEDURAL_MAX_ORDER=${CDFMM_PROCEDURAL_MAX_ORDER})
 set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # Project optimisation options append to, rather than replace, flags selected by
@@ -466,6 +481,7 @@ message(STATUS "  OpenMP:              ${CDFMM_ENABLE_OPENMP}")
 message(STATUS "  oneMKL:              ${CDFMM_ENABLE_MKL}")
 message(STATUS "  CUDA:                ${CDFMM_ENABLE_CUDA}")
 message(STATUS "  NVTX profiling:      ${CDFMM_ENABLE_PROFILING}")
+message(STATUS "  Procedural orders:   1-${CDFMM_PROCEDURAL_MAX_ORDER}")
 if(CDFMM_ENABLE_CUDA)
   message(STATUS "  CUDA architecture:   ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
