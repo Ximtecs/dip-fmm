@@ -1,5 +1,41 @@
 # Latest session work
 
+## 2026-09-28 — CUDA plan uploads were not ordered before the first evaluation
+
+The intermittent CudaPartial failures first seen 2026-09-23 ("periodic plans
+agree across the packings...", and once "every near-field geometry pair...")
+are fixed. They appeared only when other processes shared the GPU: 4-6 of 12
+runs failed with four concurrent test processes, and 5 of 12 with a single
+copy while other processes merely ran CUDA work on other cores; CPU load alone
+never failed (0/12), and neither `CUDA_LAUNCH_BLOCKING=1` (4/12) nor one
+OpenMP thread (5/12) removed it. compute-sanitizer initcheck, memcheck,
+racecheck and synccheck were clean on both tests.
+
+An instrumented test located it: the far field was always right, the near
+field wrong, and a failing plan's first evaluation was wrong while a later one
+of the same plan was often right, with errors equal to the whole field scale
+(the previous plan's near field). Cause: every CUDA P2P plan constructor (and
+the leaf, point-geometry and dictionary upload helpers shared with CudaFull,
+and the CudaFull far-field executor) uploaded its static data with a plain
+`cudaMemcpy` from pageable memory. That call may return once the source is
+staged, before the transfer reaches device memory, and it runs on the legacy
+default stream, which the plans' `cudaStreamNonBlocking` streams are not
+ordered after. On a shared GPU the transfer is late enough that the first
+kernels read stale device memory. `CUDA_LAUNCH_BLOCKING` does not serialise
+copies, and the sanitizers serialise everything, which is why neither showed
+it.
+
+Fix: `backend/cuda/common/upload.hpp::upload_to_device` (copy, then wait for
+the device) replaces all 19 construction-time host-to-device `cudaMemcpy`
+calls; CudaFull's first-evaluation identity upload became a stream-ordered
+`cudaMemcpyAsync` on the near-field stream that reads it. Construction only,
+so evaluation gains no synchronisation. Verified under the conditions that
+failed before: periodic test single copy with GPU burners 0/12 (was 5/12),
+4 concurrent copies 0/12 (was 5/12), matrix test 4 concurrent 0/12, full
+CTest with 4 parallel GPU processes 269/269. No deterministic regression test
+exists for it: the window is the last staged chunk of an upload and closes
+unless another process delays the transfer; the stress run is the evidence.
+
 ## 2026-09-28 — Procedural orders are a build option (default 10, at most 20)
 
 CI had grown from ~10 min (bc6adfa) to ~34 min (5eea2d8). The C++ tests were

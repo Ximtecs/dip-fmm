@@ -1,5 +1,12 @@
 # Project progress
 
+## CUDA plan uploads ordered before the first evaluation: COMPLETE — 2026-09-28
+
+The intermittent CudaPartial wrong near fields under GPU sharing were
+construction uploads still in flight (`cudaMemcpy` from pageable memory is not
+ordered with non-blocking streams). `cuda_detail::upload_to_device` waits for
+them. Details in `latest_session_work.md`.
+
 ## Universal operator bank construction: COMPLETE — 2026-09-28
 
 Constant-time `MultiIndexSet::index` and the Laplace-derivative recurrence:
