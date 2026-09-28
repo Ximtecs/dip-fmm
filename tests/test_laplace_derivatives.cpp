@@ -15,15 +15,23 @@ using namespace cdfmm;
 
 TEST_CASE("Laplace derivatives from the recurrence match Taylor-jet composition") {
   // The recurrence of laplace_derivatives_raw against the composition it
-  // replaced, G = 1/(4 pi sqrt(x^2 + y^2 + z^2)) in Taylor jets, through
-  // order 30 (the order-2p set of a p = 15 M2L). Errors are scaled by the
-  // largest derivative of the same total order: entries that vanish by
+  // replaced, G = 1/(4 pi sqrt(x^2 + y^2 + z^2)) in Taylor jets. One generic
+  // displacement goes to order 30 (the order-2p set of a p = 15 M2L); the
+  // reference costs quadratically in the basis size, so the axis-aligned,
+  // planar and diagonal displacements stop at order 20. Errors are scaled by
+  // the largest derivative of the same total order: entries that vanish by
   // symmetry make a pointwise relative error meaningless.
-  constexpr int order = 30;
-  const MultiIndexSet basis(order);
-  const std::array<Vec3, 4> displacements{
-      Vec3{2.0, 1.0, 0.0}, Vec3{3.0, -2.0, 1.0}, Vec3{0.0, 0.0, 2.0}, Vec3{-3.0, 3.0, -3.0}};
-  for (const Vec3& r : displacements) {
+  struct Sample {
+    int order;
+    Vec3 r;
+  };
+  const std::array<Sample, 4> samples{Sample{30, Vec3{3.0, -2.0, 1.0}},
+                                      Sample{20, Vec3{2.0, 1.0, 0.0}},
+                                      Sample{20, Vec3{0.0, 0.0, 2.0}},
+                                      Sample{20, Vec3{-3.0, 3.0, -3.0}}};
+  for (const Sample& sample : samples) {
+    const MultiIndexSet basis(sample.order);
+    const Vec3& r = sample.r;
     const TaylorJet x = TaylorJet::coordinate(basis, 0, r.x);
     const TaylorJet y = TaylorJet::coordinate(basis, 1, r.y);
     const TaylorJet z = TaylorJet::coordinate(basis, 2, r.z);
