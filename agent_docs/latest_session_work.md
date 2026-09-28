@@ -1,5 +1,41 @@
 # Latest session work
 
+## 2026-09-28 — Procedural orders are a build option (default 10, at most 20)
+
+CI had grown from ~10 min (bc6adfa) to ~34 min (5eea2d8). The C++ tests were
+unchanged (~2 min); the LTO links were 4-5x slower (libcdfmm_c.so 48 -> 228 s,
+the Python module 46 -> 226 s, 16 cores). Compiling the procedural point
+P2M/L2P to order 17 was the cause: each order is its own fully unrolled
+kernel, per precision and lane width, code growing about as p^3, and as LTO
+bytecode it is re-generated in every link of the static core. Extending to 20
+would have roughly doubled it again (the CPU executor alone compiled for
+583 s without LTO).
+
+Two remedies were measured:
+
+- Compiling `procedural.cpp` without LTO cut the links to seconds (GCC 13:
+  117 -> 3 s, 139 -> 5 s) with bitwise-identical fields, but the FP64
+  P2M+L2P ran 25-40 % slower at every order 6-17 in an interleaved A/B on the
+  P-cores (FP32 5-15 % faster). Rejected for production.
+- The compiled range became the CMake option `CDFMM_PROCEDURAL_MAX_ORDER`
+  (default 10 = the `Auto` range, at most 20 = the recurrence bound). One
+  compile-time helper, `operators::point_expansion::dispatch_procedural_order`,
+  enumerates the orders for the CPU executor and both CUDA launchers. The
+  expansion order stays a run-time choice; `Auto` and `Precomputed` work at
+  every order; only an explicit `Procedural` above the limit throws, naming
+  the option. Default build: portable build + CTest in 120 s,
+  `procedural.cpp` 2 s, libcdfmm_c link 42 s.
+
+Article1's frozen runtimes configure `-DCDFMM_PROCEDURAL_MAX_ORDER=20` for the
+FMM3D comparison at p = 17 and 20. The option is documented in
+`docs/backends.md` ("Compiled procedural orders"), `docs/installation.md`,
+the `point_expansion_execution` Doxygen and the Python docstring.
+
+Found on the way, not changed: on the CPU the FP32 procedural P2M+L2P is
+slower than FP64 above order ~10 (p = 17: ~20 ms against ~2 ms, 64k points);
+subnormal arithmetic in the high-order recurrence is the likely cause
+(unverified).
+
 ## 2026-09-28 — Universal operator bank built in seconds instead of hours
 
 Article1's p = 15 cases each spent ~47 min building the universal bank (8 M2M,

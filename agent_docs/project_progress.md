@@ -6,10 +6,11 @@ Constant-time `MultiIndexSet::index` and the Laplace-derivative recurrence:
 the p = 15 bank builds in ~1 s instead of ~47 min, fields unchanged to
 rounding, evaluation untouched. Details in `latest_session_work.md`.
 
-## Procedural point expansions to order 17: COMPLETE — 2026-09-27
+## Procedural point expansions up to order 20, as a build option: COMPLETE — 2026-09-28
 
-Compiled orders 1-17 on CPU and CUDA for explicit requests (17 = FMM3D's
-order at eps = 1e-4); `Auto` unchanged (procedural only to order 10).
+`CDFMM_PROCEDURAL_MAX_ORDER` (default 10, at most 20) sets the compiled
+procedural orders; explicit requests above it throw. `Auto` unchanged
+(procedural only to order 10). Restores CI time; Article1 builds 20.
 Details in `latest_session_work.md`.
 
 ## Exact tetrahedron pair tensors near degeneracy and at separation: COMPLETE — 2026-09-24
