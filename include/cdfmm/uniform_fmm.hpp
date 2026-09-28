@@ -216,12 +216,16 @@ struct UniformFmmOptions {
      * streams the coefficient rows built at construction; `Procedural`
      * recomputes the point operators from the sorted positions during every
      * evaluation and retains no rows. Procedural execution exists for the
-     * spherical basis at orders 1 to 17 on the static backends (`Auto`
-     * selects it only up to order 10, the measured range); a stage with
-     * a finite far-field model keeps its precomputed rows in every mode, and
-     * an explicit `Procedural` request that no stage can honour throws
-     * `std::invalid_argument` at construction. The result is identical for
-     * every value.
+     * spherical basis on the static backends (`Auto` selects it only up to
+     * order 10, the measured range); a stage with a finite far-field model
+     * keeps its precomputed rows in every mode. The expansion order itself
+     * is always a run-time choice, but the procedural kernels are compiled
+     * per order: only orders 1 to the CMake option
+     * `CDFMM_PROCEDURAL_MAX_ORDER` (10 by default, at most 20) exist, so an
+     * explicit `Procedural` request above it -- or one that no stage can
+     * honour -- throws `std::invalid_argument` at construction. `Auto` and
+     * `Precomputed` work at every order. The result is identical for every
+     * value.
      */
     PointExpansionExecution point_expansion_execution{
         PointExpansionExecution::Auto};

@@ -265,13 +265,37 @@ rows built at construction (`3 C` scalars per source and per target,
 `C = (p+1)^2`; 588 bytes per point at `p = 6` in FP32). `Procedural`
 recomputes the operator from the sorted positions during every evaluation with
 the allocation-free solid-harmonic recurrence and retains three `C`-entry
-factor tables instead of the rows. It exists for the spherical basis at orders
-1 to 17 on the static backends (orders 11 to 17 only on explicit request: the
-`Auto` policy below was measured to order 10 and stays precomputed above it);
-the Cartesian basis keeps its precomputed
-rows, a stage whose far-field model is a finite body keeps its exact
-precomputed rows in every mode, and an explicit `Procedural` request that no
-stage can honour throws `std::invalid_argument` at construction.
+factor tables instead of the rows. It exists for the spherical basis on the
+static backends, at the orders the build compiled (see below); the Cartesian
+basis keeps its precomputed rows, a stage whose far-field model is a finite
+body keeps its exact precomputed rows in every mode, and an explicit
+`Procedural` request that no stage can honour throws `std::invalid_argument`
+at construction.
+
+### Compiled procedural orders
+
+**The expansion order is always a run-time choice.** Every order runs on every
+backend with `Precomputed` point operators, and finite sources and targets
+never use the procedural path at all. What the build decides is only the
+highest order for which the *procedural* point P2M/L2P kernels exist: each
+order is a separate kernel with its recurrence fully unrolled (the order is a
+template parameter), so every procedural order must be compiled in advance,
+and its code grows roughly as `p^3`. The CMake option
+`CDFMM_PROCEDURAL_MAX_ORDER` sets that limit:
+
+| Setting | Procedural orders | Use |
+|---|---|---|
+| default | 1 to 10 | everything `Auto` selects; ordinary builds and CI |
+| `-DCDFMM_PROCEDURAL_MAX_ORDER=20` (the maximum) | 1 to 20 | explicit `Procedural` at high order, such as matching FMM3D's order (17 at `eps = 1e-4`) |
+
+With the default, nothing changes for `Auto` (it never selects procedural
+execution above order 10) or `Precomputed` at any order. An explicit
+`Procedural` request above the compiled limit throws `std::invalid_argument`
+at construction, naming the option, rather than falling back silently. Raising
+the limit costs build time only: compiling orders 11 to 20 multiplies the
+compile time of the procedural executor several times over (several minutes
+for the CPU executor at 20). The configure summary prints
+`Procedural orders: 1-N`.
 
 `Auto` follows the measurements: the CPU hierarchy (`CpuStatic` and the CPU
 stages of `CudaPartial`) recomputes both operators in FP32 and FP64, where the

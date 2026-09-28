@@ -258,7 +258,25 @@ conda activate cdfmm
 ```
 
 The comparison notebook and runner live under `benchmarks/external/fmm3d/`
-([Benchmarks and profiling](benchmarks.md)).
+([Benchmarks and profiling](benchmarks.md)). A comparison at FMM3D's own
+expansion order with procedural point operators (17 at `eps = 1e-4`) needs
+those kernels compiled beyond the default order 10; see the next section.
+
+### Procedural point expansions above order 10
+
+The expansion order is chosen at run time, and every order works in a default
+build. Only the optional *procedural* point P2M/L2P kernels are compiled per
+order, by default for orders 1 to 10, which covers everything the automatic
+policy selects. To request `PointExpansionExecution::Procedural` explicitly
+above order 10, add the option to any configure command (at most 20; the
+higher orders lengthen the build):
+
+```console
+cmake --fresh --preset release -DCDFMM_PROCEDURAL_MAX_ORDER=20
+```
+
+[Backends](backends.md) describes the option and what it does and does not
+affect.
 
 ### MagTense comparison environment
 
