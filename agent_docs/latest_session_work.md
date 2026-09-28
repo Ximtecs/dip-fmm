@@ -1,5 +1,31 @@
 # Latest session work
 
+## 2026-09-28 — Universal operator bank built in seconds instead of hours
+
+Article1's p = 15 cases each spent ~47 min building the universal bank (8 M2M,
+8 L2L, 316 M2L over offsets |d| <= 3), ~2.6 h at p = 17. Two construction-only
+defects in `math`, both independent of geometry, backend and precision:
+
+- `MultiIndexSet::index` searched the storage order linearly (O(p^3) per
+  call) inside the innermost loops of the spherical M2L builder; it is now a
+  closed form (`dc32d1e`). Banks byte-identical at p = 4, 6, 8, 10.
+- `laplace_derivatives_raw` composed 1/|r| in truncated Taylor jets
+  (4,470 core-seconds per p = 15 bank). It now uses the exact recurrence
+  |r|^2 |k| c_k = -(2|k|-1) sum_i r_i c_{k-e_i} - (|k|-1) sum_i c_{k-2e_i}
+  (`abe6aa8`), agreeing with the jets to 1e-12 of the same-order scale
+  through order 30.
+
+Bank build, 16 E-cores: p = 10 53.8 s -> 0.21 s, p = 15 ~47 min -> 1.19 s,
+p = 17 ~2.6 h -> 2.40 s. FMM fields against frozen `bc6adfa` (8000 random
+points, depth 3, FP64, cache off): max |dH| / max |H| = 1.3e-18 (spherical
+p = 10) and 6.3e-19 (Cartesian p = 8). Evaluation code, plans, cache keys and
+format are unchanged; banks differ from earlier ones at rounding level only,
+so `kOperatorVersion` is deliberately not bumped and cached banks stay valid.
+Validation: CTest 269/269 in the CUDA + oneMKL build with the RTX 5090
+visible and in the portable warnings-as-errors build (its four oneMKL/CUDA
+cases skip); pytest 186 passed,
+1 skipped (MagTense not installed).
+
 ## 2026-09-27 — Procedural point expansions compiled to order 17
 
 FMM3D chooses its expansion order from eps with `l3dterms` (worst-case decay
