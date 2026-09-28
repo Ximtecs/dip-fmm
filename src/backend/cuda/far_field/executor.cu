@@ -15,6 +15,7 @@
 // entries.cuh, procedural.cuh and translation.cuh.
 
 #include "backend/cuda/common/error.hpp"
+#include "backend/cuda/common/upload.hpp"
 #include "backend/cuda/execution_policy.hpp"
 #include "backend/cuda/far_field/entries.cuh"
 #include "backend/cuda/far_field/internal.hpp"
@@ -192,8 +193,7 @@ std::size_t build_procedural(DeviceProcedural<Scalar> &device,
   const auto copy = [&](void *destination, const void *source,
                         const std::size_t bytes) {
     if (bytes != 0) {
-      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
-                 description);
+      cuda_detail::upload_to_device(destination, source, bytes, description);
     }
   };
   copy(device.leaves, leaf_records.data(), leaf_bytes);
