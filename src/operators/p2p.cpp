@@ -25,6 +25,7 @@
 #include "cdfmm/operators/p2p.hpp"
 
 #include "operators/exact_operator_reuse.hpp"
+#include "operators/p2p_memoised.hpp"
 #include "operators/p2p_point_kernel.hpp"
 
 #include "../geometry/primitives/tetrahedron_detail.hpp"
@@ -44,6 +45,7 @@
 #include <stdexcept>
 #include <tuple>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace cdfmm {
@@ -77,6 +79,7 @@ namespace {
 // failure report are shared with the dense all-to-all builder; see
 // `src/operators/exact_operator_reuse.hpp` for what makes two pairs the
 // same operator and why the comparison is bitwise.
+using detail::exact_reuse::build_exact_operator_classes;
 using detail::exact_reuse::classify_exact_operators;
 using detail::exact_reuse::ExactOperatorClasses;
 using detail::exact_reuse::ExactOperatorKey;
@@ -120,7 +123,7 @@ struct RowInteractionKey {
 StaticP2POperator build_static_p2p_operator_impl(
     const std::span<const Vec3> target_positions,
     const std::span<const Vec3> source_positions,
-    const std::span<const StaticP2PInteraction> interactions,
+    std::vector<StaticP2PInteraction> sorted,
     const SourceGeometry source_geometry,
     const std::span<const RectangularPrism> source_prisms,
     const std::span<const Tetrahedron> source_tetrahedra,
@@ -128,7 +131,8 @@ StaticP2POperator build_static_p2p_operator_impl(
     const std::span<const RectangularPrism> target_prisms,
     const std::span<const Tetrahedron> target_tetrahedra,
     const SourceModel source_model,
-    const TargetModel target_model)
+    const TargetModel target_model,
+    detail::ExactPairTensorMemo* const memo)
 {
     // A point near-field model on a finite body evaluates the point formula
     // at the representative point; only ExactGeometry reaches the finite
@@ -219,15 +223,19 @@ StaticP2POperator build_static_p2p_operator_impl(
     // Canonical order: by target, then source, then image shift.  Every
     // derived packing and the cache rely on this order, and the reciprocity
     // lookup below binary-searches within a row on the (source, shift) part.
-    std::vector<StaticP2PInteraction> sorted(
-        interactions.begin(), interactions.end());
-    std::sort(sorted.begin(), sorted.end(), [](const auto& left,
-                                               const auto& right) {
+    // The chunked near-field build hands its pairs over in this order
+    // already; the keys are distinct, so the order is unique and a list found
+    // sorted is exactly what sorting would give.
+    const auto canonical_before = [](const StaticP2PInteraction& left,
+                                     const StaticP2PInteraction& right) {
         return std::tie(left.target, left.source, left.source_shift.x,
                         left.source_shift.y, left.source_shift.z) <
             std::tie(right.target, right.source, right.source_shift.x,
                      right.source_shift.y, right.source_shift.z);
-    });
+    };
+    if (!std::is_sorted(sorted.begin(), sorted.end(), canonical_before)) {
+        std::sort(sorted.begin(), sorted.end(), canonical_before);
+    }
 
     for (const StaticP2PInteraction& interaction : sorted) {
         const int target = interaction.target;
@@ -374,26 +382,9 @@ StaticP2POperator build_static_p2p_operator_impl(
         };
 
         if (classes.classified) {
-            const std::ptrdiff_t class_count =
-                static_cast<std::ptrdiff_t>(classes.representative.size());
-            std::vector<PairTensor> tensors(classes.representative.size());
-#pragma omp parallel for schedule(dynamic, 1) if (class_count >= 8)
-            for (std::ptrdiff_t raw_class = 0; raw_class < class_count;
-                 ++raw_class) {
-                const std::size_t entry = static_cast<std::size_t>(raw_class);
-                const std::size_t index =
-                    static_cast<std::size_t>(classes.representative[entry]);
-                if (failure.superseded(index)) {
-                    continue;
-                }
-                try {
-                    tensors[entry] = build_tensor(index);
-                } catch (...) {
-                    failure.record(index);
-                }
-            }
-            failure.rethrow_any();
-
+            const std::vector<PairTensor> tensors =
+                build_exact_operator_classes(classes, exact_operator_key,
+                                             build_tensor, memo);
 #pragma omp parallel for schedule(static) if (interaction_count >= 256)
             for (std::ptrdiff_t raw_index = 0; raw_index < interaction_count;
                  ++raw_index) {
@@ -578,25 +569,14 @@ StaticP2POperator build_static_p2p_operator_impl(
         };
 
         if (classes.classified) {
-            const std::ptrdiff_t class_count =
-                static_cast<std::ptrdiff_t>(classes.representative.size());
-            std::vector<PairTensor> tensors(classes.representative.size());
-#pragma omp parallel for schedule(dynamic, 1) if (class_count >= 8)
-            for (std::ptrdiff_t raw_class = 0; raw_class < class_count;
-                 ++raw_class) {
-                const std::size_t entry = static_cast<std::size_t>(raw_class);
-                const std::size_t index = static_cast<std::size_t>(
-                    owners[classes.representative[entry]]);
-                if (failure.superseded(index)) {
-                    continue;
-                }
-                try {
-                    tensors[entry] = build_tensor(index);
-                } catch (...) {
-                    failure.record(index);
-                }
-            }
-            failure.rethrow_any();
+            // `owners` ascends, so the owner ordinal orders failures exactly
+            // as the pair index would.
+            const auto build_owner = [&](const std::size_t owner) -> PairTensor {
+                return build_tensor(static_cast<std::size_t>(owners[owner]));
+            };
+            const std::vector<PairTensor> tensors =
+                build_exact_operator_classes(classes, exact_operator_key,
+                                             build_owner, memo);
 
 #pragma omp parallel for schedule(static) if (owner_count >= 256)
             for (std::ptrdiff_t raw_owner = 0; raw_owner < owner_count;
@@ -781,25 +761,9 @@ StaticP2POperator build_static_p2p_operator_impl(
 
     if (classes.classified) {
         // Build one tensor per distinct set of inputs, then scatter.
-        const std::ptrdiff_t class_count =
-            static_cast<std::ptrdiff_t>(classes.representative.size());
-        std::vector<PairTensor> tensors(classes.representative.size());
-#pragma omp parallel for schedule(dynamic, 1) if (class_count >= 8)
-        for (std::ptrdiff_t raw_class = 0; raw_class < class_count;
-             ++raw_class) {
-            const std::size_t index = static_cast<std::size_t>(
-                classes.representative[static_cast<std::size_t>(raw_class)]);
-            if (failure.superseded(index)) {
-                continue;
-            }
-            try {
-                tensors[static_cast<std::size_t>(raw_class)] =
-                    build_pair_tensor(index);
-            } catch (...) {
-                failure.record(index);
-            }
-        }
-        failure.rethrow_any();
+        const std::vector<PairTensor> tensors =
+            build_exact_operator_classes(classes, exact_operator_key,
+                                         build_pair_tensor, memo);
 
         const std::ptrdiff_t pair_count =
             static_cast<std::ptrdiff_t>(sorted.size());
@@ -913,10 +877,37 @@ StaticP2POperator build_static_p2p_operator(
     const TargetModel target_model)
 {
     return build_static_p2p_operator_impl(
-        target_positions, source_positions, interactions, source_geometry,
-        source_prisms, source_tetrahedra, target_geometry, target_prisms,
-        target_tetrahedra, source_model, target_model);
+        target_positions, source_positions,
+        std::vector<StaticP2PInteraction>(interactions.begin(),
+                                          interactions.end()),
+        source_geometry, source_prisms, source_tetrahedra, target_geometry,
+        target_prisms, target_tetrahedra, source_model, target_model,
+        nullptr);
 }
+
+namespace detail {
+
+StaticP2POperator build_static_p2p_operator_memoised(
+    const std::span<const Vec3> target_positions,
+    const std::span<const Vec3> source_positions,
+    std::vector<StaticP2PInteraction> interactions,
+    const SourceGeometry source_geometry,
+    const std::span<const RectangularPrism> source_prisms,
+    const std::span<const Tetrahedron> source_tetrahedra,
+    const TargetGeometry target_geometry,
+    const std::span<const RectangularPrism> target_prisms,
+    const std::span<const Tetrahedron> target_tetrahedra,
+    const SourceModel source_model,
+    const TargetModel target_model,
+    ExactPairTensorMemo& memo)
+{
+    return build_static_p2p_operator_impl(
+        target_positions, source_positions, std::move(interactions),
+        source_geometry, source_prisms, source_tetrahedra, target_geometry,
+        target_prisms, target_tetrahedra, source_model, target_model, &memo);
+}
+
+} // namespace detail
 
 } // namespace cdfmm
 

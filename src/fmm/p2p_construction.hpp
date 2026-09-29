@@ -35,6 +35,7 @@
 #include "cdfmm/plan/p2p/compact.hpp"
 #include "cdfmm/plan/p2p/leaf.hpp"
 #include "cdfmm/tree/static_topology.hpp"
+#include "operators/p2p_memoised.hpp"
 
 namespace cdfmm::detail::p2p_construction {
 
@@ -81,7 +82,11 @@ struct CanonicalInputs {
 /// @brief Builds chunk operators for one plan.
 ///
 /// Holds the reciprocal-record lookup, built once, when the plan is a
-/// tetrahedron self-system; otherwise it is empty.
+/// tetrahedron self-system; otherwise it is empty.  Also holds the exact
+/// operators built so far: every chunk classifies its own pairs, and on
+/// repeated geometry most of a chunk's classes were already built for an
+/// earlier chunk, so the builder hands each chunk the memo of the previous
+/// ones instead of evaluating those operators again.
 class ChunkBuilder {
 public:
   ChunkBuilder(const StaticFmmTopology &topology, const CanonicalInputs &inputs);
@@ -106,6 +111,7 @@ private:
   mutable std::vector<StaticP2PLeafPair> leaf_pairs_{};
   mutable bool leaf_pairs_ready_{false};
   std::vector<std::size_t> reverse_record_{};  ///< Reverse record or npos.
+  mutable ExactPairTensorMemo memo_{};         ///< Tensors built so far.
 };
 
 /// @brief Appends a chunk's rows to an operator accumulated in target order.

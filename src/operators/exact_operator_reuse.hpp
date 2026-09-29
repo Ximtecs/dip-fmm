@@ -10,8 +10,13 @@
 #include <cstdint>
 #include <exception>
 #include <limits>
+#include <numeric>
 #include <unordered_map>
 #include <vector>
+
+#ifdef CDFMM_USE_OPENMP
+#include <omp.h>
+#endif
 
 #include "cdfmm/geometry/primitives/rectangular_prism.hpp"
 #include "cdfmm/geometry/primitives/tetrahedron.hpp"
@@ -162,33 +167,135 @@ template <typename KeyOfPair>
         pair_count - 1 > std::numeric_limits<std::uint32_t>::max()) {
         return {};
     }
+    using Map = std::unordered_map<ExactOperatorKey, std::uint32_t,
+                                   ExactOperatorKeyHash>;
+
+    // The sample gate, serial and first: an initial prefix with too few
+    // duplicates means the geometry is irregular and no classification is
+    // worth paying for.  Its map is discarded; the prefix is rehashed below.
+    if (gate.sample_pairs < pair_count) {
+        Map probe;
+        std::size_t distinct = 0;
+        for (std::size_t index = 0; index < gate.sample_pairs; ++index) {
+            if (probe.try_emplace(key_of_pair(index), 0U).second) {
+                ++distinct;
+            }
+        }
+        if (distinct * gate.sample_reuse_factor > gate.sample_pairs) {
+            return {};
+        }
+    }
 
     ExactOperatorClasses result;
     result.class_of_pair.resize(pair_count);
-    std::unordered_map<ExactOperatorKey, std::uint32_t, ExactOperatorKeyHash>
-        classes;
-    for (std::size_t index = 0; index < pair_count; ++index) {
-        const auto [entry, inserted] = classes.try_emplace(
-            key_of_pair(index),
-            static_cast<std::uint32_t>(result.representative.size()));
-        if (inserted) {
-            if (result.representative.size() >= gate.max_classes) {
-                return {};
-            }
-            result.representative.push_back(static_cast<std::uint32_t>(index));
-        }
-        result.class_of_pair[index] = entry->second;
 
-        const std::size_t sampled = index + 1;
-        if (sampled == gate.sample_pairs && sampled < pair_count &&
-            result.representative.size() * gate.sample_reuse_factor >
-                sampled) {
+    // Parallel first-seen classification.  The pairs are cut into contiguous
+    // ranges; every range numbers the classes it meets in its own first-seen
+    // order and records the pair index of each first occurrence.  The merge
+    // walks the ranges in order and, within a range, its classes in that
+    // order, so a class receives the rank of its first occurrence over ALL
+    // pairs -- exactly the number the serial loop gave it -- whatever the
+    // number of ranges: a class first met in a later range cannot have an
+    // earlier first occurrence than any class of an earlier range, and two
+    // classes of one range are ordered by their first occurrences.  Class
+    // numbers, representatives and every built value are therefore
+    // independent of the thread count, as before.
+    struct Range {
+        std::size_t begin{0};
+        std::size_t end{0};
+        Map ids{};
+        std::vector<std::uint32_t> first{};      // pair index per local class
+        std::vector<ExactOperatorKey> keys{};    // key per local class
+        bool overflowed{false};
+    };
+    std::size_t range_count = 1;
+#ifdef CDFMM_USE_OPENMP
+    range_count = static_cast<std::size_t>(std::max(1, omp_get_max_threads()));
+#endif
+    // A range below the sample size gains nothing from another thread.
+    range_count = std::max<std::size_t>(
+        1, std::min(range_count, pair_count / std::max<std::size_t>(gate.sample_pairs, 1)));
+    std::vector<Range> ranges(range_count);
+    for (std::size_t r = 0; r < range_count; ++r) {
+        ranges[r].begin = pair_count * r / range_count;
+        ranges[r].end = pair_count * (r + 1) / range_count;
+    }
+#pragma omp parallel for schedule(static) if (range_count > 1)
+    for (std::ptrdiff_t raw = 0; raw < static_cast<std::ptrdiff_t>(range_count);
+         ++raw) {
+        Range& range = ranges[static_cast<std::size_t>(raw)];
+        for (std::size_t index = range.begin; index < range.end; ++index) {
+            ExactOperatorKey key = key_of_pair(index);
+            const auto [entry, inserted] = range.ids.try_emplace(
+                key, static_cast<std::uint32_t>(range.first.size()));
+            if (inserted) {
+                if (range.first.size() >= gate.max_classes) {
+                    range.overflowed = true;
+                    break;
+                }
+                range.first.push_back(static_cast<std::uint32_t>(index));
+                range.keys.push_back(key);
+            }
+            result.class_of_pair[index] = entry->second;
+        }
+    }
+    for (const Range& range : ranges) {
+        if (range.overflowed) {
             return {};
+        }
+    }
+
+    // Serial merge in range order: local class -> global class.
+    Map global;
+    std::vector<std::vector<std::uint32_t>> global_of_local(range_count);
+    for (std::size_t r = 0; r < range_count; ++r) {
+        Range& range = ranges[r];
+        global_of_local[r].resize(range.keys.size());
+        for (std::size_t local = 0; local < range.keys.size(); ++local) {
+            const auto [entry, inserted] = global.try_emplace(
+                range.keys[local],
+                static_cast<std::uint32_t>(result.representative.size()));
+            if (inserted) {
+                if (result.representative.size() >= gate.max_classes) {
+                    return {};
+                }
+                result.representative.push_back(range.first[local]);
+            }
+            global_of_local[r][local] = entry->second;
+        }
+        // The range's map and keys are no longer needed; free them before
+        // the next range's are merged so the peak stays one range's worth.
+        range.ids = {};
+        range.keys = {};
+    }
+#pragma omp parallel for schedule(static) if (range_count > 1)
+    for (std::ptrdiff_t raw = 0; raw < static_cast<std::ptrdiff_t>(range_count);
+         ++raw) {
+        const Range& range = ranges[static_cast<std::size_t>(raw)];
+        const std::vector<std::uint32_t>& table =
+            global_of_local[static_cast<std::size_t>(raw)];
+        for (std::size_t index = range.begin; index < range.end; ++index) {
+            result.class_of_pair[index] = table[result.class_of_pair[index]];
         }
     }
     result.classified = true;
     return result;
 }
+
+/// @brief Exact operators built so far, keyed by their inputs.
+///
+/// A chunked near-field build classifies each chunk on its own, so a
+/// displacement that recurs in every chunk (every one on a lattice) would be
+/// rebuilt once per chunk.  The memo carries the built tensors from one call
+/// to the next; because a tensor is a pure function of its key, a remembered
+/// tensor is bit for bit the one the build would produce.
+template <typename Tensor>
+struct ExactOperatorMemo {
+    std::unordered_map<ExactOperatorKey, Tensor, ExactOperatorKeyHash> tensors{};
+    /// @brief Entries beyond which nothing further is remembered; an entry
+    ///        is about 300 bytes, so the default bounds the memo near 1.3 GB.
+    std::size_t max_entries{std::size_t{1} << 22};
+};
 
 /// @brief The failure a parallel exact-operator loop reports.
 ///
@@ -230,5 +337,72 @@ private:
     std::atomic<std::size_t> index_{std::numeric_limits<std::size_t>::max()};
     std::exception_ptr exception_{};
 };
+
+/// @brief One tensor per class: from @p memo where its key is remembered,
+///        otherwise built from the class representative.
+///
+/// The builds run in parallel over the classes the memo does not hold.  A
+/// class representative is the lowest pair index of its class and the
+/// representatives are listed in first-seen order, so the lowest failing
+/// representative is the pair a serial build would have failed on first;
+/// @p build_of_pair takes a representative as `classes.representative` lists
+/// it.  A null @p memo builds every class.
+template <typename Tensor, typename KeyOfPair, typename BuildOfPair>
+[[nodiscard]] std::vector<Tensor> build_exact_operator_classes(
+    const ExactOperatorClasses& classes, const KeyOfPair& key_of_pair,
+    const BuildOfPair& build_of_pair, ExactOperatorMemo<Tensor>* memo)
+{
+    const std::size_t class_count = classes.representative.size();
+    std::vector<Tensor> tensors(class_count);
+    // Classes the memo does not hold, with their keys for the insertion
+    // below so no key is derived twice.
+    std::vector<std::uint32_t> pending;
+    std::vector<ExactOperatorKey> pending_keys;
+    if (memo == nullptr) {
+        pending.resize(class_count);
+        std::iota(pending.begin(), pending.end(), std::uint32_t{0});
+    } else {
+        pending.reserve(class_count);
+        pending_keys.reserve(class_count);
+        for (std::size_t entry = 0; entry < class_count; ++entry) {
+            ExactOperatorKey key = key_of_pair(classes.representative[entry]);
+            const auto found = memo->tensors.find(key);
+            if (found != memo->tensors.end()) {
+                tensors[entry] = found->second;
+            } else {
+                pending.push_back(static_cast<std::uint32_t>(entry));
+                pending_keys.push_back(key);
+            }
+        }
+    }
+
+    FirstFailure failure;
+    const std::ptrdiff_t pending_count =
+        static_cast<std::ptrdiff_t>(pending.size());
+#pragma omp parallel for schedule(dynamic, 1) if (pending_count >= 8)
+    for (std::ptrdiff_t raw = 0; raw < pending_count; ++raw) {
+        const std::size_t entry = pending[static_cast<std::size_t>(raw)];
+        const std::size_t representative = classes.representative[entry];
+        if (failure.superseded(representative)) {
+            continue;
+        }
+        try {
+            tensors[entry] = build_of_pair(representative);
+        } catch (...) {
+            failure.record(representative);
+        }
+    }
+    failure.rethrow_any();
+
+    if (memo != nullptr) {
+        for (std::size_t raw = 0; raw < pending.size(); ++raw) {
+            if (memo->tensors.size() >= memo->max_entries) {
+                break;
+            }
+            memo->tensors.emplace(pending_keys[raw], tensors[pending[raw]]);
+        }
+    }
+    return tensors;
+}
 
 } // namespace cdfmm::detail::exact_reuse

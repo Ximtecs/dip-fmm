@@ -270,28 +270,37 @@ StaticP2POperator ChunkBuilder::build(const Chunk &chunk,
   const auto &records = topology_.p2p_leaf_records;
   // Expand the records exactly as the monolithic build does: free space gives
   // every pair the identity marker and no shift, a periodic plan takes both
-  // from its record.
+  // from its record.  The records of one target leaf are consecutive
+  // (plan_chunks checks the target order), so walking each leaf's targets
+  // and, per target, its records in order emits the pairs in the builder's
+  // canonical (target, source, shift) order whenever the records' source
+  // ranges ascend, and the builder then has nothing to sort.
   std::vector<StaticP2PInteraction> interactions;
   interactions.reserve(chunk.pairs);
-  const auto expand = [&](const StaticP2PLeafRecord &record, const bool reversed) {
+  const auto expand = [&](const StaticP2PLeafRecord &record, const int target) {
     const bool skip = inputs_.periodic ? record.skip_for_identity : true;
     const Vec3 shift = inputs_.periodic ? record.source_shift : Vec3{};
-    for (int target = static_cast<int>(record.target_begin);
-         target < static_cast<int>(record.target_begin + record.target_count);
-         ++target) {
-      for (int source = static_cast<int>(record.source_begin);
-           source < static_cast<int>(record.source_begin + record.source_count);
-           ++source) {
-        if (reversed) {
-          interactions.push_back({source, target, {-shift.x, -shift.y, -shift.z}, skip});
-        } else {
-          interactions.push_back({target, source, shift, skip});
-        }
-      }
+    for (int source = static_cast<int>(record.source_begin);
+         source < static_cast<int>(record.source_begin + record.source_count);
+         ++source) {
+      interactions.push_back({target, source, shift, skip});
     }
   };
-  for (std::size_t row = chunk.record_begin; row < chunk.record_end; ++row) {
-    expand(records[row], false);
+  for (std::size_t leaf_begin = chunk.record_begin; leaf_begin < chunk.record_end;) {
+    const StaticP2PLeafRecord &first = records[leaf_begin];
+    std::size_t leaf_end = leaf_begin + 1;
+    while (leaf_end < chunk.record_end &&
+           records[leaf_end].target_begin == first.target_begin) {
+      ++leaf_end;
+    }
+    for (int target = static_cast<int>(first.target_begin);
+         target < static_cast<int>(first.target_begin + first.target_count);
+         ++target) {
+      for (std::size_t row = leaf_begin; row < leaf_end; ++row) {
+        expand(records[row], target);
+      }
+    }
+    leaf_begin = leaf_end;
   }
   // Reciprocity: a pair whose source lies before the chunk takes its tensor
   // from the reverse pair, which the monolithic build owns in the earlier
@@ -327,12 +336,11 @@ StaticP2POperator ChunkBuilder::build(const Chunk &chunk,
   }
 
   const auto tensor_start = timed ? Clock::now() : Clock::time_point{};
-  StaticP2POperator built = build_static_p2p_operator(
-      inputs_.targets, inputs_.sources, interactions, inputs_.source_geometry,
-      inputs_.source_sizes, inputs_.source_tetrahedra, inputs_.target_geometry,
-      inputs_.target_sizes, inputs_.target_tetrahedra, inputs_.source_model,
-      inputs_.target_model);
-  interactions = {};
+  StaticP2POperator built = build_static_p2p_operator_memoised(
+      inputs_.targets, inputs_.sources, std::move(interactions),
+      inputs_.source_geometry, inputs_.source_sizes, inputs_.source_tetrahedra,
+      inputs_.target_geometry, inputs_.target_sizes, inputs_.target_tetrahedra,
+      inputs_.source_model, inputs_.target_model, memo_);
   // Keep only the chunk's rows: augmented reverse rows lie before it.
   const std::size_t first = static_cast<std::size_t>(
       built.row_offsets[static_cast<std::size_t>(chunk.target_begin)]);
