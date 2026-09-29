@@ -1,5 +1,13 @@
 # Project progress
 
+## Procedural point kernels on the leaf-normalised displacement: COMPLETE — 2026-09-29
+
+FP32 procedural P2M/L2P returned NaN at p >= 17 on deep trees (underflowing
+d^l times overflowing mode factors). The recurrence now runs on d / w with
+the width powers folded into the factor products; no plan, cache or API
+change; CPU FP32 high orders faster, everything else unchanged. Details in
+`latest_session_work.md`.
+
 ## CUDA plan uploads ordered before the first evaluation: COMPLETE — 2026-09-28
 
 The intermittent CudaPartial wrong near fields under GPU sharing were

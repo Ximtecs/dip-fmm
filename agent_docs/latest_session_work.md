@@ -1,5 +1,35 @@
 # Latest session work
 
+## 2026-09-29 — Procedural point kernels evaluate on the leaf-normalised displacement
+
+Article1's `external_order17` and `external_order20` returned NaN fields for
+FP32 procedural plans at p = 17 from depth five and at p = 20 from depth
+three, on CudaFull, and the CPU reproduced it. Per-level probes showed every
+stored multipole and local finite, and the precomputed FP32 rows accurate to
+5e-7 at the same settings, so the far-field representation was sound; the
+procedural P2M/L2P alone failed. The recurrence ran on the physical
+displacement (d^l underflows for a deep leaf) and the physical locals were
+scaled by f_{l,m} = sqrt((l-m)!(l+m)!) ~ 1e24 at l = 20 (overflow); the FP32
+slowness of the procedural path at high order (2026-09-28 entry) was the same
+arithmetic running in subnormals.
+
+Fix (one commit): both executors evaluate the recurrence on d / w with w the
+leaf's box width (exact, a power of two) and fold w^(l-1) / w^l into the
+per-leaf factor products, factor times power first (`leaf_width_powers`,
+`for_each_mode` in `operators/point_expansion_kernel.hpp`). The CPU executor
+takes the leaf half-width; the CUDA `ProceduralLeaf` carries the width and
+the staged displacements are pre-divided. The kernel test adds a depth-six
+leaf with physical-scale locals at every compiled order.
+
+Evidence: CTest 269/269 (portable -Werror; CUDA at order 20), 41 device
+cases, pytest 180/7 skipped. FP32 p17 d5 / p20 d3-d5 finite and equal to the
+precomputed path on CpuStatic and CudaFull. A/B against be4cf69: CUDA
+0.98-1.00x, CPU FP64 and p <= 10 0.99-1.01x, CPU FP32 p15/p17/p20
+0.90/0.85/0.78x (P2M+L2P at p17 20.7 -> 1.7 ms). The per-level
+normalisation of all far-field coefficients that was first considered is
+NOT needed and was not done: physical-unit coefficients stay within FP32
+range at every practical depth (locals reach ~1e20 at depth five, p = 17).
+
 ## 2026-09-28 — CUDA plan uploads were not ordered before the first evaluation
 
 The intermittent CudaPartial failures first seen 2026-09-23 ("periodic plans
