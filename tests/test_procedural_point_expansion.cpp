@@ -12,6 +12,7 @@
 // the executors cannot do and leave finite far-field models precomputed.
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -167,8 +168,21 @@ TEST_CASE("procedural point P2M and L2P kernels reproduce the canonical rows "
     using detail::cpu::ProceduralPointExpansion;
     // One leaf of eleven points: not a multiple of either SIMD pack width
     // (four FP64 or eight FP32 lanes), so the padded tail pack is exercised.
-    const Scene scene = make_scene(11);
+    // The leaf is a unit box once and a depth-six box (half-width 2^-7)
+    // once: on the physical displacement the small leaf's d^l underflowed
+    // FP32 at high order while its physical-scale locals overflowed once
+    // multiplied by the mode factors, so every field was NaN. The locals of
+    // the second case carry the w^-(l+1) growth of a real local expansion,
+    // which keeps every degree's contribution to the field of order one.
+    const double half_width = GENERATE(0.5, std::ldexp(1.0, -7));
+    INFO("leaf half-width " << half_width);
+    const Scene raw_scene = make_scene(11);
     const Vec3 centre{0.05, -0.03, 0.02};
+    Scene scene = raw_scene;
+    for (Vec3& position : scene.positions) {
+        position = centre + (position - centre) * half_width;
+    }
+    const double width = 2.0 * half_width;
     std::vector<FloatVec3> float_moments;
     std::vector<double> flat_moments;
     for (const Vec3& moment : scene.moments) {
@@ -207,28 +221,48 @@ TEST_CASE("procedural point P2M and L2P kernels reproduce the canonical rows "
 
         const ProceduralPointExpansion<double> fp64(order);
         std::vector<double> M(modes, 0.0);
-        fp64.apply_p2m<Vec3>(centre, scene.positions, scene.moments, M.data());
+        fp64.apply_p2m<Vec3>(centre, half_width, scene.positions,
+                             scene.moments, M.data());
         const ProceduralPointExpansion<float> fp32(order);
         std::vector<float> M_float(modes, 0.0F);
-        fp32.apply_p2m<FloatVec3>(centre, scene.positions, float_moments,
-                                  M_float.data());
-        for (std::size_t mode = 0; mode < modes; ++mode) {
-            REQUIRE(std::abs(M[mode] - expected_M[mode]) <=
-                    tolerance_for(StaticPrecision::Float64) *
-                        std::abs(M_scale));
-            REQUIRE(std::abs(static_cast<double>(M_float[mode]) -
-                             expected_M[mode]) <=
-                    tolerance_for(StaticPrecision::Float32) *
-                        std::abs(M_scale));
+        fp32.apply_p2m<FloatVec3>(centre, half_width, scene.positions,
+                                  float_moments, M_float.data());
+        // A small leaf's multipoles fall as w^l with the degree, so each
+        // degree is judged against its own scale, not the monopole's.
+        std::vector<double> degree_scale(static_cast<std::size_t>(order) + 1, 0.0);
+        for (int l = 0; l <= order; ++l) {
+            for (int m = -l; m <= l; ++m) {
+                const auto mode = static_cast<std::size_t>(l * l + l + m);
+                degree_scale[static_cast<std::size_t>(l)] = std::max(
+                    degree_scale[static_cast<std::size_t>(l)],
+                    std::abs(expected_M[mode]));
+            }
         }
+        for (int l = 0; l <= order; ++l) {
+            const double scale = degree_scale[static_cast<std::size_t>(l)];
+            for (int m = -l; m <= l; ++m) {
+                const auto mode = static_cast<std::size_t>(l * l + l + m);
+                REQUIRE(std::abs(M[mode] - expected_M[mode]) <=
+                        tolerance_for(StaticPrecision::Float64) * scale);
+                REQUIRE(std::abs(static_cast<double>(M_float[mode]) -
+                                 expected_M[mode]) <=
+                        tolerance_for(StaticPrecision::Float32) * scale);
+            }
+        }
+        REQUIRE(std::abs(M_scale) > 0.0);
 
         // L2P: the canonical potential and field rows of every point applied
         // to one local expansion with entries of order one.
         std::vector<double> L(modes);
         std::vector<float> L_float(modes);
-        for (std::size_t mode = 0; mode < modes; ++mode) {
-            L[mode] = next_local();
-            L_float[mode] = static_cast<float>(L[mode]);
+        for (int l = 0; l <= order; ++l) {
+            // Physical local expansions grow as w^-(l+1) with the degree.
+            const double growth = std::pow(width, -(l + 1));
+            for (int m = -l; m <= l; ++m) {
+                const auto mode = static_cast<std::size_t>(l * l + l + m);
+                L[mode] = next_local() * growth;
+                L_float[mode] = static_cast<float>(L[mode]);
+            }
         }
         std::vector<PotentialField> expected(scene.positions.size());
         double field_scale = 0.0;
@@ -251,12 +285,12 @@ TEST_CASE("procedural point P2M and L2P kernels reproduce the canonical rows "
         REQUIRE(potential_scale > 0.0);
 
         std::vector<PotentialField> actual(scene.positions.size());
-        fp64.apply_l2p<PotentialField>(centre, scene.positions, L.data(),
-                                       actual, true, true);
+        fp64.apply_l2p<PotentialField>(centre, half_width, scene.positions,
+                                       L.data(), actual, true, true);
         std::vector<FloatPotentialField> actual_float(scene.positions.size());
-        fp32.apply_l2p<FloatPotentialField>(centre, scene.positions,
-                                            L_float.data(), actual_float, true,
-                                            true);
+        fp32.apply_l2p<FloatPotentialField>(centre, half_width,
+                                            scene.positions, L_float.data(),
+                                            actual_float, true, true);
         for (std::size_t target = 0; target < scene.positions.size(); ++target) {
             const PotentialField& reference = expected[target];
             const double fp64_tolerance = tolerance_for(StaticPrecision::Float64);

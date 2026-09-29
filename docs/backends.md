@@ -265,7 +265,12 @@ rows built at construction (`3 C` scalars per source and per target,
 `C = (p+1)^2`; 588 bytes per point at `p = 6` in FP32). `Procedural`
 recomputes the operator from the sorted positions during every evaluation with
 the allocation-free solid-harmonic recurrence and retains three `C`-entry
-factor tables instead of the rows. It exists for the spherical basis on the
+factor tables instead of the rows. The recurrence runs on each point's
+displacement divided by its leaf's box width, with the width powers folded
+into the per-leaf factor products: on the physical displacement, FP32 plans
+at `p >= 17` on trees deeper than four levels returned NaN fields (the
+displacement powers underflowed while the mode factors overflowed), and the
+lower orders paid for subnormal arithmetic. It exists for the spherical basis on the
 static backends, at the orders the build compiled (see below); the Cartesian
 basis keeps its precomputed rows, a stage whose far-field model is a finite
 body keeps its exact precomputed rows in every mode, and an explicit

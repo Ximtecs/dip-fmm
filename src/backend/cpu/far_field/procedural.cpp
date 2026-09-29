@@ -59,10 +59,17 @@ ProceduralPointExpansion<Scalar>::ProceduralPointExpansion(const int order)
 template <typename Scalar>
 template <int P, typename Moment>
 void ProceduralPointExpansion<Scalar>::apply_p2m_order(
-    const Vec3& centre, const std::span<const Vec3> positions,
+    const Vec3& centre, const double half_width,
+    const std::span<const Vec3> positions,
     const std::span<const Moment> moments, Scalar* M) const {
   using Pack = Lanes<Scalar, lanes>;
   constexpr int C = (P + 1) * (P + 1);
+  // The recurrence runs on d / width (exact: the width is a power of two)
+  // and the width powers restore the physical operator afterwards.
+  const double inverse_width = 0.5 / half_width;
+  Scalar powers[P + 1];
+  operators::point_expansion::leaf_width_powers<P, Scalar>(
+      static_cast<Scalar>(2.0 * half_width), powers);
   Pack acc[C];
   const std::size_t count = positions.size();
   for (std::size_t base = 0; base < count; base += lanes) {
@@ -77,9 +84,9 @@ void ProceduralPointExpansion<Scalar>::apply_p2m_order(
     for (int k = 0; k < valid; ++k) {
       const Vec3 d = positions[base + static_cast<std::size_t>(k)] - centre;
       const Moment m = moments[base + static_cast<std::size_t>(k)];
-      dx.v[k] = static_cast<Scalar>(d.x);
-      dy.v[k] = static_cast<Scalar>(d.y);
-      dz.v[k] = static_cast<Scalar>(d.z);
+      dx.v[k] = static_cast<Scalar>(d.x * inverse_width);
+      dy.v[k] = static_cast<Scalar>(d.y * inverse_width);
+      dz.v[k] = static_cast<Scalar>(d.z * inverse_width);
       mx.v[k] = static_cast<Scalar>(m.x);
       my.v[k] = static_cast<Scalar>(m.y);
       mz.v[k] = static_cast<Scalar>(m.z);
@@ -87,28 +94,41 @@ void ProceduralPointExpansion<Scalar>::apply_p2m_order(
     operators::point_expansion::accumulate_point_p2m<P, Pack>(dx, dy, dz, mx,
                                                               my, mz, acc);
   }
-  for (int index = 0; index < C; ++index) {
-    M[index] += p2m_factors_[static_cast<std::size_t>(index)] *
-                acc[index].sum();
-  }
+  // grad R(d) = width^(l - 1) grad R(d / width); degree 0 has no gradient.
+  operators::point_expansion::for_each_mode<P>([&](const int index, const int l) {
+    const Scalar factor = p2m_factors_[static_cast<std::size_t>(index)] *
+                          powers[l > 0 ? l - 1 : 0];
+    M[index] += factor * acc[index].sum();
+  });
 }
 
 template <typename Scalar>
 template <int P, typename Result>
 void ProceduralPointExpansion<Scalar>::apply_l2p_order(
-    const Vec3& centre, const std::span<const Vec3> positions,
-    const Scalar* L, const std::span<Result> results, const bool field,
+    const Vec3& centre, const double half_width,
+    const std::span<const Vec3> positions, const Scalar* L,
+    const std::span<Result> results, const bool field,
     const bool potential) const {
   using Pack = Lanes<Scalar, lanes>;
   constexpr int C = (P + 1) * (P + 1);
-  // The leaf's locals scaled once by the mode factors (and the L2P sign).
+  const double inverse_width = 0.5 / half_width;
+  Scalar powers[P + 1];
+  operators::point_expansion::leaf_width_powers<P, Scalar>(
+      static_cast<Scalar>(2.0 * half_width), powers);
+  // The leaf's locals scaled once by the mode factors (and the L2P sign)
+  // and the width powers: width^(l - 1) for the gradient, width^l for the
+  // value. The factor and the power are multiplied first, because their
+  // product is of order one while each alone may not be representable
+  // beside the physical local.
   Scalar scaled_field[C];
   Scalar scaled_potential[C];
-  for (int index = 0; index < C; ++index) {
+  operators::point_expansion::for_each_mode<P>([&](const int index, const int l) {
     const auto mode = static_cast<std::size_t>(index);
-    scaled_field[index] = l2p_field_factors_[mode] * L[index];
-    scaled_potential[index] = l2p_potential_factors_[mode] * L[index];
-  }
+    scaled_field[index] =
+        (l2p_field_factors_[mode] * powers[l > 0 ? l - 1 : 0]) * L[index];
+    scaled_potential[index] =
+        (l2p_potential_factors_[mode] * powers[l]) * L[index];
+  });
   const std::size_t count = positions.size();
   for (std::size_t base = 0; base < count; base += lanes) {
     Pack dx;
@@ -118,9 +138,9 @@ void ProceduralPointExpansion<Scalar>::apply_l2p_order(
         static_cast<int>(std::min<std::size_t>(lanes, count - base));
     for (int k = 0; k < valid; ++k) {
       const Vec3 d = positions[base + static_cast<std::size_t>(k)] - centre;
-      dx.v[k] = static_cast<Scalar>(d.x);
-      dy.v[k] = static_cast<Scalar>(d.y);
-      dz.v[k] = static_cast<Scalar>(d.z);
+      dx.v[k] = static_cast<Scalar>(d.x * inverse_width);
+      dy.v[k] = static_cast<Scalar>(d.y * inverse_width);
+      dz.v[k] = static_cast<Scalar>(d.z * inverse_width);
     }
     Pack Hx;
     Pack Hy;
@@ -148,38 +168,41 @@ void ProceduralPointExpansion<Scalar>::apply_l2p_order(
 template <typename Scalar>
 template <typename Moment>
 void ProceduralPointExpansion<Scalar>::apply_p2m(
-    const Vec3& centre, const std::span<const Vec3> positions,
+    const Vec3& centre, const double half_width,
+    const std::span<const Vec3> positions,
     const std::span<const Moment> moments, Scalar* M) const {
   dispatch_order(order_, [&](auto order_tag) {
-    apply_p2m_order<decltype(order_tag)::value, Moment>(centre, positions,
-                                                        moments, M);
+    apply_p2m_order<decltype(order_tag)::value, Moment>(
+        centre, half_width, positions, moments, M);
   });
 }
 
 template <typename Scalar>
 template <typename Result>
 void ProceduralPointExpansion<Scalar>::apply_l2p(
-    const Vec3& centre, const std::span<const Vec3> positions,
-    const Scalar* L, const std::span<Result> results, const bool field,
+    const Vec3& centre, const double half_width,
+    const std::span<const Vec3> positions, const Scalar* L,
+    const std::span<Result> results, const bool field,
     const bool potential) const {
   dispatch_order(order_, [&](auto order_tag) {
     apply_l2p_order<decltype(order_tag)::value, Result>(
-        centre, positions, L, results, field, potential);
+        centre, half_width, positions, L, results, field, potential);
   });
 }
 
 template class ProceduralPointExpansion<double>;
 template class ProceduralPointExpansion<float>;
 template void ProceduralPointExpansion<double>::apply_p2m<Vec3>(
-    const Vec3&, std::span<const Vec3>, std::span<const Vec3>, double*) const;
+    const Vec3&, double, std::span<const Vec3>, std::span<const Vec3>,
+    double*) const;
 template void ProceduralPointExpansion<float>::apply_p2m<FloatVec3>(
-    const Vec3&, std::span<const Vec3>, std::span<const FloatVec3>,
+    const Vec3&, double, std::span<const Vec3>, std::span<const FloatVec3>,
     float*) const;
 template void ProceduralPointExpansion<double>::apply_l2p<PotentialField>(
-    const Vec3&, std::span<const Vec3>, const double*,
+    const Vec3&, double, std::span<const Vec3>, const double*,
     std::span<PotentialField>, bool, bool) const;
 template void ProceduralPointExpansion<float>::apply_l2p<FloatPotentialField>(
-    const Vec3&, std::span<const Vec3>, const float*,
+    const Vec3&, double, std::span<const Vec3>, const float*,
     std::span<FloatPotentialField>, bool, bool) const;
 
 } // namespace cdfmm::detail::cpu

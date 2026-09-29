@@ -16,9 +16,13 @@ struct ProceduralLeaf {
   int begin{0};
   int count{0};
   int padding{0};
+  /// The leaf's box width: the staged displacements are divided by it and
+  /// its powers restore the physical operator (`leaf_width_powers`).
+  double width{0.0};
 };
 
-/// One point's displacement from its leaf centre, padded to one aligned load.
+/// One point's displacement from its leaf centre, divided by the leaf's box
+/// width, padded to one aligned load.
 template <typename Scalar>
 struct alignas(4 * sizeof(Scalar)) ProceduralPoint {
   Scalar x{0};
@@ -80,10 +84,14 @@ __global__ void __launch_bounds__(procedural_threads) procedural_p2m_kernel(
   }
   if (active && lane_in_group == 0) {
     Scalar *M = multipoles + static_cast<std::size_t>(leaf.node) * C;
-#pragma unroll
-    for (int index = 0; index < C; ++index) {
-      M[index] += factors[index] * acc[index];
-    }
+    Scalar powers[P + 1];
+    operators::point_expansion::leaf_width_powers<P, Scalar>(
+        static_cast<Scalar>(leaf.width), powers);
+    // grad R(d) = width^(l - 1) grad R(d / width); degree 0 has no gradient.
+    operators::point_expansion::for_each_mode<P>(
+        [&](const int index, const int l) {
+          M[index] += (factors[index] * powers[l > 0 ? l - 1 : 0]) * acc[index];
+        });
   }
 }
 
@@ -110,11 +118,16 @@ __global__ void __launch_bounds__(procedural_threads) procedural_l2p_kernel(
   }
   const ProceduralLeaf leaf = leaves[leaf_index];
   const Scalar *L = locals + static_cast<std::size_t>(leaf.node) * C;
+  Scalar powers[P + 1];
+  operators::point_expansion::leaf_width_powers<P, Scalar>(
+      static_cast<Scalar>(leaf.width), powers);
+  // Factor times power first: their product is of order one while each alone
+  // may not be representable beside the physical local.
   Scalar scaled[C];
-#pragma unroll
-  for (int index = 0; index < C; ++index) {
-    scaled[index] = factors[index] * L[index];
-  }
+  operators::point_expansion::for_each_mode<P>(
+      [&](const int index, const int l) {
+        scaled[index] = (factors[index] * powers[l > 0 ? l - 1 : 0]) * L[index];
+      });
   for (int local = lane_in_group; local < leaf.count; local += lanes_per_leaf) {
     const int target = leaf.begin + local;
     const ProceduralPoint<Scalar> d = displacements[target];

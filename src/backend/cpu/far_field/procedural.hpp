@@ -44,10 +44,13 @@ public:
   /**
    * @brief Accumulates one leaf's P2M: `M += 1/(4 pi) sum_s m_s . grad R(x_s - centre)`.
    *
-   * `positions` and `moments` are the leaf's slices of the sorted arrays.
+   * `positions` and `moments` are the leaf's slices of the sorted arrays;
+   * `half_width` is the leaf's, so the recurrence runs on the displacement
+   * divided by the box width (`operators::point_expansion::leaf_width_powers`).
    */
   template <typename Moment>
-  void apply_p2m(const Vec3& centre, std::span<const Vec3> positions,
+  void apply_p2m(const Vec3& centre, double half_width,
+                 std::span<const Vec3> positions,
                  std::span<const Moment> moments, Scalar* M) const;
 
   /**
@@ -58,9 +61,9 @@ public:
    * the other member is set to zero, like the precomputed path.
    */
   template <typename Result>
-  void apply_l2p(const Vec3& centre, std::span<const Vec3> positions,
-                 const Scalar* L, std::span<Result> results, bool field,
-                 bool potential) const;
+  void apply_l2p(const Vec3& centre, double half_width,
+                 std::span<const Vec3> positions, const Scalar* L,
+                 std::span<Result> results, bool field, bool potential) const;
 
   /// Retained bytes of the P2M factor table.
   [[nodiscard]] std::size_t p2m_memory_bytes() const noexcept {
@@ -78,11 +81,13 @@ public:
 
 private:
   template <int P, typename Moment>
-  void apply_p2m_order(const Vec3& centre, std::span<const Vec3> positions,
+  void apply_p2m_order(const Vec3& centre, double half_width,
+                       std::span<const Vec3> positions,
                        std::span<const Moment> moments, Scalar* M) const;
   template <int P, typename Result>
-  void apply_l2p_order(const Vec3& centre, std::span<const Vec3> positions,
-                       const Scalar* L, std::span<Result> results, bool field,
+  void apply_l2p_order(const Vec3& centre, double half_width,
+                       std::span<const Vec3> positions, const Scalar* L,
+                       std::span<Result> results, bool field,
                        bool potential) const;
 
   int order_{0};

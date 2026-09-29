@@ -58,11 +58,53 @@ bool dispatch_procedural_order(const int order, F &&f) {
 }
 
 /**
+ * @brief Calls `f(index, l)` for every real mode in coefficient order.
+ *
+ * `index = l^2 + l + m` for `m = -l .. l`; the loops unroll with `P` fixed.
+ */
+template <int P, typename F>
+CDFMM_SOLID_HARMONIC_HOST_DEVICE inline void for_each_mode(F&& f) {
+  CDFMM_SOLID_HARMONIC_UNROLL
+  for (int l = 0; l <= P; ++l) {
+    CDFMM_SOLID_HARMONIC_UNROLL
+    for (int m = -l; m <= l; ++m) {
+      f(l * l + l + m, l);
+    }
+  }
+}
+
+/**
+ * @brief Fills `powers[0..P]` with `width^0 .. width^P`.
+ *
+ * WARNING(cdfmm): the executors run the recurrence on the leaf-normalised
+ * displacement `d / width` (the leaf's box width, a power of two in the
+ * normalised tree), never on `d` itself. `Q_{l,m}` is homogeneous of degree
+ * `l`, so `R(d) = width^l R(d / width)` and
+ * `grad R(d) = width^(l - 1) grad R(d / width)`, and these powers restore the
+ * physical operator when the mode factors are applied. On the physical
+ * displacement a deep leaf's `d^l` underflowed FP32 while the mode factors
+ * (up to sqrt((2 l)!), about 1e24 at l = 20) overflowed the scaled locals:
+ * every FP32 field at p >= 17 on trees deeper than four levels was NaN, and
+ * the lower orders paid for subnormal arithmetic. On `d / width` every
+ * streamed value stays within FP32 range at the compiled orders.
+ */
+template <int P, typename Scalar>
+CDFMM_SOLID_HARMONIC_HOST_DEVICE inline void leaf_width_powers(const Scalar width,
+                                                               Scalar* powers) {
+  powers[0] = static_cast<Scalar>(1);
+  CDFMM_SOLID_HARMONIC_UNROLL
+  for (int l = 1; l <= P; ++l) {
+    powers[l] = powers[l - 1] * width;
+  }
+}
+
+/**
  * @brief Adds `m . grad Q_index(d)` to `acc[index]` for every real mode.
  *
- * `d` is the source position relative to the leaf centre. Multiplying a
- * leaf's accumulated values by `p2m_mode_factors` gives the canonical
- * point-source multipole coefficients.
+ * `d` is the source position relative to the leaf centre, divided by the
+ * leaf's box width (see `leaf_width_powers`). Multiplying a leaf's
+ * accumulated values by `p2m_mode_factors` and `width^(l - 1)` gives the
+ * canonical point-source multipole coefficients.
  */
 template <int P, typename Lane>
 CDFMM_SOLID_HARMONIC_HOST_DEVICE inline void
@@ -77,8 +119,9 @@ accumulate_point_p2m(const Lane dx, const Lane dy, const Lane dz,
 /**
  * @brief Adds `sum_index scaled_L[index] grad Q_index(d)` to the field.
  *
- * With `scaled_L[index] = l2p_field_mode_factors[index] * L[index]` the
- * result is the canonical far field `H = -sum L_lm grad R_lm(d)`.
+ * `d` is the leaf-normalised displacement. With
+ * `scaled_L[index] = l2p_field_mode_factors[index] * width^(l - 1) * L[index]`
+ * the result is the canonical far field `H = -sum L_lm grad R_lm(d_physical)`.
  */
 template <int P, typename Lane, typename Coefficient>
 CDFMM_SOLID_HARMONIC_HOST_DEVICE inline void
@@ -99,8 +142,10 @@ accumulate_point_l2p_field(const Lane dx, const Lane dy, const Lane dz,
 /**
  * @brief Adds `sum_index scaled_L[index] Q_index(d)` to the potential.
  *
- * With `scaled_L[index] = l2p_potential_mode_factors[index] * L[index]` the
- * result is the canonical far-field potential `phi = sum L_lm R_lm(d)`.
+ * `d` is the leaf-normalised displacement. With
+ * `scaled_L[index] = l2p_potential_mode_factors[index] * width^l * L[index]`
+ * the result is the canonical far-field potential
+ * `phi = sum L_lm R_lm(d_physical)`.
  */
 template <int P, typename Lane, typename Coefficient>
 CDFMM_SOLID_HARMONIC_HOST_DEVICE inline void
