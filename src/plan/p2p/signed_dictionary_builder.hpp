@@ -55,6 +55,9 @@ private:
   std::vector<std::uint16_t> narrow_tokens_{};
   std::vector<std::uint32_t> wide_tokens_{};
   bool wide_{false};
+  // One block's six components in source-major (token) order; reused across
+  // blocks so the transposition allocates once per builder.
+  std::vector<double> transposed_{};
 };
 
 } // namespace cdfmm::detail

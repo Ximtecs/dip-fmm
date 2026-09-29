@@ -2,6 +2,7 @@
 
 #include "cdfmm/plan/p2p/signed_dictionary.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -98,6 +99,48 @@ void SignedTensorDictionaryBuilder::append(const StaticP2PLeafPlan& leaf)
                 leaf.blocks[static_cast<std::size_t>(block_index)];
             StaticP2PLeafBlock block = source_block;
             block.tensor_offset = token_count();
+            // The tokens are source-major while the leaf tensors are
+            // target-major (`tensor_offset + local_target * source_count +
+            // local_source`).  Reading them in token order strides by
+            // `source_count` doubles through six arrays -- one cache and TLB
+            // miss per value on a leaf of hundreds of bodies -- so each block
+            // is transposed once, in cache-sized tiles, into one contiguous
+            // source-major buffer and tokenised from there.
+            const std::size_t block_pairs =
+                static_cast<std::size_t>(block.source_count) *
+                static_cast<std::size_t>(target_count);
+            transposed_.resize(block_pairs * 6U);
+            constexpr int tile = 32;
+            for (int source_tile = 0; source_tile < block.source_count;
+                 source_tile += tile) {
+                const int source_end =
+                    std::min(block.source_count, source_tile + tile);
+                for (int target_tile = 0; target_tile < target_count;
+                     target_tile += tile) {
+                    const int target_end =
+                        std::min(target_count, target_tile + tile);
+                    for (int component = 0; component < 6; ++component) {
+                        const double* values = leaf.tensors[
+                            static_cast<std::size_t>(component)].data() +
+                            source_block.tensor_offset;
+                        double* out = transposed_.data() +
+                            static_cast<std::size_t>(component) * block_pairs;
+                        for (int local_target = target_tile;
+                             local_target < target_end; ++local_target) {
+                            const double* row = values +
+                                static_cast<std::size_t>(local_target) *
+                                    block.source_count;
+                            for (int local_source = source_tile;
+                                 local_source < source_end; ++local_source) {
+                                out[static_cast<std::size_t>(local_source) *
+                                        target_count +
+                                    static_cast<std::size_t>(local_target)] =
+                                    row[local_source];
+                            }
+                        }
+                    }
+                }
+            }
             for (int local_source = 0;
                  local_source < block.source_count; ++local_source) {
                 const int source = block.source_begin + local_source;
@@ -112,14 +155,14 @@ void SignedTensorDictionaryBuilder::append(const StaticP2PLeafPlan& leaf)
                         push_token(0U);
                         continue;
                     }
-                    const std::size_t index = source_block.tensor_offset +
-                        static_cast<std::size_t>(local_target) *
-                            block.source_count +
-                        static_cast<std::size_t>(local_source);
+                    const std::size_t index =
+                        static_cast<std::size_t>(local_source) * target_count +
+                        static_cast<std::size_t>(local_target);
                     std::array<double, 6> tensor{};
                     for (int component = 0; component < 6; ++component) {
-                        const double value = leaf.tensors[
-                            static_cast<std::size_t>(component)][index];
+                        const double value = transposed_[
+                            static_cast<std::size_t>(component) * block_pairs +
+                            index];
                         tensor[static_cast<std::size_t>(component)] =
                             value == 0.0 ? 0.0 : value;
                     }
