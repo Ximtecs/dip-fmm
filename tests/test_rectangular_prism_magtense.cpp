@@ -235,6 +235,34 @@ TEST_CASE("rectangular prism pair tensor matches averaged MagTense F1/F2",
     }
 }
 
+TEST_CASE("equal prisms take the merged three-point axis sum",
+          "[rectangular_prism][magtense]")
+{
+    // Two prisms of equal half-width along an axis put two of the four
+    // corner-sum points at the displacement itself, so the production sum
+    // uses three points per equal axis with the second-difference weights
+    // (1, -2, 1).  The reference keeps all 64 corner terms.  Face-aligned,
+    // edge-aligned and coincident displacements exercise the primitives'
+    // limiting branches on those points; the far pair checks the merged sum
+    // against the strongest cancellation.
+    const RectangularPrism cube{1.0, 1.0, 1.0};
+    const RectangularPrism slab{1.0, 0.6, 1.0};  // equal along x and z only
+    for (const Vec3 displacement : {Vec3{1.3, 0.7, 0.4},
+                                    Vec3{2.0, 0.0, 0.0},
+                                    Vec3{2.0, 1.0, 0.0},
+                                    Vec3{1.0, 1.0, 1.0},
+                                    Vec3{0.0, 0.0, 0.0},
+                                    Vec3{3.0, 1.0e-12, 0.0},
+                                    Vec3{6.0, -4.5, 2.5}}) {
+        require_tensor_close(
+            rectangular_prism_rectangular_prism_tensor(displacement, cube, cube),
+            reference_prism_prism(displacement, cube, cube), 4.0e-12);
+        require_tensor_close(
+            rectangular_prism_rectangular_prism_tensor(displacement, cube, slab),
+            reference_prism_prism(displacement, cube, slab), 4.0e-12);
+    }
+}
+
 TEST_CASE("rectangular prism tensors obey reciprocity and far-field limit",
           "[rectangular_prism][magtense]")
 {

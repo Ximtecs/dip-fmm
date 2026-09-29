@@ -71,6 +71,19 @@ logarithm, inverse hyperbolic sine, arctangent and square-root primitives are
 cancellation sensitive, which is why the analytical construction stays in
 extended precision even for FP32 plans.
 
+The prism-to-prism tensor is the target-box integral of the source's corner
+sum: along each axis the `F1`/`F2` primitives are taken at
+$d \pm h_t \mp h_s$ with weight $t(-s)$ for the target and source corner
+signs $t, s$, and a point's weight is the product over the three axes. At
+each point the six components share one distance, three arctangents and six
+logarithms, which are evaluated once. When the two prisms have the same
+half-width along an axis, two of that axis's four points coincide at $d$, so
+the axis reduces to three points with the second-difference weights
+$(1, -2, 1)$: 27 point evaluations for two equal prisms instead of 64. Both
+forms are the same sum with identical terms combined before rounding rather
+than after; they agree to `double` rounding (about $10^{-15}$ of the largest
+field component) and are not bitwise identical.
+
 For a centred cube the degree-three correction is proportional to
 $D_x^2+D_y^2+D_z^2=\nabla^2$ and vanishes outside the source. The first
 physical shape correction of a cube is therefore multipole degree five, with

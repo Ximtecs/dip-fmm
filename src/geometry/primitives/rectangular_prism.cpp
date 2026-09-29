@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
@@ -180,70 +181,121 @@ Real F2(const Real x, const Real y, const Real z,
         X * Y * distance / 3.0L;
 }
 
-// Triple definite integral of a primitive over the box [x1,x2]x[y1,y2]x[z1,z2]
-// by inclusion-exclusion over its eight corners.
-template <typename Primitive>
-Real definite_integral(Primitive primitive, const Real x1, const Real x2,
-                       const Real y1, const Real y2, const Real z1,
-                       const Real z2, const Real a, const Real b,
-                       const Real c)
+// The six primitives at one evaluation point.  F1 and its two cyclic
+// permutations give the diagonal components, F2 and its permutations the
+// off-diagonal ones.  Between them the six contain one distance, three
+// arctangents and six logarithms, each used by several of the six, so those
+// are evaluated once and the six polynomials are combined from them in the
+// primitives' own term order.  A point on a coordinate plane, on an axis, at
+// the origin, or where a rounded distance equals a coordinate takes the
+// primitives' own limiting branches instead, unchanged.
+struct PointPrimitives {
+    Real xx;
+    Real yy;
+    Real zz;
+    Real xy;
+    Real yz;
+    Real xz;
+};
+
+PointPrimitives primitives_at(const Real x, const Real y, const Real z,
+                              const Real a, const Real b, const Real c)
 {
-    // AvgN_prism_definite_integral, TileRectangularPrismAvgTensor.f90:80-94.
-    return primitive(x2, y2, z2, a, b, c) -
-        primitive(x1, y2, z2, a, b, c) -
-        primitive(x2, y1, z2, a, b, c) +
-        primitive(x1, y1, z2, a, b, c) -
-        primitive(x2, y2, z1, a, b, c) +
-        primitive(x1, y2, z1, a, b, c) +
-        primitive(x2, y1, z1, a, b, c) -
-        primitive(x1, y1, z1, a, b, c);
+    const Real d = std::hypot(std::hypot(x, y), z);
+    const bool limiting = x == 0.0L || y == 0.0L || z == 0.0L || d == 0.0L ||
+        d - x == 0.0L || d - y == 0.0L || d - z == 0.0L ||
+        d + x == 0.0L || d + y == 0.0L || d + z == 0.0L;
+    if (limiting) {
+        return {F1(x, y, z, a, b, c), F1(y, z, x, a, b, c),
+                F1(z, x, y, a, b, c), F2(x, y, z, a, b, c),
+                F2(y, z, x, a, b, c), F2(z, x, y, a, b, c)};
+    }
+    const Real atan_x = std::atan(y * z / (x * d));
+    const Real atan_y = std::atan(z * x / (y * d));
+    const Real atan_z = std::atan(x * y / (z * d));
+    const Real log_minus_x = std::log(std::abs(d - x));
+    const Real log_minus_y = std::log(std::abs(d - y));
+    const Real log_minus_z = std::log(std::abs(d - z));
+    const Real log_plus_x = std::log(std::abs(d + x));
+    const Real log_plus_y = std::log(std::abs(d + y));
+    const Real log_plus_z = std::log(std::abs(d + z));
+    PointPrimitives p;
+    // F1(x, y, z), F1(y, z, x), F1(z, x, y).
+    p.xx = x * y * z * atan_x +
+        0.5L * y * (z * z - x * x) * log_minus_y +
+        0.5L * z * (y * y - x * x) * log_minus_z +
+        (y * y + z * z - 2.0L * x * x) * d / 6.0L;
+    p.yy = y * z * x * atan_y +
+        0.5L * z * (x * x - y * y) * log_minus_z +
+        0.5L * x * (z * z - y * y) * log_minus_x +
+        (z * z + x * x - 2.0L * y * y) * d / 6.0L;
+    p.zz = z * x * y * atan_z +
+        0.5L * x * (y * y - z * z) * log_minus_x +
+        0.5L * y * (x * x - z * z) * log_minus_y +
+        (x * x + y * y - 2.0L * z * z) * d / 6.0L;
+    // F2(x, y, z), F2(y, z, x), F2(z, x, y).
+    p.xy = -x * y * z * log_plus_z +
+        y * (y * y - 3.0L * z * z) * log_plus_x / 6.0L +
+        x * (x * x - 3.0L * z * z) * log_plus_y / 6.0L +
+        0.5L * x * x * z * atan_x +
+        0.5L * y * y * z * atan_y +
+        z * z * z * atan_z / 6.0L +
+        x * y * d / 3.0L;
+    p.yz = -y * z * x * log_plus_x +
+        z * (z * z - 3.0L * x * x) * log_plus_y / 6.0L +
+        y * (y * y - 3.0L * x * x) * log_plus_z / 6.0L +
+        0.5L * y * y * x * atan_y +
+        0.5L * z * z * x * atan_z +
+        x * x * x * atan_x / 6.0L +
+        y * z * d / 3.0L;
+    p.xz = -z * x * y * log_plus_y +
+        x * (x * x - 3.0L * y * y) * log_plus_z / 6.0L +
+        z * (z * z - 3.0L * y * y) * log_plus_x / 6.0L +
+        0.5L * z * z * y * atan_z +
+        0.5L * x * x * y * atan_x +
+        y * y * y * atan_y / 6.0L +
+        z * x * d / 3.0L;
+    return p;
 }
 
-// The prism-to-prism integral is the integral over the target box of the
-// source's field, and the source's field is itself an inclusion-exclusion
-// over the source's eight corners (the surface-charge picture of a uniformly
-// magnetised prism).  So: for each source corner, shift the target box by
-// that corner and integrate the primitive over it; combine with the corner
-// parity sign (-1)^(i+j+k).
-template <typename Primitive>
-Real averaged_prism_sum(Primitive primitive, const Vec3& displacement,
-                        const RectangularPrism& source,
-                        const RectangularPrism& target)
+// One axis of the prism-to-prism sum.  The integral over the target box of
+// the source's field is an inclusion-exclusion over the eight target corners
+// (sign t per axis) of an inclusion-exclusion over the eight source corners
+// (sign s per axis), so along one axis the primitive is taken at
+// d + t h_t - s h_s with coefficient t (-s), and a point's coefficient is the
+// product over the three axes (AvgN_prism_definite_integral and its caller in
+// TileRectangularPrismAvgTensor.f90).  Equal half-widths put the (+,+) and
+// (-,-) points both at d, so that axis has three points with coefficients
+// (1, -2, 1) -- the second difference -- instead of four: 27 evaluations for
+// two equal prisms instead of 64.
+struct AxisTerm {
+    Real point{0.0L};
+    int coefficient{0};
+};
+
+struct AxisTerms {
+    std::array<AxisTerm, 4> terms{};
+    int count{0};
+};
+
+AxisTerms axis_terms(const Real d, const Real source_half,
+                     const Real target_half)
 {
-    const Real source_half[3] = {
-        0.5L * source.hx, 0.5L * source.hy, 0.5L * source.hz};
-    const Real target_half[3] = {
-        0.5L * target.hx, 0.5L * target.hy, 0.5L * target.hz};
-    Real sum = 0.0L;
-    for (int i = 0; i < 2; ++i) {
-        for (int j = 0; j < 2; ++j) {
-            for (int k = 0; k < 2; ++k) {
-                const Real source_corner[3] = {
-                    (i == 0 ? -1.0L : 1.0L) * source_half[0],
-                    (j == 0 ? -1.0L : 1.0L) * source_half[1],
-                    (k == 0 ? -1.0L : 1.0L) * source_half[2]};
-                const Real x1 = displacement.x - target_half[0] -
-                    source_corner[0];
-                const Real x2 = displacement.x + target_half[0] -
-                    source_corner[0];
-                const Real y1 = displacement.y - target_half[1] -
-                    source_corner[1];
-                const Real y2 = displacement.y + target_half[1] -
-                    source_corner[1];
-                const Real z1 = displacement.z - target_half[2] -
-                    source_corner[2];
-                const Real z2 = displacement.z + target_half[2] -
-                    source_corner[2];
-                const Real sign = ((i + j + k) & 1) == 0 ? 1.0L : -1.0L;
-                sum += sign * definite_integral(
-                    primitive, x1, x2, y1, y2, z1, z2,
-                    static_cast<Real>(source.hx),
-                    static_cast<Real>(source.hy),
-                    static_cast<Real>(source.hz));
-            }
-        }
+    AxisTerms axis;
+    if (source_half == target_half) {
+        axis.terms = {{{(d - target_half) - source_half, 1},
+                       {d, -2},
+                       {(d + target_half) + source_half, 1},
+                       {}}};
+        axis.count = 3;
+        return axis;
     }
-    return sum;
+    axis.terms = {{{(d + target_half) - source_half, -1},
+                   {(d + target_half) + source_half, 1},
+                   {(d - target_half) - source_half, 1},
+                   {(d - target_half) + source_half, -1}}};
+    axis.count = 4;
+    return axis;
 }
 
 } // namespace
@@ -295,28 +347,44 @@ PairTensor rectangular_prism_rectangular_prism_tensor(
     // one; the other components follow by cyclic permutation of the axes.
     const Real scale = -1.0L / (four_pi * source_volume * target_volume);
     const Vec3& r = target_minus_source_representative;
-    const Real xx = scale * averaged_prism_sum(F1, r, source, target);
-    const Real yy = scale * averaged_prism_sum(
-        [](const Real x, const Real y, const Real z,
-           const Real a, const Real b, const Real c) {
-            return F1(y, z, x, a, b, c);
-        }, r, source, target);
-    const Real zz = scale * averaged_prism_sum(
-        [](const Real x, const Real y, const Real z,
-           const Real a, const Real b, const Real c) {
-            return F1(z, x, y, a, b, c);
-        }, r, source, target);
-    const Real xy = scale * averaged_prism_sum(F2, r, source, target);
-    const Real yz = scale * averaged_prism_sum(
-        [](const Real x, const Real y, const Real z,
-           const Real a, const Real b, const Real c) {
-            return F2(y, z, x, a, b, c);
-        }, r, source, target);
-    const Real xz = scale * averaged_prism_sum(
-        [](const Real x, const Real y, const Real z,
-           const Real a, const Real b, const Real c) {
-            return F2(z, x, y, a, b, c);
-        }, r, source, target);
+    const AxisTerms axes[3] = {
+        axis_terms(static_cast<Real>(r.x), 0.5L * source.hx, 0.5L * target.hx),
+        axis_terms(static_cast<Real>(r.y), 0.5L * source.hy, 0.5L * target.hy),
+        axis_terms(static_cast<Real>(r.z), 0.5L * source.hz, 0.5L * target.hz)};
+    const Real a = static_cast<Real>(source.hx);
+    const Real b = static_cast<Real>(source.hy);
+    const Real c = static_cast<Real>(source.hz);
+    Real xx = 0.0L;
+    Real yy = 0.0L;
+    Real zz = 0.0L;
+    Real xy = 0.0L;
+    Real yz = 0.0L;
+    Real xz = 0.0L;
+    for (int i = 0; i < axes[0].count; ++i) {
+        for (int j = 0; j < axes[1].count; ++j) {
+            for (int k = 0; k < axes[2].count; ++k) {
+                const AxisTerm& tx = axes[0].terms[static_cast<std::size_t>(i)];
+                const AxisTerm& ty = axes[1].terms[static_cast<std::size_t>(j)];
+                const AxisTerm& tz = axes[2].terms[static_cast<std::size_t>(k)];
+                const Real weight = static_cast<Real>(
+                    tx.coefficient * ty.coefficient * tz.coefficient);
+                const PointPrimitives p =
+                    primitives_at(tx.point, ty.point, tz.point, a, b, c);
+                xx += weight * p.xx;
+                yy += weight * p.yy;
+                zz += weight * p.zz;
+                xy += weight * p.xy;
+                yz += weight * p.yz;
+                xz += weight * p.xz;
+            }
+        }
+    }
+    xx *= scale;
+    yy *= scale;
+    zz *= scale;
+    xy *= scale;
+    yz *= scale;
+    xz *= scale;
     return {static_cast<double>(xx), static_cast<double>(xy),
             static_cast<double>(xz), static_cast<double>(yy),
             static_cast<double>(yz), static_cast<double>(zz)};
