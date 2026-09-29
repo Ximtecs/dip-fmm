@@ -4931,3 +4931,36 @@ copy is the collision guard.
 Remaining: the FP32 point potential rows are 17 B/pair and dominate both the
 dictionary plan's resident size and its warm read; serving FP32 potential from
 positions would change results and is not attempted here.
+
+## Exact operators memoised across chunks; faster prism-prism tensor (2026-09-29)
+
+Question: an Article1 probe measured prism near-field construction at
+0.95-1.5 us/pair, growing with the total pair count, 73-80 % of it in the
+canonical operator phase, although Phase 3C had made construction of a
+4096-body lattice a 1.5 s affair. Per-step trace of one 8 M-pair chunk
+(20^3 bodies, depth one, 16 E-core threads): tensor build 3.4 s, classify
+0.8 s, sort 0.73 s, zero-fill 0.22 s, copy 0.13 s; 421 875 classes per chunk;
+one prism-prism tensor 130 us.
+
+| Finding | Mechanism | Evidence |
+|---|---|---|
+| chunking rebuilt recurring classes | each chunk classified alone; a lattice displacement recurs in every chunk | 8 chunks x 421 875 classes x 130 us = the 27 s of tensor build |
+| lattice displacements not bitwise equal | 1e-9 canonical-grid normalisation; a spacing-1.0 lattice normalises to the same plan | grid 20: 704 969 distinct patterns for 59 319 index differences; recorded, not changed (cache contents) |
+| hashing was not the cost | parallel classification and the dictionary transpose | canonical 44.7 -> 42.7 s only |
+
+| Change | Mechanism | Evidence |
+|---|---|---|
+| memo across chunks | `ExactOperatorMemo` owned by `ChunkBuilder`, shared `build_exact_operator_classes` in all three classified branches, bounded at 2^22 entries | plans and fields SHA-identical; canonical 44.5 -> 18.1 s (20^3 d1), 316 -> 194 s (32^3 d2) |
+| no sort, no copy | target-major chunk expansion, `is_sorted` guard, pair list by value (`p2p_memoised.hpp`) | sort 0.73 s and copy 0.13 s per chunk gone |
+| prism-prism kernel | distance, three atans, six logs once per point for all six components; equal axes merged to (1, -2, 1) weights: 27 points, not 64 | 130 -> 12.8 us (equal), 28.7 us (unequal); FP64 dense fields within 1.1e-15 of |H|max of ee0319a; not bitwise |
+
+Combined on the exact-spacing lattice: 20^3 d1 61.0 -> 25.8 s (canonical
+44.5 -> 11.2 s); 32^3 d2 395 -> 123.5 s (canonical 316 -> 53.5 s). Portable
+-Werror CTest 270/270, CUDA CTest 270/270 with the GPU, pytest 186/1 skipped.
+
+Remaining: the derived dictionary packing is now the largest construction
+phase (55.7 of 123.5 s at 32^3 d2), then classification (about 0.8 s per
+8 M pairs) and the zero-fill of the canonical rows. The prism-point tensor
+still evaluates its transcendentals per component. Making lattice
+displacements bitwise equal after normalisation would cut the classes
+themselves by an order of magnitude but changes cache contents.

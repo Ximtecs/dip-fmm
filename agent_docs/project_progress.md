@@ -1,5 +1,16 @@
 # Project progress
 
+## Near-field construction: memoised exact operators and a faster prism-prism tensor: COMPLETE — 2026-09-29
+
+The chunked near-field build rebuilt every recurring exact operator once per
+chunk; `ChunkBuilder` now carries an `ExactOperatorMemo` across chunks and
+hands each chunk to the builder already in canonical order (no sort, no
+copy), bit-identically. The prism-prism tensor shares its transcendentals
+across the six components and uses 27 points instead of 64 for equal prisms:
+130 -> 12.8 us per tensor, agreeing with the old kernel to FP64 rounding
+(not bitwise). 32^3 prism construction at depth two: 395 -> 124 s. See
+`latest_session_work.md` (2026-09-29) and `performance_optimization.md`.
+
 ## Procedural point kernels on the leaf-normalised displacement: COMPLETE — 2026-09-29
 
 FP32 procedural P2M/L2P returned NaN at p >= 17 on deep trees (underflowing

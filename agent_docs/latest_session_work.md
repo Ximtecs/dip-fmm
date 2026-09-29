@@ -1,5 +1,57 @@
 # Latest session work
 
+## 2026-09-29 — Near-field construction: exact operators memoised across chunks, faster prism-prism tensor
+
+An Article1 construction probe put prism near-field construction at
+0.95-1.5 us per pair, growing with the total pair count, with the canonical
+operator phase at 73-80 % of it. A per-step trace of that phase on 20^3
+bodies at depth one (8 chunks of 8 M pairs) gave, per chunk: tensor build
+3.4 s (64 %), classification 0.8 s, `std::sort` 0.73 s, zero-fill 0.22 s,
+copy 0.13 s, with 421 875 classes per chunk; one exact prism-prism tensor
+cost 130 us (6 components x 64 corner points, each a `long double` hypot,
+three logs and three atans).
+
+Two causes. (1) The chunked build (2026-09-23) classifies each chunk on its
+own, so a displacement class that recurs in every chunk -- every one on a
+lattice -- was rebuilt once per chunk; Phase 3C's monolithic build had
+classified once. (2) Lattice displacements are not bitwise equal after the
+1e-9 canonical-grid normalisation: grid 20 has 704 969 distinct displacement
+bit patterns for 59 319 index differences, and a spacing-1.0 lattice
+normalises to the same plan. (2) is recorded, not changed: the normalised
+coordinates are cache contents under the geometry key.
+
+Fix A, bitwise preserving: `ExactOperatorMemo` and the shared
+`build_exact_operator_classes` loop in `operators/exact_operator_reuse.hpp`,
+used by all three classified branches of the builder; the internal entry
+`build_static_p2p_operator_memoised` (`operators/p2p_memoised.hpp`) takes
+the pair list by value; `ChunkBuilder` owns the memo across chunks and
+expands each chunk target-major so the builder's `is_sorted` guard skips the
+sort. With it: the parallel first-seen classification (thread-count
+independent numbering) and the per-block contiguous transpose in the signed
+dictionary builder. Persisted plans and fields are SHA-identical to ee0319a
+on four cases; canonical phase 44.5 -> 18.1 s (20^3 d1), 316 -> 194 s
+(32^3 d2).
+
+Fix B, a rounding-level change (approved): the prism-prism tensor evaluates
+the distance, three arctangents and six logarithms once per point for all
+six components, and where the two prisms have equal half-width along an axis
+merges that axis's coincident points into the second-difference weights
+(1, -2, 1): 27 points instead of 64 for equal prisms. 130 -> 12.8 us per
+tensor (equal), 28.7 us (unequal). FP64 dense fields agree with ee0319a to
+1.1e-15 of |H|max (5.8e-13 relative on near-cancelling components); FP32
+plans show single-ULP flips. Persisted prism plans therefore differ in their
+last bits under unchanged keys; the Article1 frozen runtimes are unaffected
+and a future frozen runtime builds its own caches.
+
+Combined, exact-spacing lattice, 16 E-core threads: 20^3 d1 construction
+61.0 -> 25.8 s (canonical 44.5 -> 11.2 s); 32^3 d2 395 -> 123.5 s (canonical
+316 -> 53.5 s). The derived dictionary packing (10.5 s / 55.7 s) is now the
+largest phase. Evidence: portable -Werror CTest 270/270; CUDA build (order
+20) CTest 270/270 with the GPU; pytest 186 passed, 1 skipped; the new test
+checks equal prisms' merged sum against the 64-term reference at 4e-12. No
+cache format, cache key, C ABI, Python API, Fortran interface or automatic
+policy changed.
+
 ## 2026-09-29 — Procedural point kernels evaluate on the leaf-normalised displacement
 
 Article1's `external_order17` and `external_order20` returned NaN fields for
