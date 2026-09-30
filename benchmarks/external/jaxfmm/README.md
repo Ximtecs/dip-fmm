@@ -41,6 +41,34 @@ Morton codes, every array float32), with `JAX_DEFAULT_MATMUL_PRECISION=highest`
 so float32 matmuls are not silently run as TF32 (jaxFMM's own architecture
 notes flag this); dip-fmm's FP32 CUDA path uses cuBLAS in default FP32 mode.
 
+## The three tiers
+
+1. **Point to point.** jaxFMM KIFMM (position-derivative dipoles, above) at
+   the lattice sites. dip-fmm's point rows are *reused* from the FMM3D
+   campaign's processed tables (`analysis/collect.py --config`), not
+   re-measured.
+2. **Finite sources, point targets** (the apples-to-apples finite
+   comparison). Uniformly magnetised bodies (touching unit cubes, or the six
+   Kuhn tetrahedra per cell of a conforming mesh) with random unit
+   magnetisation per body. dip-fmm evaluates its exact prism/tetrahedron
+   sources at the body centres; jaxFMM's element path evaluates the same
+   bodies as constant-charge triangles on their unique faces,
+   `sigma = (M_left - M_right) . n` (`jaxfmm_campaign/finite_sources.py`,
+   `jaxfmm_element.py`), at identical centres. The self field is included by
+   both (dip-fmm includes a finite body's own field regardless of the
+   identity map, which only marks point-source self pairs). Every row reports
+   bodies, unique faces, triangles (jaxFMM's true source count) and targets.
+   jaxFMM's accuracy at body centres is set by its near-field Gauss degree
+   (`near_deg`), recorded per row and chosen by achieved error in the
+   preflight.
+3. **Finite sources, finite targets.** dip-fmm prism-to-prism and
+   tetra-to-tetra (cell-averaged H), which jaxFMM cannot express; reported on
+   their own, never inside a point-target ratio.
+
+Both finite tiers score against the solver's FP64 dense plan at 512 sampled
+centres (moments `V * M`), cached by the dip-fmm worker and picked up by the
+jaxFMM worker (or rescored by `collect.py`).
+
 ## Nominal orders are not comparable
 
 KIFMM's `p` is the number of points per cube-face edge of the equivalent
