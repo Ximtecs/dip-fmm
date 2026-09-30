@@ -7,3 +7,5 @@
 {"case_id": "jaxfmm_kifmm_p4_nmax64_lattice10", "status": "success", "device_median_s": 0.00038260059664025904, "host_median_s": 0.0005193985998630524, "relative_l2": 0.0014263459316517283}
 [12:37:04] [2/77] run jaxfmm_kifmm_p4_nmax128_lattice10
 [12:37:08] [2/77] failed jaxfmm_kifmm_p4_nmax128_lattice10 in 3s: {"case_id": "jaxfmm_kifmm_p4_nmax128_lattice10", "status": "failed", "error": "ValueError: max() iterable argument is empty"}
+[13:01:12] [3/77] run jaxfmm_kifmm_p4_nmax256_lattice10
+[13:01:15] [3/77] unsupported jaxfmm_kifmm_p4_nmax256_lattice10 in 3s: {"case_id": "jaxfmm_kifmm_p4_nmax256_lattice10", "status": "unsupported", "error": "ValueError: max() iterable argument is empty"}

@@ -3,7 +3,8 @@
   "description": "First jaxFMM GPU campaign, FP32. Tier 1 (point): jaxFMM KIFMM p=4/6/8 point dipoles at the lattice sites; dip-fmm's point rows are taken from the FMM3D campaign tables, not re-measured. Tier 2 (finite, point targets): uniformly magnetised bodies, dip-fmm exact prism/tetrahedron sources versus jaxFMM constant-charge face triangles, both at the body centres with the self field included. Tier 3 (finite, averaged targets): dip-fmm prism-to-prism and tetra-to-tetra, reported on their own. Arms are paired by achieved accuracy in the analysis, never by nominal order.",
   "spacing": 1.0,
   "grids": [10, 16, 20, 25, 32, 40, 50, 64, 80, 100, 128],
-  "kuhn_grids": [6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64],
+  "kuhn_grids": [5, 8, 10, 16, 20, 25, 32, 40, 50, 64],
+  "kuhn_grids_note": "Kuhn meshes must have a root side of the form 2^a 5^b: dip-fmm snaps normalised coordinates to a 1e-9 grid and touching tetrahedra lose their exact shared vertices otherwise (6- and 12-cell meshes give 20-30 % errors; see README).",
   "state": "random",
   "sample_targets": 512,
   "protocol": {"warmups": 3, "samples": 5, "evaluations": 5},
@@ -16,7 +17,7 @@
       {"tier": "finite", "geometry": "lattice", "role": "finite_point_target",
        "settings": [{"p": 6, "near_deg": 8}, {"p": 8, "near_deg": 10}]},
       {"tier": "finite", "geometry": "kuhn_mesh", "role": "finite_point_target",
-       "grids": [6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64],
+       "grids": [5, 8, 10, 16, 20, 25, 32, 40, 50, 64],
        "settings": [{"p": 6, "near_deg": 8}, {"p": 8, "near_deg": 10}]}
     ],
     "environment": {}
@@ -31,10 +32,10 @@
       {"geometry": "lattice", "source": "body", "target": "body", "order": 6,
        "max_occupancy": 1024, "role": "finite_averaged_target", "dof_per_box": 49},
       {"geometry": "kuhn_mesh", "source": "body", "target": "point", "order": 6,
-       "grids": [6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64],
+       "grids": [5, 8, 10, 16, 20, 25, 32, 40, 50, 64],
        "max_occupancy": 1024, "role": "finite_point_target", "dof_per_box": 49},
       {"geometry": "kuhn_mesh", "source": "body", "target": "body", "order": 6,
-       "grids": [6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64],
+       "grids": [5, 8, 10, 16, 20, 25, 32, 40, 50, 64],
        "max_occupancy": 1024, "role": "finite_averaged_target", "dof_per_box": 49}
     ]
   },
