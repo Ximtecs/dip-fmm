@@ -3,7 +3,8 @@
   "campaign_revision": "jaxfmm_fp32_order6_v1",
   "config": {
     "campaign": "fp32_order6_point_lattice",
-    "description": "First jaxFMM GPU campaign on the FP32 point-dipole lattice with identical point targets. Nominal orders do not match in accuracy (KIFMM p=6 carries 152 equivalent charges per box, dip-fmm order 6 carries 49 spherical coefficients), so every arm runs at every size and the comparison is made at achieved accuracy: jaxFMM KIFMM p=4/6/8 against dip-fmm orders 6 and 10. The dip-fmm prism-to-prism arm is the finite-target companion and is never part of a point-target ratio.",
+    "description": "First jaxFMM GPU campaign, FP32. Point-target comparison on the cubic lattice with identical point targets: jaxFMM KIFMM p=4/6/8 against dip-fmm orders 6 and 10, paired by achieved accuracy (KIFMM p=6 carries 152 equivalent charges per box, dip-fmm order 6 carries 49 spherical coefficients). Finite companions, never part of a point-target ratio: touching unit cubes (prism sources and targets) on the same lattice, and face-touching Kuhn tetrahedra (six per cell) on a conforming mesh, both dip-fmm only in this campaign.",
+    "spacing": 1.0,
     "grids": [
       10,
       16,
@@ -66,6 +67,7 @@
       "depths": null,
       "arms": [
         {
+          "geometry": "lattice",
           "source": "point",
           "target": "point",
           "order": 6,
@@ -73,6 +75,7 @@
           "dof_per_box": 49
         },
         {
+          "geometry": "lattice",
           "source": "point",
           "target": "point",
           "order": 10,
@@ -80,10 +83,33 @@
           "dof_per_box": 121
         },
         {
-          "source": "prism",
-          "target": "prism",
+          "geometry": "lattice",
+          "source": "body",
+          "target": "body",
           "order": 6,
           "body_fill": 1.0,
+          "max_occupancy": 1024,
+          "role": "finite_companion",
+          "dof_per_box": 49
+        },
+        {
+          "geometry": "kuhn_mesh",
+          "source": "body",
+          "target": "body",
+          "order": 6,
+          "grids": [
+            6,
+            8,
+            10,
+            12,
+            16,
+            20,
+            25,
+            32,
+            40,
+            50,
+            64
+          ],
           "max_occupancy": 1024,
           "role": "finite_companion",
           "dof_per_box": 49
@@ -91,7 +117,7 @@
       ]
     }
   },
-  "started_at": "2026-09-30T09:17:00.787794+00:00",
+  "started_at": "2026-09-30T09:47:18.768708+00:00",
   "cdfmm_build": "/home/mihaa/MagTense/dip-fmm/Article1/runtime/dip-fmm/aa9d75fc37a35fa3846619bc0e13a99d4f117b67/build",
   "solver_sha": "aa9d75fc37a35fa3846619bc0e13a99d4f117b67",
   "jaxfmm_python": "/home/mihaa/.conda/envs/jaxfmm/bin/python",
@@ -145,21 +171,27 @@
     ],
     "core_class": "efficiency",
     "omp_num_threads": "8",
-    "pid": 586878
+    "pid": 593690
   },
   "gpu": {
     "gpu_model": "NVIDIA GeForce RTX 5090",
     "driver_version": "595.91.07",
-    "memory_used_mib": 151.0,
+    "memory_used_mib": 657.0,
     "memory_total_mib": 32607.0,
-    "compute_processes": []
+    "compute_processes": [
+      {
+        "pid": 586736,
+        "name": "/home/mihaa/MagTense/dip-fmm/Article1/runtime/dip-fmm/39a59c96136a87243b1e7302e1c231e49ff56755/build/benchmarks/benchmark_uniform_fmm",
+        "used_mib": 500.0
+      }
+    ]
   },
   "cuda_toolkit": "13.2",
   "dipfmm_git": {
     "path": "/home/mihaa/MagTense/dip-fmm/.claude/worktrees/jaxfmm-campaign",
-    "commit": "466073e72ce3fdd6f38409916e4955764edc6f85",
-    "describe": "v0.1.0-153-g466073e",
-    "dirty": false
+    "commit": "3ac307f56146491cab982c3a6f972e4f48c3ca49",
+    "describe": "v0.1.0-154-g3ac307f-dirty",
+    "dirty": true
   },
   "jaxfmm_git": {
     "path": "/home/mihaa/MagTense/dip-fmm/.external/jaxfmm",

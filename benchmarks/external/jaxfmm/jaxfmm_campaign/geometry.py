@@ -124,6 +124,92 @@ def kuhn_mesh(grid: int, spacing: float = 1.0) -> dict[str, np.ndarray]:
 
 
 # --------------------------------------------------------------------------
+# face charges of uniformly magnetised bodies (the jaxFMM source representation)
+# --------------------------------------------------------------------------
+
+#: The six quad faces of a cube as corner-bit indices (same order as _CORNER_OFFSETS),
+#: each split into two triangles.
+_CUBE_FACE_TRIANGLES = (
+    (0, 1, 3), (0, 3, 2),   # x = 0 face (bits a=0)
+    (4, 6, 7), (4, 7, 5),   # x = 1
+    (0, 4, 5), (0, 5, 1),   # y = 0
+    (2, 3, 7), (2, 7, 6),   # y = 1
+    (0, 2, 6), (0, 6, 4),   # z = 0
+    (1, 5, 7), (1, 7, 3),   # z = 1
+)
+
+
+def cube_lattice_mesh(grid: int, spacing: float = 1.0) -> dict[str, np.ndarray]:
+    """Nodes and per-cube corner ids of a ``grid**3`` lattice of touching unit cells."""
+    axis = (np.arange(grid + 1, dtype=np.float64) - 0.5 * grid) * spacing
+    nodes = np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), axis=-1).reshape(-1, 3)
+    node_index = np.arange((grid + 1) ** 3).reshape(grid + 1, grid + 1, grid + 1)
+    cells = np.indices((grid, grid, grid)).reshape(3, -1).T
+    corner_ids = np.empty((len(cells), 8), dtype=np.int64)
+    for index, offset in enumerate(_CORNER_OFFSETS):
+        pick = cells + offset
+        corner_ids[:, index] = node_index[pick[:, 0], pick[:, 1], pick[:, 2]]
+    centres = nodes[corner_ids].mean(axis=1)
+    return {"nodes": nodes, "corner_ids": corner_ids, "centres": centres}
+
+
+def face_triangles(nodes: np.ndarray, body_triangles: np.ndarray, body_centres: np.ndarray) -> dict[str, np.ndarray]:
+    """Unique boundary/interface triangles of a body mesh with left/right adjacency.
+
+    ``body_triangles`` is ``(n_bodies, k, 3)``: the ``k`` triangles bounding each
+    body as node ids. Triangles shared by two bodies are kept once. The returned
+    normal of every triangle points away from its ``left`` body, so the charge of
+    a uniformly magnetised mesh is ``sigma = (M_left - M_right) . n`` with
+    ``M_right = 0`` on the outer boundary (``right == -1``).
+    """
+    n_bodies, k, _ = body_triangles.shape
+    flat = body_triangles.reshape(-1, 3)
+    owner = np.repeat(np.arange(n_bodies), k)
+    key = np.sort(flat, axis=1)
+    _, first, inverse, counts = np.unique(key, axis=0, return_index=True, return_inverse=True, return_counts=True)
+    inverse = inverse.ravel()
+    n_faces = len(first)
+    left = owner[first]
+    right = np.full(n_faces, -1, dtype=np.int64)
+    order = np.argsort(inverse, kind="stable")
+    sorted_faces = inverse[order]
+    sorted_owner = owner[order]
+    second = np.ones(n_faces, dtype=bool)
+    # the second occurrence of each shared face names the right body
+    seen = np.zeros(n_faces, dtype=bool)
+    for face, body in zip(sorted_faces, sorted_owner):
+        if seen[face]:
+            right[face] = body
+        seen[face] = True
+    del second
+    triangles = flat[first]
+    a, b, c = nodes[triangles[:, 0]], nodes[triangles[:, 1]], nodes[triangles[:, 2]]
+    normal = np.cross(b - a, c - a)
+    area = 0.5 * np.linalg.norm(normal, axis=1)
+    normal /= (2.0 * area)[:, None]
+    outward = np.einsum("ij,ij->i", normal, (a + b + c) / 3.0 - body_centres[left]) > 0.0
+    normal[~outward] *= -1.0
+    return {"triangles": triangles, "left": left, "right": right, "normal": normal, "area": area,
+            "shared_count": int(np.count_nonzero(counts == 2))}
+
+
+def body_face_charges(faces: dict[str, np.ndarray], magnetisation: np.ndarray) -> np.ndarray:
+    """Constant face charge per triangle, ``(M_left - M_right) . n``."""
+    right_m = np.where(faces["right"][:, None] >= 0, magnetisation[np.maximum(faces["right"], 0)], 0.0)
+    return np.einsum("ij,ij->i", magnetisation[faces["left"]] - right_m, faces["normal"])
+
+
+def cube_body_triangles(corner_ids: np.ndarray) -> np.ndarray:
+    """``(n_cubes, 12, 3)`` node ids of the twelve boundary triangles of each cube."""
+    return corner_ids[:, np.array(_CUBE_FACE_TRIANGLES)]
+
+
+def tetra_body_triangles(connectivity: np.ndarray) -> np.ndarray:
+    """``(n_tets, 4, 3)`` node ids of the four faces of each tetrahedron."""
+    return connectivity[:, np.array([(0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3)])]
+
+
+# --------------------------------------------------------------------------
 # source states
 # --------------------------------------------------------------------------
 

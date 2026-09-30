@@ -1,17 +1,23 @@
 {
   "campaign": "fp32_order6_point_lattice",
-  "description": "First jaxFMM GPU campaign, FP32. Point-target comparison on the cubic lattice with identical point targets: jaxFMM KIFMM p=4/6/8 against dip-fmm orders 6 and 10, paired by achieved accuracy (KIFMM p=6 carries 152 equivalent charges per box, dip-fmm order 6 carries 49 spherical coefficients). Finite companions, never part of a point-target ratio: touching unit cubes (prism sources and targets) on the same lattice, and face-touching Kuhn tetrahedra (six per cell) on a conforming mesh, both dip-fmm only in this campaign.",
+  "description": "First jaxFMM GPU campaign, FP32. Tier 1 (point): jaxFMM KIFMM p=4/6/8 point dipoles at the lattice sites; dip-fmm's point rows are taken from the FMM3D campaign tables, not re-measured. Tier 2 (finite, point targets): uniformly magnetised bodies, dip-fmm exact prism/tetrahedron sources versus jaxFMM constant-charge face triangles, both at the body centres with the self field included. Tier 3 (finite, averaged targets): dip-fmm prism-to-prism and tetra-to-tetra, reported on their own. Arms are paired by achieved accuracy in the analysis, never by nominal order.",
   "spacing": 1.0,
   "grids": [10, 16, 20, 25, 32, 40, 50, 64, 80, 100, 128],
+  "kuhn_grids": [6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64],
   "state": "random",
   "sample_targets": 512,
   "protocol": {"warmups": 3, "samples": 5, "evaluations": 5},
   "jaxfmm": {
     "engines": ["kifmm"],
     "arms": [
-      {"p": 4, "N_max": [64, 128, 256], "role": "point_target", "dof_per_box": 56},
-      {"p": 6, "N_max": [64, 128, 256], "role": "point_target", "dof_per_box": 152},
-      {"p": 8, "N_max": [64], "role": "point_target", "dof_per_box": 296}
+      {"tier": "point", "p": 4, "N_max": [64, 128, 256], "role": "point_target", "dof_per_box": 56},
+      {"tier": "point", "p": 6, "N_max": [64, 128, 256], "role": "point_target", "dof_per_box": 152},
+      {"tier": "point", "p": 8, "N_max": [64], "role": "point_target", "dof_per_box": 296},
+      {"tier": "finite", "geometry": "lattice", "role": "finite_point_target",
+       "settings": [{"p": 6, "near_deg": 8}, {"p": 8, "near_deg": 10}]},
+      {"tier": "finite", "geometry": "kuhn_mesh", "role": "finite_point_target",
+       "grids": [6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64],
+       "settings": [{"p": 6, "near_deg": 8}, {"p": 8, "near_deg": 10}]}
     ],
     "environment": {}
   },
@@ -20,15 +26,22 @@
     "backend": "cuda_full",
     "depths": null,
     "arms": [
-      {"geometry": "lattice", "source": "point", "target": "point", "order": 6,
-       "role": "point_target", "dof_per_box": 49},
-      {"geometry": "lattice", "source": "point", "target": "point", "order": 10,
-       "role": "point_target", "dof_per_box": 121},
-      {"geometry": "lattice", "source": "body", "target": "body", "order": 6, "body_fill": 1.0,
-       "max_occupancy": 1024, "role": "finite_companion", "dof_per_box": 49},
+      {"geometry": "lattice", "source": "body", "target": "point", "order": 6,
+       "max_occupancy": 1024, "role": "finite_point_target", "dof_per_box": 49},
+      {"geometry": "lattice", "source": "body", "target": "body", "order": 6,
+       "max_occupancy": 1024, "role": "finite_averaged_target", "dof_per_box": 49},
+      {"geometry": "kuhn_mesh", "source": "body", "target": "point", "order": 6,
+       "grids": [6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64],
+       "max_occupancy": 1024, "role": "finite_point_target", "dof_per_box": 49},
       {"geometry": "kuhn_mesh", "source": "body", "target": "body", "order": 6,
        "grids": [6, 8, 10, 12, 16, 20, 25, 32, 40, 50, 64],
-       "max_occupancy": 1024, "role": "finite_companion", "dof_per_box": 49}
+       "max_occupancy": 1024, "role": "finite_averaged_target", "dof_per_box": 49}
     ]
+  },
+  "article1_point_rows": {
+    "description": "dip-fmm point-to-point rows reused from the FMM3D campaign (Article1/results/processed): FP32 CudaFull spherical, lattice datasets, fastest feasible depth per size.",
+    "csv": ["scaling.csv", "external_fmm3d.csv", "external_high_order.csv", "external_order17.csv", "external_order20.csv"],
+    "backend": "cuda_full",
+    "precision": "float32"
   }
 }

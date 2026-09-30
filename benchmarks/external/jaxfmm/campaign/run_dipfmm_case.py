@@ -42,6 +42,7 @@ def finite_reference_path(root: Path, dataset: geometry.Dataset, sample_targets:
         "dataset_sha256": dataset.sha256, "sample_targets": sample_targets, "sample_seed": sample_seed,
         "geometry": geometry_tag, "algorithm": "cdfmm_dense_direct_exact_fp64", "solver": solver_sha,
         "selection": reference.TARGET_SELECTION_VERSION,
+        "moments": "V*M",   # finite bodies carry V * M; the jaxFMM finite worker uses the same key
     }, sort_keys=True)
     return root / ("finite_reference_" + hashlib.sha256(payload.encode()).hexdigest()[:24] + ".npz")
 
@@ -121,6 +122,14 @@ def main() -> int:
         row["dataset"] = {"dataset_id": dataset.dataset_id, "sha256": dataset.sha256,
                           "n_sources": dataset.source_count, "n_targets": dataset.target_count,
                           "counts": dataset.counts, "spec": dataset.spec}
+        if finite:
+            # Finite bodies carry the moment V * M of a unit magnetisation M, so the
+            # same physical bodies are what jaxFMM's face charges describe.
+            import dataclasses
+
+            volume = args.spacing**3 * (args.body_fill**3 if body == "prism" else 1.0 / 6.0)
+            dataset = dataclasses.replace(dataset, moments=volume * dataset.moments)
+            row["dataset"]["moments"] = f"V * M with V = {volume:.6g} per body"
         cache_roots = [Path(p) for p in args.reference_cache] or [HERE.parent / "results" / "reference_cache"]
         reference_started = time.perf_counter()
         if not finite:

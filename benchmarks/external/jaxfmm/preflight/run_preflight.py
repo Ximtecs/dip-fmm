@@ -86,7 +86,14 @@ def main() -> int:
     parser.add_argument("--out", default=None)
     parser.add_argument("--no-lock", action="store_true", help="do not take the machine benchmark lock")
     parser.add_argument("--memory-tolerance-mib", type=float, default=64.0)
+    parser.add_argument("--tier", default="point", choices=("point", "finite"),
+                        help="point: point dipoles; finite: uniformly magnetised bodies (face charges)")
+    parser.add_argument("--kind", default="lattice", choices=("lattice", "kuhn_mesh"),
+                        help="finite tier body family")
+    parser.add_argument("--settings", default="p4,p6,p6n4,p6n6,p8n6", help="finite tier jaxFMM settings")
     args = parser.parse_args()
+    if args.tier == "finite":
+        return finite_gate(args)
 
     stamp = dt.datetime.now().strftime("%Y%m%dT%H%M%S")
     out = Path(args.out) if args.out else HERE / "out" / stamp
@@ -186,6 +193,102 @@ def main() -> int:
         print(f"    {engine}: monopole_potential {rec.get('monopole_potential_relative_l2'):.2e}"
               f"  dipole_potential {rec.get('dipole_potential_vs_direct_relative_l2'):.2e}"
               f"  setup_info {rec.get('setup_info')}")
+    print(f"result: {report['result']}")
+    return 0 if passed else 1
+
+
+def finite_gate(args) -> int:
+    """Finite-source tier: jaxFMM face-charge triangles versus dip-fmm finite bodies."""
+    stamp = dt.datetime.now().strftime("%Y%m%dT%H%M%S")
+    out = Path(args.out) if args.out else HERE / "out" / f"{stamp}_finite_{args.kind}"
+    out.mkdir(parents=True, exist_ok=True)
+    cpus = environment.taskset_list(environment.E_CORE_LOGICAL_CPUS)
+    report: dict = {"stamp": stamp, "tier": "finite", "arguments": vars(args), "efficiency_cores": cpus, "checks": {}}
+    checks = report["checks"]
+    depth = 1 if args.kind == "lattice" else 2
+
+    with locking.exclusive_benchmark_lock(enabled=not args.no_lock):
+        before = environment.gpu_state()
+        report["gpu_before"] = before
+        baseline = before["memory_used_mib"]
+        env = dict(os.environ)
+        env.update(PREFLIGHT_JAX_ENV)
+        env.pop("PYTHONPATH", None)
+        jax_run = run_worker(
+            [args.jaxfmm_python, str(HERE / "preflight_finite_jaxfmm.py"), "--kind", args.kind,
+             "--grid", str(args.grid), "--settings", args.settings, "--out", str(out)],
+            env, out / "jaxfmm_worker.log", cpus)
+        report["jaxfmm_worker"] = jax_run
+        report["gpu_after_jaxfmm"] = wait_for_gpu_baseline(baseline, jax_run["pid"], args.memory_tolerance_mib)
+        env = dict(os.environ)
+        env["PYTHONPATH"] = args.cdfmm_build
+        env["OMP_NUM_THREADS"] = "8"
+        dip_run = run_worker(
+            [args.cdfmm_python, str(HERE / "preflight_finite_dipfmm.py"), "--kind", args.kind,
+             "--grid", str(args.grid), "--order", str(args.order), "--depth", str(depth), "--out", str(out)],
+            env, out / "dipfmm_worker.log", cpus)
+        report["dipfmm_worker"] = dip_run
+        report["gpu_after_dipfmm"] = wait_for_gpu_baseline(baseline, dip_run["pid"], args.memory_tolerance_mib)
+
+    checks["jaxfmm_process_exited_cleanly"] = jax_run["returncode"] == 0
+    checks["dipfmm_process_exited_cleanly"] = dip_run["returncode"] == 0
+    checks["gpu_memory_back_to_baseline"] = (
+        report["gpu_after_jaxfmm"]["returned_to_baseline"] and report["gpu_after_dipfmm"]["returned_to_baseline"]
+        and not report["gpu_after_jaxfmm"]["worker_alive_on_gpu"] and not report["gpu_after_dipfmm"]["worker_alive_on_gpu"])
+    jax_report = json.loads((out / "jaxfmm_finite_report.json").read_text()) if (out / "jaxfmm_finite_report.json").exists() else {}
+    dip_report = json.loads((out / "dipfmm_finite_report.json").read_text()) if (out / "dipfmm_finite_report.json").exists() else {}
+    report["jaxfmm_report"] = jax_report
+    report["dipfmm_report"] = dip_report
+    checks["jaxfmm_default_backend_is_gpu"] = jax_report.get("devices", {}).get("default_backend") == "gpu"
+    checks["same_body_count"] = (jax_report.get("counts", {}).get("bodies") == dip_report.get("counts", {}).get("sources"))
+    checks["uniform_state_total_charge_zero"] = abs(jax_report.get("states", {}).get("uniform_z", {}).get("total_charge", 1.0)) < 1e-9
+    comparisons: dict = {}
+    if (out / "jaxfmm_finite_fields.npz").exists() and (out / "dipfmm_finite_fields.npz").exists():
+        jf = np.load(out / "jaxfmm_finite_fields.npz")
+        df = np.load(out / "dipfmm_finite_fields.npz")
+        checks["identical_target_coordinates"] = bool(np.array_equal(jf["centres"], df["centres"]))
+        for setting, rec in jax_report.get("settings", {}).items():
+            if rec.get("status") != "success":
+                comparisons[setting] = {"status": rec.get("status"), "error": rec.get("error")}
+                continue
+            comparisons[setting] = {}
+            for state in ("uniform_z", "random", "vortex"):
+                H = jf[f"H_{setting}_{state}"]
+                ref = df[f"Href_point_{state}"]
+                comparisons[setting][f"{state}_vs_dense_point"] = relative_l2(H, ref)
+                comparisons[setting][f"{state}_vs_dipfmm_point"] = relative_l2(H, df[f"H_point_{state}"])
+                comparisons[setting][f"{state}_output_dtype"] = rec.get(state, {}).get("output_dtype")
+        for state in ("uniform_z", "random", "vortex"):
+            comparisons[f"dipfmm_point_{state}_vs_dense"] = relative_l2(df[f"H_point_{state}"], df[f"Href_point_{state}"])
+            comparisons[f"dipfmm_body_{state}_vs_dense"] = relative_l2(df[f"H_body_{state}"], df[f"Href_body_{state}"])
+    report["comparisons"] = comparisons
+    gate = 1.0e-2
+    best = None
+    for setting, comp in comparisons.items():
+        if isinstance(comp, dict) and "random_vs_dense_point" in comp:
+            checks[f"jaxfmm_{setting}_random_vs_dense"] = comp["random_vs_dense_point"] < gate
+            checks[f"jaxfmm_{setting}_float32_output"] = comp.get("random_output_dtype") == "float32"
+            if best is None or comp["random_vs_dense_point"] < comparisons[best]["random_vs_dense_point"]:
+                best = setting
+    checks["some_jaxfmm_setting_within_gate"] = best is not None and comparisons[best]["random_vs_dense_point"] < gate
+    checks["dipfmm_point_random_vs_dense"] = comparisons.get("dipfmm_point_random_vs_dense", 1.0) < gate
+    checks["dipfmm_body_random_vs_dense"] = comparisons.get("dipfmm_body_random_vs_dense", 1.0) < gate
+    # the finite-source path is what the campaign will schedule; individual settings may fail the gate
+    decisive = [k for k in checks if not k.startswith("jaxfmm_p")]
+    passed = all(checks[k] for k in decisive)
+    report["result"] = "PASS" if passed else "FAIL"
+    report["best_jaxfmm_setting"] = best
+    (out / "preflight_report.json").write_text(json.dumps(report, indent=2, default=str) + "\n")
+    width = max(len(name) for name in checks)
+    print(f"jaxFMM finite preflight ({args.kind}, grid {args.grid}) ({out})")
+    for name, ok in checks.items():
+        print(f"  [{'x' if ok else ' '}] {name.ljust(width)}")
+    print("  values:")
+    for key, value in comparisons.items():
+        if isinstance(value, dict):
+            print(f"    {key}: " + ", ".join(f"{k}={v:.3e}" if isinstance(v, float) else f"{k}={v}" for k, v in value.items()))
+        else:
+            print(f"    {key:40s} {value:.3e}")
     print(f"result: {report['result']}")
     return 0 if passed else 1
 

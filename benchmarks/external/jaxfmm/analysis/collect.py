@@ -31,6 +31,9 @@ FIELDS = [
 def arm_name(row: dict) -> str:
     case = row.get("case", {})
     if row["framework"] == "jaxfmm":
+        if case.get("engine") == "element":
+            near = f" n{case.get('near_deg')}" if case.get("near_deg") else ""
+            return f"jaxfmm element p{case.get('p')}{near} {case.get('source_geometry')}->point"
         return f"jaxfmm {case.get('engine')} p{case.get('p')}"
     return f"dipfmm {case.get('source_geometry')}->{case.get('target_geometry')} o{case.get('order')}"
 
@@ -80,13 +83,85 @@ def flatten(row: dict) -> dict:
     return flat
 
 
+def rescore_pending(results: Path) -> int:
+    """Score jaxFMM finite rows whose dense reference appeared after they ran."""
+    import numpy as np
+
+    sys.path.insert(0, str(ROOT))
+    from jaxfmm_campaign import reference
+
+    rescored = 0
+    for path in sorted((results / "rows").glob("*.json")):
+        row = json.loads(path.read_text())
+        ref = row.get("reference") or {}
+        if row.get("status") != "success" or ref.get("status") != "pending":
+            continue
+        cache = results / "reference_cache" / ref["key"]
+        field_path = path.with_suffix(".sampled_field.npy")
+        if not cache.is_file() or not field_path.is_file():
+            continue
+        with np.load(cache) as stored:
+            row["error_metrics"] = reference.error_metrics(np.load(field_path), stored["field"])
+        row["reference"].update({"status": "scored", "source": str(cache)})
+        path.write_text(json.dumps(row, indent=2, default=str) + "\n")
+        rescored += 1
+    return rescored
+
+
+def article1_point_rows(config: dict, processed: Path) -> list[dict]:
+    """dip-fmm point-to-point rows reused from the FMM3D campaign's processed tables."""
+    spec = config.get("article1_point_rows")
+    if not spec or not processed.is_dir():
+        return []
+    rows = []
+    for name in spec["csv"]:
+        path = processed / name
+        if not path.is_file():
+            continue
+        with path.open() as stream:
+            for r in csv.DictReader(stream):
+                if r.get("status") != "success" or r.get("framework") != "dipfmm":
+                    continue
+                if r.get("case_backend") != spec["backend"] or r.get("case_precision") != spec["precision"]:
+                    continue
+                if not str(r.get("case_dataset_id", "")).startswith("lattice_"):
+                    continue
+                if r.get("case_source_geometry") not in ("point", "") or r.get("case_target_geometry") not in ("point", ""):
+                    continue
+                grid = int(r["case_grid"])
+                rows.append({
+                    "case_id": f"article1:{name}:{r['case_id']}", "framework": "dipfmm",
+                    "arm": f"dipfmm point->point o{int(r['case_order'])}", "role": "point_target_article1",
+                    "dof_per_box": (int(r["case_order"]) + 1) ** 2, "grid": grid, "n_bodies": grid**3,
+                    "config": f"depth={r.get('case_depth')}", "status": "success",
+                    "setup_seconds": r.get("external_setup_seconds") or None, "first_call_seconds": None,
+                    "jit_seconds_estimate": None, "device_evaluation_median_seconds": None,
+                    "host_evaluation_median_seconds": float(r["external_evaluation_median_seconds"]),
+                    "host_evaluation_min_seconds": r.get("external_evaluation_min_seconds") or None,
+                    "ns_per_body_host": 1e9 * float(r["external_evaluation_median_seconds"]) / grid**3,
+                    "relative_l2": float(r["relative_l2"]) if r.get("relative_l2") else None,
+                    "max_absolute_over_reference_rms": None,
+                    "max_pointwise_relative": float(r["max_pointwise_relative"]) if r.get("max_pointwise_relative") else None,
+                    "gpu_peak_bytes": None, "gpu_persistent_bytes": r.get("persistent_device_bytes") or None,
+                    "gpu_process_mib": None, "near_field": None, "max_depth": None,
+                    "failure_reason": f"solver {r.get('frozen_solver_sha', '')[:12]} from {name}",
+                })
+    return rows
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", type=Path, required=True)
+    parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--article1-processed", type=Path,
+                        default=Path("/home/mihaa/MagTense/dip-fmm/Article1/results/processed"))
     args = parser.parse_args()
+    print(f"rescored {rescore_pending(args.results)} pending jaxFMM finite rows")
     rows = []
     for path in sorted((args.results / "rows").glob("*.json")):
         rows.append(flatten(json.loads(path.read_text())))
+    if args.config:
+        rows.extend(article1_point_rows(json.loads(args.config.read_text()), args.article1_processed))
     rows.sort(key=lambda r: (r["framework"], r["arm"], r["grid"], r["config"]))
     with (args.results / "rows.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=FIELDS)

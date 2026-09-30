@@ -91,15 +91,17 @@ def build_cases(config: dict) -> list[dict]:
     for grid in all_grids:
         for engine in jconf["engines"]:
             for arm in jconf["arms"]:
-                if grid not in arm_grids(arm, config):
+                if grid not in arm_grids(arm, config) or arm.get("tier", "point") != "point":
                     continue
                 for nmax in arm["N_max"]:
                     cases.append({
-                        "framework": "jaxfmm", "geometry": "lattice", "grid": grid, "spacing": spacing,
-                        "n_bodies": grid**3, "engine": engine, "p": arm["p"], "N_max": nmax,
+                        "framework": "jaxfmm", "tier": "point", "geometry": "lattice", "grid": grid,
+                        "spacing": spacing, "n_bodies": grid**3, "engine": engine, "p": arm["p"], "N_max": nmax,
                         "role": arm.get("role", "primary"), "dof_per_box": arm.get("dof_per_box"),
                         "case_id": f"jaxfmm_{engine}_p{arm['p']}_nmax{nmax}_lattice{grid}", "protocol": protocol,
                     })
+        # dip-fmm finite cases come before the jaxFMM finite cases of the same grid so the
+        # FP64 dense reference they cache is available to score the jaxFMM rows.
         for arm in dconf["arms"]:
             if grid not in arm_grids(arm, config):
                 continue
@@ -127,6 +129,23 @@ def build_cases(config: dict) -> list[dict]:
                                 f"{dconf['backend']}_o{order}_d{depth}_{family}{grid}"),
                     "protocol": protocol,
                 })
+        for arm in jconf["arms"]:
+            if grid not in arm_grids(arm, config) or arm.get("tier", "point") != "finite":
+                continue
+            family = arm.get("geometry", "lattice")
+            count = grid**3 * BODIES_PER_CELL[family]
+            body_name = "tetra" if family == "kuhn_mesh" else "prism"
+            for setting in arm["settings"]:
+                tag = f"p{setting['p']}" + (f"n{setting['near_deg']}" if setting.get("near_deg") else "") + \
+                      (f"_nmax{setting['N_max']}" if setting.get("N_max") else "")
+                cases.append({
+                    "framework": "jaxfmm", "tier": "finite", "geometry": family, "grid": grid, "spacing": spacing,
+                    "n_bodies": count, "engine": "element", "p": setting["p"], "near_deg": setting.get("near_deg"),
+                    "N_max": setting.get("N_max"), "theta": setting.get("theta"),
+                    "source_geometry": f"{body_name}_faces", "target_geometry": "point",
+                    "role": arm.get("role", "finite_point_target"), "dof_per_box": None,
+                    "case_id": f"jaxfmm_element_{tag}_{body_name}2point_{family}{grid}", "protocol": protocol,
+                })
     return cases
 
 
@@ -145,6 +164,14 @@ def worker_command(case: dict, config: dict, args, out: Path) -> tuple[list[str]
         env.pop("PYTHONPATH", None)
         env.update(PRODUCTION_JAX_ENV)
         env.update(config.get("jaxfmm", {}).get("environment", {}))
+        if case.get("tier") == "finite":
+            argv = ["taskset", "-c", cpus, args.jaxfmm_python, str(HERE / "run_jaxfmm_finite_case.py"),
+                    "--geometry", case["geometry"], "--spacing", str(case["spacing"]), "--p", str(case["p"]),
+                    "--solver-sha", args.solver_sha, *common]
+            for flag, key in (("--near-deg", "near_deg"), ("--nmax", "N_max"), ("--theta", "theta")):
+                if case.get(key) is not None:
+                    argv += [flag, str(case[key])]
+            return argv, env
         argv = ["taskset", "-c", cpus, args.jaxfmm_python, str(HERE / "run_jaxfmm_case.py"),
                 "--engine", case["engine"], "--p", str(case["p"]), "--nmax", str(case["N_max"]), *common]
         return argv, env
