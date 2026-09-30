@@ -1,0 +1,27 @@
+{
+  "campaign": "fp32_order6_point_lattice",
+  "description": "First jaxFMM GPU campaign: FP32 point-dipole lattice, jaxFMM KIFMM p=6 versus dip-fmm order 6 on identical point targets. Secondary arms (KIFMM p=4/p=8 at the default leaf size, dip-fmm order 10 up to 50^3) exist only to place the achieved accuracies; the dip-fmm prism-to-prism arm is the finite-target companion and is never part of the point-target ratio.",
+  "grids": [10, 16, 20, 25, 32, 40, 50, 64, 80, 100, 128],
+  "state": "random",
+  "sample_targets": 512,
+  "protocol": {"warmups": 3, "samples": 5, "evaluations": 5},
+  "jaxfmm": {
+    "engines": ["kifmm"],
+    "arms": [
+      {"p": 6, "N_max": [64, 128, 256], "role": "primary"},
+      {"p": 4, "N_max": [64], "role": "accuracy_bracket"},
+      {"p": 8, "N_max": [64], "role": "accuracy_bracket"}
+    ],
+    "environment": {}
+  },
+  "dipfmm": {
+    "precision": "float32",
+    "backend": "cuda_full",
+    "depths": null,
+    "arms": [
+      {"source": "point", "target": "point", "order": 6, "role": "primary"},
+      {"source": "point", "target": "point", "order": 10, "max_grid": 50, "role": "accuracy_bracket"},
+      {"source": "prism", "target": "prism", "order": 6, "body_fill": 1.0, "max_occupancy": 1024, "role": "finite_companion"}
+    ]
+  }
+}

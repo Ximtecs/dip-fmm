@@ -1,0 +1,5 @@
+preflight/out/
+results/*/reference_cache/
+results/*/scratch_cache/
+results/*/rows/*.stderr
+__pycache__/
