@@ -32,7 +32,14 @@ OOM_MARKERS = ("resource_exhausted", "out of memory", "cuda_error_out_of_memory"
 
 def classify(error: BaseException) -> str:
     text = f"{type(error).__name__}: {error}".casefold()
-    return "oom" if any(marker in text for marker in OOM_MARKERS) or isinstance(error, MemoryError) else "failed"
+    if any(marker in text for marker in OOM_MARKERS) or isinstance(error, MemoryError):
+        return "oom"
+    # kifmm.setup raises this when the tree has no well-separated box pairs (a
+    # leaf size so large that every box is a neighbour); jaxFMM offers no
+    # direct-sum fallback there, so the configuration is unsupported, not broken.
+    if "max() iterable argument is empty" in text:
+        return "unsupported"
+    return "failed"
 
 
 def main() -> int:
@@ -144,7 +151,7 @@ def main() -> int:
               traceback=traceback.format_exc()[-6000:])
         print(json.dumps({"case_id": args.case_id, "status": status,
                           "error": f"{type(error).__name__}: {str(error)[:300]}"}))
-        return 0 if status == "oom" else 1
+        return 0 if status in ("oom", "unsupported") else 1
 
 
 if __name__ == "__main__":

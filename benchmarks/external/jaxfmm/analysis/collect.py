@@ -44,6 +44,10 @@ def flatten(row: dict) -> dict:
     metrics = row.get("error_metrics", {})
     dataset = row.get("dataset") or {}
     n_bodies = dataset.get("n_sources") or case.get("n_bodies") or grid**3
+    status = row.get("status")
+    if status == "failed" and "max() iterable argument is empty" in (row.get("failure_reason") or ""):
+        status = "unsupported"   # jaxFMM: no well-separated pairs at this leaf size (rows written before the label existed)
+    row = {**row, "status": status}
     flat = {
         "case_id": row.get("case_id"),
         "framework": row.get("framework"),

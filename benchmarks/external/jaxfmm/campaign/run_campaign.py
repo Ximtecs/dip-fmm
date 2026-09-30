@@ -257,7 +257,7 @@ def main() -> int:
         out = args.results / "rows" / f"{case['case_id']}.json"
         if out.exists():
             status = json.loads(out.read_text()).get("status")
-            if status in ("success", "oom") or (status == "failed" and not args.retry_failed):
+            if status in ("success", "oom", "unsupported") or (status == "failed" and not args.retry_failed):
                 log(f"[{index}/{len(cases)}] skip {case['case_id']} ({status})", stream)
                 continue
         argv, env = worker_command(case, config, args, out)

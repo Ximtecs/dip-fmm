@@ -1,3 +1,9 @@
 [11:17:00] campaign fp32_order6_point_lattice (jaxfmm_fp32_order6_v1): 185 cases, results in /home/mihaa/MagTense/dip-fmm/.claude/worktrees/jaxfmm-campaign/benchmarks/external/jaxfmm/results/fp32_order6_point_lattice
 [11:28:07] campaign fp32_order6_point_lattice (jaxfmm_fp32_order6_v1): 218 cases, results in /home/mihaa/MagTense/dip-fmm/.claude/worktrees/jaxfmm-campaign/benchmarks/external/jaxfmm/results/fp32_order6_point_lattice
 [11:47:18] campaign fp32_order6_point_lattice (jaxfmm_fp32_order6_v1): 77 cases, results in /home/mihaa/MagTense/dip-fmm/.claude/worktrees/jaxfmm-campaign/benchmarks/external/jaxfmm/results/fp32_order6_point_lattice
+[12:14:09] GPU idle baseline 148 MiB (NVIDIA GeForce RTX 5090)
+[12:14:09] [1/77] run jaxfmm_kifmm_p4_nmax64_lattice10
+[12:14:19] [1/77] success jaxfmm_kifmm_p4_nmax64_lattice10 in 10s: [jaxfmm] mem_limit auto: 0.1 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p4_nmax64_lattice10", "status": "success", "device_median_s": 0.00038260059664025904, "host_median_s": 0.0005193985998630524, "relative_l2": 0.0014263459316517283}
+[12:37:04] [2/77] run jaxfmm_kifmm_p4_nmax128_lattice10
+[12:37:08] [2/77] failed jaxfmm_kifmm_p4_nmax128_lattice10 in 3s: {"case_id": "jaxfmm_kifmm_p4_nmax128_lattice10", "status": "failed", "error": "ValueError: max() iterable argument is empty"}
