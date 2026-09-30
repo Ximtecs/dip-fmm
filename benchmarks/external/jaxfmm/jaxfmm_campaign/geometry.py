@@ -1,21 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Deterministic point-lattice geometry and source states.
+"""Deterministic benchmark geometries and source states.
 
-These functions reproduce, bit for bit, the conventions of the FMM3D
-comparison campaign (``Article1/scripts/datasets.py``): a centred cubic
-lattice with unit spacing, random unit dipole moments drawn from
-``default_rng(seed + 1)``, coincident sources and targets, and the binary
-``A1DS0002`` container whose SHA256 identifies a dataset. Re-implementing
-them here keeps the jaxFMM campaign self-contained inside the repository
-while letting it prove, by hash, that it evaluates the same data as the
-FMM3D rows.
+Two geometry families, both parametrised by an edge count ``grid`` and a
+``spacing`` and generated from a spec dictionary rather than a fixed list:
+
+* ``lattice``: a centred cubic point lattice of ``grid**3`` bodies. The bodies
+  are point dipoles, or touching cubes of side ``body_fill * spacing`` when
+  the prism body is requested.
+* ``kuhn_mesh``: a conforming, face-touching tetrahedral mesh of the cubic
+  domain, each of the ``grid**3`` cells split into the six Kuhn (Freudenthal)
+  tetrahedra sharing its main diagonal, ``6 * grid**3`` bodies in all.
+
+These reproduce, bit for bit, the conventions of the FMM3D comparison
+campaign (``Article1/scripts/datasets.py``): unit spacing, random unit
+dipole moments from ``default_rng(seed + 1)``, coincident sources and
+targets, tetrahedron vertices stored as offsets from the centroid, and the
+binary ``A1DS0002`` container whose SHA256 identifies a dataset. Every
+dataset reports its counts explicitly (cells, vertices, tetrahedra, faces,
+sources, targets) so a scaling axis is never ambiguous.
 """
 
 from __future__ import annotations
 
 import hashlib
 import struct
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -33,12 +42,16 @@ FIELD_CONVENTION = {
     "potential": "phi(x_i) = sum_j m_j . r_ij / (4*pi*|r_ij|^3), r_ij = x_i - x_j",
     "field": "H = -grad(phi)",
     "field_closed_form": "H_i = (1/(4*pi)) * sum_j [ 3 r_ij (m_j.r_ij)/|r_ij|^5 - m_j/|r_ij|^3 ]",
-    "moment_units": "dimensionless unit vectors",
+    "moment_units": "dimensionless unit vectors (finite bodies: moment per body, not per volume)",
     "coordinate_scale": "lattice spacing 1.0",
     "self_interaction": "excluded by explicit index identity, never by coordinate equality",
     "primary_output": "H",
 }
 
+
+# --------------------------------------------------------------------------
+# point lattice
+# --------------------------------------------------------------------------
 
 def regular_lattice(grid: int, spacing: float = 1.0) -> np.ndarray:
     """Centred lattice of ``grid**3`` points in C order (x slowest)."""
@@ -46,6 +59,73 @@ def regular_lattice(grid: int, spacing: float = 1.0) -> np.ndarray:
     x, y, z = np.meshgrid(axis, axis, axis, indexing="ij")
     return np.column_stack((x.ravel(), y.ravel(), z.ravel()))
 
+
+# --------------------------------------------------------------------------
+# Kuhn tetrahedral mesh
+# --------------------------------------------------------------------------
+
+def _kuhn_corner_indices() -> list[tuple[int, int, int, int]]:
+    """Six congruent tetrahedra of the unit cube sharing the (0,0,0)-(1,1,1) diagonal."""
+    def bit(corner: tuple[int, int, int]) -> int:
+        return corner[0] * 4 + corner[1] * 2 + corner[2]
+
+    cells: list[tuple[int, int, int, int]] = []
+    for permutation in ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)):
+        first = [0, 0, 0]
+        first[permutation[0]] = 1
+        second = list(first)
+        second[permutation[1]] = 1
+        cells.append((bit((0, 0, 0)), bit(tuple(first)), bit(tuple(second)), bit((1, 1, 1))))
+    return cells
+
+
+KUHN_TETRAHEDRA = _kuhn_corner_indices()
+_CORNER_OFFSETS = np.array([[a, b, c] for a in (0, 1) for b in (0, 1) for c in (0, 1)], dtype=np.int64)
+
+
+def kuhn_mesh(grid: int, spacing: float = 1.0) -> dict[str, np.ndarray]:
+    """Face-touching Kuhn mesh of a ``grid**3``-cell cube, centred at the origin.
+
+    Returns the node coordinates ``(n_nodes, 3)``, the connectivity
+    ``(6 * grid**3, 4)`` into the nodes, the per-tetrahedron centroids and the
+    vertex offsets from the centroid ``(n_tets, 4, 3)`` (the ``Tetrahedron``
+    record convention), plus the unique face count.
+    """
+    axis = (np.arange(grid + 1, dtype=np.float64) - 0.5 * grid) * spacing
+    nodes = np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), axis=-1)
+    cells = np.indices((grid, grid, grid)).reshape(3, -1).T
+    node_index = np.arange((grid + 1) ** 3).reshape(grid + 1, grid + 1, grid + 1)
+    corner_ids = np.empty((len(cells), 8), dtype=np.int64)
+    corners = np.empty((len(cells), 8, 3), dtype=np.float64)
+    for index, offset in enumerate(_CORNER_OFFSETS):
+        pick = cells + offset
+        corner_ids[:, index] = node_index[pick[:, 0], pick[:, 1], pick[:, 2]]
+        corners[:, index, :] = nodes[pick[:, 0], pick[:, 1], pick[:, 2]]
+    connectivity = np.empty((len(cells) * 6, 4), dtype=np.int64)
+    vertices = np.empty((len(cells) * 6, 4, 3), dtype=np.float64)
+    for slot, quad in enumerate(KUHN_TETRAHEDRA):
+        connectivity[slot::6] = corner_ids[:, list(quad)]
+        vertices[slot::6] = corners[:, list(quad), :]
+    centroids = vertices.mean(axis=1)
+    faces = np.concatenate([
+        np.sort(connectivity[:, [0, 1, 2]], axis=1),
+        np.sort(connectivity[:, [0, 1, 3]], axis=1),
+        np.sort(connectivity[:, [0, 2, 3]], axis=1),
+        np.sort(connectivity[:, [1, 2, 3]], axis=1),
+    ])
+    n_faces = int(len(np.unique(faces, axis=0)))
+    return {
+        "nodes": nodes.reshape(-1, 3),
+        "connectivity": connectivity,
+        "centroids": centroids,
+        "vertex_offsets": vertices - centroids[:, None, :],
+        "n_faces": n_faces,
+    }
+
+
+# --------------------------------------------------------------------------
+# source states
+# --------------------------------------------------------------------------
 
 def unit_dipole_moments(count: int, seed: int) -> np.ndarray:
     """Deterministic random unit-vector dipole moments (seed + 1 generator)."""
@@ -80,19 +160,24 @@ def magnetisation(positions: np.ndarray, state: str, seed: int) -> np.ndarray:
     raise ValueError(f"unknown magnetisation state: {state}")
 
 
+# --------------------------------------------------------------------------
+# dataset
+# --------------------------------------------------------------------------
+
 @dataclass(frozen=True)
-class LatticeDataset:
-    """One point-lattice problem: coincident sources and targets."""
+class Dataset:
+    """One problem: coincident sources and targets with an explicit body kind."""
 
     dataset_id: str
-    grid: int
-    spacing: float
-    seed: int
-    state: str
+    spec: dict[str, Any]
     positions: np.ndarray
     moments: np.ndarray
     identity_map: np.ndarray
-    sha256: str
+    body: str                      # point | prism | tetra
+    body_side: float | None        # prism full side length
+    tetrahedra: np.ndarray | None  # (N, 4, 3) vertex offsets from the centroid
+    counts: dict[str, int] = field(default_factory=dict)
+    sha256: str = ""
 
     @property
     def source_count(self) -> int:
@@ -102,22 +187,28 @@ class LatticeDataset:
     def target_count(self) -> int:
         return int(len(self.positions))
 
-    def spec(self) -> dict[str, Any]:
-        return {
-            "kind": "lattice",
-            "grid": self.grid,
-            "spacing": self.spacing,
-            "seed": self.seed,
-            "state": self.state,
-        }
+    @property
+    def spacing(self) -> float:
+        return float(self.spec["spacing"])
 
 
-def container_bytes(positions: np.ndarray, moments: np.ndarray) -> bytes:
-    """Serialise a coincident point dataset in the ``A1DS0002`` layout."""
+def container_bytes(positions: np.ndarray, moments: np.ndarray, prisms: np.ndarray | None,
+                    tetrahedra: np.ndarray | None) -> bytes:
+    """Serialise a coincident dataset in the ``A1DS0002`` layout (flags: identity,
+    source prisms, target prisms, source tetrahedra, target tetrahedra)."""
     positions = np.ascontiguousarray(positions, dtype="<f8")
     moments = np.ascontiguousarray(moments, dtype="<f8")
     identity = np.arange(len(positions), dtype="<i4")
-    flags = 1  # identity map present, no finite-body blocks
+    flags = 1
+    blocks = []
+    if prisms is not None:
+        flags |= 2 | 4
+        block = np.ascontiguousarray(prisms, dtype="<f8").reshape(-1, 3)
+        blocks += [block, block]
+    if tetrahedra is not None:
+        flags |= 8 | 16
+        block = np.ascontiguousarray(tetrahedra, dtype="<f8").reshape(-1, 12)
+        blocks += [block, block]
     parts = [
         DATASET_MAGIC,
         struct.pack("<QQQ", len(positions), len(positions), flags),
@@ -125,25 +216,66 @@ def container_bytes(positions: np.ndarray, moments: np.ndarray) -> bytes:
         moments.tobytes(order="C"),
         positions.tobytes(order="C"),
         identity.tobytes(order="C"),
-    ]
+    ] + [block.tobytes(order="C") for block in blocks]
     return b"".join(parts)
 
 
-def lattice_dataset(grid: int, *, spacing: float = 1.0, seed: int = DEFAULT_SEED,
-                    state: str = "random") -> LatticeDataset:
-    """Build the lattice dataset ``lattice_<grid>`` and hash its container."""
-    positions = regular_lattice(grid, spacing)
+def build_dataset(spec: dict[str, Any]) -> Dataset:
+    """Build a dataset from its spec.
+
+    Spec keys: ``kind`` (``lattice`` or ``kuhn_mesh``), ``grid``, ``spacing``
+    (default 1.0), ``seed`` (default 314159), ``state`` (default ``random``),
+    ``body`` (``point``/``prism`` for a lattice, ``tetra`` for a mesh) and
+    ``body_fill`` (prism side as a fraction of the spacing, default 1.0).
+    """
+    kind = spec.get("kind", "lattice")
+    grid = int(spec["grid"])
+    spacing = float(spec.get("spacing", 1.0))
+    seed = int(spec.get("seed", DEFAULT_SEED))
+    state = spec.get("state", "random")
+    full = {"kind": kind, "grid": grid, "spacing": spacing, "seed": seed, "state": state}
+    if kind == "lattice":
+        body = spec.get("body", "point")
+        positions = regular_lattice(grid, spacing)
+        counts = {"nx": grid, "ny": grid, "nz": grid, "cells": grid**3, "vertices": (grid + 1) ** 3,
+                  "tetrahedra": 0, "faces": 0, "sources": grid**3, "targets": grid**3}
+        prisms = None
+        tetrahedra = None
+        body_side = None
+        if body == "prism":
+            body_fill = float(spec.get("body_fill", 1.0))
+            body_side = body_fill * spacing
+            prisms = np.full((len(positions), 3), body_side)
+            full["body_fill"] = body_fill
+            dataset_id = f"prism_cells_{grid}" if body_fill == 1.0 else f"prism_fill{body_fill}_{grid}"
+        elif body == "point":
+            dataset_id = f"lattice_{grid}"
+        else:
+            raise ValueError(f"lattice body must be point or prism, not {body}")
+    elif kind == "kuhn_mesh":
+        body = "tetra"
+        mesh = kuhn_mesh(grid, spacing)
+        positions = mesh["centroids"]
+        tetrahedra = mesh["vertex_offsets"]
+        prisms = None
+        body_side = None
+        counts = {"nx": grid, "ny": grid, "nz": grid, "cells": grid**3, "vertices": int(len(mesh["nodes"])),
+                  "tetrahedra": int(len(tetrahedra)), "faces": mesh["n_faces"],
+                  "sources": int(len(positions)), "targets": int(len(positions))}
+        dataset_id = f"tetra_mesh_{grid}"
+    else:
+        raise ValueError(f"unknown geometry kind: {kind}")
+    full["body"] = body
+    if state != "random":
+        dataset_id += f"_{state}"
     moments = magnetisation(positions, state, seed)
-    digest = hashlib.sha256(container_bytes(positions, moments)).hexdigest()
-    suffix = "" if state == "random" else f"_{state}"
-    return LatticeDataset(
-        dataset_id=f"lattice_{grid}{suffix}",
-        grid=grid,
-        spacing=spacing,
-        seed=seed,
-        state=state,
-        positions=positions,
-        moments=moments,
-        identity_map=np.arange(len(positions), dtype=np.int32),
-        sha256=digest,
-    )
+    digest = hashlib.sha256(container_bytes(positions, moments, prisms, tetrahedra)).hexdigest()
+    return Dataset(dataset_id=dataset_id, spec=full, positions=positions, moments=moments,
+                   identity_map=np.arange(len(positions), dtype=np.int32), body=body,
+                   body_side=body_side, tetrahedra=tetrahedra, counts=counts, sha256=digest)
+
+
+def lattice_dataset(grid: int, *, spacing: float = 1.0, seed: int = DEFAULT_SEED,
+                    state: str = "random") -> Dataset:
+    """The point lattice ``lattice_<grid>`` (convenience wrapper)."""
+    return build_dataset({"kind": "lattice", "grid": grid, "spacing": spacing, "seed": seed, "state": state})

@@ -103,7 +103,7 @@ def main() -> int:
         dataset = geometry.lattice_dataset(args.grid, state=args.state)
         row["dataset"] = {"dataset_id": dataset.dataset_id, "sha256": dataset.sha256,
                           "n_sources": dataset.source_count, "n_targets": dataset.target_count,
-                          "spec": dataset.spec()}
+                          "counts": dataset.counts, "spec": dataset.spec}
         cache_roots = [Path(p) for p in args.reference_cache] or [HERE.parent / "results" / "reference_cache"]
         reference_started = time.perf_counter()
         ref = reference.load_or_compute_reference(

@@ -70,38 +70,61 @@ def log(message: str, stream) -> None:
     stream.flush()
 
 
+#: Bodies per lattice cell for each geometry family (the scaling axis is the
+#: body count, never the cell count).
+BODIES_PER_CELL = {"lattice": 1, "kuhn_mesh": 6}
+
+
+def arm_grids(arm: dict, config: dict) -> list[int]:
+    """Edge counts for an arm: its own list, else the campaign list, capped by max_grid."""
+    grids = arm.get("grids") or config["grids"]
+    return [g for g in grids if not arm.get("max_grid") or g <= arm["max_grid"]]
+
+
 def build_cases(config: dict) -> list[dict]:
     cases: list[dict] = []
     protocol = config["protocol"]
-    for grid in config["grids"]:
-        count = grid**3
-        jconf = config["jaxfmm"]
+    spacing = float(config.get("spacing", 1.0))
+    jconf = config["jaxfmm"]
+    dconf = config["dipfmm"]
+    all_grids = sorted({g for arm in jconf["arms"] + dconf["arms"] for g in arm_grids(arm, config)})
+    for grid in all_grids:
         for engine in jconf["engines"]:
             for arm in jconf["arms"]:
-                if arm.get("max_grid") and grid > arm["max_grid"]:
+                if grid not in arm_grids(arm, config):
                     continue
                 for nmax in arm["N_max"]:
                     cases.append({
-                        "framework": "jaxfmm", "grid": grid, "engine": engine, "p": arm["p"], "N_max": nmax,
+                        "framework": "jaxfmm", "geometry": "lattice", "grid": grid, "spacing": spacing,
+                        "n_bodies": grid**3, "engine": engine, "p": arm["p"], "N_max": nmax,
                         "role": arm.get("role", "primary"), "dof_per_box": arm.get("dof_per_box"),
-                        "case_id": f"jaxfmm_{engine}_p{arm['p']}_nmax{nmax}_grid{grid}", "protocol": protocol,
+                        "case_id": f"jaxfmm_{engine}_p{arm['p']}_nmax{nmax}_lattice{grid}", "protocol": protocol,
                     })
-        dconf = config["dipfmm"]
         for arm in dconf["arms"]:
-            if arm.get("max_grid") and grid > arm["max_grid"]:
+            if grid not in arm_grids(arm, config):
                 continue
+            family = arm.get("geometry", "lattice")
+            count = grid**3 * BODIES_PER_CELL[family]
             order = arm["order"]
-            depths = dconf.get("depths") or feasible_depths(
+            depths = arm.get("depths") or dconf.get("depths") or feasible_depths(
                 count, maximum_occupancy=arm.get("max_occupancy", 4096))
+            source_body = arm.get("source", "point")
+            target_body = arm.get("target", "point")
+            body_name = "tetra" if family == "kuhn_mesh" else "prism"
+            source_name = "point" if source_body == "point" else body_name
+            target_name = "point" if target_body == "point" else body_name
             for depth in depths:
                 cases.append({
-                    "framework": "dipfmm", "grid": grid, "order": order, "depth": depth,
+                    "framework": "dipfmm", "geometry": family, "grid": grid, "spacing": spacing,
+                    "n_bodies": count, "order": order, "depth": depth,
                     "precision": dconf["precision"], "backend": dconf["backend"],
-                    "source_geometry": arm["source"], "target_geometry": arm["target"],
+                    "source_body": "point" if source_body == "point" else "body",
+                    "target_body": "point" if target_body == "point" else "body",
+                    "source_geometry": source_name, "target_geometry": target_name,
                     "body_fill": arm.get("body_fill", 1.0), "role": arm.get("role", "primary"),
                     "dof_per_box": arm.get("dof_per_box"),
-                    "case_id": (f"dipfmm_{arm['source']}2{arm['target']}_{dconf['precision']}_"
-                                f"{dconf['backend']}_o{order}_d{depth}_grid{grid}"),
+                    "case_id": (f"dipfmm_{source_name}2{target_name}_{dconf['precision']}_"
+                                f"{dconf['backend']}_o{order}_d{depth}_{family}{grid}"),
                     "protocol": protocol,
                 })
     return cases
@@ -130,9 +153,10 @@ def worker_command(case: dict, config: dict, args, out: Path) -> tuple[list[str]
     env.update(DIPFMM_THREAD_ENV)
     env["CDFMM_CACHE_DIR"] = str(args.results / "scratch_cache")
     argv = ["taskset", "-c", cpus, args.cdfmm_python, str(HERE / "run_dipfmm_case.py"),
+            "--geometry", case["geometry"], "--spacing", str(case["spacing"]),
             "--order", str(case["order"]), "--depth", str(case["depth"]),
             "--precision", case["precision"], "--backend", case["backend"],
-            "--source-geometry", case["source_geometry"], "--target-geometry", case["target_geometry"],
+            "--source-body", case["source_body"], "--target-body", case["target_body"],
             "--body-fill", str(case["body_fill"]), "--solver-sha", args.solver_sha, *common]
     return argv, env
 
@@ -241,7 +265,8 @@ def main() -> int:
                 "stderr_tail": stderr_text[-4000:],
             }, indent=2, default=str) + "\n")
         row = json.loads(out.read_text())
-        row.setdefault("case", {}).update({"role": case.get("role"), "dof_per_box": case.get("dof_per_box")})
+        row.setdefault("case", {}).update({"role": case.get("role"), "dof_per_box": case.get("dof_per_box"),
+                                           "geometry": case.get("geometry"), "n_bodies": case.get("n_bodies")})
         row["orchestrator"] = {"returncode": returncode, "wall_seconds": elapsed,
                                "gpu_before": before, "gpu_after": after, "stdout": stdout[-2000:]}
         out.write_text(json.dumps(row, indent=2, default=str) + "\n")

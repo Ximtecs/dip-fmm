@@ -4,8 +4,8 @@
 Point-target cases use point-dipole sources on the FP32 ``CudaFull`` backend
 with the production FP32 point policy stated explicitly: position-based
 ``PointGeometry`` P2P, procedural point expansions, general layout, spherical
-basis. Finite cases use touching unit cubes (``body_fill = 1``) as sources and
-targets, the ``prism_cells`` geometry of the FMM3D campaign's finite arms.
+basis. Finite cases use the dataset's bodies (touching cubes of the lattice,
+or the face-touching Kuhn tetrahedra of the mesh) as sources and/or targets.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 
+from .geometry import Dataset
 from .timing import TimingProtocol, TimingSummary
 
 
@@ -38,10 +39,32 @@ def _enum(cdfmm, enum_name: str, value: str):
     return getattr(getattr(cdfmm, enum_name), value.upper())
 
 
-def make_options(cdfmm, *, order: int, depth: int, precision: str = "float32",
-                 backend: str = "cuda_full", source_geometry: str = "point",
-                 target_geometry: str = "point", body_side: float | None = None,
+def _uniform(array: np.ndarray) -> bool:
+    return bool(np.all(array == array[0]))
+
+
+def prism_records(cdfmm, dataset: Dataset) -> list:
+    """One ``RectangularPrism`` record when every body is the same cube."""
+    side = dataset.body_side
+    return [cdfmm.RectangularPrism(side, side, side)]
+
+
+def tetrahedron_records(cdfmm, dataset: Dataset) -> list:
+    """``Tetrahedron`` records: one when all bodies coincide, else one per body."""
+    array = dataset.tetrahedra
+    if _uniform(array):
+        return [cdfmm.Tetrahedron(np.ascontiguousarray(array[0], dtype=np.float64))]
+    return [cdfmm.Tetrahedron(np.ascontiguousarray(row, dtype=np.float64)) for row in array]
+
+
+def make_options(cdfmm, dataset: Dataset, *, order: int, depth: int, precision: str = "float32",
+                 backend: str = "cuda_full", source_body: str = "point", target_body: str = "point",
                  timing_level: str = "off"):
+    """Build ``UniformFmmOptions`` for the dataset's bodies.
+
+    ``source_body``/``target_body`` are ``point`` or ``body``; ``body`` takes
+    the dataset's finite body (prism or tetrahedron).
+    """
     options = cdfmm.UniformFmmOptions()
     options.backend = _enum(cdfmm, "ExecutionBackend", backend)
     options.precision = _enum(cdfmm, "StaticPrecision", precision)
@@ -50,29 +73,38 @@ def make_options(cdfmm, *, order: int, depth: int, precision: str = "float32",
     tree = options.tree
     tree.max_level = int(depth)
     options.tree = tree
-    options.p2p_packing = cdfmm.P2PExecutionPacking.POINT_GEOMETRY if source_geometry == "point" \
-        and target_geometry == "point" else cdfmm.P2PExecutionPacking.AUTO
-    options.point_expansion_execution = cdfmm.PointExpansionExecution.PROCEDURAL if source_geometry == "point" \
-        and target_geometry == "point" else cdfmm.PointExpansionExecution.AUTO
+    point_pair = source_body == "point" and target_body == "point"
+    options.p2p_packing = cdfmm.P2PExecutionPacking.POINT_GEOMETRY if point_pair \
+        else cdfmm.P2PExecutionPacking.AUTO
+    options.point_expansion_execution = cdfmm.PointExpansionExecution.PROCEDURAL if point_pair \
+        else cdfmm.PointExpansionExecution.AUTO
     options.spatial_layout = cdfmm.SpatialLayout.GENERAL
     options.timing_level = _enum(cdfmm, "TimingLevel", timing_level)
     options.enable_cache = False
-    if source_geometry == "point":
+    options.source_sizes = []
+    options.target_sizes = []
+    options.source_tetrahedra = []
+    options.target_tetrahedra = []
+    if source_body == "point":
         options.source_geometry = cdfmm.SourceGeometry.POINT_DIPOLE
-        options.source_sizes = []
-    elif source_geometry == "prism":
+    elif dataset.body == "prism":
         options.source_geometry = cdfmm.SourceGeometry.RECTANGULAR_PRISM
-        options.source_sizes = [cdfmm.RectangularPrism(body_side, body_side, body_side)]
+        options.source_sizes = prism_records(cdfmm, dataset)
+    elif dataset.body == "tetra":
+        options.source_geometry = cdfmm.SourceGeometry.TETRAHEDRON
+        options.source_tetrahedra = tetrahedron_records(cdfmm, dataset)
     else:
-        raise ValueError(f"unsupported source geometry: {source_geometry}")
-    if target_geometry == "point":
+        raise ValueError(f"dataset has no finite body for source_body={source_body}")
+    if target_body == "point":
         options.target_geometry = cdfmm.TargetGeometry.POINT
-        options.target_sizes = []
-    elif target_geometry == "prism":
+    elif dataset.body == "prism":
         options.target_geometry = cdfmm.TargetGeometry.RECTANGULAR_PRISM
-        options.target_sizes = [cdfmm.RectangularPrism(body_side, body_side, body_side)]
+        options.target_sizes = prism_records(cdfmm, dataset)
+    elif dataset.body == "tetra":
+        options.target_geometry = cdfmm.TargetGeometry.TETRAHEDRON
+        options.target_tetrahedra = tetrahedron_records(cdfmm, dataset)
     else:
-        raise ValueError(f"unsupported target geometry: {target_geometry}")
+        raise ValueError(f"dataset has no finite body for target_body={target_body}")
     return options
 
 
@@ -88,6 +120,8 @@ def describe_options(options) -> dict[str, Any]:
         "spatial_layout": str(options.spatial_layout).split(".")[-1],
         "source_geometry": str(options.source_geometry).split(".")[-1],
         "target_geometry": str(options.target_geometry).split(".")[-1],
+        "source_records": len(options.source_sizes) + len(options.source_tetrahedra),
+        "target_records": len(options.target_sizes) + len(options.target_tetrahedra),
         "timing_level": str(options.timing_level).split(".")[-1],
         "enable_cache": bool(options.enable_cache),
     }
@@ -95,13 +129,13 @@ def describe_options(options) -> dict[str, Any]:
 
 def warm_cuda_context(cdfmm) -> float:
     """Build and run a throw-away CUDA plan so context creation is not timed."""
+    from .geometry import lattice_dataset
+
     started = time.perf_counter()
-    rng = np.random.default_rng(0)
-    positions = rng.uniform(-1.0, 1.0, size=(512, 3))
-    moments = rng.normal(size=(512, 3))
-    options = make_options(cdfmm, order=4, depth=2)
-    plan = cdfmm.UniformFmm(positions, positions, options)
-    plan.evaluate(moments, target_source_indices=np.arange(512, dtype=np.int32))
+    dataset = lattice_dataset(8)
+    options = make_options(cdfmm, dataset, order=4, depth=2)
+    plan = cdfmm.UniformFmm(dataset.positions, dataset.positions, options)
+    plan.evaluate(dataset.moments, target_source_indices=dataset.identity_map)
     del plan
     return time.perf_counter() - started
 
@@ -157,9 +191,8 @@ def time_plan(plan, moments: np.ndarray, identities: np.ndarray | None,
     return summary, np.asarray(result, dtype=np.float64), first_call
 
 
-def finite_dense_reference(cdfmm, positions: np.ndarray, moments: np.ndarray,
-                           sample_indices: np.ndarray, body_side: float,
-                           source_geometry: str, target_geometry: str,
+def finite_dense_reference(cdfmm, dataset: Dataset, sample_indices: np.ndarray,
+                           source_body: str, target_body: str,
                            pairs_per_block: float = 2.0e7) -> np.ndarray:
     """Exact FP64 finite field at the sampled targets from the solver's dense plan.
 
@@ -167,25 +200,40 @@ def finite_dense_reference(cdfmm, positions: np.ndarray, moments: np.ndarray,
     sampled targets are processed in blocks sized from the source count, the
     same budget the FMM3D campaign's finite reference uses.
     """
-    prism = cdfmm.RectangularPrism(body_side, body_side, body_side)
-    source_kind = cdfmm.SourceGeometry.RECTANGULAR_PRISM if source_geometry == "prism" \
-        else cdfmm.SourceGeometry.POINT_DIPOLE
-    target_kind = cdfmm.TargetGeometry.RECTANGULAR_PRISM if target_geometry == "prism" \
-        else cdfmm.TargetGeometry.POINT
+    positions = dataset.positions
+    source_kind = cdfmm.SourceGeometry.POINT_DIPOLE
+    target_kind = cdfmm.TargetGeometry.POINT
+    source_sizes: list = []
+    target_sizes: list = []
+    source_tets: list = []
+    target_tets: list = []
+    if source_body != "point":
+        if dataset.body == "prism":
+            source_kind, source_sizes = cdfmm.SourceGeometry.RECTANGULAR_PRISM, prism_records(cdfmm, dataset)
+        else:
+            source_kind, source_tets = cdfmm.SourceGeometry.TETRAHEDRON, tetrahedron_records(cdfmm, dataset)
     count = len(positions)
     block = max(1, int(pairs_per_block // max(count, 1)))
     field = np.zeros((len(sample_indices), 3), dtype=np.float64)
     for start in range(0, len(sample_indices), block):
         stop = min(start + block, len(sample_indices))
         indices = np.asarray(sample_indices[start:stop], dtype=np.int64)
+        if target_body != "point":
+            if dataset.body == "prism":
+                target_kind, target_sizes = cdfmm.TargetGeometry.RECTANGULAR_PRISM, prism_records(cdfmm, dataset)
+            else:
+                target_kind = cdfmm.TargetGeometry.TETRAHEDRON
+                records = tetrahedron_records(cdfmm, dataset)
+                target_tets = records if len(records) == 1 else [records[int(i)] for i in indices]
         plan = cdfmm.DenseDirectPlan(
             positions, positions[indices],
             source_geometry=source_kind, target_geometry=target_kind,
-            source_sizes=[prism] if source_geometry == "prism" else [],
-            target_sizes=[prism] if target_geometry == "prism" else [],
+            source_sizes=source_sizes, target_sizes=target_sizes,
             target_source_indices=[int(i) for i in indices],
+            static_precision="float64",
+            source_tetrahedra=source_tets, target_tetrahedra=target_tets,
         )
-        result = plan.evaluate(moments)
+        result = plan.evaluate(dataset.moments)
         field[start:stop] = np.asarray(result["H"] if isinstance(result, dict) else result, dtype=np.float64)
         del plan
     return field

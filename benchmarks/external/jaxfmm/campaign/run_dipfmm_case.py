@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: Apache-2.0
 """One dip-fmm campaign case in a fresh process (``cdfmm`` environment).
 
-Point cases score against the shared FP64 direct reference; finite
-(prism-to-prism) cases score against the solver's own exact FP64 dense plan
-evaluated at the same sampled targets, as the FMM3D campaign's finite arms do.
+Point cases score against the shared FP64 direct reference; finite cases
+(prism or tetrahedron sources and/or targets) score against the solver's own
+exact FP64 dense plan evaluated at the same sampled targets, as the FMM3D
+campaign's finite arms do. The geometry family, edge count and body fill
+come from the command line, never from code.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import sys
 import time
@@ -33,10 +36,8 @@ def classify(error: BaseException) -> str:
     return "oom" if any(marker in text for marker in OOM_MARKERS) or isinstance(error, MemoryError) else "failed"
 
 
-def finite_reference_path(root: Path, dataset: geometry.LatticeDataset, sample_targets: int,
-                          sample_seed: int, geometry_tag: str, solver_sha: str) -> Path:
-    import hashlib
-
+def finite_reference_path(root: Path, dataset: geometry.Dataset, sample_targets: int, sample_seed: int,
+                          geometry_tag: str, solver_sha: str) -> Path:
     payload = json.dumps({
         "dataset_sha256": dataset.sha256, "sample_targets": sample_targets, "sample_seed": sample_seed,
         "geometry": geometry_tag, "algorithm": "cdfmm_dense_direct_exact_fp64", "solver": solver_sha,
@@ -47,15 +48,18 @@ def finite_reference_path(root: Path, dataset: geometry.LatticeDataset, sample_t
 
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--geometry", default="lattice", choices=("lattice", "kuhn_mesh"))
     parser.add_argument("--grid", type=int, required=True)
+    parser.add_argument("--spacing", type=float, default=1.0)
+    parser.add_argument("--body-fill", type=float, default=1.0)
+    parser.add_argument("--source-body", default="point", choices=("point", "body"))
+    parser.add_argument("--target-body", default="point", choices=("point", "body"))
     parser.add_argument("--order", type=int, default=6)
     parser.add_argument("--depth", type=int, required=True)
     parser.add_argument("--precision", default="float32")
     parser.add_argument("--backend", default="cuda_full")
-    parser.add_argument("--source-geometry", default="point", choices=("point", "prism"))
-    parser.add_argument("--target-geometry", default="point", choices=("point", "prism"))
-    parser.add_argument("--body-fill", type=float, default=1.0)
     parser.add_argument("--state", default="random")
+    parser.add_argument("--seed", type=int, default=geometry.DEFAULT_SEED)
     parser.add_argument("--sample-targets", type=int, default=512)
     parser.add_argument("--sample-seed", type=int, default=geometry.DEFAULT_SEED)
     parser.add_argument("--warmups", type=int, default=3)
@@ -67,7 +71,13 @@ def main() -> int:
     parser.add_argument("--out", required=True)
     args = parser.parse_args()
 
-    finite = args.source_geometry != "point" or args.target_geometry != "point"
+    finite = args.source_body != "point" or args.target_body != "point"
+    if args.geometry == "lattice":
+        body = "prism" if finite else "point"
+    else:
+        body = "tetra"
+    spec = {"kind": args.geometry, "grid": args.grid, "spacing": args.spacing, "seed": args.seed,
+            "state": args.state, "body": body, "body_fill": args.body_fill}
     row: dict = {
         "framework": "dipfmm",
         "campaign_revision": CAMPAIGN_REVISION,
@@ -75,10 +85,12 @@ def main() -> int:
         "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "status": "running",
         "case": {
-            "framework": "dipfmm", "grid": args.grid, "order": args.order, "depth": args.depth,
-            "precision": args.precision, "backend": args.backend, "state": args.state,
-            "source_geometry": args.source_geometry, "target_geometry": args.target_geometry,
-            "body_fill": args.body_fill if finite else None, "device": "gpu" if "cuda" in args.backend else "cpu",
+            "framework": "dipfmm", "geometry": args.geometry, "grid": args.grid, "spacing": args.spacing,
+            "order": args.order, "depth": args.depth, "precision": args.precision, "backend": args.backend,
+            "state": args.state, "source_geometry": "point" if args.source_body == "point" else body,
+            "target_geometry": "point" if args.target_body == "point" else body,
+            "body_fill": args.body_fill if finite else None,
+            "device": "gpu" if "cuda" in args.backend else "cpu",
             "sample_targets": args.sample_targets, "sample_seed": args.sample_seed,
         },
         "protocol": {"warmups": args.warmups, "samples": args.samples, "evaluations": args.evaluations},
@@ -105,12 +117,11 @@ def main() -> int:
         if "cuda" in args.backend:
             row["module"]["context_warm_seconds"] = dipfmm_runner.warm_cuda_context(cdfmm)
 
-        dataset = geometry.lattice_dataset(args.grid, state=args.state)
+        dataset = geometry.build_dataset(spec)
         row["dataset"] = {"dataset_id": dataset.dataset_id, "sha256": dataset.sha256,
                           "n_sources": dataset.source_count, "n_targets": dataset.target_count,
-                          "spec": dataset.spec()}
+                          "counts": dataset.counts, "spec": dataset.spec}
         cache_roots = [Path(p) for p in args.reference_cache] or [HERE.parent / "results" / "reference_cache"]
-        body_side = dataset.spacing * args.body_fill
         reference_started = time.perf_counter()
         if not finite:
             ref = reference.load_or_compute_reference(
@@ -123,7 +134,7 @@ def main() -> int:
             row["reference"] = {"kind": "numpy_direct_dipole_fp64", "source": ref["source"]}
         else:
             sample_indices = reference.select_sample_targets(dataset.positions, args.sample_targets, args.sample_seed)
-            tag = f"{args.source_geometry}->{args.target_geometry}_fill{args.body_fill}"
+            tag = f"{row['case']['source_geometry']}->{row['case']['target_geometry']}"
             path = finite_reference_path(cache_roots[0], dataset, args.sample_targets, args.sample_seed,
                                          tag, args.solver_sha)
             if path.is_file():
@@ -132,8 +143,7 @@ def main() -> int:
                     assert np.array_equal(stored["sample_indices"], sample_indices)
             else:
                 reference_field = dipfmm_runner.finite_dense_reference(
-                    cdfmm, dataset.positions, dataset.moments, sample_indices, body_side,
-                    args.source_geometry, args.target_geometry)
+                    cdfmm, dataset, sample_indices, args.source_body, args.target_body)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 np.savez_compressed(path, field=reference_field, sample_indices=sample_indices)
             row["reference"] = {"kind": "cdfmm_dense_direct_exact_fp64", "source": str(path)}
@@ -141,8 +151,8 @@ def main() -> int:
         row["reference"]["sample_count"] = int(len(sample_indices))
 
         options = dipfmm_runner.make_options(
-            cdfmm, order=args.order, depth=args.depth, precision=args.precision, backend=args.backend,
-            source_geometry=args.source_geometry, target_geometry=args.target_geometry, body_side=body_side)
+            cdfmm, dataset, order=args.order, depth=args.depth, precision=args.precision, backend=args.backend,
+            source_body=args.source_body, target_body=args.target_body)
         row["dipfmm_options"] = dipfmm_runner.describe_options(options)
         plan, construction = dipfmm_runner.build_plan(cdfmm, dataset.positions, options)
         row["setup_seconds"] = construction

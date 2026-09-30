@@ -39,6 +39,8 @@ def flatten(row: dict) -> dict:
     case = row.get("case", {})
     grid = int(case.get("grid"))
     metrics = row.get("error_metrics", {})
+    dataset = row.get("dataset") or {}
+    n_bodies = dataset.get("n_sources") or case.get("n_bodies") or grid**3
     flat = {
         "case_id": row.get("case_id"),
         "framework": row.get("framework"),
@@ -46,7 +48,7 @@ def flatten(row: dict) -> dict:
         "role": case.get("role"),
         "dof_per_box": case.get("dof_per_box"),
         "grid": grid,
-        "n_bodies": grid**3,
+        "n_bodies": int(n_bodies),
         "config": (f"N_max={case.get('N_max')}" if row["framework"] == "jaxfmm" else f"depth={case.get('depth')}"),
         "status": row.get("status"),
         "setup_seconds": row.get("setup_seconds"),

@@ -39,6 +39,7 @@ SERIES = {
     "dipfmm point->point o6": ("dip-fmm order 6, point targets (GPU)", "dipfmm_point", "s", "-"),
     "dipfmm point->point o10": ("dip-fmm order 10, point targets (GPU)", "dipfmm_point", "D", "--"),
     "dipfmm prism->prism o6": ("dip-fmm order 6, prism sources and targets (GPU)", "dipfmm_finite", "P", "-"),
+    "dipfmm tetra->tetra o6": ("dip-fmm order 6, Kuhn tetrahedra sources and targets (GPU)", "dipfmm_finite", "X", "--"),
 }
 
 
@@ -173,7 +174,7 @@ def main() -> int:
 
     # 4. setup and first-call (JIT) cost
     fig, ax = plt.subplots(figsize=(5.4, 4.0))
-    plot_series(ax, series, "setup_seconds", only=primary + ("dipfmm prism->prism o6",))
+    plot_series(ax, series, "setup_seconds", only=primary + ("dipfmm prism->prism o6", "dipfmm tetra->tetra o6"))
     for arm in ("jaxfmm kifmm p6",):
         if arm in series:
             label, colour, marker, dash = SERIES[arm]
@@ -187,7 +188,8 @@ def main() -> int:
     fig, ax = plt.subplots(figsize=(5.4, 4.0))
     plot_series(ax, series, "gpu_peak_bytes", scale=1 / 2**30, only=("jaxfmm kifmm p6",), label_suffix=", peak in use")
     plot_series(ax, series, "gpu_persistent_bytes", scale=1 / 2**30,
-                only=("dipfmm point->point o6", "dipfmm prism->prism o6"), label_suffix=", persistent plan")
+                only=("dipfmm point->point o6", "dipfmm prism->prism o6", "dipfmm tetra->tetra o6"),
+                label_suffix=", persistent plan")
     finish(ax, "GPU memory (GiB)", "Device memory" + note)
     save(fig, out, "gpu_memory")
 
