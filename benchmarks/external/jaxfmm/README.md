@@ -1,11 +1,17 @@
 # jaxFMM GPU comparison campaign
 
-A separate external comparison of dip-fmm against jaxFMM, a JIT-compiled
-GPU fast multipole method in JAX, on the same point-dipole lattice problems
-as the FMM3D CPU campaign. The FMM3D campaign (`Article1/`, kept outside git)
-is the skeleton: this campaign re-implements its geometry, source state,
-sampled FP64 reference, error metrics, timing statistics and CPU-affinity
-policy inside the repository so the two are directly comparable.
+dip-fmm against jaxFMM, a JIT-compiled GPU fast multipole method in JAX, on
+the same point-dipole lattices and finite-body meshes as the FMM3D CPU
+campaign. **The production home of this comparison is the Article1 campaign
+tree** (`Article1/`, kept outside git): campaigns `external_jaxfmm` and
+`finite_jaxfmm`, `scripts/adapters/jaxfmm_adapter.py`, `scripts/setup_jaxfmm.sh`,
+`analysis/figures_jaxfmm.py`, with rows under `Article1/results` and figures
+under `Article1/figures`. The adapter runs the `jaxfmm_campaign` package of
+this directory, exported at a pinned commit by `setup_jaxfmm.sh`; the
+standalone preflight, orchestrator and analysis kept here are the development
+harness that validated the formulation and the tooling. The package
+re-implements the Article1 geometry, source state, sampled FP64 reference and
+error metrics bit for bit so both are directly comparable.
 
 | Directory | Role |
 |---|---|
