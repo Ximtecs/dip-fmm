@@ -9,3 +9,331 @@
 [12:37:08] [2/77] failed jaxfmm_kifmm_p4_nmax128_lattice10 in 3s: {"case_id": "jaxfmm_kifmm_p4_nmax128_lattice10", "status": "failed", "error": "ValueError: max() iterable argument is empty"}
 [13:01:12] [3/77] run jaxfmm_kifmm_p4_nmax256_lattice10
 [13:01:15] [3/77] unsupported jaxfmm_kifmm_p4_nmax256_lattice10 in 3s: {"case_id": "jaxfmm_kifmm_p4_nmax256_lattice10", "status": "unsupported", "error": "ValueError: max() iterable argument is empty"}
+[13:17:16] campaign fp32_order6_point_lattice (jaxfmm_fp32_order6_v1): 241 cases, results in /home/mihaa/MagTense/dip-fmm/.claude/worktrees/jaxfmm-campaign/benchmarks/external/jaxfmm/results/fp32_order6_point_lattice
+[13:19:53] GPU idle baseline 148 MiB (NVIDIA GeForce RTX 5090)
+[13:19:53] [1/241] run dipfmm_tetra2point_float32_cuda_full_o6_d1_kuhn_mesh5
+[13:19:55] [1/241] success dipfmm_tetra2point_float32_cuda_full_o6_d1_kuhn_mesh5 in 2s: ero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d1_kuhn_mesh5", "status": "success", "host_median_s": 0.0001922895957250148, "setup_s": 1.6369923829915933, "relative_l2": 1.8505420382995208e-07}
+[14:14:49] [2/241] run dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh5
+[14:14:51] [2/241] success dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh5 in 2s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh5", "status": "success", "host_median_s": 8.744780207052827e-05, "setup_s": 1.5142034610034898, "relative_l2": 0.001663324812678931}
+[15:11:01] [3/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d1_kuhn_mesh5
+[15:11:06] [3/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d1_kuhn_mesh5 in 5s: ro_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d1_kuhn_mesh5", "status": "success", "host_median_s": 0.00019178680377081038, "setup_s": 3.4178024329885375, "relative_l2": 1.9976791575251778e-07}
+[16:05:52] [4/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh5
+[16:05:55] [4/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh5 in 3s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh5", "status": "success", "host_median_s": 8.442959515377879e-05, "setup_s": 2.204862771992339, "relative_l2": 0.0021504742891123242}
+[16:06:08] [5/241] run jaxfmm_element_p6n8_tetra2point_kuhn_mesh5
+[16:06:12] [5/241] failed jaxfmm_element_p6n8_tetra2point_kuhn_mesh5 in 4s: {"case_id": "jaxfmm_element_p6n8_tetra2point_kuhn_mesh5", "status": "failed", "error": "IndexError: tuple index out of range"}
+[16:06:15] [6/241] run jaxfmm_element_p8n10_tetra2point_kuhn_mesh5
+[16:06:19] [6/241] failed jaxfmm_element_p8n10_tetra2point_kuhn_mesh5 in 4s: {"case_id": "jaxfmm_element_p8n10_tetra2point_kuhn_mesh5", "status": "failed", "error": "IndexError: tuple index out of range"}
+[16:06:20] [7/241] run dipfmm_tetra2point_float32_cuda_full_o6_d1_kuhn_mesh8
+[16:06:25] [7/241] success dipfmm_tetra2point_float32_cuda_full_o6_d1_kuhn_mesh8 in 6s: : zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d1_kuhn_mesh8", "status": "success", "host_median_s": 0.003597619797801599, "setup_s": 4.789667445991654, "relative_l2": 3.464646870514188e-07}
+[16:07:03] [8/241] run dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh8
+[16:07:05] [8/241] success dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh8 in 3s: ero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh8", "status": "success", "host_median_s": 0.0001807214051950723, "setup_s": 1.9804127009992953, "relative_l2": 0.00015733793443505832}
+[16:07:11] [9/241] run dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh8
+[16:07:13] [9/241] success dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh8 in 2s: ero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh8", "status": "success", "host_median_s": 0.0001938897999934852, "setup_s": 1.4482351320039015, "relative_l2": 0.00018152886408465273}
+[16:07:14] [10/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d1_kuhn_mesh8
+[16:07:24] [10/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d1_kuhn_mesh8 in 11s: : zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d1_kuhn_mesh8", "status": "success", "host_median_s": 0.003606317995581776, "setup_s": 8.387681495019933, "relative_l2": 3.419184546530682e-07}
+[16:11:30] [11/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh8
+[16:11:33] [11/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh8 in 3s: ero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh8", "status": "success", "host_median_s": 0.00018213079893030225, "setup_s": 2.498098060983466, "relative_l2": 0.00016117244879305907}
+[16:12:07] [12/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d3_kuhn_mesh8
+[16:12:09] [12/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d3_kuhn_mesh8 in 2s: ro_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d3_kuhn_mesh8", "status": "success", "host_median_s": 0.00019405779894441367, "setup_s": 1.4913024870038498, "relative_l2": 0.00020587983813063685}
+[16:12:13] [13/241] run jaxfmm_element_p6n8_tetra2point_kuhn_mesh8
+[16:12:46] [13/241] success jaxfmm_element_p6n8_tetra2point_kuhn_mesh8 in 34s: {"case_id": "jaxfmm_element_p6n8_tetra2point_kuhn_mesh8", "status": "success", "device_median_s": 0.004964453802676872, "host_median_s": 0.004205364402150735, "relative_l2": 0.05733247647228967, "triangles": 6528}
+[16:16:51] [14/241] run jaxfmm_element_p8n10_tetra2point_kuhn_mesh8
+[16:17:34] [14/241] success jaxfmm_element_p8n10_tetra2point_kuhn_mesh8 in 42s: {"case_id": "jaxfmm_element_p8n10_tetra2point_kuhn_mesh8", "status": "success", "device_median_s": 0.006859141396125779, "host_median_s": 0.005770010000560433, "relative_l2": 0.043924646153497386, "triangles": 6528}
+[16:17:34] [15/241] skip jaxfmm_kifmm_p4_nmax64_lattice10 (success)
+[16:17:34] [16/241] skip jaxfmm_kifmm_p4_nmax128_lattice10 (failed)
+[16:17:34] [17/241] skip jaxfmm_kifmm_p4_nmax256_lattice10 (unsupported)
+[16:18:07] [18/241] run jaxfmm_kifmm_p6_nmax64_lattice10
+[16:18:23] [18/241] success jaxfmm_kifmm_p6_nmax64_lattice10 in 16s: [jaxfmm] mem_limit auto: 0.1 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p6_nmax64_lattice10", "status": "success", "device_median_s": 0.0008696287986822426, "host_median_s": 0.001110122795216739, "relative_l2": 3.1608891185217175e-05}
+[16:18:27] [19/241] run jaxfmm_kifmm_p6_nmax128_lattice10
+[16:18:30] [19/241] unsupported jaxfmm_kifmm_p6_nmax128_lattice10 in 3s: {"case_id": "jaxfmm_kifmm_p6_nmax128_lattice10", "status": "unsupported", "error": "ValueError: max() iterable argument is empty"}
+[16:22:35] [20/241] run jaxfmm_kifmm_p6_nmax256_lattice10
+[16:22:38] [20/241] unsupported jaxfmm_kifmm_p6_nmax256_lattice10 in 3s: {"case_id": "jaxfmm_kifmm_p6_nmax256_lattice10", "status": "unsupported", "error": "ValueError: max() iterable argument is empty"}
+[16:23:12] [21/241] run jaxfmm_kifmm_p8_nmax64_lattice10
+[16:23:28] [21/241] success jaxfmm_kifmm_p8_nmax64_lattice10 in 16s: [jaxfmm] mem_limit auto: 0.1 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p8_nmax64_lattice10", "status": "success", "device_median_s": 0.001974885200615972, "host_median_s": 0.0027705128013622016, "relative_l2": 7.3237361820756985e-06}
+[16:23:32] [22/241] run dipfmm_prism2point_float32_cuda_full_o6_d1_lattice10
+[16:23:35] [22/241] success dipfmm_prism2point_float32_cuda_full_o6_d1_lattice10 in 2s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2point_float32_cuda_full_o6_d1_lattice10", "status": "success", "host_median_s": 0.00021965199848636985, "setup_s": 1.567545752011938, "relative_l2": 2.254662374751957e-07}
+[16:26:01] [23/241] run dipfmm_prism2point_float32_cuda_full_o6_d2_lattice10
+[16:26:03] [23/241] success dipfmm_prism2point_float32_cuda_full_o6_d2_lattice10 in 2s: n: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2point_float32_cuda_full_o6_d2_lattice10", "status": "success", "host_median_s": 9.38685960136354e-05, "setup_s": 1.399076799978502, "relative_l2": 0.0015907322497984986}
+[16:26:18] [24/241] run dipfmm_prism2prism_float32_cuda_full_o6_d1_lattice10
+[16:26:21] [24/241] success dipfmm_prism2prism_float32_cuda_full_o6_d1_lattice10 in 3s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2prism_float32_cuda_full_o6_d1_lattice10", "status": "success", "host_median_s": 0.0002220704045612365, "setup_s": 1.917877613013843, "relative_l2": 2.0935133122323936e-07}
+[16:26:27] [25/241] run dipfmm_prism2prism_float32_cuda_full_o6_d2_lattice10
+[16:26:29] [25/241] success dipfmm_prism2prism_float32_cuda_full_o6_d2_lattice10 in 2s: : zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2prism_float32_cuda_full_o6_d2_lattice10", "status": "success", "host_median_s": 9.31896036490798e-05, "setup_s": 1.4881679149984848, "relative_l2": 0.0015924266096733392}
+[16:34:17] [26/241] run dipfmm_tetra2point_float32_cuda_full_o6_d1_kuhn_mesh10
+[16:34:40] [26/241] success dipfmm_tetra2point_float32_cuda_full_o6_d1_kuhn_mesh10 in 23s: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d1_kuhn_mesh10", "status": "success", "host_median_s": 0.013316824001958594, "setup_s": 21.145207989000482, "relative_l2": 4.787159420681289e-07}
+[16:35:29] [27/241] run dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh10
+[16:35:35] [27/241] success dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh10 in 6s: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh10", "status": "success", "host_median_s": 0.0005458122002892196, "setup_s": 5.550466660992242, "relative_l2": 0.0003175868993335932}
+[16:35:45] [28/241] run dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh10
+[16:35:48] [28/241] success dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh10 in 3s: ro_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh10", "status": "success", "host_median_s": 0.00028655019705183806, "setup_s": 2.7167457639880013, "relative_l2": 0.0020920879977169614}
+[16:39:12] [29/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d1_kuhn_mesh10
+[16:52:02] [29/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d1_kuhn_mesh10 in 769s: : zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d1_kuhn_mesh10", "status": "success", "host_median_s": 0.01326365179847926, "setup_s": 659.0414741229906, "relative_l2": 4.892468561217475e-07}
+[16:52:27] [30/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh10
+[16:52:42] [30/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh10 in 15s: ro_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh10", "status": "success", "host_median_s": 0.0005435939994640649, "setup_s": 14.718266571988352, "relative_l2": 0.00032006162737255984}
+[16:52:45] [31/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d3_kuhn_mesh10
+[16:52:52] [31/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d3_kuhn_mesh10 in 7s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d3_kuhn_mesh10", "status": "success", "host_median_s": 0.0002856281993445009, "setup_s": 6.563709195994306, "relative_l2": 0.002574364581672618}
+[16:53:02] [32/241] run jaxfmm_element_p6n8_prism2point_lattice10
+[16:53:30] [32/241] success jaxfmm_element_p6n8_prism2point_lattice10 in 28s: {"case_id": "jaxfmm_element_p6n8_prism2point_lattice10", "status": "success", "device_median_s": 0.0035677941981703044, "host_median_s": 0.004387222201330587, "relative_l2": 0.0010552406563794287, "triangles": 6600}
+[16:53:33] [33/241] run jaxfmm_element_p8n10_prism2point_lattice10
+[16:54:12] [33/241] success jaxfmm_element_p8n10_prism2point_lattice10 in 39s: {"case_id": "jaxfmm_element_p8n10_prism2point_lattice10", "status": "success", "device_median_s": 0.0064942702010739595, "host_median_s": 0.005898570397403091, "relative_l2": 0.00026323538734218823, "triangles": 6600}
+[16:54:13] [34/241] run jaxfmm_element_p6n8_tetra2point_kuhn_mesh10
+[16:54:47] [34/241] success jaxfmm_element_p6n8_tetra2point_kuhn_mesh10 in 34s: {"case_id": "jaxfmm_element_p6n8_tetra2point_kuhn_mesh10", "status": "success", "device_median_s": 0.006685266800923273, "host_median_s": 0.008330177201423794, "relative_l2": 0.05659288720711471, "triangles": 12600}
+[16:55:18] [35/241] run jaxfmm_element_p8n10_tetra2point_kuhn_mesh10
+[16:56:03] [35/241] success jaxfmm_element_p8n10_tetra2point_kuhn_mesh10 in 45s: {"case_id": "jaxfmm_element_p8n10_tetra2point_kuhn_mesh10", "status": "success", "device_median_s": 0.010588818200631067, "host_median_s": 0.01177030720282346, "relative_l2": 0.04346932144191922, "triangles": 12600}
+[16:56:07] [36/241] run jaxfmm_kifmm_p4_nmax64_lattice16
+[16:56:17] [36/241] success jaxfmm_kifmm_p4_nmax64_lattice16 in 10s: [jaxfmm] mem_limit auto: 17.0 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p4_nmax64_lattice16", "status": "success", "device_median_s": 0.0003261711972299963, "host_median_s": 0.0006482939992565661, "relative_l2": 0.00038373965513040134}
+[16:56:18] [37/241] run jaxfmm_kifmm_p4_nmax128_lattice16
+[16:56:28] [37/241] success jaxfmm_kifmm_p4_nmax128_lattice16 in 10s: [jaxfmm] mem_limit auto: 17.0 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p4_nmax128_lattice16", "status": "success", "device_median_s": 0.00032504239934496584, "host_median_s": 0.0004955599957611412, "relative_l2": 0.0003837415513565435}
+[16:59:51] [38/241] run jaxfmm_kifmm_p4_nmax256_lattice16
+[17:00:01] [38/241] success jaxfmm_kifmm_p4_nmax256_lattice16 in 9s: [jaxfmm] mem_limit auto: 17.0 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p4_nmax256_lattice16", "status": "success", "device_median_s": 0.000335167400771752, "host_median_s": 0.0004814087995328009, "relative_l2": 0.00038373788089979217}
+[17:00:29] [39/241] run jaxfmm_kifmm_p6_nmax64_lattice16
+[17:00:46] [39/241] success jaxfmm_kifmm_p6_nmax64_lattice16 in 17s: [jaxfmm] mem_limit auto: 17.0 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p6_nmax64_lattice16", "status": "success", "device_median_s": 0.0010448815999552607, "host_median_s": 0.0012668586045037956, "relative_l2": 8.116593360876143e-06}
+[17:00:49] [40/241] run jaxfmm_kifmm_p6_nmax128_lattice16
+[17:01:06] [40/241] success jaxfmm_kifmm_p6_nmax128_lattice16 in 17s: [jaxfmm] mem_limit auto: 17.0 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p6_nmax128_lattice16", "status": "success", "device_median_s": 0.0009297240001615136, "host_median_s": 0.0014447527995798738, "relative_l2": 8.119481903800674e-06}
+[17:04:29] [41/241] run jaxfmm_kifmm_p6_nmax256_lattice16
+[17:04:47] [41/241] success jaxfmm_kifmm_p6_nmax256_lattice16 in 17s: [jaxfmm] mem_limit auto: 17.0 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p6_nmax256_lattice16", "status": "success", "device_median_s": 0.000741084199398756, "host_median_s": 0.001198213396128267, "relative_l2": 8.112922128489045e-06}
+[17:05:15] [42/241] run jaxfmm_kifmm_p8_nmax64_lattice16
+[17:05:34] [42/241] success jaxfmm_kifmm_p8_nmax64_lattice16 in 19s: [jaxfmm] mem_limit auto: 17.0 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p8_nmax64_lattice16", "status": "success", "device_median_s": 0.0020356110006105156, "host_median_s": 0.002583769598277286, "relative_l2": 2.335862131383912e-06}
+[17:05:37] [43/241] run dipfmm_prism2point_float32_cuda_full_o6_d1_lattice16
+[17:05:44] [43/241] success dipfmm_prism2point_float32_cuda_full_o6_d1_lattice16 in 7s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2point_float32_cuda_full_o6_d1_lattice16", "status": "success", "host_median_s": 0.0062220156018156555, "setup_s": 6.1633956730074715, "relative_l2": 3.721789204125219e-07}
+[17:09:07] [44/241] run dipfmm_prism2point_float32_cuda_full_o6_d2_lattice16
+[17:09:10] [44/241] success dipfmm_prism2point_float32_cuda_full_o6_d2_lattice16 in 3s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2point_float32_cuda_full_o6_d2_lattice16", "status": "success", "host_median_s": 0.0002576391969341785, "setup_s": 2.3352697570226155, "relative_l2": 0.0002147330322812298}
+[17:09:39] [45/241] run dipfmm_prism2point_float32_cuda_full_o6_d3_lattice16
+[17:09:41] [45/241] success dipfmm_prism2point_float32_cuda_full_o6_d3_lattice16 in 2s: ero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2point_float32_cuda_full_o6_d3_lattice16", "status": "success", "host_median_s": 0.00022192920441739262, "setup_s": 1.5065925990056712, "relative_l2": 0.00025262696495190456}
+[17:09:44] [46/241] run dipfmm_prism2prism_float32_cuda_full_o6_d1_lattice16
+[17:09:52] [46/241] success dipfmm_prism2prism_float32_cuda_full_o6_d1_lattice16 in 8s: : zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2prism_float32_cuda_full_o6_d1_lattice16", "status": "success", "host_median_s": 0.006333373801317066, "setup_s": 6.584642843983602, "relative_l2": 3.9408959918046734e-07}
+[17:12:01] [47/241] run dipfmm_prism2prism_float32_cuda_full_o6_d2_lattice16
+[17:12:04] [47/241] success dipfmm_prism2prism_float32_cuda_full_o6_d2_lattice16 in 3s: ero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2prism_float32_cuda_full_o6_d2_lattice16", "status": "success", "host_median_s": 0.00027141820173710586, "setup_s": 2.3952725129784085, "relative_l2": 0.00021442049831297907}
+[17:12:16] [48/241] run dipfmm_prism2prism_float32_cuda_full_o6_d3_lattice16
+[17:12:18] [48/241] success dipfmm_prism2prism_float32_cuda_full_o6_d3_lattice16 in 2s: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2prism_float32_cuda_full_o6_d3_lattice16", "status": "success", "host_median_s": 0.0002245074021629989, "setup_s": 1.5101943649933673, "relative_l2": 0.00026664918786005085}
+[17:12:23] [49/241] run dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh16
+[17:13:17] [49/241] success dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh16 in 53s: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh16", "status": "success", "host_median_s": 0.004414107999764383, "setup_s": 50.75859562700498, "relative_l2": 0.00010273082290741569}
+[17:20:08] [50/241] run dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh16
+[17:20:17] [50/241] success dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh16 in 9s: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh16", "status": "success", "host_median_s": 0.0012673905992414802, "setup_s": 8.236407051997958, "relative_l2": 0.0001715896370152025}
+[17:20:57] [51/241] run dipfmm_tetra2point_float32_cuda_full_o6_d4_kuhn_mesh16
+[17:21:00] [51/241] success dipfmm_tetra2point_float32_cuda_full_o6_d4_kuhn_mesh16 in 3s: ero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d4_kuhn_mesh16", "status": "success", "host_median_s": 0.001173114200355485, "setup_s": 2.3838892230123747, "relative_l2": 0.00019961172104102833}
+[17:21:08] [52/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh16
+[17:22:36] [52/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh16 in 87s: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh16", "status": "success", "host_median_s": 0.004425435001030565, "setup_s": 69.83682199098985, "relative_l2": 0.00010886856352618122}
+[17:25:40] [53/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d3_kuhn_mesh16
+[17:25:51] [53/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d3_kuhn_mesh16 in 11s: ero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d3_kuhn_mesh16", "status": "success", "host_median_s": 0.0013006387976929545, "setup_s": 9.975667151011294, "relative_l2": 0.00020695702318032766}
+[17:26:15] [54/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d4_kuhn_mesh16
+[17:26:18] [54/241] success dipfmm_tetra2tetra_float32_cuda_full_o6_d4_kuhn_mesh16 in 3s: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2tetra_float32_cuda_full_o6_d4_kuhn_mesh16", "status": "success", "host_median_s": 0.0011735306004993617, "setup_s": 2.511342326004524, "relative_l2": 0.0002512350810183608}
+[17:26:21] [55/241] run jaxfmm_element_p6n8_prism2point_lattice16
+[17:26:54] [55/241] success jaxfmm_element_p6n8_prism2point_lattice16 in 33s: {"case_id": "jaxfmm_element_p6n8_prism2point_lattice16", "status": "success", "device_median_s": 0.007553429401014, "host_median_s": 0.007553726999321953, "relative_l2": 0.0011205361813602644, "triangles": 26112}
+[17:27:32] [56/241] run jaxfmm_element_p8n10_prism2point_lattice16
+[17:28:16] [56/241] success jaxfmm_element_p8n10_prism2point_lattice16 in 44s: {"case_id": "jaxfmm_element_p8n10_prism2point_lattice16", "status": "success", "device_median_s": 0.01298029400059022, "host_median_s": 0.011367986199911684, "relative_l2": 0.000276582830148197, "triangles": 26112}
+[17:28:28] [57/241] run jaxfmm_element_p6n8_tetra2point_kuhn_mesh16
+[17:28:59] [57/241] success jaxfmm_element_p6n8_tetra2point_kuhn_mesh16 in 31s: {"case_id": "jaxfmm_element_p6n8_tetra2point_kuhn_mesh16", "status": "success", "device_median_s": 0.021293342200806364, "host_median_s": 0.023333827004535124, "relative_l2": 0.058484145281799724, "triangles": 50688}
+[17:29:05] [58/241] run jaxfmm_element_p8n10_tetra2point_kuhn_mesh16
+[17:29:50] [58/241] success jaxfmm_element_p8n10_tetra2point_kuhn_mesh16 in 46s: {"case_id": "jaxfmm_element_p8n10_tetra2point_kuhn_mesh16", "status": "success", "device_median_s": 0.039537555997958405, "host_median_s": 0.036824084800900894, "relative_l2": 0.04490221169651731, "triangles": 50688}
+[17:31:51] [59/241] run jaxfmm_kifmm_p4_nmax64_lattice20
+[17:32:01] [59/241] success jaxfmm_kifmm_p4_nmax64_lattice20 in 10s: [jaxfmm] mem_limit auto: 0.1 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p4_nmax64_lattice20", "status": "success", "device_median_s": 0.0009036222007125616, "host_median_s": 0.0011757517990190537, "relative_l2": 0.0017826766881250383}
+[17:32:30] [60/241] run jaxfmm_kifmm_p4_nmax128_lattice20
+[17:32:40] [60/241] success jaxfmm_kifmm_p4_nmax128_lattice20 in 10s: [jaxfmm] mem_limit auto: 23.4 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p4_nmax128_lattice20", "status": "success", "device_median_s": 0.001026601600460708, "host_median_s": 0.0020354798005428167, "relative_l2": 0.0003085573574189212}
+[17:32:56] [61/241] run jaxfmm_kifmm_p4_nmax256_lattice20
+[17:33:06] [61/241] success jaxfmm_kifmm_p4_nmax256_lattice20 in 10s: [jaxfmm] mem_limit auto: 23.4 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p4_nmax256_lattice20", "status": "success", "device_median_s": 0.0008680687984451652, "host_median_s": 0.0011816214013379068, "relative_l2": 0.00030856367348424096}
+[17:34:37] [62/241] run jaxfmm_kifmm_p6_nmax64_lattice20
+[17:34:53] [62/241] success jaxfmm_kifmm_p6_nmax64_lattice20 in 16s: [jaxfmm] mem_limit auto: 0.1 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p6_nmax64_lattice20", "status": "success", "device_median_s": 0.0031202031997963784, "host_median_s": 0.003441490599652752, "relative_l2": 4.466110823223033e-05}
+[17:35:05] [63/241] run jaxfmm_kifmm_p6_nmax128_lattice20
+[17:35:23] [63/241] success jaxfmm_kifmm_p6_nmax128_lattice20 in 18s: [jaxfmm] mem_limit auto: 23.4 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p6_nmax128_lattice20", "status": "success", "device_median_s": 0.0017701842007227242, "host_median_s": 0.002275878400541842, "relative_l2": 6.990913607313766e-06}
+[17:37:25] [64/241] run jaxfmm_kifmm_p6_nmax256_lattice20
+[17:37:42] [64/241] success jaxfmm_kifmm_p6_nmax256_lattice20 in 17s: [jaxfmm] mem_limit auto: 23.4 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p6_nmax256_lattice20", "status": "success", "device_median_s": 0.0018139945983421057, "host_median_s": 0.002687227400019765, "relative_l2": 6.99168025978969e-06}
+[17:38:25] [65/241] run jaxfmm_kifmm_p8_nmax64_lattice20
+[17:38:42] [65/241] success jaxfmm_kifmm_p8_nmax64_lattice20 in 17s: [jaxfmm] mem_limit auto: 0.1 GiB peak-transient budget (speed-optimal; pass mem_limit=<bytes> to cap)
+{"case_id": "jaxfmm_kifmm_p8_nmax64_lattice20", "status": "success", "device_median_s": 0.010375692002708093, "host_median_s": 0.0113094202009961, "relative_l2": 8.051609875983617e-06}
+[17:47:34] [66/241] run dipfmm_prism2point_float32_cuda_full_o6_d1_lattice20
+[17:47:56] [66/241] success dipfmm_prism2point_float32_cuda_full_o6_d1_lattice20 in 22s: n: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2point_float32_cuda_full_o6_d1_lattice20", "status": "success", "host_median_s": 0.023286756995366885, "setup_s": 20.54212162300246, "relative_l2": 5.728672786657418e-07}
+[17:55:29] [67/241] run dipfmm_prism2point_float32_cuda_full_o6_d2_lattice20
+[17:55:35] [67/241] success dipfmm_prism2point_float32_cuda_full_o6_d2_lattice20 in 6s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2point_float32_cuda_full_o6_d2_lattice20", "status": "success", "host_median_s": 0.0006787810008972884, "setup_s": 5.699881767010083, "relative_l2": 0.00019282457491575115}
+[18:02:47] [68/241] run dipfmm_prism2point_float32_cuda_full_o6_d3_lattice20
+[18:02:50] [68/241] success dipfmm_prism2point_float32_cuda_full_o6_d3_lattice20 in 3s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2point_float32_cuda_full_o6_d3_lattice20", "status": "success", "host_median_s": 0.0003542462014593184, "setup_s": 1.9694763960142154, "relative_l2": 0.0022775964804317623}
+[18:04:35] [69/241] run dipfmm_prism2prism_float32_cuda_full_o6_d1_lattice20
+[18:05:04] [69/241] success dipfmm_prism2prism_float32_cuda_full_o6_d1_lattice20 in 28s: n: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2prism_float32_cuda_full_o6_d1_lattice20", "status": "success", "host_median_s": 0.023263101797783747, "setup_s": 25.95143731602002, "relative_l2": 5.430572795903288e-07}
+[18:06:16] [70/241] run dipfmm_prism2prism_float32_cuda_full_o6_d2_lattice20
+[18:06:23] [70/241] success dipfmm_prism2prism_float32_cuda_full_o6_d2_lattice20 in 8s: : zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2prism_float32_cuda_full_o6_d2_lattice20", "status": "success", "host_median_s": 0.0006839695968665182, "setup_s": 6.860838809981942, "relative_l2": 0.0001921507225582629}
+[18:09:54] [71/241] run dipfmm_prism2prism_float32_cuda_full_o6_d3_lattice20
+[18:09:57] [71/241] success dipfmm_prism2prism_float32_cuda_full_o6_d3_lattice20 in 3s: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_prism2prism_float32_cuda_full_o6_d3_lattice20", "status": "success", "host_median_s": 0.00035065560368821027, "setup_s": 2.2548630200035404, "relative_l2": 0.0022822633947782458}
+[18:12:02] [72/241] run dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh20
+[18:17:13] [72/241] success dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh20 in 312s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d2_kuhn_mesh20", "status": "success", "host_median_s": 0.015851655998267232, "setup_s": 303.7432090829825, "relative_l2": 9.082928273709472e-05}
+[18:19:12] [73/241] run dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh20
+[18:19:52] [73/241] success dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh20 in 40s: zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d3_kuhn_mesh20", "status": "success", "host_median_s": 0.0036481607996392993, "setup_s": 38.55760740098776, "relative_l2": 0.0004059790241042846}
+[18:20:34] [74/241] run dipfmm_tetra2point_float32_cuda_full_o6_d4_kuhn_mesh20
+[18:20:44] [74/241] success dipfmm_tetra2point_float32_cuda_full_o6_d4_kuhn_mesh20 in 10s:  zero_k0
+  periodic.setup_tolerance: 1e-12
+  build.cuda_compiled: true
+  build.one_mkl_available: true
+{"case_id": "dipfmm_tetra2point_float32_cuda_full_o6_d4_kuhn_mesh20", "status": "success", "host_median_s": 0.0021059988008346408, "setup_s": 8.969414054998197, "relative_l2": 0.002032909757171889}
+[18:21:22] [75/241] run dipfmm_tetra2tetra_float32_cuda_full_o6_d2_kuhn_mesh20

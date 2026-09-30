@@ -1,0 +1,245 @@
+{
+  "framework": "jaxfmm",
+  "campaign_revision": "jaxfmm_fp32_order6_v1",
+  "case_id": "jaxfmm_element_p8n10_tetra2point_kuhn_mesh16",
+  "started_at": "2026-09-30T15:29:05.148180+00:00",
+  "status": "success",
+  "case": {
+    "framework": "jaxfmm",
+    "engine": "element",
+    "tier": "finite",
+    "geometry": "kuhn_mesh",
+    "grid": 16,
+    "spacing": 1.0,
+    "p": 8,
+    "near_deg": 10,
+    "N_max": null,
+    "theta": null,
+    "state": "random",
+    "precision": "float32",
+    "device": "gpu",
+    "source_geometry": "tetra_faces",
+    "target_geometry": "point",
+    "sample_targets": 512,
+    "sample_seed": 314159,
+    "role": "finite_point_target",
+    "dof_per_box": null,
+    "n_bodies": 24576
+  },
+  "protocol": {
+    "warmups": 3,
+    "samples": 5,
+    "evaluations": 5
+  },
+  "process": {
+    "hostname": "mihaa-workstation",
+    "os": "Linux-7.0.0-34-generic-x86_64-with-glibc2.43",
+    "cpu_model": "Intel(R) Core(TM) i9-14900KF",
+    "python": "3.12.14",
+    "python_executable": "/home/mihaa/.conda/envs/jaxfmm/bin/python",
+    "affinity": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14
+    ],
+    "core_class": "performance",
+    "omp_num_threads": "8",
+    "pid": 683553
+  },
+  "jax_environment": {
+    "XLA_PYTHON_CLIENT_PREALLOCATE": null,
+    "XLA_PYTHON_CLIENT_MEM_FRACTION": null,
+    "XLA_PYTHON_CLIENT_ALLOCATOR": null,
+    "JAX_PLATFORMS": "cuda,cpu",
+    "JAX_ENABLE_X64": null,
+    "JAX_DEFAULT_MATMUL_PRECISION": "highest",
+    "XLA_FLAGS": null,
+    "JAX_COMPILATION_CACHE_DIR": null,
+    "CUDA_VISIBLE_DEVICES": null
+  },
+  "gpu_before": {
+    "gpu_model": "NVIDIA GeForce RTX 5090",
+    "driver_version": "595.91.07",
+    "memory_used_mib": 148.0,
+    "memory_total_mib": 32607.0,
+    "compute_processes": []
+  },
+  "cuda_toolkit": "13.2",
+  "jaxfmm_git": {
+    "path": "/home/mihaa/MagTense/dip-fmm/.external/jaxfmm",
+    "commit": "9ba4907812e00b23637cad660a0e9ceb22585064",
+    "describe": "v0.3.3",
+    "dirty": false
+  },
+  "precision_config": {
+    "jax_enable_x64": false,
+    "jax_default_matmul_precision": "highest",
+    "jax_compilation_cache_dir": null
+  },
+  "devices": {
+    "jax_version": "0.11.2",
+    "jaxlib_version": "0.11.2",
+    "default_backend": "gpu",
+    "devices": [
+      "gpu:0:NVIDIA GeForce RTX 5090"
+    ],
+    "device_kind": "NVIDIA GeForce RTX 5090",
+    "platform": "gpu"
+  },
+  "versions": {
+    "python": "3.12.14",
+    "jax": "0.11.2",
+    "jaxlib": "0.11.2",
+    "jaxfmm": "0.3.3",
+    "numpy": "2.5.3"
+  },
+  "dataset": {
+    "dataset_id": "tetra_mesh_16",
+    "sha256": "7df866b6ac602dfa53747b930f600899c7e0cd35ef8bded3f787edc73ddd5e62",
+    "n_sources": 50688,
+    "n_targets": 24576,
+    "n_bodies": 24576,
+    "counts": {
+      "nx": 16,
+      "ny": 16,
+      "nz": 16,
+      "cells": 4096,
+      "bodies": 24576,
+      "vertices": 4913,
+      "tetrahedra": 24576,
+      "faces": 50688,
+      "unique_faces": 50688,
+      "triangles": 50688,
+      "shared_triangles": 47616,
+      "sources_jaxfmm": 50688,
+      "sources_dipfmm": 24576,
+      "targets": 24576
+    },
+    "spec": {
+      "kind": "kuhn_mesh",
+      "grid": 16,
+      "spacing": 1.0,
+      "seed": 314159,
+      "state": "random",
+      "body": "tetra"
+    },
+    "source_representation": "constant face charge (M_left - M_right).n per unique face, two triangles per cube face, one per tetrahedron face",
+    "total_charge": 2.6645352591003757e-15
+  },
+  "jaxfmm_parameters": {
+    "p": 8,
+    "theta": 0.5,
+    "N_max": 128,
+    "s": 3,
+    "near_deg": 10,
+    "duffy_deg": 4,
+    "jit_connectivity": true
+  },
+  "setup_info": {
+    "near_deg_effective": null,
+    "theta": null,
+    "n_levels": 8,
+    "near_pairs": 25600,
+    "mpl_pairs": 69632,
+    "tri_quad_points_far": 25,
+    "tri_quad_points_near": 36
+  },
+  "setup_seconds": 10.201873170997715,
+  "first_call_seconds": 31.706126679026056,
+  "jit_seconds_estimate": 31.666589123028096,
+  "memory_after_setup": {
+    "bytes_in_use": 52072448,
+    "peak_bytes_in_use": 186379264,
+    "bytes_limit": 25253904384,
+    "largest_free_block_bytes": 25195034880,
+    "num_allocs": 1278,
+    "pool_bytes": 25253904384
+  },
+  "memory_after_first_call": {
+    "bytes_in_use": 52975616,
+    "peak_bytes_in_use": 16741076480,
+    "bytes_limit": 25253904384,
+    "largest_free_block_bytes": 25195034880,
+    "num_allocs": 1913,
+    "pool_bytes": 25253904384
+  },
+  "memory_after_timing": {
+    "bytes_in_use": 52975616,
+    "peak_bytes_in_use": 16742606336,
+    "bytes_limit": 25253904384,
+    "largest_free_block_bytes": 25195034880,
+    "num_allocs": 2069,
+    "pool_bytes": 25253904384
+  },
+  "device_evaluation_median_seconds": 0.039537555997958405,
+  "device_evaluation_min_seconds": 0.038588749599875884,
+  "device_evaluation_max_seconds": 0.04106751159997657,
+  "device_evaluation_mean_seconds": 0.03986293280031532,
+  "device_evaluation_samples_seconds": [
+    0.038588749599875884,
+    0.039537555997958405,
+    0.03931561660137959,
+    0.040805230202386154,
+    0.04106751159997657
+  ],
+  "host_evaluation_median_seconds": 0.036824084800900894,
+  "host_evaluation_min_seconds": 0.03652766419691034,
+  "host_evaluation_max_seconds": 0.06353020520182326,
+  "host_evaluation_mean_seconds": 0.04206904208054766,
+  "host_evaluation_samples_seconds": [
+    0.06353020520182326,
+    0.03685658340109512,
+    0.036824084800900894,
+    0.03660667280200869,
+    0.03652766419691034
+  ],
+  "field_finite": true,
+  "output_dtype": "float32",
+  "ns_per_body_device": 1608.787272052344,
+  "ns_per_body_host": 1498.375846390824,
+  "ns_per_triangle_host": 726.4852588561571,
+  "reference": {
+    "kind": "cdfmm_dense_direct_exact_fp64",
+    "key": "finite_reference_5e7964b1aa1f647a4b04303e.npz",
+    "status": "scored",
+    "source": "/home/mihaa/MagTense/dip-fmm/.claude/worktrees/jaxfmm-campaign/benchmarks/external/jaxfmm/results/fp32_order6_point_lattice/reference_cache/finite_reference_5e7964b1aa1f647a4b04303e.npz"
+  },
+  "error_metrics": {
+    "relative_l2": 0.04490221169651731,
+    "max_absolute_over_reference_rms": 0.11127834588104639,
+    "max_pointwise_relative": 0.1610425656449905,
+    "mean_pointwise_relative": 0.04112576758393273,
+    "median_pointwise_relative": 0.03906832492674607,
+    "p99_pointwise_relative": 0.10724589531446684,
+    "rms_absolute": 0.011802213765661778,
+    "max_absolute": 0.05066021541256948,
+    "error_metric_definition": "relative_l2 = ||H-Href||_F / ||Href||_F; max_absolute_over_reference_rms = max_i |H_i-Href_i| / rms_i |Href_i|"
+  },
+  "finished_at": "2026-09-30T15:29:50.132014+00:00",
+  "orchestrator": {
+    "returncode": 0,
+    "wall_seconds": 45.61847061099252,
+    "gpu_before": {
+      "clean": true,
+      "gpu_model": "NVIDIA GeForce RTX 5090",
+      "driver_version": "595.91.07",
+      "memory_used_mib": 148.0,
+      "memory_total_mib": 32607.0,
+      "compute_processes": []
+    },
+    "gpu_after": {
+      "clean": true,
+      "gpu_model": "NVIDIA GeForce RTX 5090",
+      "driver_version": "595.91.07",
+      "memory_used_mib": 148.0,
+      "memory_total_mib": 32607.0,
+      "compute_processes": []
+    },
+    "stdout": "{\"case_id\": \"jaxfmm_element_p8n10_tetra2point_kuhn_mesh16\", \"status\": \"success\", \"device_median_s\": 0.039537555997958405, \"host_median_s\": 0.036824084800900894, \"relative_l2\": 0.04490221169651731, \"triangles\": 50688}\n"
+  }
+}
