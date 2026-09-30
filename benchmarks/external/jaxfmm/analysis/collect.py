@@ -19,7 +19,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
 FIELDS = [
-    "case_id", "framework", "arm", "role", "grid", "n_bodies", "config", "status",
+    "case_id", "framework", "arm", "role", "dof_per_box", "grid", "n_bodies", "config", "status",
     "setup_seconds", "first_call_seconds", "jit_seconds_estimate",
     "device_evaluation_median_seconds", "host_evaluation_median_seconds", "host_evaluation_min_seconds",
     "ns_per_body_host", "relative_l2", "max_absolute_over_reference_rms", "max_pointwise_relative",
@@ -44,6 +44,7 @@ def flatten(row: dict) -> dict:
         "framework": row.get("framework"),
         "arm": arm_name(row),
         "role": case.get("role"),
+        "dof_per_box": case.get("dof_per_box"),
         "grid": grid,
         "n_bodies": grid**3,
         "config": (f"N_max={case.get('N_max')}" if row["framework"] == "jaxfmm" else f"depth={case.get('depth')}"),
@@ -124,6 +125,30 @@ def main() -> int:
         lines.append("Arms without a successful configuration: " + ", ".join(
             f"{arm} grid {grid} ({','.join(sorted(set(statuses[(arm, grid)])))})" for arm, grid in sorted(missing)))
     (args.results / "summary.md").write_text("\n".join(lines) + "\n")
+
+    # Accuracy-matched pairs: nominal orders are not comparable (KIFMM p is a
+    # surface resolution, dip-fmm order a harmonic degree), so for every size
+    # pair each jaxFMM arm with the dip-fmm point arm whose achieved error is
+    # closest in log space, and quote the speed ratio only for that pair.
+    import math
+
+    matched = ["| N | jaxFMM arm | rel L2 | dip-fmm arm | rel L2 | error ratio jax/dip | host time jax s | host time dip s | dip/jax time |",
+               "|---|---|---|---|---|---|---|---|---|"]
+    grids = sorted({row["grid"] for row in best_rows})
+    for grid in grids:
+        jax_rows = [r for r in best_rows if r["grid"] == grid and r["framework"] == "jaxfmm" and r["relative_l2"]]
+        dip_rows = [r for r in best_rows if r["grid"] == grid and r["framework"] == "dipfmm"
+                    and r["arm"].startswith("dipfmm point") and r["relative_l2"]]
+        for jrow in jax_rows:
+            if not dip_rows:
+                continue
+            drow = min(dip_rows, key=lambda r: abs(math.log(float(r["relative_l2"])) - math.log(float(jrow["relative_l2"]))))
+            jt, dtime = float(jrow["host_evaluation_median_seconds"]), float(drow["host_evaluation_median_seconds"])
+            matched.append(
+                f"| {grid**3} | {jrow['arm']} | {float(jrow['relative_l2']):.2e} | {drow['arm']} | "
+                f"{float(drow['relative_l2']):.2e} | {float(jrow['relative_l2']) / float(drow['relative_l2']):.2f} | "
+                f"{jt:.3g} | {dtime:.3g} | {dtime / jt:.2f} |")
+    (args.results / "matched.md").write_text("\n".join(matched) + "\n")
     print(f"{len(rows)} rows, {len(best_rows)} best rows -> {args.results}")
     return 0
 

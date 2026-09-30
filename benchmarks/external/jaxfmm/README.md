@@ -41,6 +41,19 @@ Morton codes, every array float32), with `JAX_DEFAULT_MATMUL_PRECISION=highest`
 so float32 matmuls are not silently run as TF32 (jaxFMM's own architecture
 notes flag this); dip-fmm's FP32 CUDA path uses cuBLAS in default FP32 mode.
 
+## Nominal orders are not comparable
+
+KIFMM's `p` is the number of points per cube-face edge of the equivalent
+surface: p=4, 6 and 8 place 56, 152 and 296 equivalent charges per box.
+dip-fmm's spherical expansion of order n carries (n+1)^2 coefficients: 49 at
+order 6, 121 at order 10. On the preflight lattice KIFMM p=6 reaches 1.9e-5
+relative L2 while dip-fmm order 6 reaches 1.6e-3 and order 10 reaches 2.8e-4
+on the same 64-leaf tree, so the campaign runs every arm at every size and the
+analysis pairs arms by *achieved* error (`matched.md`, the
+throughput-versus-accuracy figure) instead of by the integer parameter. The
+order-6 pair is reported, but as a non-equivalent comparison with its error
+gap alongside.
+
 ## Running
 
 ```bash

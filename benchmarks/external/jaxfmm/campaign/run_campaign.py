@@ -83,7 +83,7 @@ def build_cases(config: dict) -> list[dict]:
                 for nmax in arm["N_max"]:
                     cases.append({
                         "framework": "jaxfmm", "grid": grid, "engine": engine, "p": arm["p"], "N_max": nmax,
-                        "role": arm.get("role", "primary"),
+                        "role": arm.get("role", "primary"), "dof_per_box": arm.get("dof_per_box"),
                         "case_id": f"jaxfmm_{engine}_p{arm['p']}_nmax{nmax}_grid{grid}", "protocol": protocol,
                     })
         dconf = config["dipfmm"]
@@ -99,6 +99,7 @@ def build_cases(config: dict) -> list[dict]:
                     "precision": dconf["precision"], "backend": dconf["backend"],
                     "source_geometry": arm["source"], "target_geometry": arm["target"],
                     "body_fill": arm.get("body_fill", 1.0), "role": arm.get("role", "primary"),
+                    "dof_per_box": arm.get("dof_per_box"),
                     "case_id": (f"dipfmm_{arm['source']}2{arm['target']}_{dconf['precision']}_"
                                 f"{dconf['backend']}_o{order}_d{depth}_grid{grid}"),
                     "protocol": protocol,
@@ -240,6 +241,7 @@ def main() -> int:
                 "stderr_tail": stderr_text[-4000:],
             }, indent=2, default=str) + "\n")
         row = json.loads(out.read_text())
+        row.setdefault("case", {}).update({"role": case.get("role"), "dof_per_box": case.get("dof_per_box")})
         row["orchestrator"] = {"returncode": returncode, "wall_seconds": elapsed,
                                "gpu_before": before, "gpu_after": after, "stdout": stdout[-2000:]}
         out.write_text(json.dumps(row, indent=2, default=str) + "\n")
