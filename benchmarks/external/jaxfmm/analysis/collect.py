@@ -43,7 +43,10 @@ def flatten(row: dict) -> dict:
     grid = int(case.get("grid"))
     metrics = row.get("error_metrics", {})
     dataset = row.get("dataset") or {}
-    n_bodies = dataset.get("n_sources") or case.get("n_bodies") or grid**3
+    # the scaling axis is the BODY count; jaxFMM's finite rows also carry their
+    # triangle count (n_sources) which is reported separately
+    counts = dataset.get("counts") or {}
+    n_bodies = counts.get("bodies") or dataset.get("n_sources") or case.get("n_bodies") or grid**3
     status = row.get("status")
     if status == "failed" and "max() iterable argument is empty" in (row.get("failure_reason") or ""):
         status = "unsupported"   # jaxFMM: no well-separated pairs at this leaf size (rows written before the label existed)
@@ -192,13 +195,22 @@ def main() -> int:
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for row in best_rows:
         peak = row["gpu_peak_bytes"] or row["gpu_persistent_bytes"]
-        peak_txt = f"{peak / 2**30:.2f}" if peak else "-"
-        dev = row["device_evaluation_median_seconds"]
+        try:
+            peak_txt = f"{float(peak) / 2**30:.2f}" if peak not in (None, "") else "-"
+        except (TypeError, ValueError):
+            peak_txt = "-"
+        def fmt(value, spec):
+            try:
+                return format(float(value), spec) if value not in (None, "") else "-"
+            except (TypeError, ValueError):
+                return "-"
+
+        jit = row["jit_seconds_estimate"] if row["jit_seconds_estimate"] not in (None, "") else row["first_call_seconds"]
         lines.append(
-            f"| {row['arm']} | {row['grid']} | {row['n_bodies']} | {row['config']} | {row['setup_seconds']:.3g} | "
-            f"{(row['jit_seconds_estimate'] if row['jit_seconds_estimate'] is not None else row['first_call_seconds']):.3g} | "
-            f"{row['host_evaluation_median_seconds']:.3g} | {dev if dev is None else f'{dev:.3g}'} | "
-            f"{row['ns_per_body_host']:.1f} | {row['relative_l2']:.2e} | {row['max_absolute_over_reference_rms']:.2e} | "
+            f"| {row['arm']} | {row['grid']} | {row['n_bodies']} | {row['config']} | {fmt(row['setup_seconds'], '.3g')} | "
+            f"{fmt(jit, '.3g')} | {fmt(row['host_evaluation_median_seconds'], '.3g')} | "
+            f"{fmt(row['device_evaluation_median_seconds'], '.3g')} | {fmt(row['ns_per_body_host'], '.1f')} | "
+            f"{fmt(row['relative_l2'], '.2e')} | {fmt(row['max_absolute_over_reference_rms'], '.2e')} | "
             f"{peak_txt} | {','.join(sorted(set(statuses[(row['arm'], row['grid'])])))} |")
     missing = [(arm, grid) for (arm, grid), st in statuses.items() if (arm, grid) not in best]
     if missing:
@@ -215,18 +227,28 @@ def main() -> int:
 
     matched = ["| N | jaxFMM arm | rel L2 | dip-fmm arm | rel L2 | error ratio jax/dip | host time jax s | host time dip s | dip/jax time |",
                "|---|---|---|---|---|---|---|---|---|"]
+    # pair within a tier only: point dipoles with point dipoles, cube faces with
+    # prism sources at point targets, tetrahedron faces with tetrahedron sources
+    def tier_of(arm: str) -> str:
+        if "prism" in arm:
+            return "prism"
+        if "tetra" in arm:
+            return "tetra"
+        return "point"
+
     grids = sorted({row["grid"] for row in best_rows})
     for grid in grids:
         jax_rows = [r for r in best_rows if r["grid"] == grid and r["framework"] == "jaxfmm" and r["relative_l2"]]
-        dip_rows = [r for r in best_rows if r["grid"] == grid and r["framework"] == "dipfmm"
-                    and r["arm"].startswith("dipfmm point") and r["relative_l2"]]
         for jrow in jax_rows:
+            tier = tier_of(jrow["arm"])
+            dip_rows = [r for r in best_rows if r["grid"] == grid and r["framework"] == "dipfmm"
+                        and tier_of(r["arm"]) == tier and "->point" in r["arm"] and r["relative_l2"]]
             if not dip_rows:
                 continue
             drow = min(dip_rows, key=lambda r: abs(math.log(float(r["relative_l2"])) - math.log(float(jrow["relative_l2"]))))
             jt, dtime = float(jrow["host_evaluation_median_seconds"]), float(drow["host_evaluation_median_seconds"])
             matched.append(
-                f"| {grid**3} | {jrow['arm']} | {float(jrow['relative_l2']):.2e} | {drow['arm']} | "
+                f"| {jrow['n_bodies']} | {jrow['arm']} | {float(jrow['relative_l2']):.2e} | {drow['arm']} | "
                 f"{float(drow['relative_l2']):.2e} | {float(jrow['relative_l2']) / float(drow['relative_l2']):.2f} | "
                 f"{jt:.3g} | {dtime:.3g} | {dtime / jt:.2f} |")
     (args.results / "matched.md").write_text("\n".join(matched) + "\n")
