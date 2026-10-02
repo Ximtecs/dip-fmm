@@ -100,14 +100,15 @@ DictionaryPlan build_tensor_dictionary_from_leaf(
     return result;
 }
 
-template <typename Scalar, typename SignedPlan>
+template <typename Scalar, typename SignedPlan,
+          typename Token>
 void frequency_order_signed_variants(
     SignedPlan& plan,
-    std::vector<std::uint32_t>& tokens,
+    std::vector<Token>& tokens,
     const std::uint32_t old_zero_variant)
 {
     std::vector<std::size_t> frequencies(plan.variant_count(), 0);
-    for (const std::uint32_t token : tokens) {
+    for (const Token token : tokens) {
         ++frequencies[token];
     }
     std::vector<std::uint32_t> order(frequencies.size());
@@ -131,8 +132,8 @@ void frequency_order_signed_variants(
         }
     }
     plan.tensors = std::move(reordered);
-    for (std::uint32_t& token : tokens) {
-        token = remap[token];
+    for (Token& token : tokens) {
+        token = static_cast<Token>(remap[token]);
     }
     plan.zero_variant_id = remap[old_zero_variant];
 }

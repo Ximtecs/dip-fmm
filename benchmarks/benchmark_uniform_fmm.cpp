@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cdfmm/cuda_direct.hpp"
+#include "cdfmm/plan/direct/dense.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 #include "cdfmm/validation.hpp"
 #include "backend/cuda/fmm/internal.hpp"
@@ -9,12 +10,14 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -505,12 +508,18 @@ WorkloadTiming benchmark_fmm_workload(
     const int evaluation_count,
     const int samples)
 {
+    // Every sample is a cold build: with the cache enabled the first sample
+    // would write the plan and the later ones read it, and the median would
+    // mix the two. It also keeps this comparison from warming the cache
+    // that the headline construction below is measured against.
+    cdfmm::UniformFmmOptions cold_options = options;
+    cold_options.enable_cache = false;
     std::vector<WorkloadTiming> timings;
     timings.reserve(static_cast<std::size_t>(samples));
     for (int sample = 0; sample < samples; ++sample) {
         const auto total_start = Clock::now();
         const auto construction_start = Clock::now();
-        cdfmm::UniformFmm fmm(source_positions, target_positions, options);
+        cdfmm::UniformFmm fmm(source_positions, target_positions, cold_options);
         std::vector<cdfmm::PotentialField> results(target_positions.size());
         const double construction_seconds = std::chrono::duration<double>(
             Clock::now() - construction_start
@@ -612,6 +621,117 @@ WorkloadTiming benchmark_cpu_direct_workload(
         timings.push_back({0.0, evaluation_seconds, evaluation_seconds});
     }
     return median_timing(timings);
+}
+
+// Returns the slice of a finite-body record list for bodies
+// [first, first + count): a single shared record stays shared, a per-body
+// list is sliced in user order.
+template <typename Record>
+std::vector<Record> body_record_slice(const std::vector<Record>& records,
+                                      const std::size_t first,
+                                      const std::size_t count)
+{
+    if (records.size() <= 1) {
+        return records;
+    }
+    return std::vector<Record>(
+        records.begin() + static_cast<std::ptrdiff_t>(first),
+        records.begin() + static_cast<std::ptrdiff_t>(first + count));
+}
+
+// Exact FP64 all-pairs reference for finite bodies at the selected targets.
+// The benchmark's finite bodies enter the FMM with exact near-field tensors,
+// so a point-dipole sum is not their reference: it would report the
+// geometry-model difference as FMM error. Every pair here is the exact
+// pair tensor of the two bodies (self pairs included, since a finite self
+// field is physical; point self pairs are omitted by identity). The dense
+// plan holds N_t x N_s tensors, so it is built block by block within a
+// fixed memory budget.
+std::vector<Vec3> exact_finite_reference(
+    const cdfmm::UniformFmmOptions& options,
+    const std::vector<Vec3>& source_positions,
+    const std::vector<Vec3>& target_positions,
+    const std::vector<std::size_t>& target_indices,
+    const std::vector<int>& target_identities,
+    const std::vector<Vec3>& moments)
+{
+    constexpr std::size_t budget_bytes = std::size_t{1} << 30;
+    constexpr std::size_t bytes_per_pair = 6 * sizeof(double);
+    constexpr std::size_t target_block = 2048;
+    const std::size_t target_count = target_indices.size();
+    const std::size_t source_count = source_positions.size();
+    std::vector<Vec3> fields(target_count, Vec3{0.0, 0.0, 0.0});
+    for (std::size_t target_first = 0; target_first < target_count;
+         target_first += target_block) {
+        const std::size_t targets_here =
+            std::min(target_block, target_count - target_first);
+        std::vector<Vec3> block_targets(targets_here);
+        std::vector<cdfmm::CuboidSize> block_target_sizes;
+        std::vector<cdfmm::Tetrahedron> block_target_tetrahedra;
+        for (std::size_t local = 0; local < targets_here; ++local) {
+            const std::size_t index = target_indices[target_first + local];
+            block_targets[local] = target_positions[index];
+            if (options.target_sizes.size() > 1) {
+                block_target_sizes.push_back(options.target_sizes[index]);
+            }
+            if (options.target_tetrahedra.size() > 1) {
+                block_target_tetrahedra.push_back(
+                    options.target_tetrahedra[index]);
+            }
+        }
+        if (options.target_sizes.size() == 1) {
+            block_target_sizes = options.target_sizes;
+        }
+        if (options.target_tetrahedra.size() == 1) {
+            block_target_tetrahedra = options.target_tetrahedra;
+        }
+        const std::size_t source_block = std::max<std::size_t>(
+            1, budget_bytes / (bytes_per_pair * targets_here));
+        for (std::size_t source_first = 0; source_first < source_count;
+             source_first += source_block) {
+            const std::size_t sources_here =
+                std::min(source_block, source_count - source_first);
+            // Target identities are global source indices; only those that
+            // fall inside this source block are omitted here.
+            std::vector<int> block_identities(targets_here, -1);
+            for (std::size_t local = 0; local < targets_here; ++local) {
+                const int identity = target_identities[target_first + local];
+                if (identity >= static_cast<int>(source_first) &&
+                    identity < static_cast<int>(source_first + sources_here)) {
+                    block_identities[local] =
+                        identity - static_cast<int>(source_first);
+                }
+            }
+            const std::span<const Vec3> block_sources(
+                source_positions.data() + source_first, sources_here);
+            const std::vector<cdfmm::CuboidSize> block_source_sizes =
+                body_record_slice(options.source_sizes, source_first,
+                                  sources_here);
+            const std::vector<cdfmm::Tetrahedron> block_source_tetrahedra =
+                body_record_slice(options.source_tetrahedra, source_first,
+                                  sources_here);
+            const cdfmm::DenseDirectPlan plan(
+                block_sources,
+                block_targets,
+                options.source_geometry,
+                options.target_geometry,
+                block_source_sizes,
+                block_target_sizes,
+                block_identities,
+                cdfmm::StaticPrecision::Float64,
+                block_source_tetrahedra,
+                block_target_tetrahedra,
+                cdfmm::SourceModel::ExactGeometry,
+                cdfmm::TargetModel::ExactGeometry);
+            const std::vector<Vec3> block_fields = plan.evaluate(
+                std::span<const Vec3>(moments.data() + source_first,
+                                      sources_here));
+            for (std::size_t local = 0; local < targets_here; ++local) {
+                fields[target_first + local] += block_fields[local];
+            }
+        }
+    }
+    return fields;
 }
 
 void write_workload(std::ostream& out, const WorkloadTiming& timing)
@@ -1005,10 +1125,16 @@ int main(int argc, char** argv)
             );
         } else if (selected_backend == BenchmarkBackend::CudaM2LP2P ||
                    selected_backend == BenchmarkBackend::CudaFull) {
+            // WARNING(cdfmm): the warm-up initialises the CUDA runtime only.
+            // It must not read or write the plan cache, or the timed
+            // construction below would load the plan this warm-up just
+            // persisted and report a warm build as cold.
+            UniformFmmOptions warmup_options = selected_options;
+            warmup_options.enable_cache = false;
             UniformFmm warmup_fmm(
                 source_positions,
                 target_positions,
-                selected_options
+                warmup_options
             );
             const auto warmup_results = warmup_fmm.evaluate(
                 moment_states.front(),
@@ -1230,24 +1356,38 @@ int main(int argc, char** argv)
                 std::cerr << "Computing direct all-to-all reference..."
                           << std::flush;
                 const auto direct_start = Clock::now();
-                const auto reference = direct_p2p_reference(
-                    target_positions, source_positions,
-                    moment_states[static_cast<std::size_t>(options.warmups)],
-                    OutputFlags::Field, source_identities
-                );
+                const std::vector<Vec3>& reference_moments =
+                    moment_states[static_cast<std::size_t>(options.warmups)];
+                std::vector<Vec3> reference_fields;
+                if (finite_bodies) {
+                    std::vector<std::size_t> all_targets(
+                        target_positions.size());
+                    std::iota(all_targets.begin(), all_targets.end(),
+                              std::size_t{0});
+                    reference_fields = exact_finite_reference(
+                        selected_options, source_positions, target_positions,
+                        all_targets, source_identities, reference_moments);
+                } else {
+                    const auto reference = direct_p2p_reference(
+                        target_positions, source_positions,
+                        reference_moments, OutputFlags::Field,
+                        source_identities
+                    );
+                    reference_fields.resize(reference.size());
+                    for (std::size_t index = 0; index < reference.size();
+                         ++index) {
+                        reference_fields[index] = reference[index].H;
+                    }
+                }
                 direct_seconds = std::chrono::duration<double>(
                     Clock::now() - direct_start
                 ).count();
                 accuracy_reference_seconds = direct_seconds;
                 std::cerr << " done (" << direct_seconds << " s)\n";
-                evaluate_selected(
-                    moment_states[static_cast<std::size_t>(options.warmups)]
-                );
+                evaluate_selected(reference_moments);
                 std::vector<Vec3> approximate_fields(result.size());
-                std::vector<Vec3> reference_fields(reference.size());
                 for (std::size_t index = 0; index < result.size(); ++index) {
                     approximate_fields[index] = result[index].H;
-                    reference_fields[index] = reference[index].H;
                 }
                 metrics = compute_error_metrics(
                     approximate_fields,
@@ -1285,13 +1425,28 @@ int main(int argc, char** argv)
                           << accuracy_target_count << " sampled targets..."
                           << std::flush;
                 const auto direct_start = Clock::now();
-                const auto reference = direct_p2p_reference(
-                    sampled_targets,
-                    source_positions,
-                    moment_states[static_cast<std::size_t>(options.warmups)],
-                    OutputFlags::Field,
-                    sampled_identities
-                );
+                std::vector<Vec3> sampled_reference;
+                if (finite_bodies) {
+                    sampled_reference = exact_finite_reference(
+                        selected_options, source_positions, target_positions,
+                        sampled_indices, sampled_identities,
+                        moment_states[static_cast<std::size_t>(
+                            options.warmups)]);
+                } else {
+                    const auto reference = direct_p2p_reference(
+                        sampled_targets,
+                        source_positions,
+                        moment_states[static_cast<std::size_t>(
+                            options.warmups)],
+                        OutputFlags::Field,
+                        sampled_identities
+                    );
+                    sampled_reference.resize(reference.size());
+                    for (std::size_t sample = 0; sample < reference.size();
+                         ++sample) {
+                        sampled_reference[sample] = reference[sample].H;
+                    }
+                }
                 accuracy_reference_seconds = std::chrono::duration<double>(
                     Clock::now() - direct_start
                 ).count();
@@ -1309,7 +1464,7 @@ int main(int argc, char** argv)
                     approximate_fields[sample] = result[
                         sampled_indices[sample]
                     ].H;
-                    reference_fields[sample] = reference[sample].H;
+                    reference_fields[sample] = sampled_reference[sample];
                 }
                 metrics = compute_error_metrics(
                     approximate_fields,

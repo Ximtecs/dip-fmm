@@ -76,6 +76,34 @@ value, never by their now-relocated name.
   permutation-layout recognition, and the digest representation determine which
   files an existing installation can still read. Filename padding and the
   `_v02`/`_v04` suffixes are part of that identity.
+- A plan whose near field is position-based (`PointGeometry`, resolved before
+  preparation; `CacheIdentityInputs::position_based_p2p`) builds no pair
+  tensors and writes an empty, format-valid P2P section. It is keyed apart:
+  the filename segment is `_p2p_positions_` and the `"POSG"` marker is hashed
+  after `use_reduced_symmetry_p2p` **only** for such plans, so every
+  stored-tensor key and digest is byte-identical to before and no older
+  binary ever looks such a file up. Its load treats any file holding pair
+  tensors as a miss. Never persist an empty P2P section under a stored-tensor
+  key: nothing validates the section against the topology, so a later
+  stored-tensor plan would silently evaluate without a near field.
+- A dictionary plan (`CacheIdentityInputs::dictionary_p2p`) is keyed apart in
+  the same way, with the `_p2p_dictionary_` segment and the `"DICT"` marker,
+  target tile size and RegularGrid origin hashed only for such plans. Its
+  file ends with a dictionary section (`geometry.cpp`): either the dictionary
+  in the plan's precision plus the FP64/FP32 point potential rows (with an
+  empty canonical section), or, when a RegularGrid-hint dictionary fell back
+  to rows, a marker saying the canonical records are the near field. A warm
+  plan loads every stored representation and builds no pair tensor; the
+  cold/warm test in `tests/test_p2p_chunked_construction.cpp` asserts that
+  through the construction timers. The section is bounds-checked against the
+  live topology on load, so a mismatch is a miss.
+- `CacheFileStream` and `GeometryCacheWriter` write a file incrementally: the
+  payload goes to the temporary file first at the header's offset, the
+  streaming checksum (`StreamingChecksum`, bitwise the one-shot
+  `payload_checksum`) accumulates it, and the header is written last before
+  the usual fsync and rename. `write_cache` and `write_geometry_cache` are one
+  append of the same streams, so every file is byte-identical to the
+  pre-streaming writer; keep it so.
 - Cache misses are non-fatal. A missing, truncated, corrupt, mismatched, or
   incompatible file must remain a rebuildable miss, and a failed write must
   remain a silent zero-byte result. A cache failure cannot alter an evaluation

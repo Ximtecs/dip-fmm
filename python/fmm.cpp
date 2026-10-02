@@ -60,7 +60,15 @@ void bind_fmm_options(py::module_& module)
                      &UniformFmmOptions::use_reduced_symmetry_p2p)
       .def_readwrite("p2p_packing", &UniformFmmOptions::p2p_packing)
       .def_readwrite("point_expansion_execution",
-                     &UniformFmmOptions::point_expansion_execution)
+                     &UniformFmmOptions::point_expansion_execution,
+                     "Point P2M/L2P execution: AUTO (measured policy), "
+                     "PRECOMPUTED (stored rows, every order) or PROCEDURAL "
+                     "(recomputed each evaluation). The expansion order is a "
+                     "run-time choice, but the procedural kernels are compiled "
+                     "per order, for orders 1 to the CMake option "
+                     "CDFMM_PROCEDURAL_MAX_ORDER (10 by default, at most 20); "
+                     "an explicit PROCEDURAL request above it raises "
+                     "ValueError at construction.")
       .def_readwrite("cuda_dictionary_target_owned",
                      &UniformFmmOptions::cuda_dictionary_target_owned)
       .def_readwrite("cuda_dictionary_power2_microtiles",

@@ -15,6 +15,7 @@
 // entries.cuh, procedural.cuh and translation.cuh.
 
 #include "backend/cuda/common/error.hpp"
+#include "backend/cuda/common/upload.hpp"
 #include "backend/cuda/execution_policy.hpp"
 #include "backend/cuda/far_field/entries.cuh"
 #include "backend/cuda/far_field/internal.hpp"
@@ -150,9 +151,10 @@ void upload(T *destination, std::span<const T> values, cudaStream_t stream,
   }
 }
 
-// Builds and uploads the procedural data of one stage: the leaf ranges, the
-// displacement of every point from its leaf centre (computed in FP64 and
-// narrowed once) and the factor table. Returns the uploaded bytes.
+// Builds and uploads the procedural data of one stage: the leaf ranges with
+// their box widths, the displacement of every point from its leaf centre
+// divided by that width (computed in FP64 and narrowed once; see
+// `leaf_width_powers`) and the factor table. Returns the uploaded bytes.
 template <typename Scalar>
 std::size_t build_procedural(DeviceProcedural<Scalar> &device,
                              std::span<const StaticLeafRange> leaves,
@@ -165,15 +167,19 @@ std::size_t build_procedural(DeviceProcedural<Scalar> &device,
   leaf_records.reserve(leaves.size());
   std::vector<ProceduralPoint<Scalar>> displacements(positions.size());
   for (const StaticLeafRange &leaf : leaves) {
+    const StaticFmmTopology::Node &node =
+        nodes[static_cast<std::size_t>(leaf.node)];
+    const double width = 2.0 * node.half_width;
     leaf_records.push_back({leaf.node, static_cast<int>(leaf.begin),
-                            static_cast<int>(leaf.count), 0});
-    const Vec3 centre = nodes[static_cast<std::size_t>(leaf.node)].centre;
+                            static_cast<int>(leaf.count), 0, width});
+    const double inverse_width = 1.0 / width;
     for (std::size_t point = leaf.begin; point < leaf.begin + leaf.count;
          ++point) {
-      const Vec3 d = positions[point] - centre;
-      displacements[point] = {static_cast<Scalar>(d.x),
-                              static_cast<Scalar>(d.y),
-                              static_cast<Scalar>(d.z), Scalar{0}};
+      const Vec3 d = positions[point] - node.centre;
+      displacements[point] = {static_cast<Scalar>(d.x * inverse_width),
+                              static_cast<Scalar>(d.y * inverse_width),
+                              static_cast<Scalar>(d.z * inverse_width),
+                              Scalar{0}};
     }
   }
   std::vector<Scalar> narrowed(factors.size());
@@ -192,8 +198,7 @@ std::size_t build_procedural(DeviceProcedural<Scalar> &device,
   const auto copy = [&](void *destination, const void *source,
                         const std::size_t bytes) {
     if (bytes != 0) {
-      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
-                 description);
+      cuda_detail::upload_to_device(destination, source, bytes, description);
     }
   };
   copy(device.leaves, leaf_records.data(), leaf_bytes);

@@ -135,7 +135,7 @@ production backend accepts and why the exclusions exist.
 | `CpuStatic` (portable, oneMKL) | `CanonicalAos` | any | none |
 | `CpuStatic` | `ParticleRowSoa` | any | none; the default for finite near fields on a `General` layout |
 | `CpuStatic` | `TensorDictionary` | any | point sources need `fixed_target_source_indices` (the self pair is encoded at construction); automatic on `RegularGrid` when the built dictionary has one- or two-byte tokens |
-| `CpuStatic` | `PointGeometry` | point → point only | the fused point executor and the default for point pairs, free-space or periodic; finite geometry is rejected |
+| `CpuStatic` | `PointGeometry` | point → point only | the fused point executor and the default for point pairs, free-space or periodic; finite geometry is rejected; the plan builds no pair tensors, so construction memory does not grow with the list-1 pair count |
 | `CudaPartial`, `CudaFull` | `CanonicalAos` | any | explicit only |
 | `CudaPartial`, `CudaFull` | `LeafBlock` | any | the general default for every geometry (one warp per leaf pair) |
 | `CudaPartial`, `CudaFull` | `CudaBsr3` | any | point sources need `fixed_target_source_indices`; explicit only |
@@ -159,9 +159,10 @@ not selected BSR(3) since leaf blocks became the general default.
 |---|---|---|
 | explicit `p2p_packing` (valid for the plan) | the requested packing | `cuda_dictionary_target_owned` > `cuda_dictionary_power2_microtiles` > source-warp |
 | explicit `use_reduced_symmetry_p2p` (valid) | signed tensor dictionary | as above |
-| point sources and point targets on the CPU, or FP32 point pairs on CUDA, any layout | `PointGeometry`: sorted positions and list-1 records, no pair tensors | — |
-| `RegularGrid` layout, any other plan (FP64 points need a fixed identity map), built dictionary with one- or two-byte tokens | signed tensor dictionary | explicit executor flag if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned from 48 to below 72, source-warp from 72 upwards |
+| FP32 point pairs on CUDA, any layout | `PointGeometry`: sorted positions and list-1 records, no pair tensors | — |
+| `RegularGrid` layout, any other plan (point sources need a fixed identity map), built dictionary with one- or two-byte tokens | signed tensor dictionary | explicit executor flag if set; otherwise power-of-two microtiles below 48 targets per leaf, target-owned from 48 to below 72, source-warp from 72 upwards |
 | `RegularGrid` whose built dictionary needs four-byte tokens (more than 65535 variants) | falls back to the `General` rule | — |
+| point sources and point targets on the CPU, otherwise (`General`, no fixed identity map, or four-byte dictionary tokens) | `PointGeometry`: sorted positions and list-1 records, no pair tensors | — |
 | `General`, finite geometry or FP64 points on CUDA | dense leaf blocks | — |
 | `General`, finite geometry on the CPU | particle-row SoA tensors | — |
 
@@ -182,6 +183,39 @@ outputs, otherwise 4); the resolved choices appear as `spatial_layout` and
 `cuda_policy.*` in the summary. Neither the hint nor the derived packing
 enters the persistent cache. The measurements are recorded in
 `agent_docs/performance_optimization.md`.
+
+### Construction and resident memory
+
+The near field is built one chunk of consecutive target leaves at a time
+(about 4.2 M list-1 pairs per chunk), and each chunk is turned straight into
+the representations the resolved plan keeps; no representation the plan
+does not read is materialised. Chunking never changes a value: every pair
+tensor is a pure function of its displacement and body records, and the rows
+are ordered by target, so the chunked result is bitwise the one-shot result
+(tetrahedron self-systems, which share each tensor with its reciprocal pair,
+are handled by building the reverse pairs a chunk depends on).
+
+| Resolved near field | Built during construction | Resident afterwards |
+|---|---|---|
+| `PointGeometry` (CPU or CUDA) | nothing per pair | nothing per pair |
+| `TensorDictionary` | tokens, chunk by chunk | the dictionary (CPU), nothing on the host (CUDA); point plans also keep the rows their potential output reads |
+| CPU `ParticleRowSoa` | SoA rows in the plan's precision | the SoA rows |
+| CPU `CanonicalAos` | canonical rows in the plan's precision | the canonical rows |
+| CUDA `LeafBlock` | leaf blocks in the plan's precision | nothing on the host |
+| CUDA `CanonicalAos` / `CudaBsr3` | canonical rows in the plan's precision | nothing on the host |
+
+A point near field additionally keeps the SoA rows its `OutputFlags::Potential`
+evaluation reads (FP32 always, FP64 on a periodic plan) except on `CudaFull`,
+which is field-only; exact finite near fields reject potential output. With
+the geometry cache enabled, the FP64 canonical records are streamed into the
+cache file as they are built rather than held in full, and a dictionary plan
+persists the dictionary it executes (in its own precision) with the rows
+beside it, so a warm construction loads every stored representation and
+builds no pair tensor. A procedural point-expansion stage reads no P2M or
+L2P map: those maps are built only for a shared cache file and are not kept;
+`CudaFull` releases its host far-field maps after upload. The plan statistics
+count what the plan keeps, and are identical for a cold, a warm and an
+uncached construction.
 
 ### Explicit selection
 
@@ -231,11 +265,42 @@ rows built at construction (`3 C` scalars per source and per target,
 `C = (p+1)^2`; 588 bytes per point at `p = 6` in FP32). `Procedural`
 recomputes the operator from the sorted positions during every evaluation with
 the allocation-free solid-harmonic recurrence and retains three `C`-entry
-factor tables instead of the rows. It exists for the spherical basis at orders
-1 to 10 on the static backends; the Cartesian basis keeps its precomputed
-rows, a stage whose far-field model is a finite body keeps its exact
-precomputed rows in every mode, and an explicit `Procedural` request that no
-stage can honour throws `std::invalid_argument` at construction.
+factor tables instead of the rows. The recurrence runs on each point's
+displacement divided by its leaf's box width, with the width powers folded
+into the per-leaf factor products: on the physical displacement, FP32 plans
+at `p >= 17` on trees deeper than four levels returned NaN fields (the
+displacement powers underflowed while the mode factors overflowed), and the
+lower orders paid for subnormal arithmetic. It exists for the spherical basis on the
+static backends, at the orders the build compiled (see below); the Cartesian
+basis keeps its precomputed rows, a stage whose far-field model is a finite
+body keeps its exact precomputed rows in every mode, and an explicit
+`Procedural` request that no stage can honour throws `std::invalid_argument`
+at construction.
+
+### Compiled procedural orders
+
+**The expansion order is always a run-time choice.** Every order runs on every
+backend with `Precomputed` point operators, and finite sources and targets
+never use the procedural path at all. What the build decides is only the
+highest order for which the *procedural* point P2M/L2P kernels exist: each
+order is a separate kernel with its recurrence fully unrolled (the order is a
+template parameter), so every procedural order must be compiled in advance,
+and its code grows roughly as `p^3`. The CMake option
+`CDFMM_PROCEDURAL_MAX_ORDER` sets that limit:
+
+| Setting | Procedural orders | Use |
+|---|---|---|
+| default | 1 to 10 | everything `Auto` selects; ordinary builds and CI |
+| `-DCDFMM_PROCEDURAL_MAX_ORDER=20` (the maximum) | 1 to 20 | explicit `Procedural` at high order, such as matching FMM3D's order (17 at `eps = 1e-4`) |
+
+With the default, nothing changes for `Auto` (it never selects procedural
+execution above order 10) or `Precomputed` at any order. An explicit
+`Procedural` request above the compiled limit throws `std::invalid_argument`
+at construction, naming the option, rather than falling back silently. Raising
+the limit costs build time only: compiling orders 11 to 20 multiplies the
+compile time of the procedural executor several times over (several minutes
+for the CPU executor at 20). The configure summary prints
+`Procedural orders: 1-N`.
 
 `Auto` follows the measurements: the CPU hierarchy (`CpuStatic` and the CPU
 stages of `CudaPartial`) recomputes both operators in FP32 and FP64, where the

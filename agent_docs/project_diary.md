@@ -12,6 +12,18 @@ without removing repeated integration. The shared derivative and index work
 already benefits those paths. The total prism setup timing also contains the
 separate universal-bank improvement, so it is recorded with that caveat.
 
+## 2026-09-23 — memory is not a reason to forget
+
+The construction-memory work began as "build less" and had to be pulled back
+to "build the same, hold it less at once". The first version saved memory by
+rebuilding the dictionary on every warm construction, which is exactly what
+the framework exists to avoid, and it rewrote the plan statistics after
+releasing host copies so that cold and warm plans reported different numbers.
+The correction was to treat both as contracts: whatever a plan stores it
+persists, and whatever it reports is the same however it was built. Checked
+over 90 configurations, the result is not a compromise: the warm dictionary
+plan is 20x faster than before and still at a fraction of the old peak.
+
 ## 2026-09-20 — what pruning is actually for
 
 Phase 4 was the phase most likely to do damage, because "remove what is not
@@ -851,34 +863,3 @@ record, never a mixture that looks like the other, and a `none` in
 measurement. A third, smaller one: an OpenMP region of 50 us has a
 thread-wake jitter far larger than any clock read, so the small dense case
 had to be settled single-threaded. Final freeze at `48c2142`.
-
-## 2026-10-02 — tetrahedron P2M/L2P construction
-
-The Kuhn-mesh construction benchmark isolated repeated finite-geometry
-monomial integration in tetrahedron P2M/L2P. A shared exact O(p^3) averaged
-monomial table, accumulated in long double and retained in double, now feeds
-both Cartesian and spherical endpoints. The existing public scalar evaluator
-remains unchanged. A focused port of the constant-index and Laplace-derivative
-recurrences also removed the cold universal-bank bottleneck; the prior
-exception behaviour is retained with widened indices. No backend, P2P,
-public/ABI surface, cache identity/format/version, or policy changed.
-Recurrence rounding may change coefficient bytes under existing compatible
-cache keys.
-
-On the recorded Kuhn mesh, FP32 order-10 construction fell from 171.33 s to
-0.447 s on CPU with bit-identical fields, and from 162.72 s to 0.465 s on CUDA
-with field relative L2 error `6.47e-8`. FP64 order-6 field errors were
-`5.04e-17` CPU and `1.25e-16` CUDA. GPU endpoint builds fell from 19.956 s to
-1.675 ms for P2M and 48.133 s to 2.367 ms for L2P. Fully cold,
-cache-disabled totals are 80–94 s; the retained Article1 profile reports
-68.4 s total and 0.069 s for the bank. The reason for the earlier bank time
-is unverified, so these total timings cannot be conflated. Larger cases expose remaining P2P cost (for
-example 1.763 s at n=10, p=10, depth 3) and very high order-20 universal-bank
-cost (6.412 s), which this task did not change.
-
-CPU/CUDA CTest passed 265/265 with 4/1 expected skips; focused pytest against
-the matching builds passed 41/46 with 7/2 skips. Independent tester review
-passed. `sphinx-build -W --keep-going -b html docs docs/_build/html` exited 0.
-GCC 13, oneMKL, Fortran,
-and Windows were not validated. Changes are uncommitted; unrelated workspace
-paths were preserved.

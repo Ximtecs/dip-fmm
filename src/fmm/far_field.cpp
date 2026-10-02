@@ -200,6 +200,7 @@ void UniformFmm::upward_pass_prepared_float() {
     if (procedural_p2m_) {
       cpu_packing_->procedural_fp32.apply_p2m(
           nodes[static_cast<std::size_t>(leaf_index)].centre,
+          nodes[static_cast<std::size_t>(leaf_index)].half_width,
           std::span<const Vec3>(topology_->sorted_source_positions)
               .subspan(leaf_range.begin, leaf_range.count),
           leaf_moments, M.data());
@@ -307,7 +308,7 @@ void UniformFmm::upward_pass_prepared() {
               .subspan(leaf_range.begin, leaf_range.count);
       if (procedural_p2m_) {
         cpu_packing_->procedural_fp64.apply_p2m(
-            leaf.centre,
+            leaf.centre, leaf.half_width,
             std::span<const Vec3>(topology_->sorted_source_positions)
                 .subspan(leaf_range.begin, leaf_range.count),
             leaf_moments, M.data());
@@ -497,7 +498,8 @@ void UniformFmm::downward_pass_for_output(const OutputFlags output,
       if (procedural_l2p_ &&
           l2p_executor != StaticOperatorExecutor::Reference) {
         cpu_packing_->procedural_fp64.apply_l2p(
-            leaf.centre, targets.subspan(leaf_range.begin, leaf_range.count),
+            leaf.centre, leaf.half_width,
+            targets.subspan(leaf_range.begin, leaf_range.count),
             L,
             std::span<PotentialField>(sorted_results_)
                 .subspan(leaf_range.begin, leaf_range.count),
@@ -605,6 +607,7 @@ void UniformFmm::downward_pass_float_for_output(const OutputFlags output,
       if (procedural_l2p_) {
         cpu_packing_->procedural_fp32.apply_l2p(
             nodes[static_cast<std::size_t>(leaf_index)].centre,
+            nodes[static_cast<std::size_t>(leaf_index)].half_width,
             std::span<const Vec3>(topology_->sorted_target_positions)
                 .subspan(leaf_range.begin, leaf_range.count),
             L,

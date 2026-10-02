@@ -45,8 +45,81 @@ Validation: CPU and CUDA CTest each 265/265 with expected skips (4 CPU, 1
 CUDA); focused pytest against the actual builds: CPU 41 passed / 7 skipped,
 CUDA 46 passed / 2 skipped. Independent review passed. `sphinx-build -W
 --keep-going -b html docs docs/_build/html` exited 0. GCC 13, oneMKL, Fortran, and Windows
-were not validated in this session. Work remains uncommitted; unrelated
-`.claude/`, `Article1_old/`, and `examples/simple_notebooks/` are preserved.
+were not validated in this session. Construction work is committed as
+`0c77bd7`; unrelated `.claude/`, `Article1_old/`, and
+`examples/simple_notebooks/` are preserved.
+
+## Near-field construction: memoised exact operators and a faster prism-prism tensor: COMPLETE — 2026-09-29
+
+The chunked near-field build rebuilt every recurring exact operator once per
+chunk; `ChunkBuilder` now carries an `ExactOperatorMemo` across chunks and
+hands each chunk to the builder already in canonical order (no sort, no
+copy), bit-identically. The prism-prism tensor shares its transcendentals
+across the six components and uses 27 points instead of 64 for equal prisms:
+130 -> 12.8 us per tensor, agreeing with the old kernel to FP64 rounding
+(not bitwise). 32^3 prism construction at depth two: 395 -> 124 s. See
+`latest_session_work.md` (2026-09-29) and `performance_optimization.md`.
+
+## Procedural point kernels on the leaf-normalised displacement: COMPLETE — 2026-09-29
+
+FP32 procedural P2M/L2P returned NaN at p >= 17 on deep trees (underflowing
+d^l times overflowing mode factors). The recurrence now runs on d / w with
+the width powers folded into the factor products; no plan, cache or API
+change; CPU FP32 high orders faster, everything else unchanged. Details in
+`latest_session_work.md`.
+
+## CUDA plan uploads ordered before the first evaluation: COMPLETE — 2026-09-28
+
+The intermittent CudaPartial wrong near fields under GPU sharing were
+construction uploads still in flight (`cudaMemcpy` from pageable memory is not
+ordered with non-blocking streams). `cuda_detail::upload_to_device` waits for
+them. Details in `latest_session_work.md`.
+
+## Universal operator bank construction: COMPLETE — 2026-09-28
+
+Constant-time `MultiIndexSet::index` and the Laplace-derivative recurrence:
+the p = 15 bank builds in ~1 s instead of ~47 min, fields unchanged to
+rounding, evaluation untouched. Details in `latest_session_work.md`.
+
+## Procedural point expansions up to order 20, as a build option: COMPLETE — 2026-09-28
+
+`CDFMM_PROCEDURAL_MAX_ORDER` (default 10, at most 20) sets the compiled
+procedural orders; explicit requests above it throw. `Auto` unchanged
+(procedural only to order 10). Restores CI time; Article1 builds 20.
+Details in `latest_session_work.md`.
+
+## Exact tetrahedron pair tensors near degeneracy and at separation: COMPLETE — 2026-09-24
+
+The analytical triangle-triangle reduction returned up to 73 % errors (and
+hundreds of times the tensor) for nearly coplanar or nearly touching faces,
+and up to 1.5e-5 for separated irregular pairs below eight circumradii.
+Nearly parallel faces are projected onto parallel planes, ulp heights snap to
+zero, the rank threshold is 1e-4, and pairs from 1.5 circumradii are averaged
+by a graded Gauss ladder. Remaining documented limit: about 3e-4 for bodies
+separated by gaps of 1e-5 to 1e-3 of their size. Details in
+`latest_session_work.md`; mathematics in `docs/math/finite-geometry.md`.
+
+## Near-field construction memory and persisted dictionaries: COMPLETE — 2026-09-23
+
+Chunked near-field construction, streamed geometry-cache writes, an
+incrementally tokenised signed dictionary persisted under `_p2p_dictionary_`
+in the plan's precision, and per-plane CUDA leaf uploads. Canonical-keyed
+cache files are byte-identical to `d745503`; cold, warm and uncached plans
+report identical statistics over 90 configurations; warm dictionary plans
+build no pair tensor. Details and numbers: `latest_session_work.md` and
+`performance_optimization.md`, "Construction memory and persisted
+dictionaries".
+
+## Article1 preparation fixes: COMPLETE — 2026-09-23
+
+Branch `article1-benchmark-fixes` from `aa9d75f`. Four defects found while
+preparing Article1 (explicit CPU packing lost to the layout hint; CUDA
+warm-up polluting cold-construction measurements; point reference for
+finite-body accuracy; dense exact-reuse sampling blind above 32768 sources)
+and the Phase-3C lead-7 limit (`PointGeometry` plans built the full stored
+tensor list) are fixed with regression tests. Evidence and numbers are in
+`latest_session_work.md` (2026-09-23). The Article1 campaign must be rebuilt
+from the resulting SHA.
 
 ## Phase 5 low-overhead timing and implementation freeze: COMPLETE — 2026-09-21
 

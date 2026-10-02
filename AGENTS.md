@@ -56,8 +56,9 @@ choice, not a mathematical requirement (`docs/architecture.md`, "Precomputed
 and procedural representations"); the position-based `PointGeometry` P2P now
 runs on the CUDA backends too and is the FP32 default for point pairs, and
 the point-source P2M / point-target L2P have a procedural representation
-(`UniformFmmOptions::point_expansion_execution`, spherical basis, orders 1-10)
-that is the default on the CPU hierarchy and for FP32 `CudaFull`; finite
+(`UniformFmmOptions::point_expansion_execution`, spherical basis, orders 1 to
+the CMake option `CDFMM_PROCEDURAL_MAX_ORDER`, 10 by default and at most 20;
+`Auto` selects it only to order 10, the measured range) that is the default on the CPU hierarchy and for FP32 `CudaFull`; finite
 tiles keep their exact precomputed operators. **Phase 3B.5b is also
 COMPLETE**: the finite half of that sentence is now measured rather than
 assumed. Every exact finite P2P, P2M and L2P operator was benchmarked in both
@@ -83,7 +84,15 @@ operators by two orders of magnitude, with byte-identical persisted plans
 throughout. No cache format, cache key, C ABI, Python API or Fortran
 interface changed; the canonical near-field build for point plans was
 deliberately left in place, because skipping it would change cache contents
-under a key that distinguishes neither packing nor backend. **Phase 3C.5
+under a key that distinguishes neither packing nor backend. (It has since been
+removed for plans whose policy resolves to `PointGeometry` before preparation:
+such a plan builds and persists no pair tensors and keys its geometry file
+with a separate `_p2p_positions_` segment, so every stored-tensor key is
+unchanged; see `src/cache/AGENTS.md`. The near field is now built in chunks
+of target leaves, bitwise equal to one chunk, and a dictionary plan persists
+its dictionary under `_p2p_dictionary_`, so a warm plan builds no pair
+tensor; see `agent_docs/performance_optimization.md`, "Construction memory
+and persisted dictionaries".) **Phase 3C.5
 (dense/all-to-all construction) is also COMPLETE.** The same invariant carries
 to the exact dense baseline, which Phase 3C had not touched: a dense pair
 tensor is a pure function of the displacement, the two body records and

@@ -14,7 +14,7 @@ to 0.114 s, including the independent shared universal-bank improvement.
 Far, near and total fields agree with the pre-change extension at relative
 L2 `3.9e-16`, `1.0e-17` and `1.8e-17`; they are not bit-identical. Focused
 prism moment and cuboid FMM tests pass. Evidence is under
-`benchmarks/baselines/prism-construction/`. Changes are uncommitted.
+`benchmarks/baselines/prism-construction/`. Construction changes are committed as `0c77bd7`.
 
 ## 2026-10-02 — tetrahedron construction optimisation
 
@@ -42,12 +42,407 @@ CPU and CUDA CTest: 265/265 each (4 and 1 expected skips). Focused pytest
 against the actual respective builds: 41 passed / 7 skipped CPU and 46
 passed / 2 skipped CUDA. Independent review passed. `sphinx-build -W
 --keep-going -b html docs docs/_build/html` exited 0. GCC 13, oneMKL, Fortran,
-and Windows unvalidated. Uncommitted;
-unrelated `.claude/`, `Article1_old/`, and `examples/simple_notebooks/`
-preserved. Session validation is complete; the benchmark record is ready for
-review and retention as an engineering baseline.
+and Windows unvalidated. The construction changes are committed as `0c77bd7`; the unrelated
+`.claude/`, `Article1_old/`, and `examples/simple_notebooks/` directories are
+preserved. Session validation is complete; the benchmark record is retained
+as an engineering baseline.
 
----
+## 2026-09-29 — Near-field construction: exact operators memoised across chunks, faster prism-prism tensor
+
+An Article1 construction probe put prism near-field construction at
+0.95-1.5 us per pair, growing with the total pair count, with the canonical
+operator phase at 73-80 % of it. A per-step trace of that phase on 20^3
+bodies at depth one (8 chunks of 8 M pairs) gave, per chunk: tensor build
+3.4 s (64 %), classification 0.8 s, `std::sort` 0.73 s, zero-fill 0.22 s,
+copy 0.13 s, with 421 875 classes per chunk; one exact prism-prism tensor
+cost 130 us (6 components x 64 corner points, each a `long double` hypot,
+three logs and three atans).
+
+Two causes. (1) The chunked build (2026-09-23) classifies each chunk on its
+own, so a displacement class that recurs in every chunk -- every one on a
+lattice -- was rebuilt once per chunk; Phase 3C's monolithic build had
+classified once. (2) Lattice displacements are not bitwise equal after the
+1e-9 canonical-grid normalisation: grid 20 has 704 969 distinct displacement
+bit patterns for 59 319 index differences, and a spacing-1.0 lattice
+normalises to the same plan. (2) is recorded, not changed: the normalised
+coordinates are cache contents under the geometry key.
+
+Fix A, bitwise preserving: `ExactOperatorMemo` and the shared
+`build_exact_operator_classes` loop in `operators/exact_operator_reuse.hpp`,
+used by all three classified branches of the builder; the internal entry
+`build_static_p2p_operator_memoised` (`operators/p2p_memoised.hpp`) takes
+the pair list by value; `ChunkBuilder` owns the memo across chunks and
+expands each chunk target-major so the builder's `is_sorted` guard skips the
+sort. With it: the parallel first-seen classification (thread-count
+independent numbering) and the per-block contiguous transpose in the signed
+dictionary builder. Persisted plans and fields are SHA-identical to ee0319a
+on four cases; canonical phase 44.5 -> 18.1 s (20^3 d1), 316 -> 194 s
+(32^3 d2).
+
+Fix B, a rounding-level change (approved): the prism-prism tensor evaluates
+the distance, three arctangents and six logarithms once per point for all
+six components, and where the two prisms have equal half-width along an axis
+merges that axis's coincident points into the second-difference weights
+(1, -2, 1): 27 points instead of 64 for equal prisms. 130 -> 12.8 us per
+tensor (equal), 28.7 us (unequal). FP64 dense fields agree with ee0319a to
+1.1e-15 of |H|max (5.8e-13 relative on near-cancelling components); FP32
+plans show single-ULP flips. Persisted prism plans therefore differ in their
+last bits under unchanged keys; the Article1 frozen runtimes are unaffected
+and a future frozen runtime builds its own caches.
+
+Combined, exact-spacing lattice, 16 E-core threads: 20^3 d1 construction
+61.0 -> 25.8 s (canonical 44.5 -> 11.2 s); 32^3 d2 395 -> 123.5 s (canonical
+316 -> 53.5 s). The derived dictionary packing (10.5 s / 55.7 s) is now the
+largest phase. Evidence: portable -Werror CTest 270/270; CUDA build (order
+20) CTest 270/270 with the GPU; pytest 186 passed, 1 skipped; the new test
+checks equal prisms' merged sum against the 64-term reference at 4e-12. No
+cache format, cache key, C ABI, Python API, Fortran interface or automatic
+policy changed.
+
+## 2026-09-29 — Procedural point kernels evaluate on the leaf-normalised displacement
+
+Article1's `external_order17` and `external_order20` returned NaN fields for
+FP32 procedural plans at p = 17 from depth five and at p = 20 from depth
+three, on CudaFull, and the CPU reproduced it. Per-level probes showed every
+stored multipole and local finite, and the precomputed FP32 rows accurate to
+5e-7 at the same settings, so the far-field representation was sound; the
+procedural P2M/L2P alone failed. The recurrence ran on the physical
+displacement (d^l underflows for a deep leaf) and the physical locals were
+scaled by f_{l,m} = sqrt((l-m)!(l+m)!) ~ 1e24 at l = 20 (overflow); the FP32
+slowness of the procedural path at high order (2026-09-28 entry) was the same
+arithmetic running in subnormals.
+
+Fix (one commit): both executors evaluate the recurrence on d / w with w the
+leaf's box width (exact, a power of two) and fold w^(l-1) / w^l into the
+per-leaf factor products, factor times power first (`leaf_width_powers`,
+`for_each_mode` in `operators/point_expansion_kernel.hpp`). The CPU executor
+takes the leaf half-width; the CUDA `ProceduralLeaf` carries the width and
+the staged displacements are pre-divided. The kernel test adds a depth-six
+leaf with physical-scale locals at every compiled order.
+
+Evidence: CTest 269/269 (portable -Werror; CUDA at order 20), 41 device
+cases, pytest 180/7 skipped. FP32 p17 d5 / p20 d3-d5 finite and equal to the
+precomputed path on CpuStatic and CudaFull. A/B against be4cf69: CUDA
+0.98-1.00x, CPU FP64 and p <= 10 0.99-1.01x, CPU FP32 p15/p17/p20
+0.90/0.85/0.78x (P2M+L2P at p17 20.7 -> 1.7 ms). The per-level
+normalisation of all far-field coefficients that was first considered is
+NOT needed and was not done: physical-unit coefficients stay within FP32
+range at every practical depth (locals reach ~1e20 at depth five, p = 17).
+
+## 2026-09-28 — CUDA plan uploads were not ordered before the first evaluation
+
+The intermittent CudaPartial failures first seen 2026-09-23 ("periodic plans
+agree across the packings...", and once "every near-field geometry pair...")
+are fixed. They appeared only when other processes shared the GPU: 4-6 of 12
+runs failed with four concurrent test processes, and 5 of 12 with a single
+copy while other processes merely ran CUDA work on other cores; CPU load alone
+never failed (0/12), and neither `CUDA_LAUNCH_BLOCKING=1` (4/12) nor one
+OpenMP thread (5/12) removed it. compute-sanitizer initcheck, memcheck,
+racecheck and synccheck were clean on both tests.
+
+An instrumented test located it: the far field was always right, the near
+field wrong, and a failing plan's first evaluation was wrong while a later one
+of the same plan was often right, with errors equal to the whole field scale
+(the previous plan's near field). Cause: every CUDA P2P plan constructor (and
+the leaf, point-geometry and dictionary upload helpers shared with CudaFull,
+and the CudaFull far-field executor) uploaded its static data with a plain
+`cudaMemcpy` from pageable memory. That call may return once the source is
+staged, before the transfer reaches device memory, and it runs on the legacy
+default stream, which the plans' `cudaStreamNonBlocking` streams are not
+ordered after. On a shared GPU the transfer is late enough that the first
+kernels read stale device memory. `CUDA_LAUNCH_BLOCKING` does not serialise
+copies, and the sanitizers serialise everything, which is why neither showed
+it.
+
+Fix: `backend/cuda/common/upload.hpp::upload_to_device` (copy, then wait for
+the device) replaces all 19 construction-time host-to-device `cudaMemcpy`
+calls; CudaFull's first-evaluation identity upload became a stream-ordered
+`cudaMemcpyAsync` on the near-field stream that reads it. Construction only,
+so evaluation gains no synchronisation. Verified under the conditions that
+failed before: periodic test single copy with GPU burners 0/12 (was 5/12),
+4 concurrent copies 0/12 (was 5/12), matrix test 4 concurrent 0/12, full
+CTest with 4 parallel GPU processes 269/269. No deterministic regression test
+exists for it: the window is the last staged chunk of an upload and closes
+unless another process delays the transfer; the stress run is the evidence.
+
+## 2026-09-28 — Procedural orders are a build option (default 10, at most 20)
+
+CI had grown from ~10 min (bc6adfa) to ~34 min (5eea2d8). The C++ tests were
+unchanged (~2 min); the LTO links were 4-5x slower (libcdfmm_c.so 48 -> 228 s,
+the Python module 46 -> 226 s, 16 cores). Compiling the procedural point
+P2M/L2P to order 17 was the cause: each order is its own fully unrolled
+kernel, per precision and lane width, code growing about as p^3, and as LTO
+bytecode it is re-generated in every link of the static core. Extending to 20
+would have roughly doubled it again (the CPU executor alone compiled for
+583 s without LTO).
+
+Two remedies were measured:
+
+- Compiling `procedural.cpp` without LTO cut the links to seconds (GCC 13:
+  117 -> 3 s, 139 -> 5 s) with bitwise-identical fields, but the FP64
+  P2M+L2P ran 25-40 % slower at every order 6-17 in an interleaved A/B on the
+  P-cores (FP32 5-15 % faster). Rejected for production.
+- The compiled range became the CMake option `CDFMM_PROCEDURAL_MAX_ORDER`
+  (default 10 = the `Auto` range, at most 20 = the recurrence bound). One
+  compile-time helper, `operators::point_expansion::dispatch_procedural_order`,
+  enumerates the orders for the CPU executor and both CUDA launchers. The
+  expansion order stays a run-time choice; `Auto` and `Precomputed` work at
+  every order; only an explicit `Procedural` above the limit throws, naming
+  the option. Default build: portable build + CTest in 120 s,
+  `procedural.cpp` 2 s, libcdfmm_c link 42 s.
+
+Article1's frozen runtimes configure `-DCDFMM_PROCEDURAL_MAX_ORDER=20` for the
+FMM3D comparison at p = 17 and 20. The option is documented in
+`docs/backends.md` ("Compiled procedural orders"), `docs/installation.md`,
+the `point_expansion_execution` Doxygen and the Python docstring.
+
+Found on the way, not changed: on the CPU the FP32 procedural P2M+L2P is
+slower than FP64 above order ~10 (p = 17: ~20 ms against ~2 ms, 64k points);
+subnormal arithmetic in the high-order recurrence is the likely cause
+(unverified).
+
+## 2026-09-28 — Universal operator bank built in seconds instead of hours
+
+Article1's p = 15 cases each spent ~47 min building the universal bank (8 M2M,
+8 L2L, 316 M2L over offsets |d| <= 3), ~2.6 h at p = 17. Two construction-only
+defects in `math`, both independent of geometry, backend and precision:
+
+- `MultiIndexSet::index` searched the storage order linearly (O(p^3) per
+  call) inside the innermost loops of the spherical M2L builder; it is now a
+  closed form (`dc32d1e`). Banks byte-identical at p = 4, 6, 8, 10.
+- `laplace_derivatives_raw` composed 1/|r| in truncated Taylor jets
+  (4,470 core-seconds per p = 15 bank). It now uses the exact recurrence
+  |r|^2 |k| c_k = -(2|k|-1) sum_i r_i c_{k-e_i} - (|k|-1) sum_i c_{k-2e_i}
+  (`abe6aa8`), agreeing with the jets to 1e-12 of the same-order scale
+  through order 30.
+
+Bank build, 16 E-cores: p = 10 53.8 s -> 0.21 s, p = 15 ~47 min -> 1.19 s,
+p = 17 ~2.6 h -> 2.40 s. FMM fields against frozen `bc6adfa` (8000 random
+points, depth 3, FP64, cache off): max |dH| / max |H| = 1.3e-18 (spherical
+p = 10) and 6.3e-19 (Cartesian p = 8). Evaluation code, plans, cache keys and
+format are unchanged; banks differ from earlier ones at rounding level only,
+so `kOperatorVersion` is deliberately not bumped and cached banks stay valid.
+Validation: CTest 269/269 in the CUDA + oneMKL build with the RTX 5090
+visible and in the portable warnings-as-errors build (its four oneMKL/CUDA
+cases skip); pytest 186 passed,
+1 skipped (MagTense not installed).
+
+CI (GCC 13) then failed "M2P output flags control potential and field
+evaluation" by one ulp: with the transparent `index()`, GCC 13 contracted
+the flag-specialised clones of `m2p::evaluate` differently (GCC 15 did not).
+`05ba73b` accumulates M2P with explicit `std::fma`; CTest 269/269 with
+conda-forge GCC 13.4. M2P is the validation-only `m2p_eval`, so Article1's
+frozen `ee80109` runtime, which lacks this commit, measures the same.
+
+## 2026-09-27 — Procedural point expansions compiled to order 17
+
+FMM3D chooses its expansion order from eps with `l3dterms` (worst-case decay
+(sqrt(3)/2)^j / 1.5^(j+1) < eps, the same order at every level): 17 at
+eps = 1e-4 and 25 at eps = 1e-6, while both reach ~1e-7. Article1 compares
+dip-fmm at FMM3D's eps = 1e-4 order, so the procedural P2M/L2P are now
+compiled to order 17 (both targets; recurrence bound 17). As at order 15,
+`Auto` is unchanged (procedural only to order 10); nothing at orders 1-15
+changes. Order 25 was not pursued: its universal bank would take days to build.
+Tests: the kernel test covers orders 1-17 in FP64 and FP32; the validation
+test rejects order 18.
+
+## 2026-09-25 — Procedural point expansions compiled to order 15
+
+For Article1's FMM3D comparison at p = 15 (FMM3D reaches ~1e-7; dip-fmm at
+p = 10 stops near 1e-5 in FP32), the procedural point-source P2M and
+point-target L2P are now compiled for orders 1 to 15 on the CPU and CUDA
+(`max_procedural_order`, the CPU executor's `max_order`, both dispatch
+switches, and the solid-harmonic recurrence bound, raised from 12). The
+automatic policy is unchanged: its measurements cover orders up to 10, so
+`Auto` stays precomputed above 10 and orders 11-15 are procedural on explicit
+request only; nothing at orders 1-10 changes. The explicit-request bound is 15
+(validated before the operator bank is built; the resolved choice is read by
+neither the static plan nor the cache, so no cache key or format changes).
+Tests: the kernel test now reproduces the canonical rows at every order 1-15
+in FP64 and FP32 (5e-5 of the field scale), and the validation test rejects
+order 16. CTest 267/267 (portable warnings-as-errors build; CPU procedural
+tests in the CUDA build with the device hidden); the CUDA procedural tests run
+as a scheduler job so they never overlap a timed benchmark.
+
+## 2026-09-24 — Exact tetrahedron pair tensors: near-degenerate and separated pairs fixed
+
+Found by Article1's `finite_endpoint` campaign: on `tetra_mesh_irregular_8`
+(a conforming Kuhn mesh with jittered nodes) the error sat at 1.5e-2 for
+every order, depth and endpoint model. Three defects of
+`src/geometry/primitives/tetrahedron.cpp`, all in the analytical
+triangle-triangle reduction (Gumerov, Kaneko and Duraiswami), were
+responsible; `d745503` and `7bbb268` behave identically, so none is a
+regression of the construction work.
+
+1. **Nearly coplanar faces.** The parallel branch was taken only for normals
+   equal to 1e-14 while the Gram-Schmidt rank test dropped directions below
+   sqrt(256 eps) = 2.4e-7, so tilts of 1e-14 to 2.4e-7 ran the general branch
+   on a rank-deficient basis (a steady 73 % error) and larger tilts cancelled
+   catastrophically (hundreds of times the tensor at 1e-6). Face pairs within
+   1e-3 of parallel are now projected onto planes normal to their mean normal
+   (each through its own centroid; symmetric in the two faces) and take the
+   parallel branch; heights below 1e-10 are zero, which removes 1e-7 errors
+   from nearly shared vertices.
+2. **Nearly dependent directions.** The rank threshold is now 1e-4 of the
+   basis scale. Raised on its own it broke a separated pair (a 0.005 tensor
+   became -158), which is why it is safe only together with 3.
+3. **Separated pairs.** The reduction was only switched off beyond eight
+   summed circumradii, but it is ill-conditioned well before: on random
+   irregular tetrahedra its error grows from a median of 3e-11 at 1.5
+   circumradii to 2e-8 at eight, with outliers of 1.5e-5 (nearly parallel
+   edges). From 1.5 circumradii pairs are now averaged by collapsed Gauss
+   quadrature of the exact source point field: seven points from 1.5, six
+   from 2, five from 4 (each below about 2e-10; 6e-11 measured).
+
+Why the FMM exposed it: its normalisation and the dataset's
+centroid-plus-offset records turn exactly shared edges into ulp-level near
+misses, while the dense reference happened to see some of them differently;
+the frozen build's FMM and dense plans disagreed by 1.5e-2 even on isolated
+irregular tetrahedra.
+
+Evidence (all FP64). Shared-edge sweep: ulp-level mismatches now evaluate as
+the exact mesh (worst excess 6.7e-12, was 0.73); genuinely near-touching
+bodies (gaps 1e-5 to 1e-3 of their size) stay within 3.4e-4 of the physical
+change (was 3.1e3) -- the one documented remaining limit. 200 random
+separated pairs, ratio 3-8, against a 12^3 Gauss reference: worst 6.0e-11
+(was 6.5e-5). Self tensors: V trace = -1 to 6e-15. FMM against freshly
+computed dense references: irregular Kuhn mesh 8.5e-4 / 3.3e-5 / 1.9e-5 at
+p = 4 / 8 / 10, depth 2 (was 1.5e-2 flat; depth 3 converges more slowly,
+to 1.1e-4, because jittered bodies overhang one-cell leaves); isolated
+irregular tetrahedra to 1e-7 (was 1.5e-2); regular 8^3 mesh unchanged
+(5e-6). Cold construction, 8 P-cores, against `7bbb268`: isolated irregular
+tetrahedra 0.71x, mixed prism-tetrahedron 0.96x, regular 16^3 mesh 1.13x,
+irregular mesh 1.21x (depth 2) and 1.01x (depth 3); evaluation is unchanged.
+Tests: the shared-edge regression (no longer `[!shouldfail]`), a separated
+pair against a 16-point reference, and the far-switch test moved onto the
+ladder boundaries. CTest 267/267 (build-all and the portable
+warnings-as-errors build), `python_tests` 186 passed, 1 skipped.
+
+## 2026-09-23 — Near-field construction memory and persisted dictionaries
+
+Starting HEAD `d745503`. Branch `article1-benchmark-fixes`. The Article1
+stored-tensor tracks were bounded by construction peaks, not by the plan they
+left behind, so construction was restructured without changing any value.
+Governing rule, set by the user: nothing a plan reads, and nothing that makes
+it faster, may go unbuilt or unstored to save memory; warm plans load every
+stored representation and cold/warm logic is unchanged.
+
+**Chunked construction.** `src/fmm/p2p_construction.{hpp,cpp}` builds the
+near field one chunk of consecutive target leaves at a time (2^22, about
+4.2 M list-1 pairs; the header comment records why 2^22 beat 2^24), and each
+chunk goes straight into the representations the plan keeps. Tetrahedron
+self-systems add the reverse pairs a chunk depends on, so reciprocity holds
+across chunks. The signed dictionary is tokenised incrementally
+(`src/plan/p2p/signed_dictionary_builder.hpp`), holding two-byte tokens
+until a variant id needs four. Results are bitwise the one-chunk build
+(`tests/test_p2p_chunked_construction.cpp`, one-pair budget).
+
+**Streamed cache writes.** `CacheFileStream`/`GeometryCacheWriter`
+(`src/cache/`) append the canonical records as they are built and write the
+header last; canonical-keyed files are byte-identical to `d745503` and both
+builds read each other's files (8/8 files).
+
+**Persisted dictionary.** A dictionary plan keys its file
+`_p2p_dictionary_` (tile size and RegularGrid origin hashed) and stores the
+dictionary in the plan's precision plus its point potential rows; a
+RegularGrid fallback stores the canonical records instead. A warm plan builds
+no pair tensor, asserted through the construction timers. 262,144 points,
+64 per leaf, CPU FP32: warm 120.5 s (`d745503`, reads 18.9 GB and rebuilds and
+converts the dictionary) -> 5.8 s (reads 7.8 GB, mostly the FP32 potential
+rows); cold 219 s -> 161 s.
+
+**Released, not skipped.** Representations the resolved executor never reads
+are not built (BSR unless it executes, SoA rows for `PointGeometry`/
+`CanonicalAos`, P2M/L2P maps of procedural stages unless a shared cache file
+needs them); host copies are released after a CUDA upload. The CUDA leaf
+upload transposes one component plane at a time instead of copying all six.
+
+**Statistics.** An intermediate state rewrote statistics after the release
+and disagreed between cold and warm plans. Fixed: 90 configurations (point,
+prism, periodic x `CpuStatic`/`CudaM2LP2P`/`CudaFull` x FP32/FP64 x every
+packing) report identical statistics uncached, cold and warm, and no
+statistic exceeds `d745503` (the one exception, `p2p_canonical_total_bytes`,
+was 0 cold and 56 MB warm there). `StaticP2PCompactPlan::memory()` now counts
+potential coefficients of rows that hold no field tensors.
+
+**Peaks.** 32^3 at 64 per leaf: CPU FP32 rows 12.4 -> 4.3 GB, FP64 point
+dictionary 9.6 -> 3.0 GB, `CudaFull` FP32 10.8 -> 3.7 GB, `PointGeometry`
+far-field plan 2.7 -> 1.4 GB. 262,144 prisms at depth 4 (3.99e8 pairs, FP32):
+dictionary 113 -> 4.93 GB, SoA rows 17.2 GB, `CudaFull` leaf 19.9 ->
+12.5 GB. Evaluation unchanged in an interleaved A/B against `d745503`.
+
+**Validation.** `build-all` (CUDA + oneMKL + OpenMP, g++ 15.3, nvcc 13.3):
+serial CTest 265/265 in 127 s (142 s before the dictionary was persisted);
+`python_tests` 186 passed, 1 skipped (module from `build-all` via
+`PYTHONPATH`); Sphinx `-W` clean. GCC 13 / portable CI and Fortran not built
+locally. Open: the pre-existing CudaPartial periodic packing test fails under
+four concurrent GPU processes on `d745503` too.
+
+## 2026-09-23 — Article1 preparation: four defects found while benchmarking, position-based point plans
+
+Starting HEAD `aa9d75f` (the frozen Phase-5 SHA). Branch
+`article1-benchmark-fixes`. The Article1 campaign exposed four defects and
+one construction limit; each was fixed at the lowest layer with a regression
+test that fails on `aa9d75f`. No public API, C ABI, Python API, Fortran
+interface or cache format changed; the one cache-key change is additive (below).
+
+**1. Explicit CPU `p2p_packing` lost to the regular-grid hint.** On
+`CpuStatic`, `CanonicalAos`, `ParticleRowSoa` and `PointGeometry` requests
+returned from `apply_p2p_packing_request` without being recorded, so the
+`RegularGrid` layout rule still selected, derived and then preferred the
+signed dictionary (resolved `TensorDictionary` for a `CanonicalAos` request).
+The requests now set `explicit_packing`, which the resolver honours verbatim,
+as the public header already promised. `docs/backends.md`'s policy table also
+listed CPU point pairs above the layout rule; the order now matches the code.
+
+**2. `benchmark_uniform_fmm` measured warm CUDA builds as cold.** The CUDA
+runtime warm-up construction, and every workload-comparison construction,
+used the default cache, so an empty `CDFMM_CACHE_DIR` was filled before the
+timed construction read it. Both are now cache-free. Cold `CudaFull` setup of
+a 32^3 lattice is 3.97 s against 3.70 s on `CpuStatic`; warm 0.47 s.
+
+**3. Finite-body accuracy used a point-dipole reference.** The driver's
+`--direct`/`--accuracy-targets` compared exact finite near fields with a
+point-dipole sum. Finite bodies now use an FP64 `DenseDirectPlan` reference
+built in blocks (exact pair tensors, physical self terms). Order 4 on a
+32^3 prism lattice: 2.4e-3 RMS.
+
+**4. The dense exact-reuse gate could never see reuse above 32768 sources.**
+`DenseDirectPlan` classifies pairs target-major and decided from the first
+65536 pairs; one target row has only distinct displacements, so with
+`N_s >= 32768` the sample held at most two rows and classification was always
+abandoned, even on a perfect lattice. The sample now spans at least sixteen
+target rows (`max(65536, 16 N_s)`, identical below 4096 sources, so Phase-3C.5
+numbers are unaffected). 512 targets x 32768 prisms: 271 s -> 3.5 s,
+bit-identical by construction.
+
+**5. `PointGeometry` plans no longer build stored pair tensors.** Recorded as
+Phase-3C lead 7 in `performance_optimization.md`, now resolved there: a plan
+whose policy guarantees `PointGeometry` before preparation skips the pair
+list, canonical operator, compact rows and speculative FP32 BSR, counts
+`p2p_interactions` from the leaf records, and keys its geometry file with
+`_p2p_positions_` plus a conditionally hashed `"POSG"` marker. Stored-tensor
+keys were verified byte-identical against the `aa9d75f` module. 64^3 points
+at 64 per leaf: 66.6 GB / 63.8 s -> 1.46 GB / 2.4 s; 512 per leaf now fits in
+about 1.3 GB (CPU) and 2.0 GB (CudaFull FP32 host).
+
+**Validation (this machine, E-cores 16-31, concurrent single_grain job).**
+CUDA + oneMKL + OpenMP Release build (`build-all`, g++ 15.3, nvcc 13.3,
+RTX 5090): CTest 260/260; `python_tests` 186 passed, 1 skipped, module
+imported from `build-all` via `PYTHONPATH`. Each new test was re-run against
+the reverted source and fails there. The portable CI configuration (GCC 13)
+and the Fortran interface were not built locally.
+
+**Measured, not changed.** With packings honoured, the dictionary reduced the
+P2P operator 20-29x (host) and total device memory 5-11x, but was only
+1.2-1.3x faster than the SoA rows on the CPU; an explicit dictionary request
+without an executor flag runs the source-warp kernel, 1.9x slower than leaf
+blocks for FP64 at 8 per leaf on CUDA (the documented caveat). A CPU point
+lattice with a fixed identity map still selects the dictionary automatically,
+and here it was 1.4x slower than `PointGeometry`, which contradicts the
+Phase-3D ledger; it needs a P-core re-measurement before any policy change.
+Host memory still holds the canonical and row operators beside the dictionary,
+because the free-space potential path reads them.
 
 ## 2026-09-21 — Phase 5 closure follow-up: residual construction clocks, benchmark semantics, C accessor
 

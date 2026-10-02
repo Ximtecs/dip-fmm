@@ -48,8 +48,17 @@ src/
 |-- plan/direct/construction_statistics.hpp internal per-phase construction
 |                                          record read by the benchmark
 |-- plan/p2p/                               canonical and derived P2P packings
+|-- plan/p2p/signed_dictionary_builder.hpp  incremental signed-dictionary
+|                                          tokeniser: one append per chunk of
+|                                          leaf blocks, the one-shot builder is
+|                                          a single append
 |-- periodic.cpp                            periodic support code
 |-- fmm/construction.cpp                    geometry normalisation/construction
+|-- fmm/p2p_construction.{hpp,cpp}         chunked near-field construction:
+|                                          chunks of target leaves, the chunk
+|                                          canonical builder (with tetrahedron
+|                                          reciprocity preserved across chunks)
+|                                          and the row/leaf accumulators
 |-- fmm/plan_preparation.cpp                immutable plans, FP32 quantisation,
 |                                          high-level cache calls
 |-- fmm/execution_setup.cpp                 backend resolution/wiring and P2P policy

@@ -822,9 +822,13 @@ void CudaFullPlan::evaluate(const std::span<const Vec3> moments,
                                    sorted_self_indices.end());
     if (!plan.use_p2p_bsr && !plan.use_p2p_dictionary &&
         !sorted_self_indices.empty()) {
-      check_cuda(cudaMemcpy(plan.self_indices, sorted_self_indices.data(),
-                            sorted_self_indices.size_bytes(),
-                            cudaMemcpyHostToDevice),
+      // NOTE(cdfmm): stream-ordered on the stream whose P2P kernels read
+      // the identities; a plain cudaMemcpy runs on the legacy stream, which
+      // the non-blocking near-field stream is not ordered after
+      // (common/upload.hpp).
+      check_cuda(cudaMemcpyAsync(plan.self_indices, sorted_self_indices.data(),
+                                 sorted_self_indices.size_bytes(),
+                                 cudaMemcpyHostToDevice, plan.near_field_stream),
                  "upload static self identities");
       plan.statistics.setup_h2d_bytes += sorted_self_indices.size_bytes();
     }
@@ -1021,9 +1025,13 @@ void CudaFullPlan::evaluate(
                                    sorted_self_indices.end());
     if (!plan.use_p2p_bsr && !plan.use_p2p_dictionary &&
         !sorted_self_indices.empty()) {
-      check_cuda(cudaMemcpy(plan.self_indices, sorted_self_indices.data(),
-                            sorted_self_indices.size_bytes(),
-                            cudaMemcpyHostToDevice),
+      // NOTE(cdfmm): stream-ordered on the stream whose P2P kernels read
+      // the identities; a plain cudaMemcpy runs on the legacy stream, which
+      // the non-blocking near-field stream is not ordered after
+      // (common/upload.hpp).
+      check_cuda(cudaMemcpyAsync(plan.self_indices, sorted_self_indices.data(),
+                                 sorted_self_indices.size_bytes(),
+                                 cudaMemcpyHostToDevice, plan.near_field_stream),
                  "upload FP32 static self identities");
       plan.statistics.setup_h2d_bytes += sorted_self_indices.size_bytes();
     }

@@ -3,15 +3,19 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
+#include <iterator>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <thread>
 #include <vector>
 #include <unistd.h>
 
 #include "cdfmm/uniform_fmm.hpp"
+#include "cache/internal.hpp"
 
 using namespace cdfmm;
 
@@ -143,6 +147,57 @@ TEST_CASE("cold and warm binary caches preserve complete plan results",
   REQUIRE(warm.static_plan_statistics().total_bytes() ==
           cold.static_plan_statistics().total_bytes());
   require_same_fields(cold_result, warm_result);
+}
+
+TEST_CASE("position-based and stored-tensor plans keep separate geometry files",
+          "[cache]") {
+  // A PointGeometry plan persists an empty P2P section, so it is keyed
+  // apart from a stored-tensor plan of the same geometry: neither may load
+  // the other's file, and both stay correct cold and warm. Stored-tensor
+  // keys keep their established spelling.
+  TemporaryCache cache;
+  const UniformFmmOptions position_options = cache_options();
+  UniformFmm position_cold(positions, targets, position_options);
+  REQUIRE(position_cold.p2p_execution_packing() ==
+          P2PExecutionPacking::PointGeometry);
+  REQUIRE(position_cold.geometry_cache_key().find("_p2p_positions_") !=
+          std::string::npos);
+  REQUIRE_FALSE(position_cold.static_plan_statistics().geometry_cache_hit);
+  const auto position_expected = position_cold.evaluate_float64(moments);
+
+  UniformFmmOptions stored_options = position_options;
+  stored_options.p2p_packing = P2PExecutionPacking::ParticleRowSoa;
+  UniformFmm stored_cold(positions, targets, stored_options);
+  REQUIRE(stored_cold.geometry_cache_key().find("_p2p_canonical_") !=
+          std::string::npos);
+  REQUIRE(stored_cold.geometry_cache_key() !=
+          position_cold.geometry_cache_key());
+  REQUIRE_FALSE(stored_cold.static_plan_statistics().geometry_cache_hit);
+  REQUIRE(stored_cold.static_plan_statistics().p2p_interactions ==
+          position_cold.static_plan_statistics().p2p_interactions);
+  const auto stored_expected = stored_cold.evaluate_float64(moments);
+  REQUIRE(stored_expected.size() == position_expected.size());
+  for (std::size_t index = 0; index < stored_expected.size(); ++index) {
+    REQUIRE(position_expected[index].H.x ==
+            Catch::Approx(stored_expected[index].H.x).margin(1.0e-12));
+    REQUIRE(position_expected[index].H.y ==
+            Catch::Approx(stored_expected[index].H.y).margin(1.0e-12));
+    REQUIRE(position_expected[index].H.z ==
+            Catch::Approx(stored_expected[index].H.z).margin(1.0e-12));
+  }
+
+  UniformFmm position_warm(positions, targets, position_options);
+  REQUIRE(position_warm.static_plan_statistics().geometry_cache_hit);
+  REQUIRE(position_warm.static_plan_statistics().p2p_interactions ==
+          position_cold.static_plan_statistics().p2p_interactions);
+  require_same_fields(position_expected,
+                      position_warm.evaluate_float64(moments));
+
+  UniformFmm stored_warm(positions, targets, stored_options);
+  REQUIRE(stored_warm.static_plan_statistics().geometry_cache_hit);
+  REQUIRE(stored_warm.static_plan_statistics().p2p_interactions ==
+          stored_cold.static_plan_statistics().p2p_interactions);
+  require_same_fields(stored_expected, stored_warm.evaluate_float64(moments));
 }
 
 TEST_CASE("warm FP32 caches preserve the canonical plan exactly", "[cache]") {
@@ -402,4 +457,70 @@ TEST_CASE("cache and no-cache CUDA-full paths agree", "[cache][cuda]") {
   REQUIRE(warm.static_plan_statistics().geometry_cache_hit);
   require_same_fields(reference, cold.evaluate_float64(moments));
   require_same_fields(reference, warm.evaluate_float64(moments));
+}
+
+TEST_CASE("streamed cache payloads are byte-identical to one-shot writes",
+          "[cache]") {
+  // The incremental checksum must agree with the one-shot checksum for every
+  // length (32-byte blocks, 8-byte words and a partial tail) and every split,
+  // and a file written in pieces must equal one written at once.
+  std::vector<unsigned char> payload(3 * 1024 + 29);
+  for (std::size_t index = 0; index < payload.size(); ++index) {
+    payload[index] = static_cast<unsigned char>((index * 131U + 7U) % 251U);
+  }
+  for (const std::size_t length :
+       {std::size_t{0}, std::size_t{1}, std::size_t{7}, std::size_t{8},
+        std::size_t{31}, std::size_t{32}, std::size_t{33}, std::size_t{95},
+        std::size_t{1000}, payload.size()}) {
+    const std::uint64_t expected =
+        detail::cache::payload_checksum(payload.data(), length);
+    for (const std::size_t piece : {std::size_t{1}, std::size_t{3}, std::size_t{17},
+                                    std::size_t{32}, std::size_t{100}}) {
+      detail::cache::StreamingChecksum streamed;
+      for (std::size_t first = 0; first < length; first += piece) {
+        streamed.update(payload.data() + first, std::min(piece, length - first));
+      }
+      REQUIRE(streamed.finish() == expected);
+    }
+  }
+
+  TemporaryCache cache;
+  const detail::cache::CacheDescriptor descriptor{
+      detail::cache::CacheKind::Plan, ExpansionBasis::Spherical, 4,
+      StaticPrecision::Float64, 3, "stream_test_key", "stream_test_digest"};
+  const std::filesystem::path whole = cache.path() / "whole.bin";
+  const std::filesystem::path pieces = cache.path() / "pieces.bin";
+  const std::size_t whole_bytes = detail::cache::write_cache(whole, descriptor, payload);
+  std::size_t pieces_bytes = 0;
+  {
+    detail::cache::CacheFileStream stream(pieces, descriptor);
+    for (std::size_t first = 0; first < payload.size(); first += 45) {
+      stream.append(payload.data() + first, std::min<std::size_t>(45, payload.size() - first));
+    }
+    pieces_bytes = stream.commit();
+  }
+  REQUIRE(whole_bytes > payload.size());
+  REQUIRE(pieces_bytes == whole_bytes);
+  const auto read_all = [](const std::filesystem::path &path) {
+    std::ifstream stream(path, std::ios::binary);
+    return std::vector<char>(std::istreambuf_iterator<char>(stream), {});
+  };
+  REQUIRE(read_all(pieces) == read_all(whole));
+  std::size_t bytes_read = 0;
+  const detail::cache::CachePayload loaded =
+      detail::cache::read_cache(pieces, descriptor, bytes_read);
+  REQUIRE(loaded.bytes().size() == payload.size());
+  REQUIRE(std::equal(loaded.bytes().begin(), loaded.bytes().end(), payload.begin()));
+
+  // An uncommitted stream leaves nothing behind.
+  {
+    detail::cache::CacheFileStream abandoned(cache.path() / "abandoned.bin", descriptor);
+    abandoned.append(payload.data(), payload.size());
+  }
+  REQUIRE_FALSE(std::filesystem::exists(cache.path() / "abandoned.bin"));
+  std::size_t leftovers = 0;
+  for (const auto &entry : std::filesystem::directory_iterator(cache.path())) {
+    leftovers += entry.path().filename().string().find(".tmp.") != std::string::npos;
+  }
+  REQUIRE(leftovers == 0);
 }

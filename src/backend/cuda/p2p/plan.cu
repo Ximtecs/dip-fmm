@@ -32,6 +32,7 @@
 #include "backend/cuda/p2p/internal.hpp"
 #include "backend/cuda/common/diagnostic_event.hpp"
 #include "backend/cuda/common/error.hpp"
+#include "backend/cuda/common/upload.hpp"
 #include "operators/p2p_point_kernel.hpp"
 
 #include <algorithm>
@@ -1362,13 +1363,7 @@ void upload_cuda_signed_dictionary(
          const char *operation) {
 
         if (bytes != 0) {
-          check_cuda(
-              cudaMemcpy(
-                  destination,
-                  source,
-                  bytes,
-                  cudaMemcpyHostToDevice),
-              operation);
+          cuda_detail::upload_to_device(destination, source, bytes, operation);
         }
       };
 
@@ -1762,8 +1757,10 @@ void upload_cuda_leaf_typed(const Plan &leaf,
   const auto upload = [&](void *destination, const void *source,
                           const std::size_t bytes) {
     if (bytes != 0) {
-      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
-                 upload_operation);
+      cuda_detail::upload_to_device(destination,
+                                    source,
+                                    bytes,
+                                    upload_operation);
     }
   };
   upload(device.target_begins, leaf.target_begins.data(),
@@ -1775,38 +1772,34 @@ void upload_cuda_leaf_typed(const Plan &leaf,
          block_leaf_bytes);
   upload(device.leaf_blocks, leaf.blocks.data(), block_bytes);
 
-  std::array<std::vector<Scalar>, 6> transposed;
-  for (auto &component : transposed) {
-    component.resize(leaf.tensors[0].size());
-  }
-  for (std::size_t target_leaf = 0; target_leaf < leaf.target_begins.size();
-       ++target_leaf) {
-    const int target_count = leaf.target_counts[target_leaf];
-    for (int block_index = leaf.leaf_row_offsets[target_leaf];
-         block_index < leaf.leaf_row_offsets[target_leaf + 1]; ++block_index) {
-      const StaticP2PLeafBlock &block =
-          leaf.blocks[static_cast<std::size_t>(block_index)];
-      for (int local_target = 0; local_target < target_count; ++local_target) {
-        for (int local_source = 0; local_source < block.source_count;
-             ++local_source) {
-          const std::size_t source_index = block.tensor_offset +
-              static_cast<std::size_t>(local_target) * block.source_count +
-              local_source;
-          const std::size_t destination_index = block.tensor_offset +
-              static_cast<std::size_t>(local_source) * target_count +
-              local_target;
-          for (std::size_t component = 0; component < 6; ++component) {
-            transposed[component][destination_index] =
-                leaf.tensors[component][source_index];
+  // Each component plane is transposed into one reused staging buffer and
+  // uploaded before the next, so the host holds one plane rather than a
+  // second copy of all six; the uploads and the device layout are unchanged.
+  std::vector<Scalar> transposed(leaf.tensors[0].size());
+  for (std::size_t component = 0; component < 6; ++component) {
+    for (std::size_t target_leaf = 0; target_leaf < leaf.target_begins.size();
+         ++target_leaf) {
+      const int target_count = leaf.target_counts[target_leaf];
+      for (int block_index = leaf.leaf_row_offsets[target_leaf];
+           block_index < leaf.leaf_row_offsets[target_leaf + 1]; ++block_index) {
+        const StaticP2PLeafBlock &block =
+            leaf.blocks[static_cast<std::size_t>(block_index)];
+        for (int local_target = 0; local_target < target_count; ++local_target) {
+          for (int local_source = 0; local_source < block.source_count;
+               ++local_source) {
+            const std::size_t source_index = block.tensor_offset +
+                static_cast<std::size_t>(local_target) * block.source_count +
+                local_source;
+            const std::size_t destination_index = block.tensor_offset +
+                static_cast<std::size_t>(local_source) * target_count +
+                local_target;
+            transposed[destination_index] = leaf.tensors[component][source_index];
           }
         }
       }
     }
-  }
-  for (std::size_t component = 0; component < 6; ++component) {
     upload(device.tensors + component * leaf.tensors[0].size(),
-           transposed[component].data(),
-           transposed[component].size() * sizeof(Scalar));
+           transposed.data(), transposed.size() * sizeof(Scalar));
   }
 
   const std::size_t total_bytes = target_metadata_bytes + row_bytes +
@@ -1928,8 +1921,10 @@ void upload_cuda_point_geometry_typed(
   const auto upload = [&](void *destination, const void *source,
                           const std::size_t bytes) {
     if (bytes != 0) {
-      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
-                 upload_operation);
+      cuda_detail::upload_to_device(destination,
+                                    source,
+                                    bytes,
+                                    upload_operation);
     }
   };
   allocate(reinterpret_cast<void **>(&device.records), record_bytes);
@@ -2389,10 +2384,10 @@ CudaP2PPlan::CudaP2PPlan(
       ? static_cast<std::size_t>(target_count) * sizeof(int)
       : 0;
   if (device_self_indices && !fixed_self_indices.empty()) {
-    check_cuda(cudaMemcpy(
-                   plan.self_indices, fixed_self_indices.data(),
-                   fixed_self_indices.size_bytes(), cudaMemcpyHostToDevice),
-               "upload fixed P2P identities");
+    cuda_detail::upload_to_device(plan.self_indices,
+                                  fixed_self_indices.data(),
+                                  fixed_self_indices.size_bytes(),
+                                  "upload fixed P2P identities");
     plan.statistics.setup_h2d_bytes += fixed_self_indices.size_bytes();
   }
   plan.statistics.plan_generation_count = 1;
@@ -2420,14 +2415,15 @@ CudaP2PPlan::CudaP2PPlan(
   check_cuda(cudaMalloc(&plan.canonical.blocks,
                         std::max(block_bytes, sizeof(StaticDipoleBlock))),
              "allocate canonical P2P blocks");
-  check_cuda(cudaMemcpy(plan.canonical.row_offsets,
-                        operator_map.row_offsets.data(), row_bytes,
-                        cudaMemcpyHostToDevice),
-             "upload canonical P2P rows");
+  cuda_detail::upload_to_device(plan.canonical.row_offsets,
+                                operator_map.row_offsets.data(),
+                                row_bytes,
+                                "upload canonical P2P rows");
   if (block_bytes != 0) {
-    check_cuda(cudaMemcpy(plan.canonical.blocks, operator_map.blocks.data(),
-                          block_bytes, cudaMemcpyHostToDevice),
-               "upload canonical P2P blocks");
+    cuda_detail::upload_to_device(plan.canonical.blocks,
+                                  operator_map.blocks.data(),
+                                  block_bytes,
+                                  "upload canonical P2P blocks");
   }
   plan.statistics.setup_h2d_bytes += row_bytes + block_bytes;
   plan.statistics.persistent_device_bytes += row_bytes + block_bytes;
@@ -2468,26 +2464,27 @@ CudaP2PPlan::CudaP2PPlan(
   check_cuda(cudaMalloc(&plan.compact.tensors,
                         std::max(tensor_bytes, sizeof(double))),
              "allocate compact P2P tensors");
-  check_cuda(cudaMemcpy(plan.compact.row_offsets, compact.row_offsets.data(),
-                        row_bytes, cudaMemcpyHostToDevice),
-             "upload compact P2P rows");
+  cuda_detail::upload_to_device(plan.compact.row_offsets,
+                                compact.row_offsets.data(),
+                                row_bytes,
+                                "upload compact P2P rows");
   if (index_bytes != 0) {
-    check_cuda(cudaMemcpy(plan.compact.source_indices,
-                          compact.source_indices.data(), index_bytes,
-                          cudaMemcpyHostToDevice),
-               "upload compact P2P sources");
-    check_cuda(cudaMemcpy(plan.compact.skip_for_identity,
-                          compact.skip_for_identity.data(), identity_bytes,
-                          cudaMemcpyHostToDevice),
-               "upload compact P2P identity markers");
+    cuda_detail::upload_to_device(plan.compact.source_indices,
+                                  compact.source_indices.data(),
+                                  index_bytes,
+                                  "upload compact P2P sources");
+    cuda_detail::upload_to_device(plan.compact.skip_for_identity,
+                                  compact.skip_for_identity.data(),
+                                  identity_bytes,
+                                  "upload compact P2P identity markers");
     for (std::size_t component = 0; component < 6; ++component) {
-      check_cuda(cudaMemcpy(
-                     plan.compact.tensors +
-                         component * compact.source_indices.size(),
-                     compact.tensors[component].data(),
-                     compact.tensors[component].size() * sizeof(double),
-                     cudaMemcpyHostToDevice),
-                 "upload compact P2P tensor component");
+      double *destination =
+          plan.compact.tensors + component * compact.source_indices.size();
+      const std::size_t bytes =
+          compact.tensors[component].size() * sizeof(double);
+      cuda_detail::upload_to_device(destination,
+                                    compact.tensors[component].data(), bytes,
+                                    "upload compact P2P tensor component");
     }
   }
   plan.statistics.setup_h2d_bytes +=
@@ -2519,16 +2516,16 @@ CudaP2PPlan::CudaP2PPlan(
                         std::max(block_bytes, sizeof(FloatStaticDipoleBlock))),
              "allocate FP32 canonical P2P blocks");
   if (row_bytes != 0) {
-    check_cuda(cudaMemcpy(plan.canonical_float.row_offsets,
-                          operator_map.row_offsets.data(), row_bytes,
-                          cudaMemcpyHostToDevice),
-               "upload FP32 canonical P2P rows");
+    cuda_detail::upload_to_device(plan.canonical_float.row_offsets,
+                                  operator_map.row_offsets.data(),
+                                  row_bytes,
+                                  "upload FP32 canonical P2P rows");
   }
   if (block_bytes != 0) {
-    check_cuda(cudaMemcpy(plan.canonical_float.blocks,
-                          operator_map.blocks.data(), block_bytes,
-                          cudaMemcpyHostToDevice),
-               "upload FP32 canonical P2P blocks");
+    cuda_detail::upload_to_device(plan.canonical_float.blocks,
+                                  operator_map.blocks.data(),
+                                  block_bytes,
+                                  "upload FP32 canonical P2P blocks");
   }
   plan.statistics.setup_h2d_bytes += row_bytes + block_bytes;
   plan.statistics.persistent_device_bytes += row_bytes + block_bytes;
@@ -2569,28 +2566,28 @@ CudaP2PPlan::CudaP2PPlan(
                         std::max(tensor_bytes, sizeof(float))),
              "allocate FP32 compact P2P tensors");
   if (row_bytes != 0) {
-    check_cuda(cudaMemcpy(plan.compact_float.row_offsets,
-                          compact.row_offsets.data(), row_bytes,
-                          cudaMemcpyHostToDevice),
-               "upload FP32 compact P2P rows");
+    cuda_detail::upload_to_device(plan.compact_float.row_offsets,
+                                  compact.row_offsets.data(),
+                                  row_bytes,
+                                  "upload FP32 compact P2P rows");
   }
   if (index_bytes != 0) {
-    check_cuda(cudaMemcpy(plan.compact_float.source_indices,
-                          compact.source_indices.data(), index_bytes,
-                          cudaMemcpyHostToDevice),
-               "upload FP32 compact P2P sources");
-    check_cuda(cudaMemcpy(plan.compact_float.skip_for_identity,
-                          compact.skip_for_identity.data(), identity_bytes,
-                          cudaMemcpyHostToDevice),
-               "upload FP32 compact P2P identity markers");
+    cuda_detail::upload_to_device(plan.compact_float.source_indices,
+                                  compact.source_indices.data(),
+                                  index_bytes,
+                                  "upload FP32 compact P2P sources");
+    cuda_detail::upload_to_device(plan.compact_float.skip_for_identity,
+                                  compact.skip_for_identity.data(),
+                                  identity_bytes,
+                                  "upload FP32 compact P2P identity markers");
     for (std::size_t component = 0; component < 6; ++component) {
-      check_cuda(cudaMemcpy(
-                     plan.compact_float.tensors +
-                         component * compact.source_indices.size(),
-                     compact.tensors[component].data(),
-                     compact.tensors[component].size() * sizeof(float),
-                     cudaMemcpyHostToDevice),
-                 "upload FP32 compact P2P tensor component");
+      float *destination =
+          plan.compact_float.tensors + component * compact.source_indices.size();
+      const std::size_t bytes =
+          compact.tensors[component].size() * sizeof(float);
+      cuda_detail::upload_to_device(destination,
+                                    compact.tensors[component].data(), bytes,
+                                    "upload FP32 compact P2P tensor component");
     }
   }
   plan.statistics.setup_h2d_bytes +=
@@ -2697,8 +2694,7 @@ CudaP2PPlan::CudaP2PPlan(const StaticP2PBsrPlan& bsr)
   const auto upload = [](void* destination, const void* source,
                          const std::size_t bytes, const char* operation) {
     if (bytes != 0) {
-      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
-                 operation);
+      cuda_detail::upload_to_device(destination, source, bytes, operation);
     }
   };
   upload(plan.bsr.row_offsets, bsr.row_offsets.data(), row_bytes,
@@ -2748,8 +2744,7 @@ CudaP2PPlan::CudaP2PPlan(const FloatStaticP2PBsrPlan &bsr)
   const auto upload = [](void *destination, const void *source,
                          const std::size_t bytes, const char *operation) {
     if (bytes != 0) {
-      check_cuda(cudaMemcpy(destination, source, bytes, cudaMemcpyHostToDevice),
-                 operation);
+      cuda_detail::upload_to_device(destination, source, bytes, operation);
     }
   };
   upload(plan.bsr_float.row_offsets, bsr.row_offsets.data(), row_bytes,
