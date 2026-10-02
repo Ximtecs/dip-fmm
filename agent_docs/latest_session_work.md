@@ -1,5 +1,20 @@
 # Latest session work
 
+## 2026-10-02 — construction results and benchmark branches consolidated
+
+Committed the tetrahedron and prism construction work as `0c77bd7`. Merged
+the current remote `article1-benchmark-fixes` tip into the architecture branch
+(`eb38c92`), then merged `bench/jaxfmm-gpu-campaign` (`3bd76a1`). The campaign
+worktree also had an uncommitted 4 GiB element-evaluation memory limit; carried
+it onto the architecture branch as `4dde568` without removing the worktree.
+
+Portable and CUDA CTest each passed 280/280; the portable run skipped five
+unavailable optional-backend cases and the CUDA run skipped one oneMKL case.
+Python tests passed 178 with 9 optional skips using `PYTHONPATH=build`.
+The jaxFMM campaign Python files pass `compileall`; the element runner also
+passes `py_compile`. Source branches are merged; target-branch pushes and
+obsolete ref cleanup remain to finish.
+
 ## 2026-10-02 — prism construction follow-up
 
 Extended the finite endpoint table approach to rectangular prisms. Cartesian
