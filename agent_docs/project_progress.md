@@ -1,5 +1,53 @@
 # Project progress
 
+# Prism construction follow-up: COMPLETE — 2026-10-02
+
+Prism Cartesian and spherical P2M/L2P now reuse a per-record table of
+one-dimensional averages. The products match the scalar prism formula bit for
+bit through order 14 across tested sizes and displacements (6,131 assertions).
+On 512 bodies, spherical p10/d2 CPU FP64 endpoint times fell from 14.829 ms
+to 1.131 ms (P2M) and 21.014 ms to 1.281 ms (L2P); total cold setup fell
+76.078 s to 0.114 s including the shared universal-bank improvement. Fields
+against the older extension differ at `1e-16` relative L2 or less. Point
+construction has no volume-average table; it already benefits from shared
+multi-index and derivative improvements. Evidence is in
+`benchmarks/baselines/prism-construction/`. Focused prism moment and cuboid
+FMM tests pass.
+
+# Tetrahedron construction optimisation: COMPLETE — 2026-10-02
+
+The accepted construction work replaces repeated tetrahedron averaged-monomial
+integration in P2M/L2P with an exact O(p^3) coefficient table evaluated in
+long double and stored as double. Cartesian and spherical P2M/L2P now use the
+shared construction path; the existing public scalar evaluator is unchanged.
+The cold universal-bank bottleneck was also removed with focused ports of the
+constant-index and Laplace-derivative recurrence changes from `dc32d1e` and
+`abe6aa8`, while retaining the old exception behaviour with widened indices.
+No backend, P2P, public API, ABI, cache key/format/version, or production policy
+changed. Point and prism construction also benefit from the shared derivative
+path where applicable.
+
+On the Kuhn-mesh baseline, CPU FP32 order 10 construction fell from 171.33 s
+to 0.447 s with bit-identical fields; CUDA fell from 162.72 s to 0.465 s with
+field relative L2 error `6.47e-8`. FP64 order 6 field errors were `5.04e-17`
+(CPU) and `1.25e-16` (CUDA), with far-field errors about `7e-16`. Endpoint
+construction fell from 19.956 s to 0.001675 s (GPU P2M) and 48.133 s to
+0.002367 s (GPU L2P). Reproducible measurements and inputs are under
+`benchmarks/baselines/tetrahedron-construction/`; the engineering driver is
+`benchmarks/benchmark_kuhn_construction.py`. Fully cold, cache-disabled
+construction totals are 80–94 s; the retained Article1 profile reports
+68.4 s total and 0.069 s for the bank. The reason for that earlier bank time
+is unverified, so the total timings cannot be conflated. Cache identity and
+format remain compatible, though recurrence rounding may change coefficient
+bytes under existing keys.
+
+Validation: CPU and CUDA CTest each 265/265 with expected skips (4 CPU, 1
+CUDA); focused pytest against the actual builds: CPU 41 passed / 7 skipped,
+CUDA 46 passed / 2 skipped. Independent review passed. `sphinx-build -W
+--keep-going -b html docs docs/_build/html` exited 0. GCC 13, oneMKL, Fortran, and Windows
+were not validated in this session. Work remains uncommitted; unrelated
+`.claude/`, `Article1_old/`, and `examples/simple_notebooks/` are preserved.
+
 ## Phase 5 low-overhead timing and implementation freeze: COMPLETE — 2026-09-21
 
 Starting HEAD `8f54e6f` (tip of `phase4-pruning`); work on

@@ -24,6 +24,9 @@
 
 #include "cdfmm/operators/p2m.hpp"
 
+#include "geometry/primitives/rectangular_prism_moments.hpp"
+#include "geometry/primitives/tetrahedron_moments.hpp"
+
 #include <cstddef>
 #include <numbers>
 #include <stdexcept>
@@ -110,10 +113,17 @@ StaticCoefficientOperator build_static_cuboid_p2m_operator(
     StaticCoefficientOperator result;
     result.input_size = static_cast<int>(3 * source_positions.size());
     result.output_size = basis.size();
+    if (basis.size() == 0 || basis.order() == 0) {
+        return result;
+    }
+    const MultiIndexSet monomial_basis(
+        basis.order() > 0 ? basis.order() - 1 : 0);
     for (std::size_t source = 0; source < source_positions.size(); ++source) {
         const Vec3 displacement = source_positions[source] - centre;
         const CuboidSize size =
             source_sizes[source_sizes.size() == 1 ? 0 : source];
+        const auto averages = detail::rectangular_prism_averaged_monomials(
+            monomial_basis, displacement, size);
         for (int alpha_index = 0; alpha_index < basis.size(); ++alpha_index) {
             const MultiIndex alpha = basis[alpha_index];
             const double sign = alpha.degree() % 2 == 0 ? 1.0 : -1.0;
@@ -127,8 +137,8 @@ StaticCoefficientOperator build_static_cuboid_p2m_operator(
                     result.entries.push_back({
                         alpha_index,
                         static_cast<int>(3 * source) + component,
-                        sign * cuboid_averaged_monomial(
-                            shifted[component], displacement, size)});
+                        sign * averages[static_cast<std::size_t>(
+                            monomial_basis.index(shifted[component]))]});
                 }
             }
         }
@@ -150,11 +160,18 @@ StaticCoefficientOperator build_static_cuboid_p2m_operator(
     StaticCoefficientOperator result;
     result.input_size = static_cast<int>(3 * source_positions.size());
     result.output_size = basis.size();
+    if (basis.size() == 0 || basis.order() == 0) {
+        return result;
+    }
+    const MultiIndexSet monomial_basis(
+        basis.order() > 0 ? basis.order() - 1 : 0);
     const double green_factor = 1.0 / (4.0 * std::numbers::pi);
     for (std::size_t source = 0; source < source_positions.size(); ++source) {
         const Vec3 displacement = source_positions[source] - centre;
         const CuboidSize size =
             source_sizes[source_sizes.size() == 1 ? 0 : source];
+        const auto averages = detail::rectangular_prism_averaged_monomials(
+            monomial_basis, displacement, size);
         for (int mode = 0; mode < basis.size(); ++mode) {
             // Average grad R_lm over the prism term by term: R_lm is a
             // polynomial sum c dx^alpha, d/dx_k of a term is
@@ -179,8 +196,8 @@ StaticCoefficientOperator build_static_cuboid_p2m_operator(
                     averaged_gradient[component] +=
                         term.coefficient * powers[component] *
                         MultiIndexSet::multi_factorial(derivative) *
-                        cuboid_averaged_monomial(
-                            derivative, displacement, size);
+                        averages[static_cast<std::size_t>(
+                            monomial_basis.index(derivative))];
                 }
             }
             for (int component = 0; component < 3; ++component) {
@@ -208,8 +225,8 @@ StaticCoefficientOperator build_static_tetrahedron_p2m_operator(
         throw std::invalid_argument(
             "tetrahedron P2M geometries must be common or per source");
     }
-    // The volume call is the degeneracy check; it throws for a flat or
-    // inverted tetrahedron before any averaged monomial is requested.
+    // The volume call is the degeneracy check; it throws for a degenerate
+    // tetrahedron before any averaged monomial is requested.
     for (const Tetrahedron& tetrahedron : source_tetrahedra) {
         static_cast<void>(tetrahedron_volume(tetrahedron));
     }
@@ -217,10 +234,13 @@ StaticCoefficientOperator build_static_tetrahedron_p2m_operator(
     StaticCoefficientOperator result;
     result.input_size = static_cast<int>(3 * source_positions.size());
     result.output_size = basis.size();
+    const MultiIndexSet monomial_basis(basis.order() > 0 ? basis.order() - 1 : 0);
     for (std::size_t source = 0; source < source_positions.size(); ++source) {
         const Vec3 displacement = source_positions[source] - centre;
         const Tetrahedron& tetrahedron = source_tetrahedra[
             source_tetrahedra.size() == 1 ? 0 : source];
+        const auto averages = detail::tetrahedron_averaged_monomials(
+            monomial_basis, displacement, tetrahedron);
         for (int alpha_index = 0; alpha_index < basis.size(); ++alpha_index) {
             const MultiIndex alpha = basis[alpha_index];
             const double sign = alpha.degree() % 2 == 0 ? 1.0 : -1.0;
@@ -233,8 +253,8 @@ StaticCoefficientOperator build_static_tetrahedron_p2m_operator(
                 if (components[component] == 0) {
                     continue;
                 }
-                const double value = sign * tetrahedron_averaged_monomial(
-                    shifted[component], displacement, tetrahedron);
+                const double value = sign * averages[
+                    detail::tetrahedron_monomial_index(shifted[component])];
                 if (value != 0.0) {
                     result.entries.push_back({
                         alpha_index,
@@ -265,10 +285,13 @@ StaticCoefficientOperator build_static_tetrahedron_p2m_operator(
     result.input_size = static_cast<int>(3 * source_positions.size());
     result.output_size = basis.size();
     const double green_factor = 1.0 / (4.0 * std::numbers::pi);
+    const MultiIndexSet monomial_basis(basis.order() > 0 ? basis.order() - 1 : 0);
     for (std::size_t source = 0; source < source_positions.size(); ++source) {
         const Vec3 displacement = source_positions[source] - centre;
         const Tetrahedron& tetrahedron = source_tetrahedra[
             source_tetrahedra.size() == 1 ? 0 : source];
+        const auto averages = detail::tetrahedron_averaged_monomials(
+            monomial_basis, displacement, tetrahedron);
         for (int mode = 0; mode < basis.size(); ++mode) {
             // Same term-wise averaging as the spherical prism builder, with
             // the tetrahedron average of each monomial.
@@ -291,8 +314,7 @@ StaticCoefficientOperator build_static_tetrahedron_p2m_operator(
                     averaged_gradient[component] +=
                         term.coefficient * powers[component] *
                         MultiIndexSet::multi_factorial(derivative) *
-                        tetrahedron_averaged_monomial(
-                            derivative, displacement, tetrahedron);
+                        averages[detail::tetrahedron_monomial_index(derivative)];
                 }
             }
             for (int component = 0; component < 3; ++component) {

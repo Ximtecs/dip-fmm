@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 #include <vector>
 
@@ -77,16 +78,28 @@ public:
   /// @brief Returns the multi-index at a linear storage position.
   const MultiIndex &operator[](int i) const { return indices_.at(i); }
 
-  /// @brief Maps a multi-index to its linear storage position.
+  /**
+   * @brief Maps a multi-index to its linear storage position in constant time.
+   *
+   * The lower degrees contain d(d+1)(d+2)/6 entries. Within degree d,
+   * each smaller x exponent contributes d-x+1 entries of the y sweep.
+   * A multi-index outside the set throws std::out_of_range.
+   */
   int index(const MultiIndex &a) const {
-    for (int i = 0; i < size(); ++i) {
-      if (indices_[i].ax == a.ax && indices_[i].ay == a.ay &&
-          indices_[i].az == a.az) {
-        return i;
-      }
+    if (a.ax < 0 || a.ay < 0 || a.az < 0) {
+      throw std::out_of_range("multi-index not found");
     }
-
-    throw std::out_of_range("multi-index not found");
+    // External exponents may each approach INT_MAX. Widen before adding,
+    // and reject them before computing the cubic storage offset.
+    const std::int64_t ax = a.ax;
+    const std::int64_t ay = a.ay;
+    const std::int64_t degree = ax + ay + static_cast<std::int64_t>(a.az);
+    if (degree > p_) {
+      throw std::out_of_range("multi-index not found");
+    }
+    const std::int64_t lower_degrees = degree * (degree + 1) * (degree + 2) / 6;
+    const std::int64_t preceding_x = ax * (2 * degree + 3 - ax) / 2;
+    return static_cast<int>(lower_degrees + preceding_x + ay);
   }
 
   /// @brief Returns `n!` as a floating-point value.

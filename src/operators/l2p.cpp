@@ -19,6 +19,9 @@
 
 #include "cdfmm/operators/l2p.hpp"
 
+#include "geometry/primitives/rectangular_prism_moments.hpp"
+#include "geometry/primitives/tetrahedron_moments.hpp"
+
 #include <cstddef>
 
 namespace cdfmm {
@@ -92,29 +95,31 @@ StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
         row.resize(static_cast<std::size_t>(basis.size()));
     }
     const Vec3 displacement = target - centre;
+    if (basis.size() == 0) {
+        return result;
+    }
+    const auto averages = detail::rectangular_prism_averaged_monomials(
+        basis, displacement, target_size);
     // `cuboid_averaged_monomial` is the prism average of dx^beta / beta!, so
     // the rows have the same structure as the point rows above.
     for (int beta_index = 0; beta_index < basis.size(); ++beta_index) {
         const MultiIndex beta = basis[beta_index];
         result.potential[static_cast<std::size_t>(beta_index)] =
-            cuboid_averaged_monomial(beta, displacement, target_size);
+            averages[static_cast<std::size_t>(basis.index(beta))];
         if (beta.ax > 0) {
             result.field[0][static_cast<std::size_t>(beta_index)] =
-                -cuboid_averaged_monomial(
-                    {beta.ax - 1, beta.ay, beta.az}, displacement,
-                    target_size);
+                -averages[static_cast<std::size_t>(basis.index(
+                    {beta.ax - 1, beta.ay, beta.az}))];
         }
         if (beta.ay > 0) {
             result.field[1][static_cast<std::size_t>(beta_index)] =
-                -cuboid_averaged_monomial(
-                    {beta.ax, beta.ay - 1, beta.az}, displacement,
-                    target_size);
+                -averages[static_cast<std::size_t>(basis.index(
+                    {beta.ax, beta.ay - 1, beta.az}))];
         }
         if (beta.az > 0) {
             result.field[2][static_cast<std::size_t>(beta_index)] =
-                -cuboid_averaged_monomial(
-                    {beta.ax, beta.ay, beta.az - 1}, displacement,
-                    target_size);
+                -averages[static_cast<std::size_t>(basis.index(
+                    {beta.ax, beta.ay, beta.az - 1}))];
         }
     }
     return result;
@@ -132,6 +137,12 @@ StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
         row.resize(static_cast<std::size_t>(basis.size()));
     }
     const Vec3 displacement = target - centre;
+    if (basis.size() == 0) {
+        return result;
+    }
+    const MultiIndexSet monomial_basis(basis.order());
+    const auto averages = detail::rectangular_prism_averaged_monomials(
+        monomial_basis, displacement, target_size);
     // Each R_lm is a polynomial sum_terms c * dx^alpha; averaging the monomial
     // needs the plain average of dx^alpha, which is alpha! times the averaged
     // monomial-over-factorial.  The derivative of a term is
@@ -141,8 +152,8 @@ StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
             result.potential[static_cast<std::size_t>(mode)] +=
                 term.coefficient *
                 MultiIndexSet::multi_factorial(term.power) *
-                cuboid_averaged_monomial(
-                    term.power, displacement, target_size);
+                averages[static_cast<std::size_t>(
+                    monomial_basis.index(term.power))];
             const int powers[3] = {
                 term.power.ax, term.power.ay, term.power.az};
             for (int component = 0; component < 3; ++component) {
@@ -161,8 +172,8 @@ StaticL2PEvaluator build_static_cuboid_l2p_evaluator(
                             [static_cast<std::size_t>(mode)] -=
                     term.coefficient * powers[component] *
                     MultiIndexSet::multi_factorial(derivative) *
-                    cuboid_averaged_monomial(
-                        derivative, displacement, target_size);
+                    averages[static_cast<std::size_t>(
+                        monomial_basis.index(derivative))];
             }
         }
     }
@@ -175,8 +186,8 @@ StaticL2PEvaluator build_static_tetrahedron_l2p_evaluator(
     const Vec3& target,
     const Tetrahedron& target_tetrahedron)
 {
-    // The volume call is the degeneracy check: it throws for a flat or
-    // inverted tetrahedron before any averaged monomial is requested.
+    // The volume call is the degeneracy check: it throws for a degenerate
+    // tetrahedron before any averaged monomial is requested.
     static_cast<void>(tetrahedron_volume(target_tetrahedron));
     StaticL2PEvaluator result;
     result.potential.resize(static_cast<std::size_t>(basis.size()));
@@ -184,28 +195,26 @@ StaticL2PEvaluator build_static_tetrahedron_l2p_evaluator(
         row.resize(static_cast<std::size_t>(basis.size()));
     }
     const Vec3 displacement = target - centre;
+    const auto averages = detail::tetrahedron_averaged_monomials(
+        basis, displacement, target_tetrahedron);
     for (int beta_index = 0; beta_index < basis.size(); ++beta_index) {
         const MultiIndex beta = basis[beta_index];
         result.potential[static_cast<std::size_t>(beta_index)] =
-            tetrahedron_averaged_monomial(
-                beta, displacement, target_tetrahedron);
+            averages[detail::tetrahedron_monomial_index(beta)];
         if (beta.ax > 0) {
             result.field[0][static_cast<std::size_t>(beta_index)] =
-                -tetrahedron_averaged_monomial(
-                    {beta.ax - 1, beta.ay, beta.az}, displacement,
-                    target_tetrahedron);
+                -averages[detail::tetrahedron_monomial_index(
+                    {beta.ax - 1, beta.ay, beta.az})];
         }
         if (beta.ay > 0) {
             result.field[1][static_cast<std::size_t>(beta_index)] =
-                -tetrahedron_averaged_monomial(
-                    {beta.ax, beta.ay - 1, beta.az}, displacement,
-                    target_tetrahedron);
+                -averages[detail::tetrahedron_monomial_index(
+                    {beta.ax, beta.ay - 1, beta.az})];
         }
         if (beta.az > 0) {
             result.field[2][static_cast<std::size_t>(beta_index)] =
-                -tetrahedron_averaged_monomial(
-                    {beta.ax, beta.ay, beta.az - 1}, displacement,
-                    target_tetrahedron);
+                -averages[detail::tetrahedron_monomial_index(
+                    {beta.ax, beta.ay, beta.az - 1})];
         }
     }
     return result;
@@ -224,6 +233,8 @@ StaticL2PEvaluator build_static_tetrahedron_l2p_evaluator(
         row.resize(static_cast<std::size_t>(basis.size()));
     }
     const Vec3 displacement = target - centre;
+    const auto averages = detail::tetrahedron_averaged_monomials(
+        MultiIndexSet(basis.order()), displacement, target_tetrahedron);
     // Same term-wise expansion as the spherical prism evaluator, with the
     // tetrahedron average of each monomial.
     for (int mode = 0; mode < basis.size(); ++mode) {
@@ -231,8 +242,7 @@ StaticL2PEvaluator build_static_tetrahedron_l2p_evaluator(
             result.potential[static_cast<std::size_t>(mode)] +=
                 term.coefficient *
                 MultiIndexSet::multi_factorial(term.power) *
-                tetrahedron_averaged_monomial(
-                    term.power, displacement, target_tetrahedron);
+                averages[detail::tetrahedron_monomial_index(term.power)];
             const int powers[3] = {
                 term.power.ax, term.power.ay, term.power.az};
             for (int component = 0; component < 3; ++component) {
@@ -251,8 +261,7 @@ StaticL2PEvaluator build_static_tetrahedron_l2p_evaluator(
                             [static_cast<std::size_t>(mode)] -=
                     term.coefficient * powers[component] *
                     MultiIndexSet::multi_factorial(derivative) *
-                    tetrahedron_averaged_monomial(
-                        derivative, displacement, target_tetrahedron);
+                    averages[detail::tetrahedron_monomial_index(derivative)];
             }
         }
     }

@@ -42,6 +42,12 @@ averages by the projection described in
 [Real spherical-harmonic expansions](spherical-expansions.md), so both bases
 support finite bodies at every far-field stage.
 
+Construction reuses these moments across all operator rows for a body record.
+For a prism, the implementation tabulates each one-dimensional average once
+and combines the three axes in the same order as the scalar formula; the table
+matches that formula bit for bit. Tetrahedra use a corresponding simplex
+moment table, also shared by Cartesian and spherical endpoints.
+
 A **point target** evaluates the finite source at the receiving representative
 position; a **finite target** receives the exact average of the field over its
 own volume through the target-geometry operators.
@@ -79,6 +85,23 @@ cancellation. This is why, for cubes, finite P2M/L2P cannot improve on the
 point operators below order five.
 
 ### Tetrahedra and mixed pairs
+
+Finite tetrahedron P2M and L2P construction integrates all required Cartesian
+monomials together. For representative-relative vertices $v_a$, displacement
+$d$, and $n=|\alpha|$, the Dirichlet simplex formula gives
+
+$$J_\alpha(d)=\frac{6}{(n+3)!}[t^\alpha]
+\prod_{a=0}^{3}\frac{1}{1-(d+v_a)\cdot t}.$$
+
+Each factor updates its coefficients in total-degree order using
+$C_{\mathrm{new},\alpha}=C_{\mathrm{old},\alpha}+
+\sum_k(d+v_a)_k C_{\mathrm{new},\alpha-e_k}$, with negative-index terms
+absent. This computes the complete table in $O(p^3)$ time and memory.
+Construction accumulates in `long double` and converts the final averages
+to `double` before assembling the existing Cartesian or spherical operators.
+The public scalar `tetrahedron_averaged_monomial` remains the independent
+barycentric expansion reference. Both compute the same exact volume average;
+their floating-point summation orders differ.
 
 The tetrahedron-to-tetrahedron, prism-to-tetrahedron and tetrahedron-to-prism
 pairs are evaluated exactly during dense or static-plan construction from the
@@ -127,7 +150,8 @@ without inspecting geometry ([Architecture](../architecture.md)).
 |---|---|
 | prism average $J_\beta$ and prism P2M/L2P | `src/geometry/primitives/rectangular_prism.cpp`, `src/operators/{p2m,l2p}.cpp` |
 | prism point and prism-to-prism tensors | `src/geometry/primitives/rectangular_prism_point_kernel.hpp`, `rectangular_prism.cpp` |
-| tetrahedron moments, point field, pair tensors | `src/geometry/primitives/tetrahedron.cpp` |
+| tetrahedron scalar moments, point field, pair tensors | `src/geometry/primitives/tetrahedron.cpp` |
+| tetrahedron moment table for finite P2M/L2P | `src/geometry/primitives/tetrahedron_moments.cpp` |
 | pair dispatch for all nine combinations | `src/operators/p2p.cpp` |
 | dense all-to-all plan | `src/plan/direct/dense.cpp` |
 

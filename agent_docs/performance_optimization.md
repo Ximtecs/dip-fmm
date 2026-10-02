@@ -6,6 +6,58 @@ findings, accepted changes with measured evidence, rejected experiments, final
 numbers, and the bottlenecks that remain. Raw `.nsys-rep`/`.ncu-rep` captures
 are not committed.
 
+## Tetrahedron construction optimisation — 2026-10-02
+
+The Kuhn-mesh study found endpoint construction to be the dominant cost at
+the tested order/depth. Tetrahedron P2M/L2P now reuse an exact O(p^3)
+averaged-monomial coefficient table, accumulated in long double and stored as
+double. Cartesian and spherical endpoints share the construction support; the
+public scalar evaluator retains its prior implementation. A focused port of
+the constant-index and Laplace-derivative recurrences also removes the cold
+universal-bank bottleneck. Widened indices preserve the prior exceptional
+cases. Point/prism paths use the shared derivative improvement where
+applicable. This did not change P2P, backend execution, public/ABI interfaces,
+cache identity or format, or production policy. Recurrence rounding may
+change coefficient bytes under existing compatible cache keys.
+
+On the recorded Kuhn mesh, FP32 order-10 total construction changed from
+171.33 s to 0.447 s CPU (fields bit-identical) and 162.72 s to 0.465 s CUDA
+(field relative L2 `6.47e-8`). FP64 order-6 relative field errors were
+`5.04e-17` CPU and `1.25e-16` CUDA; far-field errors were about `7e-16`.
+GPU P2M construction changed 19.956 s -> 1.675 ms and L2P 48.133 s ->
+2.367 ms. See `benchmarks/baselines/tetrahedron-construction/README.md`,
+`summary.csv`, and the associated JSON/NPZ data for exact cases and protocol.
+
+Fully cold, cache-disabled totals are 80–94 s; the retained Article1 profile
+reports 68.4 s total and 0.069 s for the bank. The reason for the earlier bank
+time is unverified, so these total timings cannot be conflated. Both endpoint
+measurements reproduce.
+Remaining measured costs include P2P (1.763 s at n=10, p=10, depth 3) and
+universal-bank construction at order 20 (6.412 s). No P2P or order-20 policy
+change was made. CPU/CUDA CTest passed 265/265 each (4/1 expected skips);
+focused pytest on matching builds passed 41/46 with 7/2 skips.
+`sphinx-build -W --keep-going -b html docs docs/_build/html` exited 0. GCC 13,
+oneMKL, Fortran, and Windows remain unvalidated.
+
+## Prism construction follow-up — 2026-10-02
+
+The prism counterpart also repeated an exact separable average for every
+operator row. Prism P2M/L2P now builds the three one-dimensional average
+tables once per geometry record and combines them in x/y/z order. A focused
+test compares every moment through order 14 against the unchanged scalar
+formula by IEEE bit pattern across three sizes and offsets (6,131 assertions).
+Point P2M/L2P has no finite-volume integral to tabulate; it already receives
+the shared constant-index and Laplace-derivative improvements.
+
+On a 512-prism general grid, spherical p10/d2, CPU FP64, phase timings changed
+from 14.829 ms to 1.131 ms for P2M and 21.014 ms to 1.281 ms for L2P
+(13.1x and 16.4x). Total cold setup changed 76.078 s to 0.114 s, but that
+total includes the shared universal-bank recurrence and should not be
+attributed to the prism table alone. Compared with the prior extension,
+fields agree to relative L2 `3.9e-16` (far), `1.0e-17` (near) and
+`1.8e-17` (total); the full outputs are not bit-identical. Raw JSON/NPZ and
+reproduction notes are under `benchmarks/baselines/prism-construction/`.
+
 ## GPU evaluation optimization (3A)
 
 ### Environment

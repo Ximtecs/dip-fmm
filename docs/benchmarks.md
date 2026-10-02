@@ -49,6 +49,8 @@ backend, CUDA device and thread environment with every result.
 | geometry × backend × packing, periodic cells, CudaPartial/CudaFull crossover | `run_p2p_packing_matrix.py` |
 | precomputed versus procedural exact operators | `benchmark_operator_representation`, `run_operator_representation.py`, `analyse_operator_representation.py` |
 | cold static-plan construction by phase | `run_construction_matrix.py` |
+| cold construction on the jaxFMM Kuhn-mesh fixture | `benchmark_kuhn_construction.py` |
+| cold prism construction and field comparison | `benchmark_prism_construction.py` |
 | dense all-to-all construction and evaluation | `benchmark_dense_direct_construction`, `run_dense_construction_matrix.py` |
 | cold versus warm cache setup | `benchmark_cache_initialisation`, `run_phase3d_startup.py` |
 | internal cross-backend regression and policy matrix | `run_phase3d_regression.py`, `analyse_phase3d_regression.py` |

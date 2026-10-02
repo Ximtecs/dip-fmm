@@ -60,7 +60,9 @@ add_library(cdfmm_core
     src/backend/cpu/direct/dense.cpp
     src/backend/mkl/direct/dense.cpp
     src/geometry/primitives/rectangular_prism.cpp
+    src/geometry/primitives/rectangular_prism_moments.cpp
     src/geometry/primitives/tetrahedron.cpp
+    src/geometry/primitives/tetrahedron_moments.cpp
     src/plan/precision.cpp
     src/plan/p2p/packing_memory.cpp
     src/plan/p2p/compact.cpp

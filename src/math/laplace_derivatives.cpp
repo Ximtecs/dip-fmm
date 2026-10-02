@@ -2,43 +2,72 @@
 
 #include "cdfmm/math/laplace_derivatives.hpp"
 
+#include <cmath>
+#include <cstddef>
 #include <numbers>
-
-#include "cdfmm/math/taylor_jet.hpp"
+#include <stdexcept>
+#include <vector>
 
 namespace cdfmm {
 
-//------------------------------------------------------------------------------
-// Helper functions
-//------------------------------------------------------------------------------
-
 static constexpr double k_inv_four_pi = 1.0 / (4.0 * std::numbers::pi);
 
-//------------------------------------------------------------------------------
-// Public interface
-//------------------------------------------------------------------------------
+std::vector<double> laplace_derivatives_raw(const MultiIndexSet& basis,
+                                           const Vec3& r)
+{
+    // The previous coordinate-jet construction required degree-one entries,
+    // even when only the constant term was requested. Preserve its exception.
+    if (basis.order() < 1) {
+        throw std::out_of_range("multi-index not found");
+    }
+    const double r2 = r.x * r.x + r.y * r.y + r.z * r.z;
+    if (r2 <= 0.0) {
+        throw std::invalid_argument(
+            "TaylorJet::invsqrt requires positive constant coefficient");
+    }
 
-std::vector<double> laplace_derivatives_raw(const MultiIndexSet &basis,
-                                            const Vec3 &r) {
-  // Build coordinate jets around the evaluation position r:
-  // x = r_x + h_x, y = r_y + h_y, z = r_z + h_z.
-  const TaylorJet x = TaylorJet::coordinate(basis, 0, r.x);
-  const TaylorJet y = TaylorJet::coordinate(basis, 1, r.y);
-  const TaylorJet z = TaylorJet::coordinate(basis, 2, r.z);
+    // For g(h) = 1/|r+h|, contract |r+h|^2 grad(g) = -(r+h)g with h
+    // and equate coefficients. The Taylor coefficients c_alpha satisfy
+    //
+    // |r|^2 n c_alpha = -(2n-1) sum_i r_i c_(alpha-e_i)
+    //                  -(n-1) sum_i c_(alpha-2e_i),   n = |alpha|.
+    //
+    // All dependencies precede alpha in total-degree order. The recurrence
+    // takes constant work per coefficient instead of composing whole jets.
+    const MultiIndex directions[3]{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    std::vector<double> coefficients(static_cast<std::size_t>(basis.size()));
+    coefficients[0] = 1.0 / std::sqrt(r2);
+    for (int index = 1; index < basis.size(); ++index) {
+        const MultiIndex alpha = basis[index];
+        const int degree = alpha.degree();
+        double first = 0.0;
+        double second = 0.0;
+        for (int axis = 0; axis < 3; ++axis) {
+            if (alpha[axis] == 0) {
+                continue;
+            }
+            const MultiIndex previous = sub(alpha, directions[axis]);
+            first += r[axis] *
+                coefficients[static_cast<std::size_t>(basis.index(previous))];
+            if (alpha[axis] >= 2) {
+                const MultiIndex twice_previous = sub(previous, directions[axis]);
+                second += coefficients[
+                    static_cast<std::size_t>(basis.index(twice_previous))];
+            }
+        }
+        coefficients[static_cast<std::size_t>(index)] =
+            -((2.0 * degree - 1.0) * first + (degree - 1.0) * second) /
+            (r2 * degree);
+    }
 
-  // Compose G(h) = 1/(4*pi*sqrt(x*x + y*y + z*z)).
-  const TaylorJet rho2 = x.mul(x).add(y.mul(y)).add(z.mul(z));
-  const TaylorJet inv_r = rho2.invsqrt();
-  const TaylorJet G = inv_r.mul(TaylorJet::constant(basis, k_inv_four_pi));
-
-  std::vector<double> out(basis.size());
-  for (int i = 0; i < basis.size(); ++i) {
-    // TaylorJet coefficient: c_alpha = D_alpha G / alpha!
-    // Returned value here:   D_alpha G
-    // M2L and M2P consume raw derivatives in this repository.
-    out[i] = G.at(basis[i]) * MultiIndexSet::multi_factorial(basis[i]);
-  }
-  return out;
+    // M2L and M2P consume raw derivatives D_alpha G, with
+    // G = g/(4*pi) and c_alpha = D_alpha g / alpha!.
+    for (int index = 0; index < basis.size(); ++index) {
+        coefficients[static_cast<std::size_t>(index)] *= k_inv_four_pi;
+        coefficients[static_cast<std::size_t>(index)] *=
+            MultiIndexSet::multi_factorial(basis[index]);
+    }
+    return coefficients;
 }
 
 } // namespace cdfmm

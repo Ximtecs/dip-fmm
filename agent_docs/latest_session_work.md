@@ -1,5 +1,54 @@
 # Latest session work
 
+## 2026-10-02 — prism construction follow-up
+
+Extended the finite endpoint table approach to rectangular prisms. Cartesian
+and spherical P2M/L2P now reuse separable one-dimensional averages; the table
+matches the scalar formula bit for bit through order 14 (6,131 assertions).
+Point endpoints have no volume average to tabulate, and already benefit from
+the shared constant-index and Laplace-derivative improvements.
+
+On a 512-prism general grid, spherical p10/d2, CPU FP64, P2M fell 14.829 ms
+to 1.131 ms and L2P 21.014 ms to 1.281 ms. Total cold setup fell 76.078 s
+to 0.114 s, including the independent shared universal-bank improvement.
+Far, near and total fields agree with the pre-change extension at relative
+L2 `3.9e-16`, `1.0e-17` and `1.8e-17`; they are not bit-identical. Focused
+prism moment and cuboid FMM tests pass. Evidence is under
+`benchmarks/baselines/prism-construction/`. Changes are uncommitted.
+
+## 2026-10-02 — tetrahedron construction optimisation
+
+Accepted construction work for the Kuhn-mesh benchmark: exact O(p^3)
+tetrahedron averaged-monomial table (long-double accumulation, double
+storage) shared by Cartesian and spherical P2M/L2P; focused constant-index
+and Laplace-recurrence ports remove the cold universal-bank bottleneck.
+The public scalar evaluator and exception behaviour remain compatible. No
+backend, P2P, public/ABI surface, cache identity/format/version, or policy
+changed. Recurrence rounding may change coefficient bytes under existing
+compatible cache keys.
+
+FP32 order 10 Kuhn-mesh total: CPU 171.33 -> 0.447 s with bit-identical
+fields; CUDA 162.72 -> 0.465 s with relative field L2 `6.47e-8`. FP64 order
+6 errors: CPU `5.04e-17`, CUDA `1.25e-16`; far-field error about `7e-16`.
+GPU P2M endpoint: 19.956 s -> 1.675 ms; L2P: 48.133 s -> 2.367 ms.
+Detailed runs and data: `benchmarks/baselines/tetrahedron-construction/`.
+Fully cold, cache-disabled totals are 80–94 s; the retained Article1 profile
+reports 68.4 s total and 0.069 s for the bank. The reason for the old bank
+time is unverified, so do not conflate the total timings.
+Large cases show remaining P2P cost (1.763 s at n=10, p=10, depth 3) and
+order-20 bank cost (6.412 s), with no P2P change in this scope.
+
+CPU and CUDA CTest: 265/265 each (4 and 1 expected skips). Focused pytest
+against the actual respective builds: 41 passed / 7 skipped CPU and 46
+passed / 2 skipped CUDA. Independent review passed. `sphinx-build -W
+--keep-going -b html docs docs/_build/html` exited 0. GCC 13, oneMKL, Fortran,
+and Windows unvalidated. Uncommitted;
+unrelated `.claude/`, `Article1_old/`, and `examples/simple_notebooks/`
+preserved. Session validation is complete; the benchmark record is ready for
+review and retention as an engineering baseline.
+
+---
+
 ## 2026-09-21 — Phase 5 closure follow-up: residual construction clocks, benchmark semantics, C accessor
 
 Starting HEAD `d691830` (tip of `phase5-timing-freeze`, the agent-record
