@@ -12,7 +12,7 @@ Portable and CUDA CTest each passed 280/280; the portable run skipped five
 unavailable optional-backend cases and the CUDA run skipped one oneMKL case.
 Python tests passed 178 with 9 optional skips using `PYTHONPATH=build`.
 The jaxFMM campaign Python files pass `compileall`; the element runner also
-passes `py_compile`. Both target branches were pushed at `28b64de`. Obsolete
+passes `py_compile`. Both target branches now point to the same pushed commit. Obsolete
 campaign, performance, and phase refs were removed locally and remotely; the
 remote branch set is now `main`, `refactor/architecture-v0.2`, and
 `release/v0.2`. The `release/v0.1` branch was retired as requested, while the
