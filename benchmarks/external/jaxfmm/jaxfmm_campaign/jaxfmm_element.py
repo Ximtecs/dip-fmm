@@ -23,7 +23,7 @@ from .finite_sources import BodyMesh
 from .timing import TimingProtocol, TimingSummary
 
 ELEMENT_DEFAULTS = {"p": 4, "theta": 0.5, "N_max": 128, "s": 3, "near_deg": None, "duffy_deg": 4,
-                    "jit_connectivity": True}
+                    "jit_connectivity": True, "mem_limit": 4 * 1024**3}
 
 
 @dataclass
@@ -51,13 +51,16 @@ def build_element_evaluator(mesh: BodyMesh, **overrides) -> ElementEvaluator:
     from jaxfmm.fem import element_compile, element_farfield_setup
 
     parameters = {**ELEMENT_DEFAULTS, **overrides}
-    kwargs = {k: v for k, v in parameters.items() if v is not None}
+    kwargs = {k: v for k, v in parameters.items() if v is not None and k != "mem_limit"}
     nodes = jnp.asarray(mesh.nodes.astype(np.float32))
     tris = jnp.asarray(mesh.triangles.astype(np.int32))
     eval_pts = jnp.asarray(mesh.centres.astype(np.float32))
     started = time.perf_counter()
     setup = element_farfield_setup(nodes, None, tris, eval_pts, **kwargs)
-    forward = element_compile(setup, field=True)
+    # The stock default is unbounded, which lets large near/far stages materialise
+    # enormous intermediates.  A fixed transient budget keeps the same native
+    # jaxFMM algorithm but makes those stages batch their work deterministically.
+    forward = element_compile(setup, field=True, mem_limit=parameters["mem_limit"])
     jax.block_until_ready([v for v in setup.values() if hasattr(v, "shape")])
     elapsed = time.perf_counter() - started
     info = {
@@ -68,6 +71,7 @@ def build_element_evaluator(mesh: BodyMesh, **overrides) -> ElementEvaluator:
         "mpl_pairs": int(np.asarray(setup["mpl_cnct"]).shape[0]) if "mpl_cnct" in setup else None,
         "tri_quad_points_far": int(setup["tri_qpos"].shape[1]) if "tri_qpos" in setup and hasattr(setup["tri_qpos"], "shape") and setup["tri_qpos"].ndim > 1 else None,
         "tri_quad_points_near": int(setup["tri_qpos_n"].shape[1]) if "tri_qpos_n" in setup and hasattr(setup["tri_qpos_n"], "shape") and setup["tri_qpos_n"].ndim > 1 else None,
+        "evaluation_mem_limit_bytes": int(parameters["mem_limit"]),
     }
     return ElementEvaluator(parameters=parameters, setup=setup, forward=forward, setup_seconds=elapsed,
                             setup_info=info)
