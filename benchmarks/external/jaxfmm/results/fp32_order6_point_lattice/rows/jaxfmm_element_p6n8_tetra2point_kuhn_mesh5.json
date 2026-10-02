@@ -1,0 +1,158 @@
+{
+  "framework": "jaxfmm",
+  "campaign_revision": "jaxfmm_fp32_order6_v1",
+  "case_id": "jaxfmm_element_p6n8_tetra2point_kuhn_mesh5",
+  "started_at": "2026-09-30T14:06:08.070453+00:00",
+  "status": "failed",
+  "case": {
+    "framework": "jaxfmm",
+    "engine": "element",
+    "tier": "finite",
+    "geometry": "kuhn_mesh",
+    "grid": 5,
+    "spacing": 1.0,
+    "p": 6,
+    "near_deg": 8,
+    "N_max": null,
+    "theta": null,
+    "state": "random",
+    "precision": "float32",
+    "device": "gpu",
+    "source_geometry": "tetra_faces",
+    "target_geometry": "point",
+    "sample_targets": 512,
+    "sample_seed": 314159,
+    "role": "finite_point_target",
+    "dof_per_box": null,
+    "n_bodies": 750
+  },
+  "protocol": {
+    "warmups": 3,
+    "samples": 5,
+    "evaluations": 5
+  },
+  "process": {
+    "hostname": "mihaa-workstation",
+    "os": "Linux-7.0.0-34-generic-x86_64-with-glibc2.43",
+    "cpu_model": "Intel(R) Core(TM) i9-14900KF",
+    "python": "3.12.14",
+    "python_executable": "/home/mihaa/.conda/envs/jaxfmm/bin/python",
+    "affinity": [
+      0,
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14
+    ],
+    "core_class": "performance",
+    "omp_num_threads": "8",
+    "pid": 648049
+  },
+  "jax_environment": {
+    "XLA_PYTHON_CLIENT_PREALLOCATE": null,
+    "XLA_PYTHON_CLIENT_MEM_FRACTION": null,
+    "XLA_PYTHON_CLIENT_ALLOCATOR": null,
+    "JAX_PLATFORMS": "cuda,cpu",
+    "JAX_ENABLE_X64": null,
+    "JAX_DEFAULT_MATMUL_PRECISION": "highest",
+    "XLA_FLAGS": null,
+    "JAX_COMPILATION_CACHE_DIR": null,
+    "CUDA_VISIBLE_DEVICES": null
+  },
+  "gpu_before": {
+    "gpu_model": "NVIDIA GeForce RTX 5090",
+    "driver_version": "595.91.07",
+    "memory_used_mib": 148.0,
+    "memory_total_mib": 32607.0,
+    "compute_processes": []
+  },
+  "cuda_toolkit": "13.2",
+  "jaxfmm_git": {
+    "path": "/home/mihaa/MagTense/dip-fmm/.external/jaxfmm",
+    "commit": "9ba4907812e00b23637cad660a0e9ceb22585064",
+    "describe": "v0.3.3",
+    "dirty": false
+  },
+  "precision_config": {
+    "jax_enable_x64": false,
+    "jax_default_matmul_precision": "highest",
+    "jax_compilation_cache_dir": null
+  },
+  "devices": {
+    "jax_version": "0.11.2",
+    "jaxlib_version": "0.11.2",
+    "default_backend": "gpu",
+    "devices": [
+      "gpu:0:NVIDIA GeForce RTX 5090"
+    ],
+    "device_kind": "NVIDIA GeForce RTX 5090",
+    "platform": "gpu"
+  },
+  "versions": {
+    "python": "3.12.14",
+    "jax": "0.11.2",
+    "jaxlib": "0.11.2",
+    "jaxfmm": "0.3.3",
+    "numpy": "2.5.3"
+  },
+  "dataset": {
+    "dataset_id": "tetra_mesh_5",
+    "sha256": "12ab3117ef191b049d12dad42012712b2d8df04f9de8ab174779cfbce4bd5391",
+    "n_sources": 1650,
+    "n_targets": 750,
+    "n_bodies": 750,
+    "counts": {
+      "nx": 5,
+      "ny": 5,
+      "nz": 5,
+      "cells": 125,
+      "bodies": 750,
+      "vertices": 216,
+      "tetrahedra": 750,
+      "faces": 1650,
+      "unique_faces": 1650,
+      "triangles": 1650,
+      "shared_triangles": 1350,
+      "sources_jaxfmm": 1650,
+      "sources_dipfmm": 750,
+      "targets": 750
+    },
+    "spec": {
+      "kind": "kuhn_mesh",
+      "grid": 5,
+      "spacing": 1.0,
+      "seed": 314159,
+      "state": "random",
+      "body": "tetra"
+    },
+    "source_representation": "constant face charge (M_left - M_right).n per unique face, two triangles per cube face, one per tetrahedron face",
+    "total_charge": 6.217248937900877e-15
+  },
+  "finished_at": "2026-09-30T14:06:12.138704+00:00",
+  "failure_reason": "IndexError: tuple index out of range",
+  "traceback": "Traceback (most recent call last):\n  File \"/home/mihaa/MagTense/dip-fmm/.claude/worktrees/jaxfmm-campaign/benchmarks/external/jaxfmm/campaign/run_jaxfmm_finite_case.py\", line 124, in main\n    evaluator = jaxfmm_element.build_element_evaluator(mesh, **overrides)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/mihaa/MagTense/dip-fmm/.claude/worktrees/jaxfmm-campaign/benchmarks/external/jaxfmm/jaxfmm_campaign/jaxfmm_element.py\", line 59, in build_element_evaluator\n    setup = element_farfield_setup(nodes, None, tris, eval_pts, **kwargs)\n            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/mihaa/MagTense/dip-fmm/.external/jaxfmm/jaxfmm/fem/farfield.py\", line 113, in element_farfield_setup\n    msl, mel = lvl_info[-2][1], lvl_info[-2][0]               # far (multipole) levels\n               ~~~~~~~~^^^^\nIndexError: tuple index out of range\n",
+  "orchestrator": {
+    "returncode": 1,
+    "wall_seconds": 4.351133535004919,
+    "gpu_before": {
+      "clean": true,
+      "gpu_model": "NVIDIA GeForce RTX 5090",
+      "driver_version": "595.91.07",
+      "memory_used_mib": 148.0,
+      "memory_total_mib": 32607.0,
+      "compute_processes": []
+    },
+    "gpu_after": {
+      "clean": true,
+      "gpu_model": "NVIDIA GeForce RTX 5090",
+      "driver_version": "595.91.07",
+      "memory_used_mib": 148.0,
+      "memory_total_mib": 32607.0,
+      "compute_processes": []
+    },
+    "stdout": "{\"case_id\": \"jaxfmm_element_p6n8_tetra2point_kuhn_mesh5\", \"status\": \"failed\", \"error\": \"IndexError: tuple index out of range\"}\n"
+  }
+}
