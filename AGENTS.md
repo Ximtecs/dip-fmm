@@ -161,10 +161,13 @@ publication campaign is NEXT**; it runs against this frozen implementation
 with its own measurement protocol. Do not begin benchmark redesign as a side
 effect of another change.
 
-The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor
-implementation. Architectural work occurs on `refactor/architecture-v0.2`.
-Never move, recreate, or rewrite the tag or preserved branch. No `v0.2` release
-ref exists; creating one is a separate, explicit release step.
+The `v0.1.0` annotated tag preserves the pre-refactor implementation and must
+never be moved, recreated, or rewritten. At the user's request on 2026-10-02,
+the `release/v0.1` branch was retired; its commit remains reachable from the
+unchanged `v0.1.0` tag and `main`. Architectural work occurs on
+`refactor/architecture-v0.2`. The user also requested `release/v0.2`, which
+currently points to the same commit as the architecture branch. This branch
+does not create or imply a `v0.2` release tag or published release.
 
 The foundational `core`, `math`, `geometry`, and `tree` layers, followed by the
 operator/static-plan step and backend boundaries, are now organised. The

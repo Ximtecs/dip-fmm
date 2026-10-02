@@ -12,8 +12,13 @@ Portable and CUDA CTest each passed 280/280; the portable run skipped five
 unavailable optional-backend cases and the CUDA run skipped one oneMKL case.
 Python tests passed 178 with 9 optional skips using `PYTHONPATH=build`.
 The jaxFMM campaign Python files pass `compileall`; the element runner also
-passes `py_compile`. Source branches are merged; target-branch pushes and
-obsolete ref cleanup remain to finish.
+passes `py_compile`. Both target branches were pushed at `28b64de`. Obsolete
+campaign, performance, and phase refs were removed locally and remotely; the
+remote branch set is now `main`, `refactor/architecture-v0.2`, and
+`release/v0.2`. The `release/v0.1` branch was retired as requested, while the
+`v0.1.0` tag remains unchanged. Old linked worktrees were detached rather than
+removed so their files remain available; the jaxFMM worktree's dirty memory
+limit patch is also committed on the architecture branch as `4dde568`.
 
 ## 2026-10-02 — prism construction follow-up
 
