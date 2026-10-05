@@ -3,10 +3,15 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <optional>
+#include <random>
 #include <vector>
 
+#include "cdfmm/plan/direct/dense.hpp"
+#include "cdfmm/tetrahedron.hpp"
 #include "cdfmm/uniform_fmm.hpp"
 
 using namespace cdfmm;
@@ -103,6 +108,66 @@ const std::vector<Vec3> moments{
     {-0.3, -0.5, 0.9}, {0.6, 0.4, -0.2}, {-0.1, 0.3, 0.5},
     {0.9, -0.7, 0.2}, {-0.5, 0.2, -0.4}};
 
+// A conforming Kuhn (Freudenthal) mesh of `grid^3` unit cubes: each cube is
+// split along its low-to-high diagonal into the six simplices 000 -> e_a ->
+// e_a + e_b -> 111.  Representatives are the centroids and the vertices are
+// stored as offsets from them, exactly as a user passes a mesh, so every
+// shared vertex is reached through two different representative-plus-offset
+// sums.
+struct KuhnMesh {
+  std::vector<Vec3> centroids;
+  std::vector<Tetrahedron> tetrahedra;
+};
+
+KuhnMesh kuhn_mesh(const int grid) {
+  KuhnMesh mesh;
+  std::array<int, 3> axes{{0, 1, 2}};
+  std::vector<std::array<int, 3>> orders;
+  do {
+    orders.push_back(axes);
+  } while (std::next_permutation(axes.begin(), axes.end()));
+  const auto axis_vector = [](const int axis) {
+    return Vec3{axis == 0 ? 1.0 : 0.0, axis == 1 ? 1.0 : 0.0,
+                axis == 2 ? 1.0 : 0.0};
+  };
+  for (int i = 0; i < grid; ++i) {
+    for (int j = 0; j < grid; ++j) {
+      for (int k = 0; k < grid; ++k) {
+        const Vec3 low{static_cast<double>(i), static_cast<double>(j),
+                       static_cast<double>(k)};
+        for (const std::array<int, 3>& order : orders) {
+          const Vec3 first = low + axis_vector(order[0]);
+          const std::array<Vec3, 4> vertices{
+              {low, first, first + axis_vector(order[1]),
+               low + Vec3{1.0, 1.0, 1.0}}};
+          const Vec3 centroid =
+              (vertices[0] + vertices[1] + vertices[2] + vertices[3]) * 0.25;
+          Tetrahedron tetrahedron{};
+          for (std::size_t vertex = 0; vertex < 4; ++vertex) {
+            tetrahedron.vertices[vertex] = vertices[vertex] - centroid;
+          }
+          mesh.centroids.push_back(centroid);
+          mesh.tetrahedra.push_back(tetrahedron);
+        }
+      }
+    }
+  }
+  return mesh;
+}
+
+double relative_l2_field_error(const std::vector<PotentialField>& actual,
+                               const std::vector<Vec3>& reference) {
+  REQUIRE(actual.size() == reference.size());
+  double difference_squared = 0.0;
+  double reference_squared = 0.0;
+  for (std::size_t index = 0; index < reference.size(); ++index) {
+    const Vec3 difference = actual[index].H - reference[index];
+    difference_squared += dot(difference, difference);
+    reference_squared += dot(reference[index], reference[index]);
+  }
+  return std::sqrt(difference_squared / reference_squared);
+}
+
 } // namespace
 
 TEST_CASE("FMM fields are invariant under translation and uniform scaling",
@@ -174,6 +239,72 @@ TEST_CASE("cuboid P2P and full FMM use complete scale-independent geometry",
           transform_moments(moments, scale),
           OutputFlags::Field);
       require_invariant(reference, transformed, scale, 3.0e-10);
+    }
+  }
+}
+
+TEST_CASE("touching tetrahedra stay exact whatever the root side",
+          "[normalisation][tetrahedron]") {
+  // Normalisation snaps every representative and every vertex offset to the
+  // 1e-9 canonical grid independently, so on a root side that is not a
+  // multiple of the mesh's geometry the shared vertices of touching
+  // tetrahedra no longer coincide: they miss by up to ~1e-9 of the root.
+  // Before the near-degenerate handling of the triangle-pair reduction
+  // (bc6adfa), such a mesh lost 16-44 % of its tetrahedron->tetrahedron field
+  // on root sides 3, 6 and 7 while sides 4 and 5 were exact.  The canonical
+  // perturbation itself is a geometry change of order 1e-9, so it may move
+  // the field by about that much and no more.  Depth one keeps every pair in
+  // the near field, so the comparison isolates the exact pair tensors.
+  const KuhnMesh mesh = kuhn_mesh(3);
+  const std::size_t count = mesh.centroids.size();
+  std::mt19937 generator(314159);
+  std::normal_distribution<double> normal(0.0, 1.0);
+  std::vector<Vec3> moments(count);
+  for (Vec3& moment : moments) {
+    const Vec3 direction{normal(generator), normal(generator),
+                         normal(generator)};
+    moment = direction * (tetrahedron_volume(mesh.tetrahedra.front()) /
+                          std::sqrt(dot(direction, direction)));
+  }
+  std::vector<int> identities(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    identities[index] = static_cast<int>(index);
+  }
+
+  for (const bool finite_target : {true, false}) {
+    // Root half-width 1.5 is the automatic, unsafe side 3; 2 is exact.
+    for (const std::optional<double> root_half_width :
+         {std::optional<double>{}, std::optional<double>{2.0}}) {
+      CAPTURE(finite_target, root_half_width.has_value());
+      const TargetGeometry target_geometry = finite_target
+          ? TargetGeometry::Tetrahedron
+          : TargetGeometry::Point;
+      const std::vector<Tetrahedron> target_tetrahedra =
+          finite_target ? mesh.tetrahedra : std::vector<Tetrahedron>{};
+      const DenseDirectPlan dense(
+          mesh.centroids, mesh.centroids, SourceGeometry::Tetrahedron,
+          target_geometry, {}, {}, identities, StaticPrecision::Float64,
+          mesh.tetrahedra, target_tetrahedra);
+      const std::vector<Vec3> reference =
+          dense.evaluate(moments, DenseDirectBackend::Portable);
+
+      UniformFmmOptions options;
+      options.backend = ExecutionBackend::CpuStatic;
+      options.precision = StaticPrecision::Float64;
+      options.expansion_basis = ExpansionBasis::Spherical;
+      options.expansion_order = 4;
+      options.tree.max_level = 1;
+      options.tree.root_half_width = root_half_width;
+      options.enable_cache = false;
+      options.source_geometry = SourceGeometry::Tetrahedron;
+      options.source_tetrahedra = mesh.tetrahedra;
+      options.target_geometry = target_geometry;
+      options.target_tetrahedra = target_tetrahedra;
+      UniformFmm plan(mesh.centroids, mesh.centroids, options);
+      const double error = relative_l2_field_error(
+          plan.evaluate_float64(moments, OutputFlags::Field), reference);
+      CAPTURE(error);
+      CHECK(error <= (root_half_width.has_value() ? 1.0e-11 : 1.0e-7));
     }
   }
 }
