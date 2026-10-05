@@ -4,7 +4,7 @@
   "spacing": 1.0,
   "grids": [10, 16, 20, 25, 32, 40, 50, 64, 80, 100, 128],
   "kuhn_grids": [5, 8, 10, 16, 20, 25, 32, 40, 50, 64],
-  "kuhn_grids_note": "Kuhn meshes must have a root side of the form 2^a 5^b: dip-fmm snaps normalised coordinates to a 1e-9 grid and touching tetrahedra lose their exact shared vertices otherwise (6- and 12-cell meshes give 20-30 % errors; see README).",
+  "kuhn_grids_note": "Historical: this ladder kept root sides of the form 2^a 5^b because the aa9d75f solver lost 20-40 % of touching tetra->tetra fields on other sides. That was fixed in bc6adfa; any side is now within ~1e-8 (tests/test_normalisation.cpp).",
   "state": "random",
   "sample_targets": 512,
   "protocol": {"warmups": 3, "samples": 5, "evaluations": 5},

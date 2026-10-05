@@ -167,19 +167,12 @@ def main() -> int:
         row["setup_seconds"] = construction
         row["plan"] = dipfmm_runner.plan_report(plan)
         root_side = 2.0 * float(plan.tree.root_half_width)
+        # NOTE(cdfmm): the root side is recorded because the plan snaps normalised
+        # coordinates to a 1e-9 grid. On sides where the mesh coordinates are not
+        # exact on that grid, shared vertices of touching tetrahedra miss by ~1e-9
+        # and the field moves by ~1e-8 (pinned in tests/test_normalisation.cpp);
+        # the 20-40 % failure seen here on aa9d75f was fixed in bc6adfa.
         row["plan"]["root_side"] = root_side
-        if body == "tetra":
-            # WARNING(cdfmm): the plan snaps normalised coordinates to a 1e-9 grid;
-            # touching tetrahedra keep their exactly shared vertices only when the
-            # mesh coordinates (multiples of spacing/4) stay on that grid, i.e. when
-            # (spacing/4)/root_side is a multiple of 1e-9.  Otherwise the analytic
-            # tetrahedron-tetrahedron near field is 20-30 % wrong.  Refuse rather
-            # than record a wrong number.
-            steps = 0.25 * args.spacing / root_side * 1.0e9
-            if abs(steps - round(steps)) > 1.0e-6:
-                raise RuntimeError(
-                    f"unsafe root side {root_side:g} for touching tetrahedra: mesh coordinates "
-                    "are not exact on the solver's 1e-9 canonical grid")
         row["gpu_with_plan"] = environment.gpu_state()
         protocol = TimingProtocol(args.warmups, args.samples, args.evaluations)
         summary, field, first_call = dipfmm_runner.time_plan(plan, dataset.moments, dataset.identity_map, protocol)

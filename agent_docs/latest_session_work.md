@@ -1,5 +1,23 @@
 # Latest session work
 
+## 2026-10-05 — touching tetrahedra on any root side: already fixed, now pinned
+
+Article1 NOTES 2r recorded 17-31 % tetra->tetra errors on conforming Kuhn
+meshes whose root side is not of the form 2^a 5^b, attributed to the
+independent 1e-9 canonical-grid snapping of representatives and vertex
+offsets. Re-measured (FP64, depth 1, against the dense exact plan): the
+failure reproduces only on `aa9d75f` (sides 3, 6, 7: 0.16-0.44); `bc6adfa`,
+`39a59c9` and `96e4d68` give 1e-8 to 3e-8 on those sides and 1e-13 on sides
+4 and 5. The near-degenerate triangle-pair handling of `bc6adfa` fixed it;
+2r was measured with the jaxFMM preflight's `aa9d75f` build. The remaining
+1e-8 is the 1e-9 geometry perturbation itself (tetra->point and prisms see
+the same order), two orders below the smallest FP64 tetrahedron error in
+Article1 (2.6e-6). No solver change. `tests/test_normalisation.cpp` now pins
+it ("touching tetrahedra stay exact whatever the root side"); the
+benchmark-side refusal of such sides in
+`benchmarks/external/jaxfmm/campaign/run_dipfmm_case.py` is removed. Portable
+CTest 281/281 (5 optional-backend skips).
+
 ## 2026-10-02 — construction results and benchmark branches consolidated
 
 Committed the tetrahedron and prism construction work as `0c77bd7`. Merged
