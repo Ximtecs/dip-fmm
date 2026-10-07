@@ -66,6 +66,9 @@ def main(argv=None) -> int:
     p.add_argument("--targets", type=int, default=512, help="dense reference on this many random targets")
     p.add_argument("--fp32", action="store_true", help="FP32 plans (reference stays FP64)")
     p.add_argument("--csv", type=Path, default=None)
+    p.add_argument("--repeats", type=int, default=5, help="timed evaluations after one warm-up (median reported)")
+    p.add_argument("--stop-if-busy", action="store_true",
+                   help="stop before each plan if `job-scheduler status` reports a running job")
     args = p.parse_args(argv)
 
     if args.npz is not None:
@@ -81,7 +84,7 @@ def main(argv=None) -> int:
         moments = random_moments(mesh)
     n = len(centres)
     levels = np.unique(np.round(sizes[:, 0] / sizes[:, 0].min()).astype(int), return_counts=True)
-    print(f"{label}: {n} prisms, size ratios {dict(zip(levels[0].tolist(), levels[1].tolist()))}, box {box:.4g}")
+    print(f"{label}: {n} prisms, size ratios {dict(zip(levels[0].tolist(), levels[1].tolist()))}, box {box:.4g}", flush=True)
 
     rng = np.random.default_rng(args.seed)
     subset = np.sort(rng.choice(n, size=min(args.targets, n), replace=False))
@@ -90,27 +93,50 @@ def main(argv=None) -> int:
     dense = c.DenseDirectPlan(centres, centres[subset], c.SourceGeometry.RECTANGULAR_PRISM, c.TargetGeometry.RECTANGULAR_PRISM,
                               prisms, [prisms[i] for i in subset], [], static_precision="float64")
     reference = np.asarray(dense.evaluate(moments, c.DenseDirectBackend.PORTABLE))
-    print(f"dense FP64 reference on {len(subset)} targets: {time.perf_counter()-t0:.1f} s")
+    print(f"dense FP64 reference on {len(subset)} targets: {time.perf_counter()-t0:.1f} s", flush=True)
     ref_norm = np.linalg.norm(reference)
     precision = c.StaticPrecision.FLOAT32 if args.fp32 else c.StaticPrecision.FLOAT64
     centre = c.Vec3(*((centres + sizes / 2).max(axis=0) + (centres - sizes / 2).min(axis=0)) / 2)
     half = 0.5 * box * (1 + 1e-6)
 
     rows = []
+
+    def scheduler_busy() -> bool:
+        import subprocess
+        try:
+            out = subprocess.run(["job-scheduler", "status"], capture_output=True, text=True, timeout=30).stdout
+        except Exception:
+            return False
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0] == "running":
+                return int(parts[1]) > 0
+        return False
+
     def run(kind, order, build, extra):
-        t = time.perf_counter(); plan = build(); t_build = time.perf_counter() - t
-        t = time.perf_counter(); field = np.asarray(plan.evaluate(moments)["H"]); t_eval = time.perf_counter() - t
-        for _ in range(2):
-            t = time.perf_counter(); plan.evaluate(moments); t_eval = min(t_eval, time.perf_counter() - t)
+        if args.stop_if_busy and scheduler_busy():
+            print("job-scheduler has a running job: stopping the sweep", flush=True)
+            raise SystemExit(3)
+        t = time.perf_counter(); built = build(); t_build = time.perf_counter() - t
+        plan, t_tree = built if isinstance(built, tuple) else (built, 0.0)
+        field = np.asarray(plan.evaluate(moments)["H"])              # warm-up, also the accuracy sample
+        times = []
+        for _ in range(max(args.repeats, 1)):
+            t = time.perf_counter(); plan.evaluate(moments); times.append(time.perf_counter() - t)
+        t_eval = float(np.median(times))
         s = plan.static_plan_statistics
         err = float(np.linalg.norm(field[subset] - reference) / ref_norm)
-        row = {"kind": kind, "order": order, **extra, "rel_l2": err, "build_s": t_build, "eval_s": t_eval,
+        row = {"kind": kind, "order": order, **extra, "rel_l2": err, "build_s": t_build, "tree_s": t_tree,
+               "eval_median_s": t_eval, "eval_min_s": float(min(times)), "eval_max_s": float(max(times)),
                "exceeding": int(s["source_bodies_exceeding_leaf"]), "max_ratio": float(s["max_body_leaf_extent_ratio"]),
                "p2p_interactions": int(s["p2p_interactions"]), "m2l_interactions": int(s["interactions"]),
-               "operator_MB": s["operator_bytes"] / 2**20 + s["near_field_operator_bytes"] / 2**20}
+               "far_field_MB": s["operator_bytes"] / 2**20, "near_field_MB": s["near_field_operator_bytes"] / 2**20,
+               "p2p_index_MB": s["p2p_index_bytes"] / 2**20, "n_bodies": n, "precision": "fp32" if args.fp32 else "fp64"}
         rows.append(row)
-        print(f"{kind:8s} order {order} {json.dumps(extra)}: rel_l2 {err:.2e}, build {t_build:6.1f} s, eval {t_eval*1e3:7.1f} ms, "
-              f"exceeding {row['exceeding']} (max ratio {row['max_ratio']:.2f}), p2p {row['p2p_interactions']}, m2l {row['m2l_interactions']}")
+        print(f"{kind:8s} order {order} {json.dumps(extra)}: rel_l2 {err:.2e}, build {t_build:6.1f} s (tree {t_tree:4.1f}), "
+              f"eval median {t_eval*1e3:8.1f} ms [{min(times)*1e3:.1f}-{max(times)*1e3:.1f}], exceeding {row['exceeding']} "
+              f"(max ratio {row['max_ratio']:.2f}), p2p {row['p2p_interactions']}, m2l {row['m2l_interactions']}, "
+              f"near {row['near_field_MB']:.0f} MB + idx {row['p2p_index_MB']:.0f} MB, far {row['far_field_MB']:.0f} MB", flush=True)
 
     for order in args.orders:
         for depth in args.uniform_depths:
@@ -123,7 +149,9 @@ def main(argv=None) -> int:
                 def build_adaptive(order=order, cap=cap, depth=depth):
                     to = c.AdaptiveTreeOptions(); to.max_particles_per_leaf = cap; to.max_depth = depth
                     to.root_centre = centre; to.root_half_width = half
-                    return c.AdaptiveTree(centres, to).build_fmm(make_options(order, sizes, c.ExpansionBasis.SPHERICAL, precision))
+                    tree = c.AdaptiveTree(centres, to)
+                    plan = tree.build_fmm(make_options(order, sizes, c.ExpansionBasis.SPHERICAL, precision))
+                    return plan, tree.tree_seconds + tree.interaction_seconds
                 run("adaptive", order, build_adaptive, {"capacity": cap, "depth": depth})
     if args.csv:
         with open(args.csv, "w", newline="") as f:

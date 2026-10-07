@@ -15,6 +15,13 @@ test_variable_cuboids_voronoi.py on examples/validation/voronoi_octree_mesh.py. 
 MagTense octree meshes (unstructuredPrisms) with dip-fmm. The Article1 benchmarks run a frozen
 build under Article1/runtime and are unaffected.
 
+Adaptive-versus-uniform study (examples/validation/results/adaptive_vs_uniform_2026-10-07/):
+plans deeper than the coarsest tile are wrong by O(1) and are all flagged by the new warning;
+contained plans of both trees match dense. On the MagTense 192k-prism two-level mesh (FP32,
+order 6) the adaptive tree (capacity 32) is 1.27x faster to evaluate with 4.1x less memory than
+the best contained uniform tree; on an FP64 synthetic mesh the uniform tree is faster (cross-level
+M2L cost). Non-dyadic tile grids break containment for either tree. CUDA untested.
+
 # Latest session work
 
 ## 2026-10-05 — touching tetrahedra on any root side: already fixed, now pinned
