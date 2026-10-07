@@ -45,9 +45,26 @@ Meshes (tile sizes relative to the coarsest tile):
    synthetic meshes (7x the near-field pairs, slowest build). Capacity 32 / depth 5 is a sensible
    default.
 
+## GPU (CUDA_FULL, RTX 5090), MagTense 192k-prism mesh, FP32, order 6
+
+`cmp_magtense_lev2_fp32_cuda.csv`, built with the `cuda` preset (host side on the E-cores, ten timed
+evaluations). Per-body and adaptive plans give the CPU errors on the GPU, which is the first CUDA
+validation of both:
+
+| plan | rel. L2 | eval | device memory | build |
+|---|---|---|---|---|
+| uniform depth 4 | 5.72e-4 | 6.7 ms | 5.6 GB | 40 s |
+| adaptive capacity 16 | 5.79e-4 | 3.9 ms | 1.5 GB | 24 s |
+| adaptive capacity 32 | 5.84e-4 | 3.8 ms | 1.8 GB | 31 s |
+| adaptive capacity 64 | 5.72e-4 | 6.2 ms | 5.6 GB | 77 s |
+
+About 20 ns and 8 kB of device memory per tile for capacity 16-32. The `cuda` preset's test and
+benchmark executables did not link in this environment (system g++ host compiler with the conda
+sysroot's libpthread); the Python module and libcdfmm_c.so did, so CTest was not run on CUDA.
+
 ## Open points
 
-- CUDA execution with per-body sizes and on adaptive topologies is untested (CPU build only).
+- CUDA: Python-level validation only (see above); the CUDA CTest suite was not built.
 - Adaptive far-field storage is dominated by per-body finite P2M/L2P operators: mixed-level leaves
   give more distinct body offsets and so less exact reuse.
 - The cross-level M2L cost in FP64 at high order is the main performance gap of the adaptive tree.

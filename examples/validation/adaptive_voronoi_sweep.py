@@ -36,12 +36,15 @@ def load_npz(path: Path, unit: float):
     return centres, sizes, grain, band
 
 
+BACKEND = c.ExecutionBackend.CPU_STATIC
+
+
 def make_options(order, sizes, basis, precision):
     options = c.UniformFmmOptions()
     options.expansion_order = order
     options.expansion_basis = basis
     options.precision = precision
-    options.backend = c.ExecutionBackend.CPU_STATIC
+    options.backend = BACKEND
     options.source_geometry = c.SourceGeometry.RECTANGULAR_PRISM
     options.target_geometry = c.TargetGeometry.RECTANGULAR_PRISM
     prisms = [c.RectangularPrism(*s) for s in sizes]
@@ -67,9 +70,12 @@ def main(argv=None) -> int:
     p.add_argument("--fp32", action="store_true", help="FP32 plans (reference stays FP64)")
     p.add_argument("--csv", type=Path, default=None)
     p.add_argument("--repeats", type=int, default=5, help="timed evaluations after one warm-up (median reported)")
+    p.add_argument("--backend", choices=("cpu", "cuda"), default="cpu", help="CPU_STATIC or CUDA_FULL")
     p.add_argument("--stop-if-busy", action="store_true",
                    help="stop before each plan if `job-scheduler status` reports a running job")
     args = p.parse_args(argv)
+    global BACKEND
+    BACKEND = c.ExecutionBackend.CUDA_FULL if args.backend == "cuda" else c.ExecutionBackend.CPU_STATIC
 
     if args.npz is not None:
         centres, sizes, grain, band = load_npz(args.npz, args.unit)
@@ -131,12 +137,15 @@ def main(argv=None) -> int:
                "exceeding": int(s["source_bodies_exceeding_leaf"]), "max_ratio": float(s["max_body_leaf_extent_ratio"]),
                "p2p_interactions": int(s["p2p_interactions"]), "m2l_interactions": int(s["interactions"]),
                "far_field_MB": s["operator_bytes"] / 2**20, "near_field_MB": s["near_field_operator_bytes"] / 2**20,
-               "p2p_index_MB": s["p2p_index_bytes"] / 2**20, "n_bodies": n, "precision": "fp32" if args.fp32 else "fp64"}
+               "p2p_index_MB": s["p2p_index_bytes"] / 2**20, "n_bodies": n, "precision": "fp32" if args.fp32 else "fp64",
+               "backend": args.backend,
+               "device_MB": plan.cuda_plan_statistics["persistent_device_bytes"] / 2**20 if args.backend == "cuda" else 0.0}
         rows.append(row)
         print(f"{kind:8s} order {order} {json.dumps(extra)}: rel_l2 {err:.2e}, build {t_build:6.1f} s (tree {t_tree:4.1f}), "
               f"eval median {t_eval*1e3:8.1f} ms [{min(times)*1e3:.1f}-{max(times)*1e3:.1f}], exceeding {row['exceeding']} "
               f"(max ratio {row['max_ratio']:.2f}), p2p {row['p2p_interactions']}, m2l {row['m2l_interactions']}, "
-              f"near {row['near_field_MB']:.0f} MB + idx {row['p2p_index_MB']:.0f} MB, far {row['far_field_MB']:.0f} MB", flush=True)
+              f"near {row['near_field_MB']:.0f} MB + idx {row['p2p_index_MB']:.0f} MB, far {row['far_field_MB']:.0f} MB, "
+              f"device {row['device_MB']:.0f} MB", flush=True)
 
     for order in args.orders:
         for depth in args.uniform_depths:
