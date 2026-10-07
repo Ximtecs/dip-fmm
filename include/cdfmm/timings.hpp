@@ -137,6 +137,20 @@ struct StaticPlanStatistics {
     PhaseTiming cuda_upload{};
     /// @brief Complete constructor setup time, including backend creation.
     PhaseTiming total_setup{};
+    /// @brief Finite source bodies whose extent reaches outside their own leaf box.
+    ///
+    /// Bodies are assigned to leaves by their representative position only, so a
+    /// prism larger than its leaf (a coarse tile of a graded mesh in a leaf split
+    /// by its fine neighbours, or any body wider than a deep uniform leaf) is
+    /// handled by operators that assume it inside; the far field for such a body
+    /// is then an approximation of unbounded error. The plan reports and prints
+    /// the count instead of refusing; choose depth, capacity or the mesh so that
+    /// it is zero.
+    std::size_t source_bodies_exceeding_leaf{0};
+    /// @brief Finite target bodies whose extent reaches outside their own leaf box.
+    std::size_t target_bodies_exceeding_leaf{0};
+    /// @brief Largest (|offset from leaf centre| + half extent) / leaf half-width over all finite bodies; 1 means contained.
+    double max_body_leaf_extent_ratio{0.0};
     /// @brief Whether the universal operator bank was loaded from the cache.
     bool universal_cache_hit{false};
     /// @brief Whether the periodic root operator was loaded from the cache.

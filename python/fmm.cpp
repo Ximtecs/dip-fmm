@@ -367,6 +367,9 @@ void bind_fmm(py::module_& module)
         result["p2p_dictionary_token_bytes"] = statistics.p2p_dictionary_token_bytes;
         result["p2p_dictionary_tensor_bytes"] = statistics.p2p_dictionary_tensor_bytes;
         result["p2p_dictionary_total_bytes"] = statistics.p2p_dictionary_total_bytes;
+        result["source_bodies_exceeding_leaf"] = statistics.source_bodies_exceeding_leaf;
+        result["target_bodies_exceeding_leaf"] = statistics.target_bodies_exceeding_leaf;
+        result["max_body_leaf_extent_ratio"] = statistics.max_body_leaf_extent_ratio;
         result["tree_bytes"] = statistics.tree_bytes;
         result["topology_bytes"] = statistics.topology_bytes;
         result["topology_construction_seconds"] = statistics.topology_construction.total_seconds;

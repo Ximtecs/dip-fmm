@@ -71,6 +71,28 @@ The wrapper deliberately performs no volume or `Ms` scaling because these may
 vary by cell. The result is the signed, volume-averaged demagnetising field
 `H = -grad(phi)`.
 
+## Per-body prism sizes and the adaptive tree
+
+Two additive wrappers accept one full side-length triple per body, for graded
+(octree) meshes whose tiles differ in size:
+
+```fortran
+! fixed-depth uniform tree of options%depth
+call cdfmm_create_variable_cuboids(fmm, x, y, z, hx, hy, hz, options, ierr)
+! adaptive octree: split while a box holds more than 32 bodies, at most 5 levels deep;
+! the root cube is inferred from the body extents unless root_centre/root_half_width are given
+call cdfmm_create_adaptive_variable_cuboids(fmm, x, y, z, hx, hy, hz, 32, 5, options, ierr)
+```
+
+`hx, hy, hz` are the full side lengths in user order, sources and targets are
+the same prisms, finite self interactions are kept, and moments are total
+moments as before. With equal sizes the per-body plan reproduces the
+`cell_size(3)` plan bit for bit. The adaptive plan ignores `options%depth`, is
+not cached and does not support periodicity. Both print the leaf-containment
+warning described in `trees-and-parameter-selection.md` when a body is wider
+than its leaf; the C ABI names are `cdfmm_plan_create_same_variable_cuboids`
+and `cdfmm_plan_create_adaptive_variable_cuboids`.
+
 ## Advanced C ABI access
 
 The boundary beneath the convenience layer remains `ISO_C_BINDING` Fortran ->

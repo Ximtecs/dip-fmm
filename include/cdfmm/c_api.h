@@ -131,6 +131,43 @@ CDFMM_C_API int cdfmm_plan_create_same_uniform_cuboids_periodic(
     const double cell_lengths[3], double setup_tolerance,
     const cdfmm_options* options, cdfmm_plan** plan);
 
+/**
+ * @brief Creates a same-source/same-target plan of rectangular prisms with one
+ * size per body.
+ *
+ * Additive to ABI version 1. `hx`, `hy`, `hz` hold the full side lengths of
+ * every body in user order; targets are the same prisms (volume-averaged) and
+ * finite self interactions are kept. The uniform tree of `options->tree_depth`
+ * assigns bodies to leaves by their centres: a body wider than its leaf is
+ * accepted, counted in the initialisation summary and printed as a warning,
+ * but its far field is then not guaranteed. Choose the depth so that the
+ * largest body fits in a leaf.
+ */
+CDFMM_C_API int cdfmm_plan_create_same_variable_cuboids(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* hx, const double* hy, const double* hz,
+    const cdfmm_options* options, cdfmm_plan** plan);
+
+/**
+ * @brief Creates the same per-body prism plan on an adaptive (capacity-driven)
+ * octree instead of the fixed-depth uniform tree.
+ *
+ * Additive to ABI version 1. A box is subdivided while it holds more than
+ * `max_particles_per_leaf` bodies and is shallower than `max_depth` (0..8);
+ * `options->tree_depth` is ignored. The root is the cube centred at
+ * `root_centre` with half-width `root_half_width`; pass `root_centre == NULL`
+ * or `root_half_width <= 0` to infer a cube that encloses every body
+ * including its extent. Plans on an adaptive topology are not cached and do
+ * not support periodicity. The same leaf-containment warning as for the
+ * uniform entry point applies.
+ */
+CDFMM_C_API int cdfmm_plan_create_adaptive_variable_cuboids(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* hx, const double* hy, const double* hz,
+    size_t max_particles_per_leaf, int max_depth,
+    const double* root_centre, double root_half_width,
+    const cdfmm_options* options, cdfmm_plan** plan);
+
 CDFMM_C_API int cdfmm_plan_evaluate_f32(
     cdfmm_plan* plan, const float* mx, const float* my, const float* mz,
     float* hx, float* hy, float* hz);

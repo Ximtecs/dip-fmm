@@ -1,3 +1,20 @@
+## 2026-10-07 — adaptive_devel: per-body prisms through the C ABI, adaptive defaults, leaf containment
+
+Branch `adaptive_devel` (from `refactor/architecture-v0.2` at bafe1cd, after the
+`fix/tetra-canonical-coincidence` fast-forward). Additive C ABI entry points
+`cdfmm_plan_create_same_variable_cuboids` (uniform tree, one size per body) and
+`cdfmm_plan_create_adaptive_variable_cuboids` (AdaptiveTree with capacity/max_depth, root
+inferred from body extents unless given), Fortran wrappers `cdfmm_create_variable_cuboids` /
+`cdfmm_create_adaptive_variable_cuboids`, no ABI version bump, no struct change.
+`AdaptiveTreeOptions` defaults changed to capacity 32 / max_depth 5. New leaf-containment
+diagnostics in `StaticPlanStatistics` (bodies whose extent reaches past their leaf, worst
+reach ratio), printed as a `[cdfmm] warning` by both constructors and in the summary; the
+hazard itself (centre-based leaf assignment) is unchanged. Tests: test_c_api.cpp (graded
+15-prism scene against DenseDirectPlan), Fortran smoke test, python_tests/
+test_variable_cuboids_voronoi.py on examples/validation/voronoi_octree_mesh.py. Target use:
+MagTense octree meshes (unstructuredPrisms) with dip-fmm. The Article1 benchmarks run a frozen
+build under Article1/runtime and are unaffected.
+
 # Latest session work
 
 ## 2026-10-05 — touching tetrahedra on any root side: already fixed, now pinned

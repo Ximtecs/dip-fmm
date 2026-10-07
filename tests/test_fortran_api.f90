@@ -15,6 +15,9 @@ program test_fortran_api
     real(c_float) :: low_hx(2), low_hy(2), low_hz(2)
     real(c_double) :: dmx(2), dmy(2), dmz(2), dhx(2), dhy(2), dhz(2)
     integer(c_int) :: ierr
+    type(cdfmm_plan_t) :: variable_plan, adaptive_plan
+    real(c_double) :: hx_body(2), hy_body(2), hz_body(2)
+    real(c_float) :: var_hx(2), var_hy(2), var_hz(2), ada_hx(2), ada_hy(2), ada_hz(2)
 
     options = cdfmm_options()
     if (options%basis /= CDFMM_BASIS_SPHERICAL) error stop "incorrect default basis"
@@ -118,4 +121,45 @@ program test_fortran_api
         call cdfmm_create_uniform_cuboids(finalised_plan, x, y, z, cell_size, options, ierr)
         if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
     end block
+
+    ! Per-body sizes: equal sizes must reproduce the scalar-size plan exactly,
+    ! and the adaptive constructor must build and evaluate the same geometry.
+    options = cdfmm_options()
+    options%order = 5
+    options%depth = 2
+    options%basis = CDFMM_BASIS_CARTESIAN
+    options%precision = CDFMM_PRECISION_FLOAT32
+    options%backend = CDFMM_BACKEND_CPU_STATIC
+    hx_body = cell_size(1)
+    hy_body = cell_size(2)
+    hz_body = cell_size(3)
+    call cdfmm_create_uniform_cuboids(plan, x, y, z, cell_size, options, ierr)
+    if (ierr /= CDFMM_SUCCESS .or. .not. plan%valid()) error stop cdfmm_last_error()
+    call cdfmm_create_variable_cuboids(variable_plan, x, y, z, hx_body, hy_body, hz_body, options, ierr)
+    if (ierr /= CDFMM_SUCCESS .or. .not. variable_plan%valid()) error stop cdfmm_last_error()
+    mx = 0.0_c_float
+    my = 0.0_c_float
+    mz = [1.0_c_float, 0.0_c_float]
+    call cdfmm_evaluate(plan, mx, my, mz, hx, hy, hz, ierr)
+    if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
+    call cdfmm_evaluate(variable_plan, mx, my, mz, var_hx, var_hy, var_hz, ierr)
+    if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
+    if (any(var_hx /= hx) .or. any(var_hy /= hy) .or. any(var_hz /= hz)) then
+        error stop "per-body plan with equal sizes differs from the uniform-size plan"
+    end if
+    call cdfmm_create_adaptive_variable_cuboids(adaptive_plan, x, y, z, hx_body, hy_body, hz_body, 1, 3, options, ierr)
+    if (ierr /= CDFMM_SUCCESS .or. .not. adaptive_plan%valid()) error stop cdfmm_last_error()
+    call cdfmm_evaluate(adaptive_plan, mx, my, mz, ada_hx, ada_hy, ada_hz, ierr)
+    if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
+    if (any(abs(ada_hz - hz) > 1.0e-3_c_float * maxval(abs(hz)))) then
+        error stop "adaptive per-body plan disagrees with the uniform plan"
+    end if
+    call cdfmm_create_variable_cuboids(variable_plan, x, y, z, hx_body(1:1), hy_body, hz_body, options, ierr)
+    if (ierr /= CDFMM_ERROR_INVALID_ARGUMENT .or. variable_plan%valid()) then
+        error stop "size-conformance error was not reported"
+    end if
+    call plan%destroy()
+    call variable_plan%destroy()
+    call adaptive_plan%destroy()
+
 end program test_fortran_api

@@ -186,3 +186,169 @@ TEST_CASE("C ABI creates fully periodic same-cuboid plans")
             CDFMM_ERROR_INVALID_ARGUMENT);
     REQUIRE(plan == nullptr);
 }
+
+// ---------------------------------------------------------------------------
+// Per-body prism sizes through the C ABI (uniform and adaptive trees)
+// ---------------------------------------------------------------------------
+
+#include <array>
+#include <vector>
+
+#include "cdfmm/plan/direct/dense.hpp"
+#include "cdfmm/uniform_fmm.hpp"
+
+namespace {
+
+// Eight cubes of side 2 at (+-1, +-1, +-1), with the (+,+,+) cube replaced by
+// its eight unit-cube children: a two-level octree mesh, 15 prisms in a
+// 4 x 4 x 4 block centred on the origin.
+struct GradedScene {
+    std::vector<double> x, y, z, hx, hy, hz, mx, my, mz;
+    std::vector<cdfmm::Vec3> positions;
+    std::vector<cdfmm::CuboidSize> sizes;
+    std::vector<cdfmm::Vec3> moments;
+    void add(double px, double py, double pz, double side) {
+        const std::size_t i = x.size();
+        x.push_back(px); y.push_back(py); z.push_back(pz);
+        hx.push_back(side); hy.push_back(side); hz.push_back(side);
+        const double volume = side * side * side;
+        mx.push_back(volume * (0.3 + 0.05 * i));
+        my.push_back(volume * (-0.2 + 0.03 * i));
+        mz.push_back(volume * (0.9 - 0.04 * i));
+        positions.push_back({px, py, pz});
+        sizes.push_back({side, side, side});
+        moments.push_back({mx.back(), my.back(), mz.back()});
+    }
+};
+
+GradedScene graded_scene() {
+    GradedScene scene;
+    for (double sx : {-1.0, 1.0}) for (double sy : {-1.0, 1.0}) for (double sz : {-1.0, 1.0}) {
+        if (sx > 0 && sy > 0 && sz > 0) continue;
+        scene.add(sx, sy, sz, 2.0);
+    }
+    for (double sx : {0.5, 1.5}) for (double sy : {0.5, 1.5}) for (double sz : {0.5, 1.5}) {
+        scene.add(sx, sy, sz, 1.0);
+    }
+    return scene;
+}
+
+std::vector<cdfmm::Vec3> dense_reference(const GradedScene& scene) {
+    const cdfmm::DenseDirectPlan dense(
+        scene.positions, scene.positions, cdfmm::SourceGeometry::RectangularPrism,
+        cdfmm::TargetGeometry::RectangularPrism, scene.sizes, scene.sizes, {},
+        cdfmm::StaticPrecision::Float64);
+    return dense.evaluate(scene.moments, cdfmm::DenseDirectBackend::Portable);
+}
+
+double relative_l2(const std::vector<cdfmm::Vec3>& reference,
+                   const std::vector<double>& hx, const std::vector<double>& hy,
+                   const std::vector<double>& hz) {
+    double num = 0.0, den = 0.0;
+    for (std::size_t i = 0; i < reference.size(); ++i) {
+        const double dx = hx[i] - reference[i].x, dy = hy[i] - reference[i].y,
+                     dz = hz[i] - reference[i].z;
+        num += dx * dx + dy * dy + dz * dz;
+        den += reference[i].x * reference[i].x + reference[i].y * reference[i].y +
+               reference[i].z * reference[i].z;
+    }
+    return std::sqrt(num / den);
+}
+
+cdfmm_options fp64_options(int order, int depth) {
+    cdfmm_options options{};
+    cdfmm_default_options(&options);
+    options.precision = CDFMM_PRECISION_FLOAT64;
+    options.expansion_order = order;
+    options.tree_depth = depth;
+    options.execution_backend = CDFMM_BACKEND_CPU_STATIC;
+    return options;
+}
+
+} // namespace
+
+TEST_CASE("C ABI per-body cuboids with equal sizes reproduce the uniform-size plan") {
+    const cdfmm_options options = fp64_options(4, 1);
+    const double x[] = {-0.5, 0.5, -0.5, 0.5};
+    const double y[] = {-0.5, -0.5, 0.5, 0.5};
+    const double z[] = {0.0, 0.0, 0.0, 0.0};
+    const double h[] = {1.0, 1.0, 1.0, 1.0};
+    cdfmm_plan *uniform = nullptr, *variable = nullptr;
+    REQUIRE(cdfmm_plan_create_same_uniform_cuboids(4, x, y, z, 1.0, 1.0, 1.0, &options, &uniform) == CDFMM_SUCCESS);
+    REQUIRE(cdfmm_plan_create_same_variable_cuboids(4, x, y, z, h, h, h, &options, &variable) == CDFMM_SUCCESS);
+    const double mx[] = {1.0, -0.5, 0.25, 0.75}, my[] = {0.2, 0.4, -0.6, 0.1}, mz[] = {-0.3, 0.9, 0.5, -0.8};
+    double ux[4]{}, uy[4]{}, uz[4]{}, vx[4]{}, vy[4]{}, vz[4]{};
+    REQUIRE(cdfmm_plan_evaluate_f64(uniform, mx, my, mz, ux, uy, uz) == CDFMM_SUCCESS);
+    REQUIRE(cdfmm_plan_evaluate_f64(variable, mx, my, mz, vx, vy, vz) == CDFMM_SUCCESS);
+    for (int i = 0; i < 4; ++i) {
+        REQUIRE(vx[i] == ux[i]);
+        REQUIRE(vy[i] == uy[i]);
+        REQUIRE(vz[i] == uz[i]);
+    }
+    cdfmm_plan_destroy(uniform);
+    cdfmm_plan_destroy(variable);
+}
+
+TEST_CASE("C ABI per-body cuboids match the dense reference on a graded mesh") {
+    const GradedScene scene = graded_scene();
+    const auto reference = dense_reference(scene);
+    const std::size_t n = scene.x.size();
+    REQUIRE(n == 15);
+    std::vector<double> hx(n), hy(n), hz(n);
+
+    SECTION("uniform tree, leaves as large as the coarse tiles: exact near field") {
+        const cdfmm_options options = fp64_options(8, 1);
+        cdfmm_plan* plan = nullptr;
+        REQUIRE(cdfmm_plan_create_same_variable_cuboids(
+                    n, scene.x.data(), scene.y.data(), scene.z.data(), scene.hx.data(),
+                    scene.hy.data(), scene.hz.data(), &options, &plan) == CDFMM_SUCCESS);
+        REQUIRE(cdfmm_plan_evaluate_f64(plan, scene.mx.data(), scene.my.data(), scene.mz.data(),
+                                        hx.data(), hy.data(), hz.data()) == CDFMM_SUCCESS);
+        REQUIRE(relative_l2(reference, hx, hy, hz) < 1.0e-10);
+        cdfmm_plan_destroy(plan);
+    }
+    SECTION("adaptive tree keeps every tile inside its leaf and converges with the order") {
+        double previous = 1.0;
+        for (const int order : {4, 8}) {
+            const cdfmm_options options = fp64_options(order, 0);
+            cdfmm_plan* plan = nullptr;
+            REQUIRE(cdfmm_plan_create_adaptive_variable_cuboids(
+                        n, scene.x.data(), scene.y.data(), scene.z.data(), scene.hx.data(),
+                        scene.hy.data(), scene.hz.data(), /*capacity*/ 4, /*max_depth*/ 3,
+                        nullptr, 0.0, &options, &plan) == CDFMM_SUCCESS);
+            REQUIRE(cdfmm_plan_evaluate_f64(plan, scene.mx.data(), scene.my.data(), scene.mz.data(),
+                                            hx.data(), hy.data(), hz.data()) == CDFMM_SUCCESS);
+            const double error = relative_l2(reference, hx, hy, hz);
+            REQUIRE(error < 1.0e-2);
+            REQUIRE(error <= previous);
+            previous = error;
+            cdfmm_plan_destroy(plan);
+        }
+    }
+    SECTION("an explicit root is honoured and a root that cuts a body is rejected") {
+        const cdfmm_options options = fp64_options(4, 0);
+        const double centre[3] = {0.0, 0.0, 0.0};
+        cdfmm_plan* plan = nullptr;
+        REQUIRE(cdfmm_plan_create_adaptive_variable_cuboids(
+                    n, scene.x.data(), scene.y.data(), scene.z.data(), scene.hx.data(),
+                    scene.hy.data(), scene.hz.data(), 4, 3, centre, 2.5, &options, &plan) == CDFMM_SUCCESS);
+        cdfmm_plan_destroy(plan);
+        REQUIRE(cdfmm_plan_create_adaptive_variable_cuboids(
+                    n, scene.x.data(), scene.y.data(), scene.z.data(), scene.hx.data(),
+                    scene.hy.data(), scene.hz.data(), 4, 3, centre, 1.5, &options, &plan) ==
+                CDFMM_ERROR_INVALID_ARGUMENT);
+        REQUIRE(plan == nullptr);
+    }
+}
+
+TEST_CASE("C ABI per-body cuboids reject invalid sizes and adaptive controls") {
+    const cdfmm_options options = fp64_options(4, 1);
+    const double x[] = {0.0, 1.0}, h[] = {0.5, 0.5}, bad[] = {0.5, -0.5};
+    cdfmm_plan* plan = nullptr;
+    REQUIRE(cdfmm_plan_create_same_variable_cuboids(2, x, x, x, nullptr, h, h, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cdfmm_plan_create_same_variable_cuboids(2, x, x, x, h, bad, h, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cdfmm_plan_create_same_variable_cuboids(0, x, x, x, h, h, h, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cdfmm_plan_create_adaptive_variable_cuboids(2, x, x, x, h, h, h, 4, 9, nullptr, 0.0, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cdfmm_plan_create_adaptive_variable_cuboids(2, x, x, x, h, h, h, 0, 3, nullptr, 0.0, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(plan == nullptr);
+}

@@ -65,6 +65,7 @@ module cdfmm_fortran
     public :: cdfmm_one_mkl_available
     public :: cdfmm_create_points, cdfmm_create_same_points
     public :: cdfmm_create_uniform_cuboids, cdfmm_create_same_uniform_cuboids
+    public :: cdfmm_create_variable_cuboids, cdfmm_create_adaptive_variable_cuboids
     public :: cdfmm_evaluate, cdfmm_evaluate_f32, cdfmm_evaluate_f64
     public :: cdfmm_destroy, cdfmm_last_error
 
@@ -126,6 +127,27 @@ module cdfmm_fortran
             real(c_double), intent(in) :: cell_center(3), cell_lengths(3)
             real(c_double), value :: setup_tolerance
             type(c_ptr), value :: options
+            type(c_ptr), intent(out) :: plan
+            integer(c_int) :: status
+        end function
+        function c_create_same_variable_cuboids(count, x, y, z, hx, hy, hz, options, plan) result(status) &
+                bind(c, name="cdfmm_plan_create_same_variable_cuboids")
+            import :: c_size_t, c_double, c_ptr, c_int
+            integer(c_size_t), value :: count
+            real(c_double), intent(in) :: x(*), y(*), z(*), hx(*), hy(*), hz(*)
+            type(c_ptr), value :: options
+            type(c_ptr), intent(out) :: plan
+            integer(c_int) :: status
+        end function
+        function c_create_adaptive_variable_cuboids(count, x, y, z, hx, hy, hz, max_particles_per_leaf, max_depth, &
+                root_centre, root_half_width, options, plan) result(status) &
+                bind(c, name="cdfmm_plan_create_adaptive_variable_cuboids")
+            import :: c_size_t, c_double, c_ptr, c_int
+            integer(c_size_t), value :: count, max_particles_per_leaf
+            real(c_double), intent(in) :: x(*), y(*), z(*), hx(*), hy(*), hz(*)
+            integer(c_int), value :: max_depth
+            type(c_ptr), value :: root_centre, options
+            real(c_double), value :: root_half_width
             type(c_ptr), intent(out) :: plan
             integer(c_int) :: status
         end function
@@ -216,6 +238,86 @@ contains
             ierr = c_create_same_cuboids(size(x, kind=c_size_t), x, y, z, cell_size(1), cell_size(2), cell_size(3), &
                                          c_loc(c_options), plan%handle)
         end if
+        if (ierr == CDFMM_SUCCESS) then
+            plan%precision = c_options%precision
+            plan%count = size(x, kind=c_size_t)
+        end if
+    end subroutine
+
+    !> Same-source/same-target plan of rectangular prisms with one full side
+    !> length triple per body (hx, hy, hz in user order) on the fixed-depth
+    !> uniform tree of options%depth. Bodies wider than their leaf are accepted
+    !> but reported by the C++ core as a warning: their far field is not
+    !> guaranteed.
+    subroutine cdfmm_create_variable_cuboids(plan, x, y, z, hx, hy, hz, options, ierr)
+        type(cdfmm_plan_t), intent(inout) :: plan
+        real(c_double), intent(in), target :: x(:), y(:), z(:), hx(:), hy(:), hz(:)
+        type(cdfmm_options_t), intent(in) :: options
+        integer(c_int), intent(out) :: ierr
+        type(cdfmm_c_options_t), target :: c_options
+
+        call clear_wrapper_error()
+        call cdfmm_destroy(plan)
+        if (size(y) /= size(x) .or. size(z) /= size(x) .or. size(hx) /= size(x) .or. &
+            size(hy) /= size(x) .or. size(hz) /= size(x)) then
+            call set_wrapper_error("x, y, z, hx, hy, and hz must have equal sizes")
+            ierr = CDFMM_ERROR_INVALID_ARGUMENT
+            return
+        end if
+        if (options%periodic) then
+            call set_wrapper_error("per-body cuboid plans do not support periodicity yet")
+            ierr = CDFMM_ERROR_INVALID_ARGUMENT
+            return
+        end if
+        call to_c_options(options, c_options)
+        ierr = c_create_same_variable_cuboids(size(x, kind=c_size_t), x, y, z, hx, hy, hz, c_loc(c_options), plan%handle)
+        if (ierr == CDFMM_SUCCESS) then
+            plan%precision = c_options%precision
+            plan%count = size(x, kind=c_size_t)
+        end if
+    end subroutine
+
+    !> The same per-body prism plan on the adaptive (capacity-driven) octree:
+    !> a box is split while it holds more than max_particles_per_leaf bodies
+    !> and is shallower than max_depth (0..8); options%depth is ignored. The
+    !> root cube is inferred from the body extents unless root_centre(3) and a
+    !> positive root_half_width are given. Not cached, not periodic.
+    subroutine cdfmm_create_adaptive_variable_cuboids(plan, x, y, z, hx, hy, hz, max_particles_per_leaf, max_depth, &
+                                                      options, ierr, root_centre, root_half_width)
+        type(cdfmm_plan_t), intent(inout) :: plan
+        real(c_double), intent(in), target :: x(:), y(:), z(:), hx(:), hy(:), hz(:)
+        integer, intent(in) :: max_particles_per_leaf, max_depth
+        type(cdfmm_options_t), intent(in) :: options
+        integer(c_int), intent(out) :: ierr
+        real(c_double), intent(in), optional, target :: root_centre(3)
+        real(c_double), intent(in), optional :: root_half_width
+        type(cdfmm_c_options_t), target :: c_options
+        type(c_ptr) :: centre_pointer
+        real(c_double) :: half_width
+
+        call clear_wrapper_error()
+        call cdfmm_destroy(plan)
+        if (size(y) /= size(x) .or. size(z) /= size(x) .or. size(hx) /= size(x) .or. &
+            size(hy) /= size(x) .or. size(hz) /= size(x)) then
+            call set_wrapper_error("x, y, z, hx, hy, and hz must have equal sizes")
+            ierr = CDFMM_ERROR_INVALID_ARGUMENT
+            return
+        end if
+        if (options%periodic) then
+            call set_wrapper_error("adaptive plans do not support periodicity")
+            ierr = CDFMM_ERROR_INVALID_ARGUMENT
+            return
+        end if
+        centre_pointer = c_null_ptr
+        half_width = 0.0_c_double
+        if (present(root_centre) .and. present(root_half_width)) then
+            centre_pointer = c_loc(root_centre(1))
+            half_width = root_half_width
+        end if
+        call to_c_options(options, c_options)
+        ierr = c_create_adaptive_variable_cuboids(size(x, kind=c_size_t), x, y, z, hx, hy, hz, &
+            int(max_particles_per_leaf, c_size_t), int(max_depth, c_int), centre_pointer, half_width, &
+            c_loc(c_options), plan%handle)
         if (ierr == CDFMM_SUCCESS) then
             plan%precision = c_options%precision
             plan%count = size(x, kind=c_size_t)

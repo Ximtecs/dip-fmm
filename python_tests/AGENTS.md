@@ -15,6 +15,8 @@ python_tests/
 |-- test_fmm_memory.py, memory_model.py plan byte accounting against an
 |                                       independent storage model
 |-- test_adaptive_showcase.py           the tutorial-5 geometry/topology helpers
+|-- test_variable_cuboids_voronoi.py    per-body prisms on an octree-refined Voronoi
+|                                       mesh: uniform/adaptive vs dense, leaf containment
 |-- test_tutorial_notebooks.py          structure and headless execution of
 |                                       every notebook in examples/tutorials
 |-- test_{benchmark_runner,p2p_sweep,high_occupancy_p2p_runner,

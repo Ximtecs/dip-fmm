@@ -12,8 +12,8 @@ namespace cdfmm {
 
 /** @brief Geometry-only adaptive octree subdivision controls. */
 struct AdaptiveTreeOptions {
-    std::size_t max_particles_per_leaf{10};   ///< A box holding more sources or targets than this is subdivided.
-    int max_depth{3};                         ///< Deepest level allowed; coincident points stop here.
+    std::size_t max_particles_per_leaf{32};   ///< A box holding more sources or targets than this is subdivided.
+    int max_depth{5};                         ///< Deepest level allowed (at most 8); coincident points stop here.
     std::optional<Vec3> root_centre{};        ///< Optional fixed root centre; otherwise inferred from all points.
     std::optional<double> root_half_width{};  ///< Optional positive root half-width; otherwise inferred.
 };

@@ -248,6 +248,12 @@ void UniformFmm::print_initialisation_summary(
   stream << "  p2m_execution: " << name(p2m_execution()) << '\n';
   stream << "  l2p_execution: " << name(l2p_execution()) << '\n';
   stream << "  spatial_layout: " << cuda_policy::name(spatial_layout_) << '\n';
+  stream << "  leaf_containment.source_bodies_exceeding: "
+         << static_plan_statistics_.source_bodies_exceeding_leaf << '\n';
+  stream << "  leaf_containment.target_bodies_exceeding: "
+         << static_plan_statistics_.target_bodies_exceeding_leaf << '\n';
+  stream << "  leaf_containment.max_reach_ratio: "
+         << static_plan_statistics_.max_body_leaf_extent_ratio << '\n';
   if (cuda_policy_ && (backend_ == ExecutionBackend::CudaM2LP2P ||
                        backend_ == ExecutionBackend::CudaFull)) {
     const cuda_policy::CudaExecutionPolicy &policy = cuda_policy_->policy;

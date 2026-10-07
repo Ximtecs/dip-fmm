@@ -20,6 +20,9 @@
 // the result.  The resolved choices are what the initialisation summary
 // reports.
 
+#include <algorithm>
+#include <cmath>
+#include <iostream>
 #include "cdfmm/uniform_fmm.hpp"
 
 #include <algorithm>
@@ -166,6 +169,43 @@ UniformFmm::CudaFullPlanOwner::CudaFullPlanOwner(
     std::unique_ptr<CudaFullPlan> value)
     : plan(std::move(value)) {}
 
+
+namespace {
+
+// Bodies are assigned to leaves by their representative position only. A finite
+// body whose half extent reaches past its own leaf box is served by operators
+// that assume it inside, so its far field is an approximation of unbounded
+// error. Count such bodies and remember the worst reach, in units of the leaf
+// half-width (1 = exactly contained); callers print a warning when the count is
+// not zero. Positions, sizes and nodes share the normalised frame.
+void record_leaf_containment(const StaticFmmTopology& topology,
+                             std::span<const StaticLeafRange> leaves,
+                             std::span<const Vec3> positions,
+                             std::span<const CuboidSize> sizes,
+                             std::size_t& exceeding, double& worst_ratio) {
+  if (sizes.empty()) return;
+  // A body counts as exceeding when it reaches more than 1e-5 of the (unit)
+  // root side past its leaf face: scale-free across levels, far above the
+  // 1e-9 canonical rounding, and below any padding a caller adds to the root.
+  constexpr double protrusion_tolerance = 1.0e-5;
+  for (const StaticLeafRange& leaf : leaves) {
+    const auto& node = topology.nodes[static_cast<std::size_t>(leaf.node)];
+    if (node.half_width <= 0.0) continue;
+    for (std::size_t sorted = leaf.begin; sorted < leaf.begin + leaf.count; ++sorted) {
+      const CuboidSize& size = sizes[sizes.size() == 1 ? 0 : sorted];
+      const Vec3 offset = positions[sorted] - node.centre;
+      const double reach = std::max({std::abs(offset.x) + 0.5 * size.hx,
+                                     std::abs(offset.y) + 0.5 * size.hy,
+                                     std::abs(offset.z) + 0.5 * size.hz});
+      const double ratio = reach / node.half_width;
+      worst_ratio = std::max(worst_ratio, ratio);
+      if (reach - node.half_width > protrusion_tolerance) ++exceeding;
+    }
+  }
+}
+
+} // namespace
+
 void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
   validate_model_options(options);
   if (options.expansion_order < 0) {
@@ -194,6 +234,19 @@ void UniformFmm::initialise_execution(const UniformFmmOptions& options) {
   }
   initialise_source_geometry(options);
   initialise_target_geometry(options);
+  if (static_plan_statistics_.source_bodies_exceeding_leaf +
+          static_plan_statistics_.target_bodies_exceeding_leaf > 0) {
+    std::cerr << "[cdfmm] warning: "
+              << static_plan_statistics_.source_bodies_exceeding_leaf
+              << " source and "
+              << static_plan_statistics_.target_bodies_exceeding_leaf
+              << " target finite bodies extend beyond their own leaf box (worst "
+                 "reach / leaf half-width = "
+              << static_plan_statistics_.max_body_leaf_extent_ratio
+              << "). Their far field is not guaranteed: use a shallower uniform "
+                 "tree, a larger adaptive leaf capacity or smaller max_depth, or "
+                 "a mesh whose largest body fits in a leaf.\n";
+  }
 
   const bool effective_finite_source =
       source_geometry_ != SourceGeometry::PointDipole &&
@@ -684,13 +737,17 @@ void UniformFmm::initialise_source_geometry(const UniformFmmOptions &options) {
   }
   if (options.source_sizes.size() == 1) {
     sorted_source_sizes_ = options.source_sizes;
-    return;
+  } else {
+    sorted_source_sizes_.resize(count);
+    const auto permutation = std::span<const int>(topology_->source_permutation);
+    for (std::size_t sorted = 0; sorted < count; ++sorted) {
+      sorted_source_sizes_[sorted] = options.source_sizes[permutation[sorted]];
+    }
   }
-  sorted_source_sizes_.resize(count);
-  const auto permutation = std::span<const int>(topology_->source_permutation);
-  for (std::size_t sorted = 0; sorted < count; ++sorted) {
-    sorted_source_sizes_[sorted] = options.source_sizes[permutation[sorted]];
-  }
+  record_leaf_containment(*topology_, topology_->source_leaves,
+                          topology_->sorted_source_positions, sorted_source_sizes_,
+                          static_plan_statistics_.source_bodies_exceeding_leaf,
+                          static_plan_statistics_.max_body_leaf_extent_ratio);
 }
 
 void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
@@ -742,13 +799,17 @@ void UniformFmm::initialise_target_geometry(const UniformFmmOptions &options) {
   }
   if (options.target_sizes.size() == 1) {
     sorted_target_sizes_ = options.target_sizes;
-    return;
+  } else {
+    sorted_target_sizes_.resize(count);
+    const auto permutation = std::span<const int>(topology_->target_permutation);
+    for (std::size_t sorted = 0; sorted < count; ++sorted) {
+      sorted_target_sizes_[sorted] = options.target_sizes[permutation[sorted]];
+    }
   }
-  sorted_target_sizes_.resize(count);
-  const auto permutation = std::span<const int>(topology_->target_permutation);
-  for (std::size_t sorted = 0; sorted < count; ++sorted) {
-    sorted_target_sizes_[sorted] = options.target_sizes[permutation[sorted]];
-  }
+  record_leaf_containment(*topology_, topology_->target_leaves,
+                          topology_->sorted_target_positions, sorted_target_sizes_,
+                          static_plan_statistics_.target_bodies_exceeding_leaf,
+                          static_plan_statistics_.max_body_leaf_extent_ratio);
 }
 
 // Hybrid backend near field: instantiate the device P2P plan for the packing

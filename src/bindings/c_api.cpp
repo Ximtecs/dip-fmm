@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "cdfmm/c_api.h"
+#include "cdfmm/tree/adaptive_tree.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -180,31 +181,115 @@ void create_plan(std::size_t source_count, const double* source_x,
     *output = plan.release();
 }
 
+// Prism records for a same-source/same-target plan: one common size, or one per
+// body in user order.  Both source and target records are set from the same
+// list and finite self interactions are kept (no identity map).
+void set_same_cuboid_geometry(cdfmm::UniformFmmOptions& options,
+                              std::vector<cdfmm::CuboidSize> sizes)
+{
+    for (const cdfmm::CuboidSize& size : sizes) {
+        if (!(std::isfinite(size.hx) && std::isfinite(size.hy) &&
+              std::isfinite(size.hz) && size.hx > 0.0 && size.hy > 0.0 &&
+              size.hz > 0.0)) {
+            throw std::invalid_argument(
+                "cuboid side lengths must be finite and positive");
+        }
+    }
+    options.source_geometry = cdfmm::SourceGeometry::RectangularPrism;
+    options.target_geometry = cdfmm::TargetGeometry::RectangularPrism;
+    options.target_sizes = sizes;
+    options.source_sizes = std::move(sizes);
+}
+
+std::vector<cdfmm::CuboidSize> pack_sizes(const std::size_t count,
+                                          const double* hx, const double* hy,
+                                          const double* hz)
+{
+    require_array(count, hx, "hx");
+    require_array(count, hy, "hy");
+    require_array(count, hz, "hz");
+    std::vector<cdfmm::CuboidSize> sizes(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        sizes[index] = {hx[index], hy[index], hz[index]};
+    }
+    return sizes;
+}
+
 void create_same_uniform_cuboid_plan(
     const std::size_t count, const double* x, const double* y, const double* z,
     const double hx, const double hy, const double hz,
     cdfmm::UniformFmmOptions options, cdfmm_plan** output)
 {
-    if (!(std::isfinite(hx) && std::isfinite(hy) && std::isfinite(hz) &&
-          hx > 0.0 && hy > 0.0 && hz > 0.0)) {
-        throw std::invalid_argument(
-            "cuboid side lengths must be finite and positive");
-    }
     require_array(count, x, "x");
     require_array(count, y, "y");
     require_array(count, z, "z");
     if (count == 0) {
         throw std::invalid_argument("cuboid count must be positive");
     }
-
-    options.source_geometry = cdfmm::SourceGeometry::RectangularPrism;
-    options.source_sizes = {{hx, hy, hz}};
-    options.target_geometry = cdfmm::TargetGeometry::RectangularPrism;
-    options.target_sizes = {{hx, hy, hz}};
-
+    set_same_cuboid_geometry(options, {{hx, hy, hz}});
     // Finite cuboid self interactions are physical and are not excluded.
     create_plan(count, x, y, z, count, x, y, z, nullptr, std::move(options),
                 output);
+}
+
+// Same as create_plan, for a plan on a prebuilt (adaptive) topology.
+void create_topology_plan(const std::size_t count,
+                          std::shared_ptr<const cdfmm::StaticFmmTopology> topology,
+                          const cdfmm::UniformFmmOptions& options,
+                          cdfmm_plan** output)
+{
+    if (output == nullptr) {
+        throw std::invalid_argument("plan output pointer is NULL");
+    }
+    *output = nullptr;
+    auto plan = std::make_unique<cdfmm_plan>();
+    plan->source_count = count;
+    plan->target_count = count;
+    plan->precision = options.precision;
+    if (options.precision == cdfmm::StaticPrecision::Float32) {
+        plan->moments32.resize(count);
+        plan->results32.resize(count);
+    } else {
+        plan->moments.resize(count);
+        plan->results64.resize(count);
+    }
+    plan->fmm = std::make_unique<cdfmm::UniformFmm>(std::move(topology), options);
+    *output = plan.release();
+}
+
+// The adaptive tree places bodies by their centres and infers its root from
+// them alone, so for finite bodies the root is derived here from the full
+// extents (centre +- half size), as a cube, unless the caller fixes it.
+cdfmm::AdaptiveTreeOptions adaptive_root_for_bodies(
+    const std::vector<cdfmm::Vec3>& positions,
+    const std::vector<cdfmm::CuboidSize>& sizes,
+    const std::size_t max_particles_per_leaf, const int max_depth,
+    const double* root_centre, const double root_half_width)
+{
+    cdfmm::AdaptiveTreeOptions tree_options;
+    tree_options.max_particles_per_leaf = max_particles_per_leaf;
+    tree_options.max_depth = max_depth;
+    if (root_centre != nullptr && root_half_width > 0.0) {
+        tree_options.root_centre = cdfmm::Vec3{root_centre[0], root_centre[1], root_centre[2]};
+        tree_options.root_half_width = root_half_width;
+        return tree_options;
+    }
+    cdfmm::Vec3 low = positions.front();
+    cdfmm::Vec3 high = positions.front();
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        const cdfmm::CuboidSize& size = sizes[sizes.size() == 1 ? 0 : index];
+        const cdfmm::Vec3& p = positions[index];
+        low = {std::min(low.x, p.x - 0.5 * size.hx), std::min(low.y, p.y - 0.5 * size.hy),
+               std::min(low.z, p.z - 0.5 * size.hz)};
+        high = {std::max(high.x, p.x + 0.5 * size.hx), std::max(high.y, p.y + 0.5 * size.hy),
+                std::max(high.z, p.z + 0.5 * size.hz)};
+    }
+    const cdfmm::Vec3 centre{0.5 * (low.x + high.x), 0.5 * (low.y + high.y), 0.5 * (low.z + high.z)};
+    const double half = 0.5 * std::max({high.x - low.x, high.y - low.y, high.z - low.z});
+    // A hair of slack keeps bodies on the root faces inside after the canonical rounding.
+    tree_options.root_centre = centre;
+    tree_options.root_half_width = half * (1.0 + 1.0e-6) + 1.0e-12;
+    return tree_options;
 }
 
 } // namespace
@@ -316,6 +401,47 @@ int cdfmm_plan_create_same_uniform_cuboids_periodic(
         translated.periodic.setup_tolerance = setup_tolerance;
         create_same_uniform_cuboid_plan(
             count, x, y, z, hx, hy, hz, std::move(translated), plan);
+    });
+}
+
+int cdfmm_plan_create_same_variable_cuboids(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* hx, const double* hy, const double* hz,
+    const cdfmm_options* options, cdfmm_plan** plan)
+{
+    return guarded([&] {
+        if (count == 0) {
+            throw std::invalid_argument("cuboid count must be positive");
+        }
+        require_array(count, x, "x");
+        require_array(count, y, "y");
+        require_array(count, z, "z");
+        auto translated = translate_options(options);
+        set_same_cuboid_geometry(translated, pack_sizes(count, hx, hy, hz));
+        create_plan(count, x, y, z, count, x, y, z, nullptr,
+                    std::move(translated), plan);
+    });
+}
+
+int cdfmm_plan_create_adaptive_variable_cuboids(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* hx, const double* hy, const double* hz,
+    size_t max_particles_per_leaf, int max_depth,
+    const double* root_centre, double root_half_width,
+    const cdfmm_options* options, cdfmm_plan** plan)
+{
+    return guarded([&] {
+        if (count == 0) {
+            throw std::invalid_argument("cuboid count must be positive");
+        }
+        auto positions = pack_positions(count, x, y, z);
+        auto translated = translate_options(options);
+        set_same_cuboid_geometry(translated, pack_sizes(count, hx, hy, hz));
+        const cdfmm::AdaptiveTreeOptions tree_options = adaptive_root_for_bodies(
+            positions, translated.source_sizes, max_particles_per_leaf, max_depth,
+            root_centre, root_half_width);
+        const cdfmm::AdaptiveTree tree(positions, tree_options);
+        create_topology_plan(count, tree.shared_topology(), translated, plan);
     });
 }
 

@@ -60,8 +60,8 @@ leaf-pair records with image shifts.
 ## The adaptive tree
 
 `AdaptiveTree` splits a box only while it holds more than
-`max_particles_per_leaf` bodies, up to `max_depth`, with an explicit root
-centre and half-width. It produces the same static topology type as the
+`max_particles_per_leaf` bodies (default 32), up to `max_depth` (default 5, at
+most 8), with an explicit root centre and half-width. It produces the same static topology type as the
 uniform adapter, and `AdaptiveTree.build_fmm(options)` or
 `cdfmm.build_static_fmm(topology, options)` constructs the ordinary static
 plan on it; every backend and packing applies unchanged.
@@ -75,6 +75,20 @@ so the adaptive tree keeps more pairs in the exact near field and typically
 reaches a lower far-field error at the same order. Leaf capacity is a split
 trigger, not a guarantee at the depth cap. Plans on a supplied topology are
 not cached, and the geometry records keep their physical user units.
+
+Both trees assign a body to a leaf by its representative position alone. A
+finite body wider than its leaf (a coarse tile of a graded mesh whose centre
+falls into a box that its fine neighbours split, or any prism wider than a deep
+uniform leaf) is still accepted, but the far-field operators then describe a
+body that is not inside the box they expand, and nothing bounds that error.
+Every plan counts such bodies and prints a `[cdfmm] warning` when the count is
+not zero; the numbers are in `static_plan_statistics` as
+`source_bodies_exceeding_leaf`, `target_bodies_exceeding_leaf` and
+`max_body_leaf_extent_ratio` (reach over leaf half-width, 1 = contained) and in
+the initialisation summary. Choose `max_depth`, the leaf capacity or the uniform
+`max_level` so that the largest body fits in a leaf, or refine the mesh. For
+finite bodies the adaptive root must also enclose the extents, not only the
+centres; the C ABI entry point infers such a root when none is given.
 
 ## Order, depth and layout
 
