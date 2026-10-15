@@ -168,6 +168,41 @@ CDFMM_C_API int cdfmm_plan_create_adaptive_variable_cuboids(
     const double* root_centre, double root_half_width,
     const cdfmm_options* options, cdfmm_plan** plan);
 
+/**
+ * @brief Creates a same-source/same-target plan of tetrahedra.
+ *
+ * Additive to ABI version 1. Body `i` is represented by the point
+ * (`x[i]`, `y[i]`, `z[i]`), normally its centroid, and its four vertices are
+ * `vertices[12*i + 3*k + {0,1,2}]` (k = 0..3), given as offsets from that
+ * point. Sources and targets are the same tetrahedra: the near field uses the
+ * exact (Galerkin, volume-averaged) tetrahedron pair tensors, the far field the
+ * finite-tetrahedron P2M and volume-averaged L2P operators, and finite self
+ * interactions are kept. Moments passed to the evaluation are the total
+ * moments V*M. The uniform tree of `options->tree_depth` places bodies by
+ * their representative points; the automatic root encloses every vertex. A
+ * body wider than its leaf is accepted, counted and warned about as for the
+ * prism entry points.
+ */
+CDFMM_C_API int cdfmm_plan_create_same_tetrahedra(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* vertices, const cdfmm_options* options, cdfmm_plan** plan);
+
+/**
+ * @brief Creates the same tetrahedron plan on an adaptive (capacity-driven)
+ * octree.
+ *
+ * Additive to ABI version 1, with the tree arguments of
+ * cdfmm_plan_create_adaptive_variable_cuboids: a box is split while it holds
+ * more than `max_particles_per_leaf` bodies and is shallower than `max_depth`
+ * (0..8); `options->tree_depth` is ignored. Pass `root_centre == NULL` or
+ * `root_half_width <= 0` to infer a cube enclosing every vertex.
+ */
+CDFMM_C_API int cdfmm_plan_create_adaptive_tetrahedra(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* vertices, size_t max_particles_per_leaf, int max_depth,
+    const double* root_centre, double root_half_width,
+    const cdfmm_options* options, cdfmm_plan** plan);
+
 CDFMM_C_API int cdfmm_plan_evaluate_f32(
     cdfmm_plan* plan, const float* mx, const float* my, const float* mz,
     float* hx, float* hy, float* hz);

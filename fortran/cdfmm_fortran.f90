@@ -66,6 +66,7 @@ module cdfmm_fortran
     public :: cdfmm_create_points, cdfmm_create_same_points
     public :: cdfmm_create_uniform_cuboids, cdfmm_create_same_uniform_cuboids
     public :: cdfmm_create_variable_cuboids, cdfmm_create_adaptive_variable_cuboids
+    public :: cdfmm_create_tetrahedra, cdfmm_create_adaptive_tetrahedra
     public :: cdfmm_evaluate, cdfmm_evaluate_f32, cdfmm_evaluate_f64
     public :: cdfmm_destroy, cdfmm_last_error
 
@@ -145,6 +146,27 @@ module cdfmm_fortran
             import :: c_size_t, c_double, c_ptr, c_int
             integer(c_size_t), value :: count, max_particles_per_leaf
             real(c_double), intent(in) :: x(*), y(*), z(*), hx(*), hy(*), hz(*)
+            integer(c_int), value :: max_depth
+            type(c_ptr), value :: root_centre, options
+            real(c_double), value :: root_half_width
+            type(c_ptr), intent(out) :: plan
+            integer(c_int) :: status
+        end function
+        function c_create_same_tetrahedra(count, x, y, z, vertices, options, plan) result(status) &
+                bind(c, name="cdfmm_plan_create_same_tetrahedra")
+            import :: c_size_t, c_double, c_ptr, c_int
+            integer(c_size_t), value :: count
+            real(c_double), intent(in) :: x(*), y(*), z(*), vertices(*)
+            type(c_ptr), value :: options
+            type(c_ptr), intent(out) :: plan
+            integer(c_int) :: status
+        end function
+        function c_create_adaptive_tetrahedra(count, x, y, z, vertices, max_particles_per_leaf, max_depth, &
+                root_centre, root_half_width, options, plan) result(status) &
+                bind(c, name="cdfmm_plan_create_adaptive_tetrahedra")
+            import :: c_size_t, c_double, c_ptr, c_int
+            integer(c_size_t), value :: count, max_particles_per_leaf
+            real(c_double), intent(in) :: x(*), y(*), z(*), vertices(*)
             integer(c_int), value :: max_depth
             type(c_ptr), value :: root_centre, options
             real(c_double), value :: root_half_width
@@ -316,6 +338,88 @@ contains
         end if
         call to_c_options(options, c_options)
         ierr = c_create_adaptive_variable_cuboids(size(x, kind=c_size_t), x, y, z, hx, hy, hz, &
+            int(max_particles_per_leaf, c_size_t), int(max_depth, c_int), centre_pointer, half_width, &
+            c_loc(c_options), plan%handle)
+        if (ierr == CDFMM_SUCCESS) then
+            plan%precision = c_options%precision
+            plan%count = size(x, kind=c_size_t)
+        end if
+    end subroutine
+
+    !> Same-source/same-target plan of tetrahedra on the uniform tree of
+    !> options%depth. (x, y, z) is each body's representative point (normally
+    !> its centroid) and vertices(3*k-2:3*k, i), k = 1..4, are the offsets of
+    !> its vertices from that point. Near field: exact tetrahedron pair
+    !> tensors (volume-averaged targets); far field: finite-tetrahedron
+    !> operators; self interactions are kept. Moments are total moments V*M.
+    subroutine cdfmm_create_tetrahedra(plan, x, y, z, vertices, options, ierr)
+        type(cdfmm_plan_t), intent(inout) :: plan
+        real(c_double), intent(in), target :: x(:), y(:), z(:)
+        real(c_double), intent(in), contiguous, target :: vertices(:, :)
+        type(cdfmm_options_t), intent(in) :: options
+        integer(c_int), intent(out) :: ierr
+        type(cdfmm_c_options_t), target :: c_options
+
+        call clear_wrapper_error()
+        call cdfmm_destroy(plan)
+        if (size(y) /= size(x) .or. size(z) /= size(x) .or. size(vertices, 1) /= 12 .or. &
+            size(vertices, 2) /= size(x)) then
+            call set_wrapper_error("x, y, z must have equal sizes and vertices the shape (12, size(x))")
+            ierr = CDFMM_ERROR_INVALID_ARGUMENT
+            return
+        end if
+        if (options%periodic) then
+            call set_wrapper_error("tetrahedron plans do not support periodicity")
+            ierr = CDFMM_ERROR_INVALID_ARGUMENT
+            return
+        end if
+        call to_c_options(options, c_options)
+        ierr = c_create_same_tetrahedra(size(x, kind=c_size_t), x, y, z, vertices, c_loc(c_options), plan%handle)
+        if (ierr == CDFMM_SUCCESS) then
+            plan%precision = c_options%precision
+            plan%count = size(x, kind=c_size_t)
+        end if
+    end subroutine
+
+    !> The same tetrahedron plan on the adaptive (capacity-driven) octree, with
+    !> the tree arguments of cdfmm_create_adaptive_variable_cuboids. The root
+    !> cube is inferred from the vertices unless root_centre(3) and a positive
+    !> root_half_width are given. Not cached, not periodic.
+    subroutine cdfmm_create_adaptive_tetrahedra(plan, x, y, z, vertices, max_particles_per_leaf, max_depth, &
+                                                options, ierr, root_centre, root_half_width)
+        type(cdfmm_plan_t), intent(inout) :: plan
+        real(c_double), intent(in), target :: x(:), y(:), z(:)
+        real(c_double), intent(in), contiguous, target :: vertices(:, :)
+        integer, intent(in) :: max_particles_per_leaf, max_depth
+        type(cdfmm_options_t), intent(in) :: options
+        integer(c_int), intent(out) :: ierr
+        real(c_double), intent(in), optional, target :: root_centre(3)
+        real(c_double), intent(in), optional :: root_half_width
+        type(cdfmm_c_options_t), target :: c_options
+        type(c_ptr) :: centre_pointer
+        real(c_double) :: half_width
+
+        call clear_wrapper_error()
+        call cdfmm_destroy(plan)
+        if (size(y) /= size(x) .or. size(z) /= size(x) .or. size(vertices, 1) /= 12 .or. &
+            size(vertices, 2) /= size(x)) then
+            call set_wrapper_error("x, y, z must have equal sizes and vertices the shape (12, size(x))")
+            ierr = CDFMM_ERROR_INVALID_ARGUMENT
+            return
+        end if
+        if (options%periodic) then
+            call set_wrapper_error("adaptive plans do not support periodicity")
+            ierr = CDFMM_ERROR_INVALID_ARGUMENT
+            return
+        end if
+        centre_pointer = c_null_ptr
+        half_width = 0.0_c_double
+        if (present(root_centre) .and. present(root_half_width)) then
+            centre_pointer = c_loc(root_centre(1))
+            half_width = root_half_width
+        end if
+        call to_c_options(options, c_options)
+        ierr = c_create_adaptive_tetrahedra(size(x, kind=c_size_t), x, y, z, vertices, &
             int(max_particles_per_leaf, c_size_t), int(max_depth, c_int), centre_pointer, half_width, &
             c_loc(c_options), plan%handle)
         if (ierr == CDFMM_SUCCESS) then

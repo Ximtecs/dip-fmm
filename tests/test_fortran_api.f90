@@ -18,6 +18,12 @@ program test_fortran_api
     type(cdfmm_plan_t) :: variable_plan, adaptive_plan
     real(c_double) :: hx_body(2), hy_body(2), hz_body(2)
     real(c_float) :: var_hx(2), var_hy(2), var_hz(2), ada_hx(2), ada_hy(2), ada_hz(2)
+    type(cdfmm_plan_t) :: tet_plan
+    integer, parameter :: kuhn(4, 6) = reshape([1, 2, 4, 8, 1, 2, 6, 8, 1, 3, 4, 8, 1, 3, 7, 8, &
+                                                 1, 5, 6, 8, 1, 5, 7, 8], [4, 6])
+    real(c_double) :: corner(3, 8), tx(6), ty(6), tz(6), tet_vertices(12, 6)
+    real(c_float) :: tmx(6), tmy(6), tmz(6), thx(6), thy(6), thz(6)
+    integer :: c, t, k
 
     options = cdfmm_options()
     if (options%basis /= CDFMM_BASIS_SPHERICAL) error stop "incorrect default basis"
@@ -161,5 +167,47 @@ program test_fortran_api
     call plan%destroy()
     call variable_plan%destroy()
     call adaptive_plan%destroy()
+
+    ! Tetrahedra: the unit cube cut into six (Kuhn) tetrahedra, uniformly
+    ! magnetised along z. Every pair is in the exact near field, so the
+    ! volume-averaged field of the cube is -M/3 for both constructors.
+    do c = 1, 8
+        corner(:, c) = real([mod(c - 1, 2), mod((c - 1) / 2, 2), (c - 1) / 4], c_double) - 0.5_c_double
+    end do
+    do t = 1, 6
+        tx(t) = 0.25_c_double * sum(corner(1, kuhn(:, t)))
+        ty(t) = 0.25_c_double * sum(corner(2, kuhn(:, t)))
+        tz(t) = 0.25_c_double * sum(corner(3, kuhn(:, t)))
+        do k = 1, 4
+            tet_vertices(3 * k - 2:3 * k, t) = corner(:, kuhn(k, t)) - [tx(t), ty(t), tz(t)]
+        end do
+    end do
+    tmx = 0.0_c_float
+    tmy = 0.0_c_float
+    tmz = 1.0_c_float / 6.0_c_float          ! total moment V * M, V = 1/6, M = z
+    options = cdfmm_options()
+    options%order = 4
+    options%depth = 1
+    options%precision = CDFMM_PRECISION_FLOAT32
+    options%backend = CDFMM_BACKEND_CPU_STATIC
+    call cdfmm_create_tetrahedra(tet_plan, tx, ty, tz, tet_vertices, options, ierr)
+    if (ierr /= CDFMM_SUCCESS .or. .not. tet_plan%valid()) error stop cdfmm_last_error()
+    call cdfmm_evaluate(tet_plan, tmx, tmy, tmz, thx, thy, thz, ierr)
+    if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
+    if (abs(sum(thz) / 6.0_c_float + 1.0_c_float / 3.0_c_float) > 1.0e-4_c_float) then
+        error stop "tetrahedron cube does not give <H> = -M/3"
+    end if
+    call cdfmm_create_adaptive_tetrahedra(tet_plan, tx, ty, tz, tet_vertices, 8, 2, options, ierr)
+    if (ierr /= CDFMM_SUCCESS .or. .not. tet_plan%valid()) error stop cdfmm_last_error()
+    call cdfmm_evaluate(tet_plan, tmx, tmy, tmz, thx, thy, thz, ierr)
+    if (ierr /= CDFMM_SUCCESS) error stop cdfmm_last_error()
+    if (abs(sum(thz) / 6.0_c_float + 1.0_c_float / 3.0_c_float) > 1.0e-4_c_float) then
+        error stop "adaptive tetrahedron cube does not give <H> = -M/3"
+    end if
+    call cdfmm_create_tetrahedra(tet_plan, tx, ty, tz, tet_vertices(1:9, :), options, ierr)
+    if (ierr /= CDFMM_ERROR_INVALID_ARGUMENT .or. tet_plan%valid()) then
+        error stop "tetrahedron vertex-shape error was not reported"
+    end if
+    call tet_plan%destroy()
 
 end program test_fortran_api

@@ -292,6 +292,69 @@ cdfmm::AdaptiveTreeOptions adaptive_root_for_bodies(
     return tree_options;
 }
 
+// Tetrahedron records for a same-source/same-target plan, one per body in user
+// order: vertices[12*i + 3*k + c] is coordinate c of vertex k of body i, as an
+// offset from the body's representative point.
+std::vector<cdfmm::Tetrahedron> pack_tetrahedra(const std::size_t count,
+                                                const double* vertices)
+{
+    require_array(count, vertices, "tetrahedron vertex array");
+    std::vector<cdfmm::Tetrahedron> tetrahedra(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const double* v = vertices + 12 * index;
+        for (int k = 0; k < 4; ++k) {
+            tetrahedra[index].vertices[k] = {v[3 * k], v[3 * k + 1], v[3 * k + 2]};
+        }
+        // Rejects non-finite and (scale-aware) degenerate tetrahedra.
+        static_cast<void>(cdfmm::tetrahedron_volume(tetrahedra[index]));
+    }
+    return tetrahedra;
+}
+
+// Same as set_same_cuboid_geometry, for tetrahedra (finite self interactions kept).
+void set_same_tetrahedron_geometry(cdfmm::UniformFmmOptions& options,
+                                   std::vector<cdfmm::Tetrahedron> tetrahedra)
+{
+    options.source_geometry = cdfmm::SourceGeometry::Tetrahedron;
+    options.target_geometry = cdfmm::TargetGeometry::Tetrahedron;
+    options.target_tetrahedra = tetrahedra;
+    options.source_tetrahedra = std::move(tetrahedra);
+}
+
+// adaptive_root_for_bodies for tetrahedra: the cube enclosing every vertex.
+cdfmm::AdaptiveTreeOptions adaptive_root_for_tetrahedra(
+    const std::vector<cdfmm::Vec3>& positions,
+    const std::vector<cdfmm::Tetrahedron>& tetrahedra,
+    const std::size_t max_particles_per_leaf, const int max_depth,
+    const double* root_centre, const double root_half_width)
+{
+    cdfmm::AdaptiveTreeOptions tree_options;
+    tree_options.max_particles_per_leaf = max_particles_per_leaf;
+    tree_options.max_depth = max_depth;
+    if (root_centre != nullptr && root_half_width > 0.0) {
+        tree_options.root_centre = cdfmm::Vec3{root_centre[0], root_centre[1], root_centre[2]};
+        tree_options.root_half_width = root_half_width;
+        return tree_options;
+    }
+    cdfmm::Vec3 low = positions.front();
+    cdfmm::Vec3 high = positions.front();
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        const cdfmm::Vec3& p = positions[index];
+        for (const cdfmm::Vec3& offset : tetrahedra[index].vertices) {
+            low = {std::min(low.x, p.x + offset.x), std::min(low.y, p.y + offset.y),
+                   std::min(low.z, p.z + offset.z)};
+            high = {std::max(high.x, p.x + offset.x), std::max(high.y, p.y + offset.y),
+                    std::max(high.z, p.z + offset.z)};
+        }
+    }
+    const cdfmm::Vec3 centre{0.5 * (low.x + high.x), 0.5 * (low.y + high.y), 0.5 * (low.z + high.z)};
+    const double half = 0.5 * std::max({high.x - low.x, high.y - low.y, high.z - low.z});
+    // A hair of slack keeps bodies on the root faces inside after the canonical rounding.
+    tree_options.root_centre = centre;
+    tree_options.root_half_width = half * (1.0 + 1.0e-6) + 1.0e-12;
+    return tree_options;
+}
+
 } // namespace
 
 extern "C" {
@@ -439,6 +502,45 @@ int cdfmm_plan_create_adaptive_variable_cuboids(
         set_same_cuboid_geometry(translated, pack_sizes(count, hx, hy, hz));
         const cdfmm::AdaptiveTreeOptions tree_options = adaptive_root_for_bodies(
             positions, translated.source_sizes, max_particles_per_leaf, max_depth,
+            root_centre, root_half_width);
+        const cdfmm::AdaptiveTree tree(positions, tree_options);
+        create_topology_plan(count, tree.shared_topology(), translated, plan);
+    });
+}
+
+int cdfmm_plan_create_same_tetrahedra(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* vertices, const cdfmm_options* options, cdfmm_plan** plan)
+{
+    return guarded([&] {
+        if (count == 0) {
+            throw std::invalid_argument("tetrahedron count must be positive");
+        }
+        require_array(count, x, "x");
+        require_array(count, y, "y");
+        require_array(count, z, "z");
+        auto translated = translate_options(options);
+        set_same_tetrahedron_geometry(translated, pack_tetrahedra(count, vertices));
+        create_plan(count, x, y, z, count, x, y, z, nullptr,
+                    std::move(translated), plan);
+    });
+}
+
+int cdfmm_plan_create_adaptive_tetrahedra(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* vertices, size_t max_particles_per_leaf, int max_depth,
+    const double* root_centre, double root_half_width,
+    const cdfmm_options* options, cdfmm_plan** plan)
+{
+    return guarded([&] {
+        if (count == 0) {
+            throw std::invalid_argument("tetrahedron count must be positive");
+        }
+        auto positions = pack_positions(count, x, y, z);
+        auto translated = translate_options(options);
+        set_same_tetrahedron_geometry(translated, pack_tetrahedra(count, vertices));
+        const cdfmm::AdaptiveTreeOptions tree_options = adaptive_root_for_tetrahedra(
+            positions, translated.source_tetrahedra, max_particles_per_leaf, max_depth,
             root_centre, root_half_width);
         const cdfmm::AdaptiveTree tree(positions, tree_options);
         create_topology_plan(count, tree.shared_topology(), translated, plan);

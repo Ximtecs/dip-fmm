@@ -341,6 +341,117 @@ TEST_CASE("C ABI per-body cuboids match the dense reference on a graded mesh") {
     }
 }
 
+namespace {
+
+// The cube [-m/2, m/2]^3 cut into m x m x m unit cubes and each cube into six
+// (Kuhn) tetrahedra: centroids plus vertex offsets in the C ABI layout.
+struct TetrahedronScene {
+    std::vector<double> x, y, z, vertices, volume;
+};
+
+TetrahedronScene kuhn_cube(const int m)
+{
+    const int kuhn[6][4] = {{0, 1, 3, 7}, {0, 1, 5, 7}, {0, 2, 3, 7},
+                            {0, 2, 6, 7}, {0, 4, 5, 7}, {0, 4, 6, 7}};
+    TetrahedronScene scene;
+    for (int ci = 0; ci < m; ++ci) {
+        for (int cj = 0; cj < m; ++cj) {
+            for (int ck = 0; ck < m; ++ck) {
+                double corner[8][3];
+                for (int c = 0; c < 8; ++c) {
+                    corner[c][0] = -0.5 * m + ci + (c & 1);
+                    corner[c][1] = -0.5 * m + cj + ((c >> 1) & 1);
+                    corner[c][2] = -0.5 * m + ck + ((c >> 2) & 1);
+                }
+                for (const auto& tet : kuhn) {
+                    double centroid[3] = {0.0, 0.0, 0.0};
+                    for (const int v : tet) {
+                        for (int d = 0; d < 3; ++d) {
+                            centroid[d] += 0.25 * corner[v][d];
+                        }
+                    }
+                    scene.x.push_back(centroid[0]);
+                    scene.y.push_back(centroid[1]);
+                    scene.z.push_back(centroid[2]);
+                    for (const int v : tet) {
+                        for (int d = 0; d < 3; ++d) {
+                            scene.vertices.push_back(corner[v][d] - centroid[d]);
+                        }
+                    }
+                    scene.volume.push_back(1.0 / 6.0);
+                }
+            }
+        }
+    }
+    return scene;
+}
+
+} // namespace
+
+TEST_CASE("C ABI tetrahedra: a uniformly magnetised cube of tetrahedra has <H> = -M/3") {
+    // Total moments V * M with M = (0.2, -0.4, 1); the volume-averaged field of the
+    // whole cube is exactly -M/3 however the cube is cut.
+    auto check = [](const TetrahedronScene& scene, cdfmm_plan* plan, const double tolerance) {
+        const std::size_t n = scene.x.size();
+        std::vector<double> mx(n), my(n), mz(n), hx(n), hy(n), hz(n);
+        double total = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            mx[i] = 0.2 * scene.volume[i];
+            my[i] = -0.4 * scene.volume[i];
+            mz[i] = scene.volume[i];
+            total += scene.volume[i];
+        }
+        REQUIRE(cdfmm_plan_evaluate_f64(plan, mx.data(), my.data(), mz.data(), hx.data(),
+                                        hy.data(), hz.data()) == CDFMM_SUCCESS);
+        double ax = 0.0, ay = 0.0, az = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            ax += scene.volume[i] * hx[i] / total;
+            ay += scene.volume[i] * hy[i] / total;
+            az += scene.volume[i] * hz[i] / total;
+        }
+        REQUIRE(std::abs(ax + 0.2 / 3.0) < tolerance);
+        REQUIRE(std::abs(ay - 0.4 / 3.0) < tolerance);
+        REQUIRE(std::abs(az + 1.0 / 3.0) < tolerance);
+        cdfmm_plan_destroy(plan);
+    };
+    SECTION("uniform tree with every pair in the exact near field") {
+        const TetrahedronScene scene = kuhn_cube(2);
+        REQUIRE(scene.x.size() == 48);
+        const cdfmm_options options = fp64_options(8, 1);
+        cdfmm_plan* plan = nullptr;
+        REQUIRE(cdfmm_plan_create_same_tetrahedra(scene.x.size(), scene.x.data(), scene.y.data(),
+                                                  scene.z.data(), scene.vertices.data(), &options,
+                                                  &plan) == CDFMM_SUCCESS);
+        check(scene, plan, 1.0e-10);
+    }
+    SECTION("adaptive tree whose leaves are the unit cubes: exact near field plus far field") {
+        const TetrahedronScene scene = kuhn_cube(4);
+        REQUIRE(scene.x.size() == 384);
+        const cdfmm_options options = fp64_options(8, 0);
+        cdfmm_plan* plan = nullptr;
+        REQUIRE(cdfmm_plan_create_adaptive_tetrahedra(
+                    scene.x.size(), scene.x.data(), scene.y.data(), scene.z.data(),
+                    scene.vertices.data(), /*capacity*/ 6, /*max_depth*/ 2, nullptr, 0.0, &options,
+                    &plan) == CDFMM_SUCCESS);
+        check(scene, plan, 1.0e-6);
+    }
+}
+
+TEST_CASE("C ABI tetrahedra reject degenerate and missing records") {
+    const cdfmm_options options = fp64_options(4, 1);
+    const double x[] = {0.0}, y[] = {0.0}, z[] = {0.0};
+    const double flat[] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0};     // four coplanar vertices
+    const double bad[] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, NAN};
+    cdfmm_plan* plan = nullptr;
+    REQUIRE(cdfmm_plan_create_same_tetrahedra(1, x, y, z, flat, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cdfmm_plan_create_same_tetrahedra(1, x, y, z, bad, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cdfmm_plan_create_same_tetrahedra(1, x, y, z, nullptr, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cdfmm_plan_create_same_tetrahedra(0, x, y, z, flat, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cdfmm_plan_create_adaptive_tetrahedra(1, x, y, z, flat, 4, 3, nullptr, 0.0, &options, &plan) ==
+            CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(plan == nullptr);
+}
+
 TEST_CASE("C ABI per-body cuboids reject invalid sizes and adaptive controls") {
     const cdfmm_options options = fp64_options(4, 1);
     const double x[] = {0.0, 1.0}, h[] = {0.5, 0.5}, bad[] = {0.5, -0.5};

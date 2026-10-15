@@ -93,6 +93,28 @@ warning described in `trees-and-parameter-selection.md` when a body is wider
 than its leaf; the C ABI names are `cdfmm_plan_create_same_variable_cuboids`
 and `cdfmm_plan_create_adaptive_variable_cuboids`.
 
+## Tetrahedral meshes
+
+Two more additive wrappers take tetrahedra, for unstructured tetrahedral
+micromagnetic meshes:
+
+```fortran
+! vertices(3*k-2:3*k, i), k = 1..4: vertex offsets of body i from (x(i), y(i), z(i))
+call cdfmm_create_tetrahedra(fmm, x, y, z, vertices, options, ierr)
+call cdfmm_create_adaptive_tetrahedra(fmm, x, y, z, vertices, 32, 5, options, ierr)
+```
+
+`(x, y, z)` is each body's representative point, normally its centroid, and
+`vertices` has the shape `(12, n)`. Sources and targets are the same
+tetrahedra: the near field uses the exact tetrahedron pair tensors (volume
+averaged over the target), the far field the finite-tetrahedron P2M and
+volume-averaged L2P operators (see `geometry.md`), finite self interactions are
+kept and moments are total moments V·M. The automatic root encloses every
+vertex. Tree depth, caching, periodicity and the leaf-containment warning
+behave as for the per-body prism wrappers; an element wider than its leaf is
+accepted but its far field is then not guaranteed. The C ABI names are
+`cdfmm_plan_create_same_tetrahedra` and `cdfmm_plan_create_adaptive_tetrahedra`.
+
 ## Advanced C ABI access
 
 The boundary beneath the convenience layer remains `ISO_C_BINDING` Fortran ->
