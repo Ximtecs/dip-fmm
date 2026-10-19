@@ -38,6 +38,7 @@
 #include "cdfmm/geometry/primitives/tetrahedron.hpp"
 
 #include "tetrahedron_detail.hpp"
+#include "math/double_double.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -505,30 +506,21 @@ PairTensor to_pair_tensor(const Matrix3& matrix)
 // they do not cancel.
 
 #if defined(__FLT128_MANT_DIG__)
-// GCC/Clang quadruple precision with the glibc *f128 functions (libm).
-using ReductionReal = _Float128;
+// Double-double arithmetic (math/double_double.hpp, about 106 bits): its basic
+// operations cost a few tens of double operations, where software _Float128
+// cost about ten times more and dominated the construction time; the
+// transcendental functions go through _Float128 (glibc *f128).
+using ReductionReal = math::DoubleDouble;
 
-// Square root from the double-precision root and one Newton step, which
-// doubles its 53 bits; glibc's software sqrtf128 was 35 % of the construction
-// time.  Arguments outside the double range use sqrtf128.
-inline ReductionReal reduction_sqrt(const ReductionReal x)
+inline ReductionReal reduction_sqrt(const ReductionReal& x) { return math::sqrt(x); }
+inline ReductionReal reduction_log(const ReductionReal& x) { return math::log(x); }
+inline ReductionReal reduction_atan(const ReductionReal& x) { return math::atan(x); }
+inline ReductionReal reduction_asinh(const ReductionReal& x) { return math::asinh(x); }
+inline ReductionReal reduction_hypot(const ReductionReal& x, const ReductionReal& y)
 {
-    const double approximation = std::sqrt(static_cast<double>(x));
-    if (!(approximation > 0.0) || !std::isfinite(approximation) ||
-        approximation < 1.0e-150 || approximation > 1.0e150) {
-        return sqrtf128(x);
-    }
-    const ReductionReal y = approximation;
-    return (y + x / y) / 2;
+    return math::hypot(x, y);
 }
-inline ReductionReal reduction_log(const ReductionReal x) { return logf128(x); }
-inline ReductionReal reduction_atan(const ReductionReal x) { return atanf128(x); }
-inline ReductionReal reduction_asinh(const ReductionReal x) { return asinhf128(x); }
-inline ReductionReal reduction_hypot(const ReductionReal x, const ReductionReal y)
-{
-    return hypotf128(x, y);
-}
-inline ReductionReal reduction_abs(const ReductionReal x) { return fabsf128(x); }
+inline ReductionReal reduction_abs(const ReductionReal& x) { return math::abs(x); }
 #else
 // WARNING(cdfmm): without a quadruple-precision type the reduction runs in
 // long double, where the tolerances below are too tight for the round-off of
@@ -570,7 +562,11 @@ inline long double reduction_abs(const long double x) { return std::abs(x); }
 
 constexpr ReductionReal reduction_real(const long double value) noexcept
 {
-    return static_cast<ReductionReal>(value);
+#if defined(__FLT128_MANT_DIG__)
+    return math::DoubleDouble::from_long_double(value);
+#else
+    return value;
+#endif
 }
 
 // Tolerances of the reduction, all relative to unit-scale geometry (the

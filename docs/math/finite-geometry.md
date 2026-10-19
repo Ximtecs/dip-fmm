@@ -155,9 +155,15 @@ Four numerical safeguards keep these analytical kernels well conditioned:
   double precision this lost every digit for parallel faces with non-aligned
   edges (the top and bottom faces of an unstructured film mesh: errors up to
   24 times the tensor against an independent Sauter–Schwab quadrature on a
-  440-pair validation set). The reduction therefore runs in quadruple
-  precision (`_Float128`; `long double` where the compiler has none) with
-  tolerances chosen for it: coefficients below 1e-22 drop their term,
+  440-pair validation set). A geometric screen (the smallest non-exact
+  measure among the angle between the normals, between an edge and the other
+  plane, between two edges, and the height of a vertex over the other plane)
+  leaves well-conditioned face pairs, those with every such measure above
+  1e-2, to the former double-precision reduction, which is accurate to
+  4e-11 on them. All other face pairs are reduced in double-double
+  arithmetic (about 106 bits, with the transcendental functions in
+  `_Float128`; `long double` where the compiler has no `_Float128`) with
+  tolerances chosen for that precision: coefficients below 1e-22 drop their term,
   heights below 1e-12 of the pair's scale are zero, an expansion direction
   whose squared independent part is below 1e-23 of the basis scale is
   dependent, and face pairs within 1e-8 of parallel are projected onto
@@ -176,9 +182,10 @@ Four numerical safeguards keep these analytical kernels well conditioned:
   larger edge count as common, and faces count as separated only when every
   vertex pair is further apart than 1e-3 of it, so a rounded conforming mesh
   keeps the closed form for its nearly touching faces. On the validation set
-  the worst tensor error is 5e-9, limited by the reference; the quadruple
-  precision costs about 15 times the former double-precision evaluation per
-  close pair.
+  the worst tensor error is 5e-9, limited by the reference. Cold
+  construction costs the same as before on a regular lattice, whose
+  degeneracies are exact, and about nine times as much on an irregular film
+  mesh, most of it in the `_Float128` transcendental functions.
 
 For a tetrahedron point evaluation on a face, the analytical boundary value
 uses the MagTense-compatible one-sided limiting convention; edge and vertex
