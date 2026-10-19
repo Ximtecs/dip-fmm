@@ -55,7 +55,7 @@ bodies as points too.
 | prism | prism | exact prism-to-prism average (`getAvgN_prism_3D` adaptation) | prism P2M, prism L2P |
 | tetrahedron | point | analytical polyhedron point field | tetrahedron P2M, point L2P |
 | point | tetrahedron | exact volume average over the tetrahedron | point P2M, tetrahedron L2P |
-| tetrahedron | tetrahedron | analytical surface (Galerkin) integral | tetrahedron P2M, tetrahedron L2P |
+| tetrahedron | tetrahedron | surface (Galerkin) integral: closed form, quadrature for ill-conditioned face pairs | tetrahedron P2M, tetrahedron L2P |
 | prism | tetrahedron, tetrahedron | prism | analytical surface integral (twelve prism triangles, four tetrahedron faces) | the corresponding finite operators |
 
 Every pair executes on the portable CPU, oneMKL, `CudaPartial` and `CudaFull`

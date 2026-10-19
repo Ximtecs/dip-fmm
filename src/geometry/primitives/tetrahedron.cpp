@@ -15,18 +15,23 @@
 //     double surface integral, where each face pair contributes the exact
 //     integral of 1/|x - y| over two triangles (Gumerov, Kaneko and
 //     Duraiswami, SIAM J. Sci. Comput. 46 (2024)) times the outer product
-//     of the outward normals.  Separated pairs (from 1.5 summed
-//     circumradii) switch to a converged Gauss rule over the target of the
-//     exact source field, because the analytical reduction loses accuracy
-//     through cancellation exactly where quadrature becomes accurate.
+//     of the outward normals.  The reduction runs in quadruple precision;
+//     nearly degenerate face pairs, where it is unreliable whatever the
+//     precision, are integrated numerically instead (Sauter-Schwab for
+//     touching triangles, split Gauss quadrature otherwise).  Separated
+//     pairs (from 1.5 summed circumradii) switch to a converged Gauss rule
+//     over the target of the exact source field, because the analytical
+//     reduction loses accuracy through cancellation exactly where
+//     quadrature becomes accurate.
 //
 // Vertices are representative-relative.  Degenerate faces, evaluation on an
 // edge or vertex, and a lost rank in the dimensional reduction are reported
 // as exceptions rather than patched with a limiting value.  Near-degenerate
-// configurations are different: nearly parallel face pairs, nearly dependent
-// expansion directions and ulp-level heights are resolved to the exactly
-// degenerate case they approximate (docs/math/finite-geometry.md), because
-// the reduction's general branches cancel catastrophically there.  The `Prepared*`
+// configurations are different: nearly parallel face pairs and ulp-level
+// heights are resolved to the exactly degenerate case they approximate, and
+// a nearly dependent expansion direction close to the rank tolerance sends
+// the face pair to quadrature (docs/math/finite-geometry.md), because the
+// reduction's general branches cancel catastrophically there.  The `Prepared*`
 // records hoist everything that depends on the body alone (frames, normals,
 // circumradius) so that a body used in many pairs derives it once.
 
@@ -476,74 +481,218 @@ PairTensor to_pair_tensor(const Matrix3& matrix)
 // Gumerov, Kaneko, and Duraiswami, SIAM J. Sci. Comput. 46 (2024),
 // DOI 10.1137/23M1547688.  The upstream reference implementation is MIT
 // licensed: https://github.com/pirl-lab/analytical-quadrature-laplace-galerkin.
+//
+// NOTE(cdfmm): accuracy.  The reduction is exact in exact arithmetic, but its
+// terms carry coefficients that grow without bound when the geometry is
+// nearly degenerate (nearly parallel planes, nearly collinear or coplanar
+// edge vectors), and it drops or snaps those directions with fixed
+// tolerances.  In double precision that lost every digit for parallel faces
+// with non-aligned edges -- the top and bottom faces of an unstructured film
+// mesh -- with errors up to 24 times the tensor against an independent
+// Sauter-Schwab quadrature (440-pair validation of 19 Oct 2026, shared with
+// MagTense's port of this reduction).  Therefore:
+//   * the reduction runs in quadruple precision (`ReductionReal`), with
+//     tolerances chosen for it rather than scaled from double precision;
+//   * a Gram-Schmidt rank decision close to the rank tolerance, where
+//     neither dropping nor keeping the direction is reliable, flags the face
+//     pair, which is then integrated numerically: Sauter-Schwab quadrature
+//     for touching triangles, split Gauss quadrature otherwise;
+//   * triangles without a common vertex in nearly, but not exactly, parallel
+//     planes are integrated by split Gauss quadrature directly, because the
+//     reduction expands their offset in a nearly degenerate basis whatever
+//     the precision.
+// The quadratures run in double precision: their integrand is positive, so
+// they do not cancel.
+
+#if defined(__FLT128_MANT_DIG__)
+// GCC/Clang quadruple precision with the glibc *f128 functions (libm).
+using ReductionReal = _Float128;
+
+inline ReductionReal reduction_sqrt(const ReductionReal x) { return sqrtf128(x); }
+inline ReductionReal reduction_log(const ReductionReal x) { return logf128(x); }
+inline ReductionReal reduction_atan(const ReductionReal x) { return atanf128(x); }
+inline ReductionReal reduction_asinh(const ReductionReal x) { return asinhf128(x); }
+inline ReductionReal reduction_hypot(const ReductionReal x, const ReductionReal y)
+{
+    return hypotf128(x, y);
+}
+inline ReductionReal reduction_abs(const ReductionReal x) { return fabsf128(x); }
+#else
+// WARNING(cdfmm): without a quadruple-precision type the reduction runs in
+// long double, where the tolerances below are too tight for the round-off of
+// nearly degenerate pairs; the guard band then catches fewer of them.
+using ReductionReal = long double;
+
+inline ReductionReal reduction_sqrt(const ReductionReal x) { return std::sqrt(x); }
+inline ReductionReal reduction_log(const ReductionReal x) { return std::log(x); }
+inline ReductionReal reduction_atan(const ReductionReal x) { return std::atan(x); }
+inline ReductionReal reduction_asinh(const ReductionReal x) { return std::asinh(x); }
+inline ReductionReal reduction_hypot(const ReductionReal x, const ReductionReal y)
+{
+    return std::hypot(x, y);
+}
+inline ReductionReal reduction_abs(const ReductionReal x) { return std::abs(x); }
+#endif
+
+constexpr ReductionReal reduction_real(const long double value) noexcept
+{
+    return static_cast<ReductionReal>(value);
+}
+
+// Tolerances of the reduction, all relative to unit-scale geometry (the
+// triangle pair is normalised before the core).  The validation that fixed
+// them is described above; a decade either way on the rank tolerance fails
+// on some face pair of an unstructured film mesh.
+//
+// A coefficient below `kZeroCoefficient` drops its term.  Dropping is what
+// keeps touching triangles finite; the former double-precision 1e-14 dropped
+// real terms of nearly degenerate pairs (errors up to 7e-8).
+constexpr ReductionReal kZeroCoefficient = reduction_real(1.0e-22L);
+// Squared relative test of the I0 case selection for vanishing heights.
+constexpr ReductionReal kI0ZeroSquared = reduction_real(1.0e-24L);
+// Heights below this fraction of the vector scale are zero.  A nearly shared
+// vertex of double-precision input leaves heights of a few double ulps,
+// which must be snapped; the I0 forms lose about eps / h^2, which this keeps
+// below 1e-10 in quadruple precision.
+constexpr ReductionReal kRelativeResidual = reduction_real(1.0e-12L);
+// Gram-Schmidt rank tolerance, squared and relative to the largest basis
+// vector: directions down to 1e-23 must be kept, those below it dropped.
+constexpr ReductionReal kRankSquared = reduction_real(1.0e-23L);
+// A rank decision with a squared relative norm in [kGuardLow, kGuardHigh)
+// is unreliable and sends the face pair to quadrature (about 2 % of the
+// touching face pairs of an unstructured film mesh).
+constexpr ReductionReal kGuardLow = reduction_real(1.0e-26L);
+constexpr ReductionReal kGuardHigh = reduction_real(1.0e-20L);
+// Face pairs whose normals differ by less than this are projected onto a
+// common plane and evaluated by the parallel branch: the projection costs
+// about 0.1 x angle, the general branch's round-off grows like
+// eps / angle^3, both below 1e-9 here in quadruple precision.
+constexpr ReductionReal kNearParallel = reduction_real(1.0e-8L);
+// Separated triangles (see kSeparatedVertex) whose normals differ by more
+// than round-off but less than this are integrated by split Gauss quadrature.
+constexpr double kParallelQuadrature = 1.0e-2;
+// Vertices closer than this fraction of the larger edge are common.  It is
+// loose on purpose: the FMM's canonical normalisation moves the shared
+// vertices of touching tetrahedra apart by up to ~1e-9 of the root, and the
+// Sauter-Schwab maps tolerate such a mismatch.
+constexpr double kSharedVertex = 1.0e-6;
+// Triangles count as separated, and may be integrated by split Gauss
+// quadrature, only when every vertex pair is further apart than this
+// fraction of the larger edge: a nearly touching pair needs more splitting
+// than kMaxSplitDepth and stays with the closed form, whose near-parallel
+// projection and height snapping exist for exactly that case.
+constexpr double kSeparatedVertex = 1.0e-3;
+
+// Three-vector of the reduction's working precision.
+struct ReductionVec {
+    ReductionReal x{0};
+    ReductionReal y{0};
+    ReductionReal z{0};
+};
+
+ReductionVec operator+(const ReductionVec& a, const ReductionVec& b)
+{
+    return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+ReductionVec operator-(const ReductionVec& a, const ReductionVec& b)
+{
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+ReductionVec operator*(const ReductionReal factor, const ReductionVec& a)
+{
+    return {factor * a.x, factor * a.y, factor * a.z};
+}
+
+ReductionReal reduction_dot(const ReductionVec& a, const ReductionVec& b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+ReductionVec reduction_cross(const ReductionVec& a, const ReductionVec& b)
+{
+    return {a.y * b.z - a.z * b.y,
+            a.z * b.x - a.x * b.z,
+            a.x * b.y - a.y * b.x};
+}
+
+ReductionReal reduction_norm(const ReductionVec& a)
+{
+    return reduction_sqrt(reduction_dot(a, a));
+}
+
+// Outcome flags of one reduction: `guard` marks an unreliable rank decision,
+// `prohibited` a reduction that reached the reference's prohibited I0 case.
+struct ReductionStatus {
+    bool guard{false};
+    bool prohibited{false};
+};
 
 // Decomposition of an offset vector into the span of up to four edge vectors
 // (the coefficients) plus the perpendicular remainder (`residual`, the
 // "height" the reduced integrals see).  The I3/I2/I1/I0 recursion reduces the
 // dimension of the integration domain one edge at a time using these.
 struct ExpansionProjection {
-    std::array<double, 4> coefficient{{0.0, 0.0, 0.0, 0.0}};
-    Vec3 projected{};
-    double residual{0.0};
+    std::array<ReductionReal, 4> coefficient{};
+    ReductionVec projected{};
+    ReductionReal residual{0};
 };
 
 // This is the small Gram--Schmidt projection used by the reference
 // expan_GrammSchmidt.m routine.  Keeping the triangular back substitution
 // explicit is important: I3/I2s/I2t use the coefficients of the original
-// edge vectors, rather than coefficients of an orthogonal basis.
+// edge vectors, rather than coefficients of an orthogonal basis.  A direction
+// whose independent part is below `kRankSquared` is dependent; one near that
+// tolerance sets `status.guard`.
 ExpansionProjection expand_gram_schmidt(
-    const std::array<Vec3, 4>& vectors, const int count, const Vec3& value)
+    const std::array<ReductionVec, 4>& vectors, const int count,
+    const ReductionVec& value, ReductionStatus& status)
 {
-    std::array<Vec3, 4> orthogonal{};
-    std::array<double, 4> orthogonal_norm_squared{{0.0, 0.0, 0.0, 0.0}};
-    double vector_scale = norm(value);
-    double basis_scale = 0.0;
+    std::array<ReductionVec, 4> orthogonal{};
+    std::array<ReductionReal, 4> orthogonal_norm_squared{};
+    ReductionReal vector_scale = reduction_norm(value);
+    ReductionReal basis_scale_squared = 0;
     for (int i = 0; i < count; ++i) {
-        const double length = norm(vectors[static_cast<std::size_t>(i)]);
+        const ReductionReal length = reduction_norm(
+            vectors[static_cast<std::size_t>(i)]);
         vector_scale = std::max(vector_scale, length);
-        basis_scale = std::max(basis_scale, length);
+        basis_scale_squared = std::max(basis_scale_squared, length * length);
     }
-    // A direction whose independent part is below `kRelativeRank` of the
-    // basis scale is treated as dependent. Keeping such a direction makes the
-    // expansion coefficients grow like its inverse and the reduction cancels
-    // catastrophically: two tetrahedra that nearly share an edge measured
-    // errors of hundreds of times the tensor. Dropping it perturbs the
-    // geometry by at most that part. Only close pairs reach this reduction
-    // (separated ones are averaged by quadrature, see pair_evaluation), and
-    // for them 1e-4 bounds the error of genuinely near-touching bodies near
-    // 3e-4 relative while leaving every measured separated or exactly
-    // conforming configuration unchanged.
-    constexpr double kRelativeRank = 1.0e-4;
-    const double rank_tolerance = kRelativeRank * kRelativeRank *
-        std::max(std::numeric_limits<double>::min(), basis_scale * basis_scale);
+    basis_scale_squared = std::max(
+        basis_scale_squared,
+        static_cast<ReductionReal>(std::numeric_limits<double>::min()));
+    const ReductionReal rank_tolerance = kRankSquared * basis_scale_squared;
 
-    double coefficient_matrix[4][4]{};
+    ReductionReal coefficient_matrix[4][4]{};
     for (int column = 0; column < count; ++column) {
         orthogonal[static_cast<std::size_t>(column)] =
             vectors[static_cast<std::size_t>(column)];
         for (int row = 0; row < column; ++row) {
-            const double denominator = orthogonal_norm_squared[
-                static_cast<std::size_t>(row)];
             coefficient_matrix[row][column] =
-                dot(orthogonal[static_cast<std::size_t>(row)],
-                    vectors[static_cast<std::size_t>(column)]) /
-                denominator;
+                reduction_dot(orthogonal[static_cast<std::size_t>(row)],
+                              vectors[static_cast<std::size_t>(column)]) /
+                orthogonal_norm_squared[static_cast<std::size_t>(row)];
             orthogonal[static_cast<std::size_t>(column)] =
                 orthogonal[static_cast<std::size_t>(column)] -
                 coefficient_matrix[row][column] *
                     orthogonal[static_cast<std::size_t>(row)];
         }
-        const double norm_squared = dot(
+        const ReductionReal norm_squared = reduction_dot(
             orthogonal[static_cast<std::size_t>(column)],
             orthogonal[static_cast<std::size_t>(column)]);
+        const ReductionReal ratio = norm_squared / basis_scale_squared;
+        if (ratio >= kGuardLow && ratio < kGuardHigh) {
+            status.guard = true;
+        }
         if (!(norm_squared > rank_tolerance)) {
             orthogonal[static_cast<std::size_t>(column)] = {};
-            orthogonal_norm_squared[static_cast<std::size_t>(column)] = 1.0;
-            coefficient_matrix[column][column] = 0.0;
+            orthogonal_norm_squared[static_cast<std::size_t>(column)] = 1;
+            coefficient_matrix[column][column] = 0;
         } else {
             orthogonal_norm_squared[static_cast<std::size_t>(column)] =
                 norm_squared;
-            coefficient_matrix[column][column] = dot(
+            coefficient_matrix[column][column] = reduction_dot(
                 orthogonal[static_cast<std::size_t>(column)],
                 vectors[static_cast<std::size_t>(column)]) /
                 norm_squared;
@@ -551,15 +700,15 @@ ExpansionProjection expand_gram_schmidt(
     }
 
     ExpansionProjection result;
-    std::array<double, 4> residual_projection{{0.0, 0.0, 0.0, 0.0}};
+    std::array<ReductionReal, 4> residual_projection{};
     for (int index = count - 1; index >= 0; --index) {
-        const double diagonal = coefficient_matrix[index][index];
-        if (diagonal == 0.0) {
+        const ReductionReal diagonal = coefficient_matrix[index][index];
+        if (diagonal == 0) {
             continue;
         }
-        double correction = residual_projection[static_cast<std::size_t>(index)];
-        const double numerator = dot(
-            value, orthogonal[static_cast<std::size_t>(index)]) - correction;
+        const ReductionReal numerator = reduction_dot(
+            value, orthogonal[static_cast<std::size_t>(index)]) -
+            residual_projection[static_cast<std::size_t>(index)];
         result.coefficient[static_cast<std::size_t>(index)] = numerator /
             (diagonal * orthogonal_norm_squared[
                 static_cast<std::size_t>(index)]);
@@ -572,149 +721,138 @@ ExpansionProjection expand_gram_schmidt(
     }
 
     for (int index = 0; index < count; ++index) {
-        result.projected += result.coefficient[
-            static_cast<std::size_t>(index)] * vectors[
-                static_cast<std::size_t>(index)];
+        result.projected = result.projected +
+            result.coefficient[static_cast<std::size_t>(index)] *
+                vectors[static_cast<std::size_t>(index)];
     }
-    result.residual = norm(value - result.projected);
-    // Heights below `kRelativeResidual` are zero. A nearly shared vertex
-    // leaves heights of a few ulps, for which the one-dimensional closed forms
-    // combine logarithms of the height that cancel only approximately (1e-7
-    // errors at 1e-13 heights); snapping them costs O(h log h), about 2e-9
-    // at the threshold, and makes an FMM-rounded conforming mesh evaluate as
-    // the exactly conforming one.
-    constexpr double kRelativeResidual = 1.0e-10;
-    const double residual_tolerance =
-        kRelativeResidual * std::max(1.0, vector_scale);
+    result.residual = reduction_norm(value - result.projected);
+    const ReductionReal residual_tolerance = kRelativeResidual *
+        std::max(static_cast<ReductionReal>(1), vector_scale);
     if (result.residual <= residual_tolerance) {
-        result.residual = 0.0;
+        result.residual = 0;
     }
     return result;
 }
 
 // I0: the fully reduced one-dimensional primitive of the recursion, a closed
 // form in the edge length `p` and the four heights, with the reference's
-// case analysis of which heights vanish.  Evaluated in long double because
-// the branches subtract nearly equal logarithms and arctangents.
-long double triangle_i0(const double p,
-                        const std::array<double, 4>& input_heights)
+// case analysis of which heights vanish.
+ReductionReal triangle_i0(const ReductionReal p,
+                          const std::array<ReductionReal, 4>& input_heights,
+                          ReductionStatus& status)
 {
-    std::array<double, 4> heights = input_heights;
+    std::array<ReductionReal, 4> heights = input_heights;
     std::array<int, 4> order{{0, 1, 2, 3}};
-    std::sort(order.begin(), order.end(), [&](const int first,
-                                              const int second) {
+    std::stable_sort(order.begin(), order.end(), [&](const int first,
+                                                     const int second) {
         return heights[static_cast<std::size_t>(first)] <
             heights[static_cast<std::size_t>(second)];
     });
-    heights[static_cast<std::size_t>(order[0])] = 0.0;
-    heights[static_cast<std::size_t>(order[1])] = 0.0;
-    const long double h1 = heights[0];
-    const long double h2 = heights[1];
-    const long double h3 = heights[2];
-    const long double h4 = heights[3];
-    const long double P = std::abs(static_cast<long double>(p));
-    const long double hh = h1 * h1 + h2 * h2 + h3 * h3 + h4 * h4;
-    if (P == 0.0L && hh == 0.0L) {
+    heights[static_cast<std::size_t>(order[0])] = 0;
+    heights[static_cast<std::size_t>(order[1])] = 0;
+    const ReductionReal h1 = heights[0];
+    const ReductionReal h2 = heights[1];
+    const ReductionReal h3 = heights[2];
+    const ReductionReal h4 = heights[3];
+    const ReductionReal P = reduction_abs(p);
+    const ReductionReal hh = h1 * h1 + h2 * h2 + h3 * h3 + h4 * h4;
+    if (P == 0 && hh == 0) {
         // This primitive is only reached with a zero edge in a degenerate
         // triangle.  Valid triangle reductions skip that term before I0.
-        return 0.0L;
+        return 0;
     }
 
-    const long double zero2 = 1.0e-28L;
-    const long double radius = std::sqrt(P * P + hh);
-    if (hh < zero2 * P * P) {
+    const ReductionReal radius = reduction_sqrt(P * P + hh);
+    if (hh < kI0ZeroSquared * P * P) {
         // This is the complete zero-height branch in the reference I0
         // reduction, not merely an alternative way to compute Phi1.
-        return std::log(P) / (6.0L * P);
+        return reduction_log(P) / (6 * P);
     }
 
-    long double phi1;
-    if (P == 0.0L) {
-        phi1 = 1.0L / std::sqrt(hh);
+    ReductionReal phi1;
+    if (P == 0) {
+        phi1 = 1 / reduction_sqrt(hh);
     } else {
         // asinh(P/sqrt(hh))/P is equivalent to the logarithm in I0 and is
         // well behaved at P=0.
-        phi1 = std::asinh(P / std::sqrt(hh)) / P;
+        phi1 = reduction_asinh(P / reduction_sqrt(hh)) / P;
     }
 
-    const long double hh1 = hh - h1 * h1;
-    const long double tiny = zero2;
-    const auto phi2_for = [&](const long double h) {
-        if (h1 * P == 0.0L) {
-            return 1.0L / (hh + h * radius);
+    const ReductionReal hh1 = hh - h1 * h1;
+    const ReductionReal tiny = kI0ZeroSquared;
+    const auto phi2_for = [&](const ReductionReal h) {
+        if (h1 * P == 0) {
+            return 1 / (hh + h * radius);
         }
-        return std::atan((h1 * P) / (hh + h * radius)) / (h1 * P);
+        return reduction_atan((h1 * P) / (hh + h * radius)) / (h1 * P);
     };
-    long double answer;
+    ReductionReal answer;
     if (h1 * h1 + h2 * h2 + h4 * h4 < tiny * hh) {
         // Rank-deficient reductions can leave h3 as the only non-zero
         // height.  The reference case-4 expression is 0/0 at h1=0; this is
         // its analytical h1 -> 0 limit.
-        const long double q = std::hypot(P, h3);
-        const long double logarithm = std::asinh(P / h3);
-        answer = (logarithm * (2.0L * q * q - 3.0L * h3 * h3) /
-                      (2.0L * P * P * P) +
-                  (4.0L * h3 - 3.0L * q) / (2.0L * P * P)) /
-            6.0L;
+        const ReductionReal q = reduction_hypot(P, h3);
+        const ReductionReal logarithm = reduction_asinh(P / h3);
+        answer = (logarithm * (2 * q * q - 3 * h3 * h3) / (2 * P * P * P) +
+                  (4 * h3 - 3 * q) / (2 * P * P)) /
+            6;
     } else if (h1 * h1 + h2 * h2 + h3 * h3 < tiny * hh) {
         // Likewise, the reference case-6 expression needs its h1 -> 0
         // limit when h4 is the only non-zero height.
-        const long double q = std::hypot(P, h4);
-        const long double logarithm = std::asinh(P / h4);
-        answer = (logarithm * (2.0L * q * q - 5.0L * h4 * h4) /
-                      (2.0L * P * P * P) +
-                  3.0L * (2.0L * h4 - q) / (2.0L * P * P) -
-                  (q + 2.0L * h4) /
-                      (3.0L * (q + h4) * (q + h4))) /
-            6.0L;
+        const ReductionReal q = reduction_hypot(P, h4);
+        const ReductionReal logarithm = reduction_asinh(P / h4);
+        answer = (logarithm * (2 * q * q - 5 * h4 * h4) / (2 * P * P * P) +
+                  3 * (2 * h4 - q) / (2 * P * P) -
+                  (q + 2 * h4) / (3 * (q + h4) * (q + h4))) /
+            6;
     } else if (hh1 < tiny * hh) {
-        answer = phi1 / 6.0L;
+        answer = phi1 / 6;
     } else if (h3 * h3 + h4 * h4 < tiny * hh) {
-        answer = (phi1 - h2 * phi2_for(h2)) / 6.0L;
+        answer = (phi1 - h2 * phi2_for(h2)) / 6;
     } else {
-        const long double radius1 = std::sqrt(P * P + h1 * h1);
+        const ReductionReal radius1 = reduction_sqrt(P * P + h1 * h1);
         if (h2 * h2 + h4 * h4 < tiny * hh) {
-            const long double phi2 = phi2_for(h3);
-            const long double phi3 = 0.5L * hh1 / radius1 *
-                std::log((radius1 + radius) * (radius1 + radius) / hh1);
+            const ReductionReal phi2 = phi2_for(h3);
+            const ReductionReal phi3 = hh1 / (2 * radius1) *
+                reduction_log((radius1 + radius) * (radius1 + radius) / hh1);
             answer = ((h1 * h1 - h3 * h3) * phi1 -
-                      2.0L * h1 * h1 * h3 * phi2 + phi3) /
-                (6.0L * h1 * h1);
+                      2 * h1 * h1 * h3 * phi2 + phi3) /
+                (6 * h1 * h1);
         } else if (h2 * h2 + h3 * h3 < tiny * hh) {
-            const long double phi2 = phi2_for(h4);
-            const long double phi3 = 0.5L / radius1 *
-                std::log((radius1 + radius) * (radius1 + radius) / hh1);
-            answer = ((h1 * h1 - 3.0L * h4 * h4) * phi1 -
-                      h4 * (3.0L * h1 * h1 - h4 * h4) * phi2 +
-                      3.0L * h4 * h4 * phi3 -
+            const ReductionReal phi2 = phi2_for(h4);
+            const ReductionReal phi3 = 1 / (2 * radius1) *
+                reduction_log((radius1 + radius) * (radius1 + radius) / hh1);
+            answer = ((h1 * h1 - 3 * h4 * h4) * phi1 -
+                      h4 * (3 * h1 * h1 - h4 * h4) * phi2 +
+                      3 * h4 * h4 * phi3 -
                       h4 * h4 / (radius + h4)) /
-                (6.0L * h1 * h1);
+                (6 * h1 * h1);
         } else if (h1 * h1 + h4 * h4 < tiny * hh) {
-            const long double h = std::sqrt(hh);
-            const long double radius2 = std::sqrt(P * P + h2 * h2);
-            const long double phi4 = h3 * h3 / (h2 * P * P) *
-                ((radius2 / h2) * std::log((radius2 + radius) / h3) -
-                 std::log((h2 + h) / h3));
-            answer = (hh / (h2 * h2) * phi1 - 1.0L / (radius + h) -
-                      phi4) / 6.0L;
+            const ReductionReal h = reduction_sqrt(hh);
+            const ReductionReal radius2 = reduction_sqrt(P * P + h2 * h2);
+            const ReductionReal phi4 = h3 * h3 / (h2 * P * P) *
+                ((radius2 / h2) * reduction_log((radius2 + radius) / h3) -
+                 reduction_log((h2 + h) / h3));
+            answer = (hh / (h2 * h2) * phi1 - 1 / (radius + h) - phi4) / 6;
         } else if (h1 * h1 + h3 * h3 < tiny * hh) {
-            const long double h = std::sqrt(hh);
-            const long double radius2 = std::sqrt(P * P + h2 * h2);
-            const long double phi2 = std::atan(h2 * P /
+            const ReductionReal h = reduction_sqrt(hh);
+            const ReductionReal radius2 = reduction_sqrt(P * P + h2 * h2);
+            const ReductionReal phi2 = reduction_atan(h2 * P /
                 (hh + h4 * radius)) / P;
-            const long double phi4 = h4 * h4 / (h2 * P * P) *
-                ((radius2 / h2) * std::log((radius2 + radius) / h4) -
-                 std::log((h2 + h) / h4));
-            answer = ((1.0L + 3.0L * h4 * h4 / (h2 * h2)) * phi1 -
-                      2.0L * (h4 / h2) * (h4 / h2) * (h4 / h2) * phi2 -
-                      3.0L * phi4 +
-                      (2.0L * h4 * h4 - h2 * h2) /
-                      (h2 * h2 * (radius + h))) / 6.0L;
+            const ReductionReal phi4 = h4 * h4 / (h2 * P * P) *
+                ((radius2 / h2) * reduction_log((radius2 + radius) / h4) -
+                 reduction_log((h2 + h) / h4));
+            answer = ((1 + 3 * h4 * h4 / (h2 * h2)) * phi1 -
+                      2 * (h4 / h2) * (h4 / h2) * (h4 / h2) * phi2 -
+                      3 * phi4 +
+                      (2 * h4 * h4 - h2 * h2) /
+                      (h2 * h2 * (radius + h))) / 6;
         } else {
             // This is the prohibited reference-I0 case.  Reaching it means
             // that the preceding dimensional reduction has lost its expected
-            // rank; assigning an ad-hoc limiting value would hide that error.
-            throw std::domain_error("triangle I0 reached prohibited branch");
+            // rank; the caller reports it unless the face pair is guarded.
+            status.prohibited = true;
+            return 0;
         }
     }
     return answer;
@@ -722,121 +860,123 @@ long double triangle_i0(const double p,
 
 // I1, I2s, I2t, I3: the reduction steps.  Each expands the offset in the
 // remaining edge vectors, drops one edge and calls the next lower primitive
-// at the two endpoints of that edge; a coefficient within `zero_tolerance`
+// at the two endpoints of that edge; a coefficient within `kZeroCoefficient`
 // of zero contributes nothing and is skipped, exactly as in the reference.
-double triangle_i1(const Vec3& vector, const Vec3& offset,
-                   const double h2, const double h3, const double h4)
+ReductionReal triangle_i1(const ReductionVec& vector, const ReductionVec& offset,
+                          const ReductionReal h2, const ReductionReal h3,
+                          const ReductionReal h4, ReductionStatus& status)
 {
-    const double length = norm(vector);
-    if (!(length > 0.0)) {
-        return 0.0;
+    const ReductionReal length = reduction_norm(vector);
+    if (!(length > 0)) {
+        return 0;
     }
-    std::array<Vec3, 4> basis{{vector, {}, {}, {}}};
+    std::array<ReductionVec, 4> basis{{vector, {}, {}, {}}};
     const ExpansionProjection expansion = expand_gram_schmidt(
-        basis, 1, offset);
-    constexpr double zero_tolerance = 1.0e-14;
-    double result = 0.0;
-    const double coefficient = expansion.coefficient[0];
-    if (std::abs(1.0 + coefficient) > zero_tolerance) {
-        result += (1.0 + coefficient) * static_cast<double>(triangle_i0(
-            std::abs(1.0 + coefficient) * length,
-            {{expansion.residual, h2, h3, h4}}));
+        basis, 1, offset, status);
+    ReductionReal result = 0;
+    const ReductionReal coefficient = expansion.coefficient[0];
+    if (reduction_abs(1 + coefficient) > kZeroCoefficient) {
+        result += (1 + coefficient) * triangle_i0(
+            reduction_abs(1 + coefficient) * length,
+            {{expansion.residual, h2, h3, h4}}, status);
     }
-    if (std::abs(coefficient) > zero_tolerance) {
-        result -= coefficient * static_cast<double>(triangle_i0(
-            std::abs(coefficient) * length,
-            {{expansion.residual, h2, h3, h4}}));
+    if (reduction_abs(coefficient) > kZeroCoefficient) {
+        result -= coefficient * triangle_i0(
+            reduction_abs(coefficient) * length,
+            {{expansion.residual, h2, h3, h4}}, status);
     }
     return result;
 }
 
-double triangle_i2s(const Vec3& first, const Vec3& second,
-                    const Vec3& offset, const double h3, const double h4)
+ReductionReal triangle_i2s(const ReductionVec& first, const ReductionVec& second,
+                           const ReductionVec& offset, const ReductionReal h3,
+                           const ReductionReal h4, ReductionStatus& status)
 {
-    std::array<Vec3, 4> basis{{first, second, {}, {}}};
+    std::array<ReductionVec, 4> basis{{first, second, {}, {}}};
     const ExpansionProjection expansion = expand_gram_schmidt(
-        basis, 2, offset);
-    constexpr double zero_tolerance = 1.0e-14;
-    double result = 0.0;
-    const double s0 = expansion.coefficient[0];
-    const double s1 = expansion.coefficient[1];
-    if (std::abs(1.0 + s0) > zero_tolerance) {
-        result += (1.0 + s0) * triangle_i1(
-            second, expansion.projected + first, expansion.residual, h3, h4);
+        basis, 2, offset, status);
+    ReductionReal result = 0;
+    const ReductionReal s0 = expansion.coefficient[0];
+    const ReductionReal s1 = expansion.coefficient[1];
+    if (reduction_abs(1 + s0) > kZeroCoefficient) {
+        result += (1 + s0) * triangle_i1(
+            second, expansion.projected + first, expansion.residual, h3, h4,
+            status);
     }
-    if (std::abs(s0) > zero_tolerance) {
+    if (reduction_abs(s0) > kZeroCoefficient) {
         result -= s0 * triangle_i1(
-            second, expansion.projected, expansion.residual, h3, h4);
+            second, expansion.projected, expansion.residual, h3, h4, status);
     }
-    if (std::abs(1.0 + s1) > zero_tolerance) {
-        result += (1.0 + s1) * triangle_i1(
-            first, expansion.projected + second, expansion.residual, h3, h4);
+    if (reduction_abs(1 + s1) > kZeroCoefficient) {
+        result += (1 + s1) * triangle_i1(
+            first, expansion.projected + second, expansion.residual, h3, h4,
+            status);
     }
-    if (std::abs(s1) > zero_tolerance) {
+    if (reduction_abs(s1) > kZeroCoefficient) {
         result -= s1 * triangle_i1(
-            first, expansion.projected, expansion.residual, h3, h4);
+            first, expansion.projected, expansion.residual, h3, h4, status);
     }
     return result;
 }
 
-double triangle_i2t(const Vec3& first, const Vec3& second,
-                    const Vec3& offset, const double h3, const double h4)
+ReductionReal triangle_i2t(const ReductionVec& first, const ReductionVec& second,
+                           const ReductionVec& offset, const ReductionReal h3,
+                           const ReductionReal h4, ReductionStatus& status)
 {
-    std::array<Vec3, 4> basis{{first, second, {}, {}}};
+    std::array<ReductionVec, 4> basis{{first, second, {}, {}}};
     const ExpansionProjection expansion = expand_gram_schmidt(
-        basis, 2, offset);
-    constexpr double zero_tolerance = 1.0e-14;
-    double result = 0.0;
-    const double s0 = expansion.coefficient[0];
-    const double s1 = expansion.coefficient[1];
-    if (std::abs(s0) > zero_tolerance) {
+        basis, 2, offset, status);
+    ReductionReal result = 0;
+    const ReductionReal s0 = expansion.coefficient[0];
+    const ReductionReal s1 = expansion.coefficient[1];
+    if (reduction_abs(s0) > kZeroCoefficient) {
         result -= s0 * triangle_i1(
-            second, expansion.projected, expansion.residual, h3, h4);
+            second, expansion.projected, expansion.residual, h3, h4, status);
     }
-    if (std::abs(s1) > zero_tolerance) {
+    if (reduction_abs(s1) > kZeroCoefficient) {
         result -= s1 * triangle_i1(
-            first, expansion.projected, expansion.residual, h3, h4);
+            first, expansion.projected, expansion.residual, h3, h4, status);
     }
-    if (std::abs(1.0 + s0 + s1) > zero_tolerance) {
-        result += (1.0 + s0 + s1) * triangle_i1(
+    if (reduction_abs(1 + s0 + s1) > kZeroCoefficient) {
+        result += (1 + s0 + s1) * triangle_i1(
             first - second, expansion.projected + second,
-            expansion.residual, h3, h4);
+            expansion.residual, h3, h4, status);
     }
     return result;
 }
 
-double triangle_i3(const Vec3& first, const Vec3& second, const Vec3& third,
-                   const Vec3& offset, const double h4)
+ReductionReal triangle_i3(const ReductionVec& first, const ReductionVec& second,
+                          const ReductionVec& third, const ReductionVec& offset,
+                          const ReductionReal h4, ReductionStatus& status)
 {
-    std::array<Vec3, 4> basis{{first, second, third, {}}};
+    std::array<ReductionVec, 4> basis{{first, second, third, {}}};
     const ExpansionProjection expansion = expand_gram_schmidt(
-        basis, 3, offset);
-    constexpr double zero_tolerance = 1.0e-14;
-    double result = 0.0;
-    const double s0 = expansion.coefficient[0];
-    const double s1 = expansion.coefficient[1];
-    const double s2 = expansion.coefficient[2];
-    if (std::abs(1.0 + s0 + s1) > zero_tolerance) {
-        result += (1.0 + s0 + s1) * triangle_i2s(
+        basis, 3, offset, status);
+    ReductionReal result = 0;
+    const ReductionReal s0 = expansion.coefficient[0];
+    const ReductionReal s1 = expansion.coefficient[1];
+    const ReductionReal s2 = expansion.coefficient[2];
+    if (reduction_abs(1 + s0 + s1) > kZeroCoefficient) {
+        result += (1 + s0 + s1) * triangle_i2s(
             first - second, third, expansion.projected + second,
-            expansion.residual, h4);
+            expansion.residual, h4, status);
     }
-    if (std::abs(s0) > zero_tolerance) {
+    if (reduction_abs(s0) > kZeroCoefficient) {
         result -= s0 * triangle_i2s(
-            second, third, expansion.projected, expansion.residual, h4);
+            second, third, expansion.projected, expansion.residual, h4, status);
     }
-    if (std::abs(s1) > zero_tolerance) {
+    if (reduction_abs(s1) > kZeroCoefficient) {
         result -= s1 * triangle_i2s(
-            first, third, expansion.projected, expansion.residual, h4);
+            first, third, expansion.projected, expansion.residual, h4, status);
     }
-    if (std::abs(1.0 + s2) > zero_tolerance) {
-        result += (1.0 + s2) * triangle_i2t(
+    if (reduction_abs(1 + s2) > kZeroCoefficient) {
+        result += (1 + s2) * triangle_i2t(
             first, second, expansion.projected + third,
-            expansion.residual, h4);
+            expansion.residual, h4, status);
     }
-    if (std::abs(s2) > zero_tolerance) {
+    if (reduction_abs(s2) > kZeroCoefficient) {
         result -= s2 * triangle_i2t(
-            first, second, expansion.projected, expansion.residual, h4);
+            first, second, expansion.projected, expansion.residual, h4, status);
     }
     return result;
 }
@@ -846,98 +986,373 @@ double triangle_i3(const Vec3& first, const Vec3& second, const Vec3& third,
 // triangles' edge vectors a1..a4 and the vertex offset e4 are expanded
 // together; coplanar (parallel) pairs take the reduced branch in which only
 // the in-plane offset and the separation height enter.
-double triangle_triangle_integral_core(
-    const std::array<Vec3, 3>& first,
-    const std::array<Vec3, 3>& second)
+ReductionReal triangle_triangle_integral_core(
+    const std::array<ReductionVec, 3>& first,
+    const std::array<ReductionVec, 3>& second,
+    ReductionStatus& status)
 {
     // Only the two edges meeting at each triangle's first vertex enter the
     // expansion basis and the area; the third edge of each triangle is
     // implied by them and is not formed.
-    const Vec3 first_edge_1 = first[1] - first[0];
-    const Vec3 first_edge_3 = first[0] - first[2];
-    const Vec3 second_edge_1 = second[1] - second[0];
-    const Vec3 second_edge_3 = second[0] - second[2];
-    const Vec3 first_cross = cross(first_edge_1, -1.0 * first_edge_3);
-    const Vec3 second_cross = cross(second_edge_1, -1.0 * second_edge_3);
-    const double first_area_twice = norm(first_cross);
-    const double second_area_twice = norm(second_cross);
-    if (!(first_area_twice > 0.0 && second_area_twice > 0.0)) {
+    const ReductionVec a1 = first[1] - first[0];
+    const ReductionVec a2 = first[2] - first[0];
+    const ReductionVec a3 = second[0] - second[1];
+    const ReductionVec a4 = second[0] - second[2];
+    const ReductionVec e4 = first[0] - second[0];
+    const ReductionVec first_cross = reduction_cross(a1, a2);
+    const ReductionVec second_cross = reduction_cross(a3, a4);
+    const ReductionReal first_area_twice = reduction_norm(first_cross);
+    const ReductionReal second_area_twice = reduction_norm(second_cross);
+    if (!(first_area_twice > 0 && second_area_twice > 0)) {
         throw std::invalid_argument("triangle pair contains a degenerate triangle");
     }
 
-    const Vec3 a1 = first_edge_1;
-    const Vec3 a2 = -1.0 * first_edge_3;
-    const Vec3 a3 = -1.0 * second_edge_1;
-    const Vec3 a4 = second_edge_3;
-    const Vec3 e4 = first[0] - second[0];
-    std::array<Vec3, 4> all_vectors{{a1, a2, a3, a4}};
+    std::array<ReductionVec, 4> all_vectors{{a1, a2, a3, a4}};
     const ExpansionProjection complete_expansion = expand_gram_schmidt(
-        all_vectors, 4, e4);
-    const double s0 = complete_expansion.coefficient[0];
-    const double s1 = complete_expansion.coefficient[1];
-    const double s2 = complete_expansion.coefficient[2];
-    const double s3 = complete_expansion.coefficient[3];
-    const Vec3 e4x = complete_expansion.projected;
-    const Vec3 first_normal = scale(first_cross, 1.0 / first_area_twice);
-    const Vec3 second_normal = scale(second_cross, 1.0 / second_area_twice);
-    const double parallel_measure = std::min(
-        norm(first_normal + second_normal),
-        norm(first_normal - second_normal));
-    constexpr double zero_tolerance = 1.0e-14;
+        all_vectors, 4, e4, status);
+    const ReductionReal s0 = complete_expansion.coefficient[0];
+    const ReductionReal s1 = complete_expansion.coefficient[1];
+    const ReductionReal s2 = complete_expansion.coefficient[2];
+    const ReductionReal s3 = complete_expansion.coefficient[3];
+    const ReductionVec e4x = complete_expansion.projected;
+    const ReductionVec first_normal = (1 / first_area_twice) * first_cross;
+    const ReductionVec second_normal = (1 / second_area_twice) * second_cross;
+    const ReductionReal parallel_measure = std::min(
+        reduction_norm(first_normal + second_normal),
+        reduction_norm(first_normal - second_normal));
     // Nearly parallel faces (two coplanar faces of a conforming mesh after the
     // FMM rounds their coordinates, or genuinely almost parallel ones) are
-    // where the general branch is worst conditioned: its error grows like
-    // eps / angle^3. Below `kNearParallel` both triangles are projected onto
-    // planes normal to their mean normal, each through its own centroid, and
-    // the parallel branch evaluates them. That costs O(angle) -- measured
-    // below 0.1 x angle -- and is symmetric in the two triangles.
-    constexpr double kNearParallel = 1.0e-3;
-    if (parallel_measure > zero_tolerance && parallel_measure <= kNearParallel) {
-        const double sign = dot(first_normal, second_normal) >= 0.0 ? 1.0 : -1.0;
-        const Vec3 mean_normal = first_normal + sign * second_normal;
-        const Vec3 normal = scale(mean_normal, 1.0 / norm(mean_normal));
-        const auto project = [&normal](const std::array<Vec3, 3> &triangle) {
-            const Vec3 centroid =
-                scale(triangle[0] + triangle[1] + triangle[2], 1.0 / 3.0);
-            std::array<Vec3, 3> projected{};
+    // projected onto planes normal to their mean normal, each through its own
+    // centroid, and the parallel branch evaluates them (see kNearParallel).
+    // The projection is symmetric in the two triangles.
+    if (parallel_measure > kZeroCoefficient &&
+        parallel_measure <= kNearParallel) {
+        const ReductionReal sign =
+            reduction_dot(first_normal, second_normal) >= 0 ? 1 : -1;
+        const ReductionVec mean_normal = first_normal + sign * second_normal;
+        const ReductionVec normal =
+            (1 / reduction_norm(mean_normal)) * mean_normal;
+        const auto project = [&normal](const std::array<ReductionVec, 3>& triangle) {
+            const ReductionVec centroid = static_cast<ReductionReal>(1) /
+                static_cast<ReductionReal>(3) *
+                (triangle[0] + triangle[1] + triangle[2]);
+            std::array<ReductionVec, 3> projected{};
             for (std::size_t vertex = 0; vertex < 3; ++vertex) {
                 projected[vertex] = triangle[vertex] -
-                    dot(triangle[vertex] - centroid, normal) * normal;
+                    reduction_dot(triangle[vertex] - centroid, normal) * normal;
             }
             return projected;
         };
-        return triangle_triangle_integral_core(project(first), project(second));
+        return triangle_triangle_integral_core(project(first), project(second),
+                                               status);
     }
-    double reduced = 0.0;
-    if (parallel_measure > zero_tolerance) {
-        const double h4 = 0.0;
-        const double i31 = triangle_i3(a1, a2, a3, e4, h4);
-        const double i32 = triangle_i3(a1, a2, a4, e4, h4);
-        const double i33 = triangle_i3(a1, a2, a4 - a3, e4 + a3, h4);
-        const double i34 = triangle_i3(a3, a4, a1, e4, h4);
-        const double i35 = triangle_i3(a3, a4, a2, e4, h4);
-        const double i36 = triangle_i3(a3, a4, a2 - a1, e4 + a1, h4);
-        reduced = (1.0 + s2 + s3) * i33 - s3 * i31 - s2 * i32 +
-            (1.0 + s0 + s1) * i36 - s1 * i34 - s0 * i35;
+    ReductionReal reduced = 0;
+    if (parallel_measure > kZeroCoefficient) {
+        const ReductionReal h4 = 0;
+        const ReductionReal i31 = triangle_i3(a1, a2, a3, e4, h4, status);
+        const ReductionReal i32 = triangle_i3(a1, a2, a4, e4, h4, status);
+        const ReductionReal i33 = triangle_i3(a1, a2, a4 - a3, e4 + a3, h4,
+                                              status);
+        const ReductionReal i34 = triangle_i3(a3, a4, a1, e4, h4, status);
+        const ReductionReal i35 = triangle_i3(a3, a4, a2, e4, h4, status);
+        const ReductionReal i36 = triangle_i3(a3, a4, a2 - a1, e4 + a1, h4,
+                                              status);
+        reduced = (1 + s2 + s3) * i33 - s3 * i31 - s2 * i32 +
+            (1 + s0 + s1) * i36 - s1 * i34 - s0 * i35;
     } else {
         // In the parallel case the projection of e4 onto the common plane
         // is the only offset required by the dimensional reduction.
-        const double h4 = complete_expansion.residual;
-        const double i33 = triangle_i3(
-            a1, a2, a4 - a3, e4x + a3, h4);
-        const double i34 = triangle_i3(a3, a4, a1, e4x, h4);
-        const double i35 = triangle_i3(a3, a4, a2, e4x, h4);
-        const double i36 = triangle_i3(
-            a3, a4, a2 - a1, e4x + a1, h4);
-        reduced = i33 + (1.0 + s0 + s1) * i36 - s1 * i34 - s0 * i35;
+        const ReductionReal h4 = complete_expansion.residual;
+        const ReductionReal i33 = triangle_i3(a1, a2, a4 - a3, e4x + a3, h4,
+                                              status);
+        const ReductionReal i34 = triangle_i3(a3, a4, a1, e4x, h4, status);
+        const ReductionReal i35 = triangle_i3(a3, a4, a2, e4x, h4, status);
+        const ReductionReal i36 = triangle_i3(a3, a4, a2 - a1, e4x + a1, h4,
+                                              status);
+        reduced = i33 + (1 + s0 + s1) * i36 - s1 * i34 - s0 * i35;
     }
-    return 4.0 * (0.5 * first_area_twice) *
-        (0.5 * second_area_twice) * reduced;
+    return first_area_twice * second_area_twice * reduced;
 }
 
-// Normalise a triangle pair to unit scale about the first vertex of the
-// larger triangle before the core; the integral is homogeneous of degree 3
-// in length, so the result is rescaled by scale^3.
+//------------------------------------------------------------------------------
+// Numerical triangle-pair quadratures (the fallbacks of the reduction)
+//------------------------------------------------------------------------------
+
+// Gauss-Legendre nodes and weights on [0, 1] (Newton iteration on the
+// Legendre recurrence; the weights sum to one).
+struct GaussRule {
+    std::vector<double> node;
+    std::vector<double> weight;
+};
+
+GaussRule make_gauss_legendre_rule(const int points)
+{
+    GaussRule rule;
+    rule.node.resize(static_cast<std::size_t>(points));
+    rule.weight.resize(static_cast<std::size_t>(points));
+    for (int i = 0; i < points; ++i) {
+        double z = std::cos(std::numbers::pi * (i + 0.75) / (points + 0.5));
+        double derivative = 1.0;
+        for (int iteration = 0; iteration < 100; ++iteration) {
+            double p1 = 1.0;
+            double p2 = 0.0;
+            for (int j = 1; j <= points; ++j) {
+                const double p3 = p2;
+                p2 = p1;
+                p1 = ((2.0 * j - 1.0) * z * p2 - (j - 1.0) * p3) / j;
+            }
+            derivative = points * (z * p1 - p2) / (z * z - 1.0);
+            const double previous = z;
+            z = previous - p1 / derivative;
+            if (std::abs(z - previous) <= 4.0 * std::numeric_limits<double>::epsilon()) {
+                break;
+            }
+        }
+        rule.node[static_cast<std::size_t>(i)] = 0.5 * (1.0 - z);
+        rule.weight[static_cast<std::size_t>(i)] =
+            1.0 / ((1.0 - z * z) * derivative * derivative);
+    }
+    return rule;
+}
+
+// Points of the reduced regular quadrature (per direction, per triangle) and
+// the Sauter-Schwab rule (per direction of the four-dimensional domain).
+constexpr int kRegularGaussPoints = 10;
+constexpr int kSauterSchwabGaussPoints = 24;
+// The larger triangle of a separated pair is split into four until the gap
+// between the two bounding spheres is at least this times the larger radius.
+constexpr double kSeparationRatio = 1.0;
+constexpr int kMaxSplitDepth = 12;
+
+const GaussRule& regular_gauss_rule()
+{
+    static const GaussRule rule = make_gauss_legendre_rule(kRegularGaussPoints);
+    return rule;
+}
+
+const GaussRule& sauter_schwab_gauss_rule()
+{
+    static const GaussRule rule = make_gauss_legendre_rule(kSauterSchwabGaussPoints);
+    return rule;
+}
+
+double twice_triangle_area(const std::array<Vec3, 3>& triangle)
+{
+    return norm(cross(triangle[1] - triangle[0], triangle[2] - triangle[1]));
+}
+
+// chi(x1, x2) = P0 + x1 (P1 - P0) + x2 (P2 - P1) on the reference triangle
+// {0 <= x2 <= x1 <= 1}, whose Jacobian is twice the triangle's area.
+Vec3 reference_triangle_point(const std::array<Vec3, 3>& triangle,
+                              const double x1, const double x2)
+{
+    return triangle[0] + (triangle[1] - triangle[0]) * x1 +
+        (triangle[2] - triangle[1]) * x2;
+}
+
+// The four midpoint children of a triangle.
+std::array<std::array<Vec3, 3>, 4> split_triangle(const std::array<Vec3, 3>& triangle)
+{
+    const Vec3 m01 = (triangle[0] + triangle[1]) * 0.5;
+    const Vec3 m12 = (triangle[1] + triangle[2]) * 0.5;
+    const Vec3 m20 = (triangle[2] + triangle[0]) * 0.5;
+    return {{{{triangle[0], m01, m20}},
+             {{m01, triangle[1], m12}},
+             {{m20, m12, triangle[2]}},
+             {{m01, m12, m20}}}};
+}
+
+// Gauss quadrature of the pair integral for triangles without a common
+// point: collapsed Gauss rules on both triangles, the larger one split
+// recursively until the two are well separated.
+double triangle_pair_gauss(const std::array<Vec3, 3>& first,
+                           const std::array<Vec3, 3>& second,
+                           const int depth)
+{
+    const Vec3 first_centre = (first[0] + first[1] + first[2]) * (1.0 / 3.0);
+    const Vec3 second_centre = (second[0] + second[1] + second[2]) * (1.0 / 3.0);
+    double first_radius = 0.0;
+    double second_radius = 0.0;
+    for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+        first_radius = std::max(first_radius, norm(first[vertex] - first_centre));
+        second_radius = std::max(second_radius, norm(second[vertex] - second_centre));
+    }
+    const double gap = norm(first_centre - second_centre) - first_radius - second_radius;
+    if (gap < kSeparationRatio * std::max(first_radius, second_radius) &&
+        depth < kMaxSplitDepth) {
+        double sum = 0.0;
+        if (first_radius >= second_radius) {
+            for (const auto& child : split_triangle(first)) {
+                sum += triangle_pair_gauss(child, second, depth + 1);
+            }
+        } else {
+            for (const auto& child : split_triangle(second)) {
+                sum += triangle_pair_gauss(first, child, depth + 1);
+            }
+        }
+        return sum;
+    }
+
+    const GaussRule& rule = regular_gauss_rule();
+    constexpr std::size_t count =
+        static_cast<std::size_t>(kRegularGaussPoints * kRegularGaussPoints);
+    std::array<Vec3, count> first_point{};
+    std::array<Vec3, count> second_point{};
+    std::array<double, count> weight{};
+    std::size_t index = 0;
+    for (std::size_t i = 0; i < rule.node.size(); ++i) {
+        for (std::size_t j = 0; j < rule.node.size(); ++j) {
+            // Collapsed map (s, s t) of the unit square onto the reference
+            // triangle, with Jacobian s.
+            const double s = rule.node[i];
+            const double t = rule.node[j];
+            first_point[index] = reference_triangle_point(first, s, s * t);
+            second_point[index] = reference_triangle_point(second, s, s * t);
+            weight[index] = rule.weight[i] * rule.weight[j] * s;
+            ++index;
+        }
+    }
+    double sum = 0.0;
+    for (std::size_t i = 0; i < count; ++i) {
+        for (std::size_t j = 0; j < count; ++j) {
+            sum += weight[i] * weight[j] / norm(first_point[i] - second_point[j]);
+        }
+    }
+    return twice_triangle_area(first) * twice_triangle_area(second) * sum;
+}
+
+// Sauter-Schwab quadrature of the pair integral for triangles with a common
+// vertex, edge or face (S. Sauter and C. Schwab, Boundary Element Methods,
+// Springer 2011, Sec. 5.2).  The singularity is removed by transformations
+// of the four-dimensional reference domain, after which the tensor Gauss rule
+// converges exponentially (relative error 1e-9 to 1e-12 on mesh face pairs).
+// `first` and `second` must list their common vertices first, in matching
+// order; `shared` is their number.
+double triangle_pair_sauter_schwab(const std::array<Vec3, 3>& first,
+                                   const std::array<Vec3, 3>& second,
+                                   const int shared)
+{
+    const GaussRule& rule = sauter_schwab_gauss_rule();
+    struct ReferencePair {
+        double a1, a2, b1, b2, jacobian;
+    };
+    const auto kernel = [&](const ReferencePair& pair) {
+        return pair.jacobian / norm(
+            reference_triangle_point(first, pair.a1, pair.a2) -
+            reference_triangle_point(second, pair.b1, pair.b2));
+    };
+    double sum = 0.0;
+    const std::size_t points = rule.node.size();
+    for (std::size_t i1 = 0; i1 < points; ++i1) {
+        const double xi = rule.node[i1];
+        for (std::size_t i2 = 0; i2 < points; ++i2) {
+            const double e1 = rule.node[i2];
+            for (std::size_t i3 = 0; i3 < points; ++i3) {
+                const double e2 = rule.node[i3];
+                for (std::size_t i4 = 0; i4 < points; ++i4) {
+                    const double e3 = rule.node[i4];
+                    const double w = rule.weight[i1] * rule.weight[i2] *
+                        rule.weight[i3] * rule.weight[i4];
+                    double value = 0.0;
+                    if (shared == 3) {
+                        const double jacobian = xi * xi * xi * e1 * e1 * e2;
+                        const double u1 = xi * (1.0 - e1 + e1 * e2);
+                        const double v1 = xi * (1.0 - e1 * e2 * e3);
+                        const double v2 = xi * (1.0 - e1);
+                        const double u3 = xi * e1 * (1.0 - e2 + e2 * e3);
+                        const double v3 = xi * (1.0 - e1 * e2);
+                        const double w3 = xi * e1 * (1.0 - e2);
+                        const double u5 = xi * (1.0 - e1 * e2 * e3);
+                        const double v5 = xi * e1 * (1.0 - e2 * e3);
+                        const double w5 = xi * e1 * (1.0 - e2);
+                        value = kernel({xi, u1, v1, v2, jacobian}) +
+                            kernel({v1, v2, xi, u1, jacobian}) +
+                            kernel({xi, u3, v3, w3, jacobian}) +
+                            kernel({v3, w3, xi, u3, jacobian}) +
+                            kernel({u5, v5, xi, w5, jacobian}) +
+                            kernel({xi, w5, u5, v5, jacobian});
+                    } else if (shared == 2) {
+                        const double j1 = xi * xi * xi * e1 * e1;
+                        const double j2 = j1 * e2;
+                        value = kernel({xi, xi * e1 * e3,
+                                        xi * (1.0 - e1 * e2), xi * e1 * (1.0 - e2), j1}) +
+                            kernel({xi, xi * e1,
+                                    xi * (1.0 - e1 * e2 * e3), xi * e1 * e2 * (1.0 - e3), j2}) +
+                            kernel({xi * (1.0 - e1 * e2), xi * e1 * (1.0 - e2),
+                                    xi, xi * e1 * e2 * e3, j2}) +
+                            kernel({xi * (1.0 - e1 * e2 * e3), xi * e1 * e2 * (1.0 - e3),
+                                    xi, xi * e1, j2}) +
+                            kernel({xi * (1.0 - e1 * e2 * e3), xi * e1 * (1.0 - e2 * e3),
+                                    xi, xi * e1 * e2, j2});
+                    } else {
+                        const double jacobian = xi * xi * xi * e2;
+                        value = kernel({xi, xi * e1, xi * e2, xi * e2 * e3, jacobian}) +
+                            kernel({xi * e2, xi * e2 * e3, xi, xi * e1, jacobian});
+                    }
+                    sum += w * value;
+                }
+            }
+        }
+    }
+    return twice_triangle_area(first) * twice_triangle_area(second) * sum;
+}
+
+// The common vertices of two triangles (to kSharedVertex of the larger
+// edge) as (first, second) index pairs, in the order of the first triangle.
+std::vector<std::pair<int, int>> common_vertices(const std::array<Vec3, 3>& first,
+                                                 const std::array<Vec3, 3>& second,
+                                                 const double edge)
+{
+    std::vector<std::pair<int, int>> common;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            if (norm(first[static_cast<std::size_t>(i)] -
+                     second[static_cast<std::size_t>(j)]) <= kSharedVertex * edge &&
+                common.size() < 3) {
+                common.emplace_back(i, j);
+            }
+        }
+    }
+    return common;
+}
+
+// Sauter-Schwab quadrature of touching triangles, after reordering both so
+// that their common vertices come first in matching order.
+double touching_triangle_pair_quadrature(const std::array<Vec3, 3>& first,
+                                         const std::array<Vec3, 3>& second,
+                                         const std::vector<std::pair<int, int>>& common)
+{
+    std::array<int, 3> first_order{};
+    std::array<int, 3> second_order{};
+    if (common.size() == 3) {
+        first_order = {{0, 1, 2}};
+        second_order = {{common[0].second, common[1].second, common[2].second}};
+    } else if (common.size() == 2) {
+        first_order = {{common[0].first, common[1].first,
+                        3 - common[0].first - common[1].first}};
+        second_order = {{common[0].second, common[1].second,
+                         3 - common[0].second - common[1].second}};
+    } else {
+        first_order = {{common[0].first, (common[0].first + 1) % 3,
+                        (common[0].first + 2) % 3}};
+        second_order = {{common[0].second, (common[0].second + 1) % 3,
+                         (common[0].second + 2) % 3}};
+    }
+    std::array<Vec3, 3> reordered_first{};
+    std::array<Vec3, 3> reordered_second{};
+    for (std::size_t vertex = 0; vertex < 3; ++vertex) {
+        reordered_first[vertex] = first[static_cast<std::size_t>(first_order[vertex])];
+        reordered_second[vertex] = second[static_cast<std::size_t>(second_order[vertex])];
+    }
+    return triangle_pair_sauter_schwab(reordered_first, reordered_second,
+                                       static_cast<int>(common.size()));
+}
+
+// The pair integral: the closed form in quadruple precision, with the
+// numerical fallbacks described at the top of this section.  The closed form
+// is normalised to unit scale about the first vertex of the larger triangle;
+// the integral is homogeneous of degree 3 in length, so the result is
+// rescaled by scale^3.
 double triangle_triangle_integral_impl(
     std::array<Vec3, 3> first,
     std::array<Vec3, 3> second)
@@ -954,27 +1369,78 @@ double triangle_triangle_integral_impl(
         !std::isfinite(first_scale) || !std::isfinite(second_scale)) {
         throw std::invalid_argument("triangle pair has invalid scale");
     }
+    const Vec3 first_cross = cross(first[1] - first[0], first[2] - first[0]);
+    const Vec3 second_cross = cross(second[1] - second[0], second[2] - second[0]);
+    if (!(norm(first_cross) > 0.0) || !(norm(second_cross) > 0.0)) {
+        throw std::invalid_argument("triangle pair contains a degenerate triangle");
+    }
+    const Vec3 first_normal = scale(first_cross, 1.0 / norm(first_cross));
+    const Vec3 second_normal = scale(second_cross, 1.0 / norm(second_cross));
+    const double parallel_measure = std::min(norm(first_normal + second_normal),
+                                             norm(first_normal - second_normal));
+    const double edge = std::max(first_scale, second_scale);
+    const std::vector<std::pair<int, int>> common = common_vertices(
+        first, second, edge);
+    double closest_vertices = std::numeric_limits<double>::infinity();
+    for (const Vec3& a : first) {
+        for (const Vec3& b : second) {
+            closest_vertices = std::min(closest_vertices, norm(a - b));
+        }
+    }
+    const bool separated = closest_vertices > kSeparatedVertex * edge;
+
+    // Separated triangles in nearly parallel planes: quadrature directly.
+    if (separated && parallel_measure > 1.0e-14 &&
+        parallel_measure < kParallelQuadrature) {
+        return triangle_pair_gauss(first, second, 0);
+    }
+
     // The core is symmetric in its two triangles.  Keep the larger triangle
     // first for the same ordering used by the reference reduction, but do so
     // before choosing the common origin so normalization remains one-pass.
+    std::array<Vec3, 3> ordered_first = first;
+    std::array<Vec3, 3> ordered_second = second;
     if (first_scale < second_scale) {
-        std::swap(first, second);
+        std::swap(ordered_first, ordered_second);
     }
-
     const double scale_value = std::max(first_scale, second_scale);
-    const Vec3 origin = first[0];
-    const double inverse_scale = 1.0 / scale_value;
-    std::array<Vec3, 3> normalised_first{};
-    std::array<Vec3, 3> normalised_second{};
-    for (int index = 0; index < 3; ++index) {
-        normalised_first[static_cast<std::size_t>(index)] =
-            (first[static_cast<std::size_t>(index)] - origin) * inverse_scale;
-        normalised_second[static_cast<std::size_t>(index)] =
-            (second[static_cast<std::size_t>(index)] - origin) * inverse_scale;
+    const ReductionReal inverse_scale = 1 / static_cast<ReductionReal>(scale_value);
+    const auto to_reduction = [&](const Vec3& point) {
+        const Vec3& origin = ordered_first[0];
+        return ReductionVec{
+            (static_cast<ReductionReal>(point.x) - static_cast<ReductionReal>(origin.x)) *
+                inverse_scale,
+            (static_cast<ReductionReal>(point.y) - static_cast<ReductionReal>(origin.y)) *
+                inverse_scale,
+            (static_cast<ReductionReal>(point.z) - static_cast<ReductionReal>(origin.z)) *
+                inverse_scale};
+    };
+    std::array<ReductionVec, 3> normalised_first{};
+    std::array<ReductionVec, 3> normalised_second{};
+    for (std::size_t index = 0; index < 3; ++index) {
+        normalised_first[index] = to_reduction(ordered_first[index]);
+        normalised_second[index] = to_reduction(ordered_second[index]);
     }
-    return std::pow(scale_value, 3.0) *
-        triangle_triangle_integral_core(normalised_first,
-                                        normalised_second);
+    ReductionStatus status;
+    const ReductionReal reduced = triangle_triangle_integral_core(
+        normalised_first, normalised_second, status);
+    if (status.guard && !common.empty()) {
+        // An unreliable rank decision: integrate numerically instead.
+        return touching_triangle_pair_quadrature(first, second, common);
+    }
+    if (status.guard && separated) {
+        return triangle_pair_gauss(first, second, 0);
+    }
+    // NOTE(cdfmm): a guarded pair that is neither touching nor separated
+    // (nearly touching without a common vertex) keeps the closed form: no
+    // fallback here resolves its gap.
+    if (status.prohibited) {
+        // Reaching the prohibited reference-I0 case means that the
+        // dimensional reduction has lost its expected rank; assigning an
+        // ad-hoc limiting value would hide that error.
+        throw std::domain_error("triangle I0 reached prohibited branch");
+    }
+    return std::pow(scale_value, 3.0) * static_cast<double>(reduced);
 }
 
 double triangle_triangle_integral(const std::array<Vec3, 3>& first,

@@ -117,8 +117,8 @@ barycentric expansion reference. Both compute the same exact volume average;
 their floating-point summation orders differ.
 
 The tetrahedron-to-tetrahedron, prism-to-tetrahedron and tetrahedron-to-prism
-pairs are evaluated exactly during dense or static-plan construction from the
-same polyhedron surface formulation: applying the divergence theorem to both
+pairs are evaluated during dense or static-plan construction from the same
+exact polyhedron surface formulation: applying the divergence theorem to both
 uniformly magnetised bodies gives
 
 $$K=-\frac{1}{4\pi V_sV_t}\sum_{f_t}\sum_{f_s}\hat n_t\hat n_s^{T}
@@ -148,19 +148,37 @@ Four numerical safeguards keep these analytical kernels well conditioned:
   about 2e-10 in its range (6e-11 measured over random pairs from three to
   eight circumradii). The switch is continuous to that precision and is
   exercised by the tests;
-- in the triangle-pair reduction, face pairs within 1e-3 of parallel are
-  projected onto parallel planes and evaluated by the parallel branch, and
-  heights below 1e-10 of the pair's scale are zero. A conforming mesh whose
-  coordinates the FMM rounds (so that shared edges and coplanar faces miss by
-  a few ulps) then evaluates as the exactly conforming one; before, such near
-  misses returned errors of up to 73 %; and
-- a direction of the reduction's expansion basis whose independent part is
-  below 1e-4 of the basis scale is treated as dependent. This bounds the
-  error of genuinely near-touching bodies (gaps of 1e-5 to 1e-3 of their
-  size) near 3e-4 relative on that pair, where the reduction otherwise
-  returned up to hundreds of times the tensor. It is the one remaining
-  accuracy limit of the exact kernel; removing it needs first-order
-  corrections to the degenerate limits of the reduction.
+- the triangle-pair reduction is exact in exact arithmetic, but its terms
+  carry coefficients that grow without bound when the geometry is nearly
+  degenerate (nearly parallel planes, nearly collinear or coplanar edge
+  vectors), and it drops or snaps those directions with fixed tolerances. In
+  double precision this lost every digit for parallel faces with non-aligned
+  edges (the top and bottom faces of an unstructured film mesh: errors up to
+  24 times the tensor against an independent Sauter–Schwab quadrature on a
+  440-pair validation set). The reduction therefore runs in quadruple
+  precision (`_Float128`; `long double` where the compiler has none) with
+  tolerances chosen for it: coefficients below 1e-22 drop their term,
+  heights below 1e-12 of the pair's scale are zero, an expansion direction
+  whose squared independent part is below 1e-23 of the basis scale is
+  dependent, and face pairs within 1e-8 of parallel are projected onto
+  parallel planes and evaluated by the parallel branch. A conforming mesh
+  whose coordinates the FMM rounds still evaluates as the exactly conforming
+  one; and
+- where the reduction is unreliable whatever the precision, the face pair is
+  integrated numerically in double precision instead (the integrand is
+  positive, so these quadratures do not cancel): a rank decision whose
+  squared independent part lies within three decades of the rank tolerance
+  sends a touching face pair to Sauter–Schwab quadrature (Sauter and Schwab,
+  *Boundary Element Methods*, Sec. 5.2; 24 Gauss points per direction of the
+  transformed four-dimensional domain) and a separated one to Gauss
+  quadrature with splitting; separated faces in nearly parallel planes
+  (1e-14 to 1e-2) go to the latter directly. Vertices within 1e-6 of the
+  larger edge count as common, and faces count as separated only when every
+  vertex pair is further apart than 1e-3 of it, so a rounded conforming mesh
+  keeps the closed form for its nearly touching faces. On the validation set
+  the worst tensor error is 5e-9, limited by the reference; the quadruple
+  precision costs about 15 times the former double-precision evaluation per
+  close pair.
 
 For a tetrahedron point evaluation on a face, the analytical boundary value
 uses the MagTense-compatible one-sided limiting convention; edge and vertex

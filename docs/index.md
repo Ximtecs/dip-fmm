@@ -10,9 +10,11 @@ potential is available on supported paths.
 ## What it does
 
 - **Sources and targets**: point dipoles, axis-aligned rectangular prisms and
-  tetrahedra, in any of the nine combinations, with the **exact** analytical
-  interaction tensors of the finite bodies in the near field (including each
-  body's own demagnetising field) and finite or point far-field operators.
+  tetrahedra, in any of the nine combinations, with the **exact** interaction
+  tensors of the finite bodies in the near field (including each body's own
+  demagnetising field; evaluated analytically, with quadrature where the closed
+  form is ill-conditioned, see `math/finite-geometry.md`) and finite or point
+  far-field operators.
 - **Expansions**: real spherical harmonics by default ($(p+1)^2$
   coefficients) and a complete independent Cartesian Taylor formulation.
 - **Trees**: a complete Morton-sorted uniform octree, or a geometry-only
