@@ -505,11 +505,10 @@ PairTensor to_pair_tensor(const Matrix3& matrix)
 // The quadratures run in double precision: their integrand is positive, so
 // they do not cancel.
 
-#if defined(__FLT128_MANT_DIG__)
 // Double-double arithmetic (math/double_double.hpp, about 106 bits): its basic
-// operations cost a few tens of double operations, where software _Float128
-// cost about ten times more and dominated the construction time; the
-// transcendental functions go through _Float128 (glibc *f128).
+// operations and transcendental functions cost a few tens to a few hundred
+// double operations, where software _Float128 cost about ten times more and
+// dominated the construction time.
 using ReductionReal = math::DoubleDouble;
 
 inline ReductionReal reduction_sqrt(const ReductionReal& x) { return math::sqrt(x); }
@@ -521,22 +520,6 @@ inline ReductionReal reduction_hypot(const ReductionReal& x, const ReductionReal
     return math::hypot(x, y);
 }
 inline ReductionReal reduction_abs(const ReductionReal& x) { return math::abs(x); }
-#else
-// WARNING(cdfmm): without a quadruple-precision type the reduction runs in
-// long double, where the tolerances below are too tight for the round-off of
-// nearly degenerate pairs; the guard band then catches fewer of them.
-using ReductionReal = long double;
-
-inline ReductionReal reduction_sqrt(const ReductionReal x) { return std::sqrt(x); }
-inline ReductionReal reduction_log(const ReductionReal x) { return std::log(x); }
-inline ReductionReal reduction_atan(const ReductionReal x) { return std::atan(x); }
-inline ReductionReal reduction_asinh(const ReductionReal x) { return std::asinh(x); }
-inline ReductionReal reduction_hypot(const ReductionReal x, const ReductionReal y)
-{
-    return std::hypot(x, y);
-}
-inline ReductionReal reduction_abs(const ReductionReal x) { return std::abs(x); }
-#endif
 
 // Double-precision versions of the same functions, for the reduction of
 // well-conditioned face pairs (see kScreenBand).
@@ -546,7 +529,6 @@ inline double reduction_atan(const double x) { return std::atan(x); }
 inline double reduction_asinh(const double x) { return std::asinh(x); }
 inline double reduction_hypot(const double x, const double y) { return std::hypot(x, y); }
 inline double reduction_abs(const double x) { return std::abs(x); }
-#if defined(__FLT128_MANT_DIG__)
 // Long double versions, for I0 of the double-precision reduction (as before
 // the quadruple-precision change, its logarithms and arctangents cancel).
 inline long double reduction_sqrt(const long double x) { return std::sqrt(x); }
@@ -558,15 +540,10 @@ inline long double reduction_hypot(const long double x, const long double y)
     return std::hypot(x, y);
 }
 inline long double reduction_abs(const long double x) { return std::abs(x); }
-#endif
 
 constexpr ReductionReal reduction_real(const long double value) noexcept
 {
-#if defined(__FLT128_MANT_DIG__)
     return math::DoubleDouble::from_long_double(value);
-#else
-    return value;
-#endif
 }
 
 // Tolerances of the reduction, all relative to unit-scale geometry (the
@@ -574,8 +551,8 @@ constexpr ReductionReal reduction_real(const long double value) noexcept
 template <typename Real>
 struct ReductionTolerances;
 
-// Quadruple precision, for every face pair the screen (kScreenBand) does not
-// clear.  The validation that fixed them is described above; a decade either
+// Double-double precision, for every face pair the screen (kScreenBand) does
+// not clear.  The validation that fixed them is described above; a decade either
 // way on the rank tolerance fails on some face pair of an unstructured film
 // mesh.
 template <>
@@ -938,12 +915,10 @@ struct I0Precision {
     using type = Real;
 };
 
-#if defined(__FLT128_MANT_DIG__)
 template <>
 struct I0Precision<double> {
     using type = long double;
 };
-#endif
 
 template <typename Real>
 Real triangle_i0(const Real p, const std::array<Real, 4>& heights,

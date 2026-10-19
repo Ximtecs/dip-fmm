@@ -28,14 +28,22 @@ Cost, then reduction of it (cold construction, FP64, order 6, 8 threads):
 | all face pairs in `_Float128` (bb32a3e) | 136.9 s | 0.65 s |
 | + geometric screen, faster quad sqrt (39f0db8) | 75.1 s | 0.17 s |
 | + double-double instead of `_Float128` (a94a9a4) | 48.4 s | 0.17 s |
+| + native double-double log, atan, asinh (this step) | 22.2-22.4 s | 0.14 s |
 
 The screen sends 26 % of face pairs (film mesh) to the high-precision reduction; the others keep
 the double-precision code with a long-double I0, accurate to 3.6e-11 there. The 106-bit
 double-double needs no tolerance change (mpmath study: routing identical, tensors within
-8.5e-14 of 113 bits). What remains is the `_Float128` transcendental functions (log, atan,
-asinh); native double-double versions would take the film mesh to roughly 4x. Not merged into
-`adaptive_devel`: whether 9x cold construction on irregular meshes (warm caches unaffected) is
-acceptable is the maintainers' call.
+8.5e-14 of 113 bits). The last step replaced the `_Float128` transcendental functions by native
+double-double ones (exp/expm1 by reduction and Taylor series, log and asinh by a second-order
+Newton step from the double result, atan from a 65-entry table of atan(k/64) and its series),
+accurate to 4-8 units of 2^-106 against glibc `*f128` (tests/test_double_double.cpp); same-session
+timing on 8 P-cores against a94a9a4: 47.1 s -> 22.3 s. The FP64 tensors of all 660 pairs of the
+stratified validation set are bitwise identical to a94a9a4's, so plans and evaluation are
+unchanged and `kOperatorVersion` stays 3. The double-double path no longer needs `_Float128`
+and is now unconditional (the long-double fallback for compilers without it is gone). Merged
+into `adaptive_devel` with the user's approval of the cold-construction cost (warm caches
+unaffected). Remaining construction cost on the film mesh: division (20 % before the atan
+table), the split Gauss fallback (12 %), and the reduction itself.
 
 ## 2026-10-07 — adaptive_devel: per-body prisms through the C ABI, adaptive defaults, leaf containment
 

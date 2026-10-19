@@ -161,8 +161,9 @@ Four numerical safeguards keep these analytical kernels well conditioned:
   leaves well-conditioned face pairs, those with every such measure above
   1e-2, to the former double-precision reduction, which is accurate to
   4e-11 on them. All other face pairs are reduced in double-double
-  arithmetic (about 106 bits, with the transcendental functions in
-  `_Float128`; `long double` where the compiler has no `_Float128`) with
+  arithmetic (about 106 bits; `src/math/double_double.hpp`, whose log, atan
+  and asinh are native double-double functions accurate to a few times
+  2^-104) with
   tolerances chosen for that precision: coefficients below 1e-22 drop their term,
   heights below 1e-12 of the pair's scale are zero, an expansion direction
   whose squared independent part is below 1e-23 of the basis scale is
@@ -184,8 +185,8 @@ Four numerical safeguards keep these analytical kernels well conditioned:
   keeps the closed form for its nearly touching faces. On the validation set
   the worst tensor error is 5e-9, limited by the reference. Cold
   construction costs the same as before on a regular lattice, whose
-  degeneracies are exact, and about nine times as much on an irregular film
-  mesh, most of it in the `_Float128` transcendental functions.
+  degeneracies are exact, and about five times as much on an irregular film
+  mesh. Evaluation is unaffected: the stored tensors are the only output.
 
 For a tetrahedron point evaluation on a face, the analytical boundary value
 uses the MagTense-compatible one-sided limiting convention; edge and vertex

@@ -31,6 +31,7 @@ add_executable(cdfmm_tests
   test_rectangular_prism_magtense.cpp
   test_rectangular_prism_moments.cpp
   test_precision.cpp
+  test_double_double.cpp
   test_normalisation.cpp
   test_cache.cpp
   test_tetrahedron.cpp
