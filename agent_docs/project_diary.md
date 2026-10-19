@@ -1,5 +1,18 @@
 # Project diary
 
+## 2026-10-19 — the reduction was right, the tolerances were not
+
+The parallel-face failures looked like a missing case in the Gumerov-Kaneko-Duraiswami
+reduction. A line-by-line mpmath port settled it: at 50 digits the same branches give the right
+answer to 1e-13, and at 50 digits with the double-precision tolerances they still fail. Each
+tolerance was tuned for double rounding, and mesh geometry produces nearly degenerate directions
+at every scale, so no single double-precision setting is safe. In quadruple precision one rank
+tolerance (1e-23) is right on every face pair of the validation set, but a decade either way
+fails on some, which is why the guard band exists. The earlier T5 reference (a long-double nested
+average of the point field) was itself unconverged for touching pairs; an independent
+Sauter-Schwab quadrature replaced it. The price is soft-float arithmetic, measured at 7-33x
+cold construction; that is the next task, not an acceptable end state.
+
 ## 2026-10-02 — prism endpoints reuse exact moments
 
 The tetrahedron question led to checking the analogous prism path. The prism

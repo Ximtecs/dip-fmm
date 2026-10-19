@@ -1,3 +1,30 @@
+## 2026-10-19 — tet-pair-quad: the triangle-pair reduction in quadruple precision, with quadrature fallbacks
+
+Branch `tet-pair-quad` (from `adaptive_devel` at 7b41691). Port of the fix found for
+MagTense's Fortran port of the same reduction (MagTense `dipFmm_integration` f58eadc6; analysis
+in FMM-article `tet-tet-tests`, tet-tet-article/data/REPORT.md "A1"). Against an independent
+Sauter-Schwab quadrature (FMM-article scripts/a1_ref.py) the double-precision reduction was
+wrong by up to 24 times the tensor on parallel faces with non-aligned edges of an unstructured
+film mesh (60 of 440 validation pairs above 1e-8); at 50 digits the same algorithm agrees with the
+reference to 1e-13, so the failures were round-off combined with tolerances tuned for double
+precision (the absolute 1e-14 coefficient drop, the rank test, the 1e-3 near-parallel
+projection). Now: the reduction runs in `_Float128` with tolerances chosen for it; a rank
+decision within three decades of the rank tolerance sends the face pair to Sauter-Schwab (touching)
+or split Gauss (separated) quadrature; separated faces in nearly parallel planes go to split Gauss
+directly. Common vertices are matched to 1e-6 of the edge and split Gauss is used only for faces
+more than 1e-3 apart, so FMM-rounded touching meshes keep the closed form (the first version
+failed "touching tetrahedra stay exact whatever the root side" with an error of 516 and the C ABI
+cube test). The far-field Gauss ladder and the point kernel are unchanged (dip-fmm's long-double
+point kernel was already accurate: 5.5e-10 on the separated validation pairs).
+Validation: 440 pairs worst 5.1e-9 (was 24), none above 1e-8; new regression test with five
+of the failing pairs against q = 40 Sauter-Schwab references; ctest 286 passed, 5 skipped (CUDA,
+oneMKL absent; portable build). Cost: software `_Float128` dominates (perf: 35 % `__sqrtf128`,
+~55 % other soft-float); cold construction of the 2247-tetrahedron film mesh (level 5, order 6,
+FP64) 4.2 s -> 136.9 s, Kuhn 8^3 0.10 s -> 0.65 s. Not merged into `adaptive_devel`: the cost
+must come down first (cheaper square roots; quadruple precision only for near-degenerate face
+pairs). Cache: persisted plans built before this change hold the old tensors under unchanged
+keys; see the separate `kOperatorVersion` commit.
+
 ## 2026-10-07 — adaptive_devel: per-body prisms through the C ABI, adaptive defaults, leaf containment
 
 Branch `adaptive_devel` (from `refactor/architecture-v0.2` at bafe1cd, after the
