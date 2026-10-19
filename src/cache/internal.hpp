@@ -54,8 +54,11 @@ namespace cdfmm::detail::cache {
 // representative-relative tetrahedron records to the geometry identity.
 inline constexpr std::uint32_t kCacheSchemaVersion = 4;
 // Version 2 invalidates plans built before the analytical tetrahedron pair
-// kernel and its rank-deficient reduction fixes.
-inline constexpr std::uint32_t kOperatorVersion = 2;
+// kernel and its rank-deficient reduction fixes. Version 3 invalidates plans
+// built before the triangle-pair reduction moved to quadruple precision with
+// quadrature fallbacks (their tetrahedron and prism-tetrahedron pair tensors
+// could be wrong by O(1) on nearly degenerate face pairs).
+inline constexpr std::uint32_t kOperatorVersion = 3;
 inline constexpr std::uint32_t kEndianMarker = 0x01020304U;
 // Fast 64-bit payload checksum.
 inline constexpr std::uint32_t kChecksumAlgorithm = 2U;
