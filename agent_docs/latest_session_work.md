@@ -18,12 +18,24 @@ cube test). The far-field Gauss ladder and the point kernel are unchanged (dip-f
 point kernel was already accurate: 5.5e-10 on the separated validation pairs).
 Validation: 440 pairs worst 5.1e-9 (was 24), none above 1e-8; new regression test with five
 of the failing pairs against q = 40 Sauter-Schwab references; ctest 286 passed, 5 skipped (CUDA,
-oneMKL absent; portable build). Cost: software `_Float128` dominates (perf: 35 % `__sqrtf128`,
-~55 % other soft-float); cold construction of the 2247-tetrahedron film mesh (level 5, order 6,
-FP64) 4.2 s -> 136.9 s, Kuhn 8^3 0.10 s -> 0.65 s. Not merged into `adaptive_devel`: the cost
-must come down first (cheaper square roots; quadruple precision only for near-degenerate face
-pairs). Cache: persisted plans built before this change hold the old tensors under unchanged
-keys; see the separate `kOperatorVersion` commit.
+oneMKL absent; portable build). Cache: persisted plans built before this change hold the old
+tensors under unchanged keys, hence `kOperatorVersion` 3 (9bfed76, separate commit for review).
+Cost, then reduction of it (cold construction, FP64, order 6, 8 threads):
+
+| step | 2247-tet film mesh, level 5 | Kuhn 8^3, level 3 |
+|---|---|---|
+| double-precision code (7b41691) | 4.2-5.2 s | 0.10-0.18 s |
+| all face pairs in `_Float128` (bb32a3e) | 136.9 s | 0.65 s |
+| + geometric screen, faster quad sqrt (39f0db8) | 75.1 s | 0.17 s |
+| + double-double instead of `_Float128` (a94a9a4) | 48.4 s | 0.17 s |
+
+The screen sends 26 % of face pairs (film mesh) to the high-precision reduction; the others keep
+the double-precision code with a long-double I0, accurate to 3.6e-11 there. The 106-bit
+double-double needs no tolerance change (mpmath study: routing identical, tensors within
+8.5e-14 of 113 bits). What remains is the `_Float128` transcendental functions (log, atan,
+asinh); native double-double versions would take the film mesh to roughly 4x. Not merged into
+`adaptive_devel`: whether 9x cold construction on irregular meshes (warm caches unaffected) is
+acceptable is the maintainers' call.
 
 ## 2026-10-07 — adaptive_devel: per-body prisms through the C ABI, adaptive defaults, leaf containment
 
