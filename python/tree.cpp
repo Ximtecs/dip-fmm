@@ -157,13 +157,17 @@ void bind_tree(py::module_& module)
       .def_property_readonly("memory_bytes", &StaticFmmTopology::memory_bytes)
       .def("validate", &StaticFmmTopology::validate);
 
+  py::enum_<AdaptiveSplitRule>(module, "AdaptiveSplitRule")
+      .value("Capacity", AdaptiveSplitRule::Capacity)
+      .value("Target", AdaptiveSplitRule::Target);
   py::class_<AdaptiveTreeOptions>(module, "AdaptiveTreeOptions")
       .def(py::init<>())
       .def_readwrite("max_particles_per_leaf",
                      &AdaptiveTreeOptions::max_particles_per_leaf)
       .def_readwrite("max_depth", &AdaptiveTreeOptions::max_depth)
       .def_readwrite("root_centre", &AdaptiveTreeOptions::root_centre)
-      .def_readwrite("root_half_width", &AdaptiveTreeOptions::root_half_width);
+      .def_readwrite("root_half_width", &AdaptiveTreeOptions::root_half_width)
+      .def_readwrite("split_rule", &AdaptiveTreeOptions::split_rule);
   py::class_<AdaptiveTree>(module, "AdaptiveTree")
       .def(py::init([](py::object sources,
                        const AdaptiveTreeOptions& options) {
@@ -175,6 +179,15 @@ void bind_tree(py::module_& module)
                             parse_tree_points(targets), options);
       }), py::arg("sources"), py::arg("targets"),
            py::arg("options") = AdaptiveTreeOptions{})
+      .def(py::init([](py::object sources, py::object targets, std::vector<double> source_radii,
+                       std::vector<double> target_radii, const AdaptiveTreeOptions& options) {
+        return AdaptiveTree(parse_tree_points(sources), parse_tree_points(targets),
+                            source_radii, target_radii, options);
+      }), py::arg("sources"), py::arg("targets"), py::arg("source_radii"),
+           py::arg("target_radii"), py::arg("options") = AdaptiveTreeOptions{},
+           "Finite bodies of the given support radii: far-field pairs also satisfy the finite-support "
+           "acceptance criterion a_s + a_t <= eta |c_t - c_s|; failing pairs are refined.")
+      .def_property_readonly("support_refinements", &AdaptiveTree::support_refinements)
       .def_property_readonly("topology", [](const AdaptiveTree& tree) {
         return std::const_pointer_cast<StaticFmmTopology>(tree.shared_topology());
       })
@@ -185,11 +198,13 @@ void bind_tree(py::module_& module)
                           [](int id) { return id >= 0; })) {
             continue;
           }
+          // above the capacity a leaf stopped at the depth limit, or (Target rule) because
+          // subdividing would not have brought its octants closer to the target occupancy
           reasons[py::int_(node.index)] =
-              std::max(node.source_count(), node.target_count()) >
+              std::max(node.source_count(), node.target_count()) <=
                       tree.options().max_particles_per_leaf
-                  ? "depth_limit"
-                  : "capacity";
+                  ? "capacity"
+                  : node.level >= tree.options().max_depth ? "depth_limit" : "target";
         }
         return reasons;
       })

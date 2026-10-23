@@ -257,6 +257,16 @@ void create_topology_plan(const std::size_t count,
     *output = plan.release();
 }
 
+// C split-rule selector (CDFMM_ADAPTIVE_SPLIT_*) to the tree's enum.
+cdfmm::AdaptiveSplitRule translate_split_rule(const int split_rule)
+{
+    switch (split_rule) {
+    case CDFMM_ADAPTIVE_SPLIT_CAPACITY: return cdfmm::AdaptiveSplitRule::Capacity;
+    case CDFMM_ADAPTIVE_SPLIT_TARGET: return cdfmm::AdaptiveSplitRule::Target;
+    default: throw std::invalid_argument("adaptive split rule must be CDFMM_ADAPTIVE_SPLIT_CAPACITY or _TARGET");
+    }
+}
+
 // The adaptive tree places bodies by their centres and infers its root from
 // them alone, so for finite bodies the root is derived here from the full
 // extents (centre +- half size), as a cube, unless the caller fixes it.
@@ -493,6 +503,18 @@ int cdfmm_plan_create_adaptive_variable_cuboids(
     const double* root_centre, double root_half_width,
     const cdfmm_options* options, cdfmm_plan** plan)
 {
+    return cdfmm_plan_create_adaptive_variable_cuboids_split(
+        count, x, y, z, hx, hy, hz, max_particles_per_leaf, max_depth, root_centre,
+        root_half_width, CDFMM_ADAPTIVE_SPLIT_CAPACITY, options, plan);
+}
+
+int cdfmm_plan_create_adaptive_variable_cuboids_split(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* hx, const double* hy, const double* hz,
+    size_t max_particles_per_leaf, int max_depth,
+    const double* root_centre, double root_half_width, int split_rule,
+    const cdfmm_options* options, cdfmm_plan** plan)
+{
     return guarded([&] {
         if (count == 0) {
             throw std::invalid_argument("cuboid count must be positive");
@@ -500,10 +522,18 @@ int cdfmm_plan_create_adaptive_variable_cuboids(
         auto positions = pack_positions(count, x, y, z);
         auto translated = translate_options(options);
         set_same_cuboid_geometry(translated, pack_sizes(count, hx, hy, hz));
-        const cdfmm::AdaptiveTreeOptions tree_options = adaptive_root_for_bodies(
+        cdfmm::AdaptiveTreeOptions tree_options = adaptive_root_for_bodies(
             positions, translated.source_sizes, max_particles_per_leaf, max_depth,
             root_centre, root_half_width);
-        const cdfmm::AdaptiveTree tree(positions, tree_options);
+        tree_options.split_rule = translate_split_rule(split_rule);
+        // support radius of each prism (half its diagonal): far-field pairs must satisfy the finite-support
+        // acceptance criterion, also for prisms that protrude from their leaves
+        std::vector<double> radii(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            const cdfmm::CuboidSize& s = translated.source_sizes[translated.source_sizes.size() == 1 ? 0 : i];
+            radii[i] = 0.5 * std::sqrt(s.hx * s.hx + s.hy * s.hy + s.hz * s.hz);
+        }
+        const cdfmm::AdaptiveTree tree(positions, positions, radii, radii, tree_options);
         create_topology_plan(count, tree.shared_topology(), translated, plan);
     });
 }
@@ -532,6 +562,17 @@ int cdfmm_plan_create_adaptive_tetrahedra(
     const double* root_centre, double root_half_width,
     const cdfmm_options* options, cdfmm_plan** plan)
 {
+    return cdfmm_plan_create_adaptive_tetrahedra_split(
+        count, x, y, z, vertices, max_particles_per_leaf, max_depth, root_centre,
+        root_half_width, CDFMM_ADAPTIVE_SPLIT_CAPACITY, options, plan);
+}
+
+int cdfmm_plan_create_adaptive_tetrahedra_split(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* vertices, size_t max_particles_per_leaf, int max_depth,
+    const double* root_centre, double root_half_width, int split_rule,
+    const cdfmm_options* options, cdfmm_plan** plan)
+{
     return guarded([&] {
         if (count == 0) {
             throw std::invalid_argument("tetrahedron count must be positive");
@@ -539,10 +580,19 @@ int cdfmm_plan_create_adaptive_tetrahedra(
         auto positions = pack_positions(count, x, y, z);
         auto translated = translate_options(options);
         set_same_tetrahedron_geometry(translated, pack_tetrahedra(count, vertices));
-        const cdfmm::AdaptiveTreeOptions tree_options = adaptive_root_for_tetrahedra(
+        cdfmm::AdaptiveTreeOptions tree_options = adaptive_root_for_tetrahedra(
             positions, translated.source_tetrahedra, max_particles_per_leaf, max_depth,
             root_centre, root_half_width);
-        const cdfmm::AdaptiveTree tree(positions, tree_options);
+        tree_options.split_rule = translate_split_rule(split_rule);
+        // support radius of each tetrahedron (its farthest vertex from the representative point): far-field pairs
+        // must satisfy the finite-support acceptance criterion, also for elements that protrude from their leaves
+        std::vector<double> radii(count, 0.0);
+        for (std::size_t i = 0; i < count; ++i) {
+            for (const cdfmm::Vec3& v : translated.source_tetrahedra[i].vertices) {
+                radii[i] = std::max(radii[i], std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z));
+            }
+        }
+        const cdfmm::AdaptiveTree tree(positions, positions, radii, radii, tree_options);
         create_topology_plan(count, tree.shared_topology(), translated, plan);
     });
 }

@@ -435,6 +435,27 @@ TEST_CASE("C ABI tetrahedra: a uniformly magnetised cube of tetrahedra has <H> =
                     &plan) == CDFMM_SUCCESS);
         check(scene, plan, 1.0e-6);
     }
+    SECTION("tetrahedra wider than their leaves stay accurate: far-field pairs satisfy the support criterion") {
+        // depth-3 leaves of half the cube edge: every tetrahedron protrudes from its leaf
+        const TetrahedronScene scene = kuhn_cube(4);
+        const cdfmm_options options = fp64_options(8, 0);
+        cdfmm_plan* plan = nullptr;
+        REQUIRE(cdfmm_plan_create_adaptive_tetrahedra(
+                    scene.x.size(), scene.x.data(), scene.y.data(), scene.z.data(),
+                    scene.vertices.data(), /*capacity*/ 1, /*max_depth*/ 3, nullptr, 0.0, &options,
+                    &plan) == CDFMM_SUCCESS);
+        check(scene, plan, 1.0e-5);
+    }
+    SECTION("the target split rule builds an equally accurate adaptive plan") {
+        const TetrahedronScene scene = kuhn_cube(4);
+        const cdfmm_options options = fp64_options(8, 0);
+        cdfmm_plan* plan = nullptr;
+        REQUIRE(cdfmm_plan_create_adaptive_tetrahedra_split(
+                    scene.x.size(), scene.x.data(), scene.y.data(), scene.z.data(),
+                    scene.vertices.data(), /*target*/ 6, /*max_depth*/ 2, nullptr, 0.0,
+                    CDFMM_ADAPTIVE_SPLIT_TARGET, &options, &plan) == CDFMM_SUCCESS);
+        check(scene, plan, 1.0e-6);
+    }
 }
 
 TEST_CASE("C ABI tetrahedra reject degenerate and missing records") {
@@ -461,5 +482,6 @@ TEST_CASE("C ABI per-body cuboids reject invalid sizes and adaptive controls") {
     REQUIRE(cdfmm_plan_create_same_variable_cuboids(0, x, x, x, h, h, h, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
     REQUIRE(cdfmm_plan_create_adaptive_variable_cuboids(2, x, x, x, h, h, h, 4, 9, nullptr, 0.0, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
     REQUIRE(cdfmm_plan_create_adaptive_variable_cuboids(2, x, x, x, h, h, h, 0, 3, nullptr, 0.0, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
+    REQUIRE(cdfmm_plan_create_adaptive_variable_cuboids_split(2, x, x, x, h, h, h, 4, 3, nullptr, 0.0, 2, &options, &plan) == CDFMM_ERROR_INVALID_ARGUMENT);
     REQUIRE(plan == nullptr);
 }

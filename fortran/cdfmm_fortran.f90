@@ -21,6 +21,8 @@ module cdfmm_fortran
     integer(c_int), parameter, public :: CDFMM_BACKEND_CUDA_FULL = 4_c_int
     integer(c_int), parameter, public :: CDFMM_STATIC_MATRIX_PORTABLE = 0_c_int
     integer(c_int), parameter, public :: CDFMM_STATIC_MATRIX_ONE_MKL = 1_c_int
+    integer(c_int), parameter, public :: CDFMM_ADAPTIVE_SPLIT_CAPACITY = 0_c_int
+    integer(c_int), parameter, public :: CDFMM_ADAPTIVE_SPLIT_TARGET = 1_c_int
 
     !> Native options for the recommended Fortran interface.
     type, public :: cdfmm_options_t
@@ -141,12 +143,12 @@ module cdfmm_fortran
             integer(c_int) :: status
         end function
         function c_create_adaptive_variable_cuboids(count, x, y, z, hx, hy, hz, max_particles_per_leaf, max_depth, &
-                root_centre, root_half_width, options, plan) result(status) &
-                bind(c, name="cdfmm_plan_create_adaptive_variable_cuboids")
+                root_centre, root_half_width, split_rule, options, plan) result(status) &
+                bind(c, name="cdfmm_plan_create_adaptive_variable_cuboids_split")
             import :: c_size_t, c_double, c_ptr, c_int
             integer(c_size_t), value :: count, max_particles_per_leaf
             real(c_double), intent(in) :: x(*), y(*), z(*), hx(*), hy(*), hz(*)
-            integer(c_int), value :: max_depth
+            integer(c_int), value :: max_depth, split_rule
             type(c_ptr), value :: root_centre, options
             real(c_double), value :: root_half_width
             type(c_ptr), intent(out) :: plan
@@ -162,12 +164,12 @@ module cdfmm_fortran
             integer(c_int) :: status
         end function
         function c_create_adaptive_tetrahedra(count, x, y, z, vertices, max_particles_per_leaf, max_depth, &
-                root_centre, root_half_width, options, plan) result(status) &
-                bind(c, name="cdfmm_plan_create_adaptive_tetrahedra")
+                root_centre, root_half_width, split_rule, options, plan) result(status) &
+                bind(c, name="cdfmm_plan_create_adaptive_tetrahedra_split")
             import :: c_size_t, c_double, c_ptr, c_int
             integer(c_size_t), value :: count, max_particles_per_leaf
             real(c_double), intent(in) :: x(*), y(*), z(*), vertices(*)
-            integer(c_int), value :: max_depth
+            integer(c_int), value :: max_depth, split_rule
             type(c_ptr), value :: root_centre, options
             real(c_double), value :: root_half_width
             type(c_ptr), intent(out) :: plan
@@ -303,9 +305,11 @@ contains
     !> a box is split while it holds more than max_particles_per_leaf bodies
     !> and is shallower than max_depth (0..8); options%depth is ignored. The
     !> root cube is inferred from the body extents unless root_centre(3) and a
-    !> positive root_half_width are given. Not cached, not periodic.
+    !> positive root_half_width are given. Not cached, not periodic. split_rule
+    !> (optional) is CDFMM_ADAPTIVE_SPLIT_CAPACITY (default) or
+    !> CDFMM_ADAPTIVE_SPLIT_TARGET, which aims leaves at max_particles_per_leaf.
     subroutine cdfmm_create_adaptive_variable_cuboids(plan, x, y, z, hx, hy, hz, max_particles_per_leaf, max_depth, &
-                                                      options, ierr, root_centre, root_half_width)
+                                                      options, ierr, root_centre, root_half_width, split_rule)
         type(cdfmm_plan_t), intent(inout) :: plan
         real(c_double), intent(in), target :: x(:), y(:), z(:), hx(:), hy(:), hz(:)
         integer, intent(in) :: max_particles_per_leaf, max_depth
@@ -313,6 +317,7 @@ contains
         integer(c_int), intent(out) :: ierr
         real(c_double), intent(in), optional, target :: root_centre(3)
         real(c_double), intent(in), optional :: root_half_width
+        integer, intent(in), optional :: split_rule
         type(cdfmm_c_options_t), target :: c_options
         type(c_ptr) :: centre_pointer
         real(c_double) :: half_width
@@ -339,7 +344,7 @@ contains
         call to_c_options(options, c_options)
         ierr = c_create_adaptive_variable_cuboids(size(x, kind=c_size_t), x, y, z, hx, hy, hz, &
             int(max_particles_per_leaf, c_size_t), int(max_depth, c_int), centre_pointer, half_width, &
-            c_loc(c_options), plan%handle)
+            split_rule_or_capacity(split_rule), c_loc(c_options), plan%handle)
         if (ierr == CDFMM_SUCCESS) then
             plan%precision = c_options%precision
             plan%count = size(x, kind=c_size_t)
@@ -384,9 +389,10 @@ contains
     !> The same tetrahedron plan on the adaptive (capacity-driven) octree, with
     !> the tree arguments of cdfmm_create_adaptive_variable_cuboids. The root
     !> cube is inferred from the vertices unless root_centre(3) and a positive
-    !> root_half_width are given. Not cached, not periodic.
+    !> root_half_width are given. Not cached, not periodic. split_rule as for
+    !> cdfmm_create_adaptive_variable_cuboids.
     subroutine cdfmm_create_adaptive_tetrahedra(plan, x, y, z, vertices, max_particles_per_leaf, max_depth, &
-                                                options, ierr, root_centre, root_half_width)
+                                                options, ierr, root_centre, root_half_width, split_rule)
         type(cdfmm_plan_t), intent(inout) :: plan
         real(c_double), intent(in), target :: x(:), y(:), z(:)
         real(c_double), intent(in), contiguous, target :: vertices(:, :)
@@ -395,6 +401,7 @@ contains
         integer(c_int), intent(out) :: ierr
         real(c_double), intent(in), optional, target :: root_centre(3)
         real(c_double), intent(in), optional :: root_half_width
+        integer, intent(in), optional :: split_rule
         type(cdfmm_c_options_t), target :: c_options
         type(c_ptr) :: centre_pointer
         real(c_double) :: half_width
@@ -421,7 +428,7 @@ contains
         call to_c_options(options, c_options)
         ierr = c_create_adaptive_tetrahedra(size(x, kind=c_size_t), x, y, z, vertices, &
             int(max_particles_per_leaf, c_size_t), int(max_depth, c_int), centre_pointer, half_width, &
-            c_loc(c_options), plan%handle)
+            split_rule_or_capacity(split_rule), c_loc(c_options), plan%handle)
         if (ierr == CDFMM_SUCCESS) then
             plan%precision = c_options%precision
             plan%count = size(x, kind=c_size_t)
@@ -563,6 +570,14 @@ contains
     subroutine clear_wrapper_error()
         if (allocated(wrapper_error)) deallocate(wrapper_error)
     end subroutine
+
+    !> The optional split_rule of the adaptive constructors, capacity when absent.
+    function split_rule_or_capacity(split_rule) result(rule)
+        integer, intent(in), optional :: split_rule
+        integer(c_int) :: rule
+        rule = CDFMM_ADAPTIVE_SPLIT_CAPACITY
+        if (present(split_rule)) rule = int(split_rule, c_int)
+    end function
 
     subroutine set_wrapper_error(message)
         character(len=*), intent(in) :: message

@@ -30,7 +30,23 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
 AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
                            const std::vector<Vec3>& targets,
                            const AdaptiveTreeOptions& options)
+    : AdaptiveTree(sources, targets, {}, {}, options) {}
+
+AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
+                           const std::vector<Vec3>& targets,
+                           const std::vector<double>& source_radii,
+                           const std::vector<double>& target_radii,
+                           const AdaptiveTreeOptions& options)
     : options_(options) {
+    if ((!source_radii.empty() && source_radii.size() != sources.size()) ||
+        (!target_radii.empty() && target_radii.size() != targets.size())) {
+        throw std::invalid_argument("adaptive support radii must match the number of bodies");
+    }
+    for (const auto* radii : {&source_radii, &target_radii}) {
+        for (const double r : *radii) {
+            if (!(r >= 0.0) || !std::isfinite(r)) throw std::invalid_argument("adaptive support radii must be finite and non-negative");
+        }
+    }
     const auto start = Clock::now();
     if (options.max_depth < 0 || options.max_depth > 8 ||
         options.max_particles_per_leaf == 0) {
@@ -100,6 +116,24 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
         }
         const auto so = partition(t.source_permutation, sources, sb, se, centre);
         const auto to = partition(t.target_permutation, targets, tb, te, centre);
+        if (options.split_rule == AdaptiveSplitRule::Target) {
+            // Subdivide only if the octants, weighted by their counts, are closer to the target
+            // occupancy than this box: sum_k n_k |ln(n_k / T)| / sum_k n_k < |ln(n / T)|.
+            const double target = static_cast<double>(options.max_particles_per_leaf);
+            double weighted = 0.0, total = 0.0;
+            for (int child = 0; child < 8; ++child) {
+                const double n = static_cast<double>(std::max(so[child + 1] - so[child], to[child + 1] - to[child]));
+                if (n == 0.0) continue;
+                weighted += n * std::abs(std::log(n / target));
+                total += n;
+            }
+            const double here = static_cast<double>(std::max(se - sb, te - tb));
+            if (weighted >= total * std::abs(std::log(here / target))) {
+                if (se > sb) t.source_leaves.push_back({id, sb, se - sb});
+                if (te > tb) t.target_leaves.push_back({id, tb, te - tb});
+                return id;
+            }
+        }
         const double h = half_width * 0.5;
         for (int child = 0; child < 8; ++child) {
             if (so[child] == so[child + 1] && to[child] == to[child + 1]) continue;
@@ -148,6 +182,29 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
     t.m2m_parent_level_offsets.back() = static_cast<int>(t.m2m_parent_nodes.size());
     const auto interaction_start = Clock::now();
     tree_seconds_ = std::chrono::duration<double>(interaction_start - start).count();
+    // Finite bodies: support radius of every box about its centre (physical coordinates), the bound a of the
+    // finite-support acceptance criterion a_s + a_t <= eta |c_t - c_s|.
+    const bool finite_bodies = !source_radii.empty() || !target_radii.empty();
+    std::vector<double> source_support, target_support;
+    if (finite_bodies) {
+        const auto support = [&](const auto& sorted, const auto& permutation, const std::vector<double>& radii,
+                                 std::vector<double>& out, bool targets_side) {
+            out.assign(t.nodes.size(), 0.0);
+            for (const auto& node : t.nodes) {
+                const std::size_t begin = targets_side ? node.target_begin : node.source_begin;
+                const std::size_t end = targets_side ? node.target_end : node.source_end;
+                double a = 0.0;
+                for (std::size_t i = begin; i < end; ++i) {
+                    const Vec3 d = sorted[i] - node.centre;
+                    a = std::max(a, std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z) +
+                                        (radii.empty() ? 0.0 : radii[permutation[i]]));
+                }
+                out[node.index] = a;
+            }
+        };
+        support(t.sorted_source_positions, t.source_permutation, source_radii, source_support, false);
+        support(t.sorted_target_positions, t.target_permutation, target_radii, target_support, true);
+    }
     std::function<void(int, int)> visit;
     visit = [&](int source_id, int target_id) {
         const auto& source = t.nodes[source_id];
@@ -159,10 +216,20 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
         const double radius_sum = std::sqrt(3.0) * (source.half_width + target.half_width);
         // Equal levels retain the classical stencil. Unequal boxes use a
         // convergent enclosing-sphere test plus explicit non-touching boxes.
-        const bool separated = source.level == target.level
+        bool separated = source.level == target.level
             ? separation >= 4.0 * source.half_width
             : separation > source.half_width + target.half_width &&
               radius_sum <= 0.75 * distance;
+        // Finite bodies may protrude from their boxes: the expansions converge only if their supports satisfy
+        // the acceptance criterion too, with the bound the box test gives for points (equal boxes: separation
+        // >= 4h, so 2 sqrt(3) h <= sqrt(3)/2 |d|; across levels 0.75). Otherwise refine, as for neighbours.
+        if (separated && finite_bodies) {
+            const double eta = source.level == target.level ? 0.5 * std::sqrt(3.0) : 0.75;
+            if (source_support[source_id] + target_support[target_id] > eta * distance * (1.0 + 1.0e-12)) {
+                separated = false;
+                ++support_refinements_;
+            }
+        }
         if (separated) {
             StaticM2LInteraction interaction;
             interaction.source_node = source_id;

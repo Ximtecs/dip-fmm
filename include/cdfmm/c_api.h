@@ -203,6 +203,33 @@ CDFMM_C_API int cdfmm_plan_create_adaptive_tetrahedra(
     const double* root_centre, double root_half_width,
     const cdfmm_options* options, cdfmm_plan** plan);
 
+/** Adaptive split rules (`split_rule` of the `_split` entry points). */
+#define CDFMM_ADAPTIVE_SPLIT_CAPACITY 0 /**< Split every box above max_particles_per_leaf (the plain entry points). */
+#define CDFMM_ADAPTIVE_SPLIT_TARGET 1   /**< Split a box only if its octants are closer to max_particles_per_leaf. */
+
+/**
+ * @brief cdfmm_plan_create_adaptive_variable_cuboids with a selectable split rule.
+ *
+ * Additive to ABI version 1. With `CDFMM_ADAPTIVE_SPLIT_TARGET`,
+ * `max_particles_per_leaf` is the occupancy to aim for: a box above it is
+ * subdivided only if its non-empty octants are, weighted by their body
+ * counts, closer to it in |ln(n / target)| than the box. With
+ * `CDFMM_ADAPTIVE_SPLIT_CAPACITY` the call equals the plain entry point.
+ */
+CDFMM_C_API int cdfmm_plan_create_adaptive_variable_cuboids_split(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* hx, const double* hy, const double* hz,
+    size_t max_particles_per_leaf, int max_depth,
+    const double* root_centre, double root_half_width, int split_rule,
+    const cdfmm_options* options, cdfmm_plan** plan);
+
+/** @brief cdfmm_plan_create_adaptive_tetrahedra with a selectable split rule (see the cuboid variant). */
+CDFMM_C_API int cdfmm_plan_create_adaptive_tetrahedra_split(
+    size_t count, const double* x, const double* y, const double* z,
+    const double* vertices, size_t max_particles_per_leaf, int max_depth,
+    const double* root_centre, double root_half_width, int split_rule,
+    const cdfmm_options* options, cdfmm_plan** plan);
+
 CDFMM_C_API int cdfmm_plan_evaluate_f32(
     cdfmm_plan* plan, const float* mx, const float* my, const float* mz,
     float* hx, float* hy, float* hz);
