@@ -195,7 +195,11 @@ CDFMM_C_API int cdfmm_plan_create_same_tetrahedra(
  * cdfmm_plan_create_adaptive_variable_cuboids: a box is split while it holds
  * more than `max_particles_per_leaf` bodies and is shallower than `max_depth`
  * (0..8); `options->tree_depth` is ignored. Pass `root_centre == NULL` or
- * `root_half_width <= 0` to infer a cube enclosing every vertex.
+ * `root_half_width <= 0` to infer a cube enclosing every vertex. Far-field
+ * box pairs also satisfy the finite-support acceptance criterion
+ * a_s + a_t <= eta |c_t - c_s| with the exact support a of each box (its
+ * farthest tetrahedron vertex from the box centre); failing pairs are refined
+ * into the near field.
  */
 CDFMM_C_API int cdfmm_plan_create_adaptive_tetrahedra(
     size_t count, const double* x, const double* y, const double* z,

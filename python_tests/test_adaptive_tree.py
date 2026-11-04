@@ -239,6 +239,116 @@ def test_zero_support_radii_keep_the_point_topology():
         c.AdaptiveTree(x, x, np.zeros(3), np.zeros(len(x)), options)
 
 
+def build_points(points, offsets, per_body, depth=4, capacity=4):
+    options = c.AdaptiveTreeOptions()
+    options.max_depth = depth
+    options.max_particles_per_leaf = capacity
+    options.root_centre = c.Vec3(0, 0, 0)
+    options.root_half_width = .5
+    return c.AdaptiveTree(points, points, offsets, per_body, offsets, per_body, options)
+
+
+def random_tetrahedra(n, size, seed):
+    rng = np.random.default_rng(seed)
+    x = rng.uniform(-.45, .45, (n, 3))
+    vertices = rng.uniform(-size, size, (n, 4, 3))
+    vertices -= vertices.mean(axis=1, keepdims=True)                  # positions are the centroids
+    return x, vertices
+
+
+def test_support_points_criterion_holds_with_the_exact_extent():
+    x, vertices = random_tetrahedra(600, .05, 41)
+    tree = build_points(x, vertices.reshape(-1, 3), 4)
+    t = tree.topology
+    t.validate()
+    np.testing.assert_array_equal(coverage(t), np.ones((len(x), len(x))))
+    assert tree.support_refinements > 0
+    scale = t.coordinate_scale
+    perm = np.asarray(t.source_permutation)
+    pos = np.asarray(t.sorted_source_positions)
+    hull = pos[:, None, :] + vertices[perm] / scale                  # every vertex, normalised coordinates
+    def support(node):
+        centre = np.array([node.centre.x, node.centre.y, node.centre.z])
+        return np.max(np.linalg.norm(hull[node.source_begin:node.source_end] - centre, axis=2))
+    for i in t.m2l_interactions:
+        s, q = t.nodes[i.source_node], t.nodes[i.target_node]
+        d = np.linalg.norm([q.centre.x - s.centre.x, q.centre.y - s.centre.y, q.centre.z - s.centre.z])
+        eta = np.sqrt(3) / 2 if s.level == q.level else .75
+        assert support(s) + support(q) <= eta * d * (1 + 1e-9)
+
+
+def test_support_points_refine_no_more_than_the_radius_bound():
+    x, vertices = random_tetrahedra(600, .05, 43)
+    radii = np.linalg.norm(vertices, axis=2).max(axis=1)              # farthest vertex from the centroid
+    by_radius = build_finite(x, radii)
+    by_points = build_points(x, vertices.reshape(-1, 3), 4)
+    assert by_points.support_refinements < by_radius.support_refinements
+    def near(t):
+        n = t.nodes
+        return sum((n[p.target_leaf].target_end - n[p.target_leaf].target_begin) *
+                   (n[p.source_leaf].source_end - n[p.source_leaf].source_begin) for p in t.p2p_leaf_records)
+    assert near(by_points.topology) < near(by_radius.topology)
+
+
+def test_lattice_tetrahedra_inside_their_leaves_keep_the_point_topology():
+    # Kuhn split of a 16^3 cube lattice aligned with the depth-4 leaves: every tetrahedron lies in its leaf, so the
+    # exact extent never refines, while the centroid-sphere bound (1.29 against 0.87 cube edges) does.
+    n = 16
+    h = 1.0 / n
+    corner = np.array(np.meshgrid(*[np.arange(n) * h - .5] * 3, indexing="ij")).reshape(3, -1).T
+    paths = []
+    for perm in ((0, 1, 2), (0, 2, 1), (1, 0, 2), (1, 2, 0), (2, 0, 1), (2, 1, 0)):
+        v = np.zeros((4, 3))
+        for k, axis in enumerate(perm):
+            v[k + 1:, axis] += h
+        paths.append(v)
+    tets = (corner[:, None, None, :] + np.array(paths)[None]).reshape(-1, 4, 3)
+    x = tets.mean(axis=1)
+    offsets = (tets - x[:, None, :]).reshape(-1, 3)
+    radii = np.linalg.norm(tets - x[:, None, :], axis=2).max(axis=1)
+    points_tree = build_points(x, offsets, 4, depth=4, capacity=6)
+    plain = build(x, depth=4, capacity=6).topology
+    assert points_tree.support_refinements == 0
+    assert [(i.source_node, i.target_node) for i in plain.m2l_interactions] == [
+        (i.source_node, i.target_node) for i in points_tree.topology.m2l_interactions]
+    assert build_finite(x, radii, depth=4, capacity=6).support_refinements > 0
+
+
+def test_support_points_validation():
+    x, vertices = random_tetrahedra(20, .05, 47)
+    options = c.AdaptiveTreeOptions()
+    with pytest.raises(ValueError):
+        c.AdaptiveTree(x, x, vertices.reshape(-1, 3)[:-1], 4, [], 0, options)
+    with pytest.raises(ValueError):
+        c.AdaptiveTree(x, x, vertices.reshape(-1, 3), 0, [], 0, options)
+    bad = vertices.reshape(-1, 3).copy()
+    bad[3, 1] = np.nan
+    with pytest.raises(ValueError):
+        c.AdaptiveTree(x, x, bad, 4, [], 0, options)
+    empty = c.AdaptiveTree(x, x, [], 0, [], 0, options)
+    assert empty.support_refinements == 0
+
+
+def test_root_that_is_not_a_binary_fraction_keeps_the_topology():
+    # The same 13^3 cell-centre lattice with a cell of 1/7 (box centres carry rounding) and of 1 (exact): boxes
+    # exactly two widths apart must be far field in both, so the two topologies agree pair for pair.
+    def topology(h):
+        g = (np.arange(13) + .5) * h
+        x = np.array(np.meshgrid(g, g, g, indexing="ij")).reshape(3, -1).T
+        options = c.AdaptiveTreeOptions()
+        options.max_depth = 4
+        options.max_particles_per_leaf = 1
+        options.root_centre = c.Vec3(8 * h, 8 * h, 8 * h)
+        options.root_half_width = 8 * h
+        t = c.AdaptiveTree(x, options).topology
+        return ([(i.source_node, i.target_node) for i in t.m2l_interactions],
+                [(p.source_leaf, p.target_leaf) for p in t.p2p_leaf_records])
+    m2l_exact, p2p_exact = topology(1.0)
+    m2l, p2p = topology(1.0 / 7.0)
+    assert p2p == p2p_exact
+    assert m2l == m2l_exact
+
+
 def test_invalid_options_and_geometry():
     for key, value in [("max_depth", -1), ("max_depth", 9), ("max_particles_per_leaf", 0)]:
         options = c.AdaptiveTreeOptions()

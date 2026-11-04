@@ -187,6 +187,17 @@ void bind_tree(py::module_& module)
            py::arg("target_radii"), py::arg("options") = AdaptiveTreeOptions{},
            "Finite bodies of the given support radii: far-field pairs also satisfy the finite-support "
            "acceptance criterion a_s + a_t <= eta |c_t - c_s|; failing pairs are refined.")
+      .def(py::init([](py::object sources, py::object targets, py::object source_points,
+                       std::size_t points_per_source, py::object target_points, std::size_t points_per_target,
+                       const AdaptiveTreeOptions& options) {
+        return AdaptiveTree(parse_tree_points(sources), parse_tree_points(targets),
+                            parse_tree_points(source_points), points_per_source,
+                            parse_tree_points(target_points), points_per_target, options);
+      }), py::arg("sources"), py::arg("targets"), py::arg("source_points"), py::arg("points_per_source"),
+           py::arg("target_points"), py::arg("points_per_target"), py::arg("options") = AdaptiveTreeOptions{},
+           "Finite convex bodies given by support points (offsets from each body's position, points_per_source "
+           "consecutive rows per body, e.g. the four vertices of a tetrahedron): the finite-support criterion "
+           "uses the exact extent of every box, max |x + p - c|.")
       .def_property_readonly("support_refinements", &AdaptiveTree::support_refinements)
       .def_property_readonly("topology", [](const AdaptiveTree& tree) {
         return std::const_pointer_cast<StaticFmmTopology>(tree.shared_topology());

@@ -73,6 +73,26 @@ public:
                  const std::vector<double>& source_radii,
                  const std::vector<double>& target_radii,
                  const AdaptiveTreeOptions& options = {});
+    /**
+     * @brief Builds the tree for finite convex bodies given by support points.
+     *
+     * Body i of the sources is the convex hull of `source_points[i * points_per_source + k]`,
+     * k = 0..points_per_source-1, given as offsets from its position (e.g. the four vertices of a tetrahedron);
+     * likewise for the targets. Either vector may be empty (points), otherwise its size must be the body count
+     * times the points per body. The support radius of a box is then the exact a = max |x_i + p - c| over the
+     * points of its bodies, the smallest sphere about the box centre that encloses them, instead of the bound
+     * max (|x_i - c| + r_i) of the radius constructor, which can exceed it by about half (a tetrahedron of a cube
+     * lattice inside its leaf: 1.29 against 0.87 times the cube edge). The acceptance criterion, refinement and
+     * leaf assignment are those of the radius constructor, so bodies inside their leaves never change the
+     * topology, and protruding bodies are refined only where their actual extent requires it.
+     */
+    AdaptiveTree(const std::vector<Vec3>& sources,
+                 const std::vector<Vec3>& targets,
+                 const std::vector<Vec3>& source_points,
+                 std::size_t points_per_source,
+                 const std::vector<Vec3>& target_points,
+                 std::size_t points_per_target,
+                 const AdaptiveTreeOptions& options = {});
     /// @brief The immutable topology, in normalised coordinates.
     [[nodiscard]] const StaticFmmTopology& topology() const { return *topology_; }
     /// @brief Shared ownership of the topology, for `UniformFmm`.
@@ -88,6 +108,19 @@ public:
     /// @brief Box pairs that passed the box test but failed the finite-support criterion and were refined.
     [[nodiscard]] std::size_t support_refinements() const { return support_refinements_; }
 private:
+    // Extent of the finite bodies of one population: support radii, support points, or neither (points).
+    struct BodySupport {
+        const std::vector<double>* radii{nullptr};
+        const std::vector<Vec3>* points{nullptr};
+        std::size_t points_per_body{0};
+        [[nodiscard]] bool finite() const {
+            return (radii != nullptr && !radii->empty()) || (points != nullptr && !points->empty());
+        }
+    };
+    void build(const std::vector<Vec3>& sources,
+               const std::vector<Vec3>& targets,
+               const BodySupport& source_support,
+               const BodySupport& target_support);
     std::shared_ptr<const StaticFmmTopology> topology_;
     AdaptiveTreeOptions options_;
     double tree_seconds_{0};

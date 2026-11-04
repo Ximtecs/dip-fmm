@@ -584,15 +584,18 @@ int cdfmm_plan_create_adaptive_tetrahedra_split(
             positions, translated.source_tetrahedra, max_particles_per_leaf, max_depth,
             root_centre, root_half_width);
         tree_options.split_rule = translate_split_rule(split_rule);
-        // support radius of each tetrahedron (its farthest vertex from the representative point): far-field pairs
-        // must satisfy the finite-support acceptance criterion, also for elements that protrude from their leaves
-        std::vector<double> radii(count, 0.0);
+        // support points of each tetrahedron (its vertices, offsets from the representative point): far-field
+        // pairs must satisfy the finite-support acceptance criterion with the exact extent of every box, also for
+        // elements that protrude from their leaves; the centroid-sphere bound (farthest vertex as a radius about
+        // the position) refines pairs whose elements lie inside their leaves
+        std::vector<cdfmm::Vec3> points;
+        points.reserve(4 * count);
         for (std::size_t i = 0; i < count; ++i) {
             for (const cdfmm::Vec3& v : translated.source_tetrahedra[i].vertices) {
-                radii[i] = std::max(radii[i], std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z));
+                points.push_back(v);
             }
         }
-        const cdfmm::AdaptiveTree tree(positions, positions, radii, radii, tree_options);
+        const cdfmm::AdaptiveTree tree(positions, positions, points, 4, points, 4, tree_options);
         create_topology_plan(count, tree.shared_topology(), translated, plan);
     });
 }

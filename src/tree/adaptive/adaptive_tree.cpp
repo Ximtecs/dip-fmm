@@ -47,6 +47,39 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
             if (!(r >= 0.0) || !std::isfinite(r)) throw std::invalid_argument("adaptive support radii must be finite and non-negative");
         }
     }
+    build(sources, targets, BodySupport{&source_radii, nullptr, 0}, BodySupport{&target_radii, nullptr, 0});
+}
+
+AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
+                           const std::vector<Vec3>& targets,
+                           const std::vector<Vec3>& source_points,
+                           std::size_t points_per_source,
+                           const std::vector<Vec3>& target_points,
+                           std::size_t points_per_target,
+                           const AdaptiveTreeOptions& options)
+    : options_(options) {
+    const auto check = [](const std::vector<Vec3>& points, std::size_t per_body, std::size_t bodies) {
+        if (points.empty()) return;
+        if (per_body == 0 || points.size() != bodies * per_body) {
+            throw std::invalid_argument("adaptive support points must be the number of bodies times the points per body");
+        }
+        for (const Vec3& p : points) {
+            if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+                throw std::invalid_argument("adaptive support points must be finite");
+            }
+        }
+    };
+    check(source_points, points_per_source, sources.size());
+    check(target_points, points_per_target, targets.size());
+    build(sources, targets, BodySupport{nullptr, &source_points, points_per_source},
+          BodySupport{nullptr, &target_points, points_per_target});
+}
+
+void AdaptiveTree::build(const std::vector<Vec3>& sources,
+                         const std::vector<Vec3>& targets,
+                         const BodySupport& source_body_support,
+                         const BodySupport& target_body_support) {
+    const AdaptiveTreeOptions& options = options_;
     const auto start = Clock::now();
     if (options.max_depth < 0 || options.max_depth > 8 ||
         options.max_particles_per_leaf == 0) {
@@ -183,12 +216,17 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
     const auto interaction_start = Clock::now();
     tree_seconds_ = std::chrono::duration<double>(interaction_start - start).count();
     // Finite bodies: support radius of every box about its centre (physical coordinates), the bound a of the
-    // finite-support acceptance criterion a_s + a_t <= eta |c_t - c_s|.
-    const bool finite_bodies = !source_radii.empty() || !target_radii.empty();
+    // finite-support acceptance criterion a_s + a_t <= eta |c_t - c_s|. With support radii, a body extends at
+    // most |x - c| + r from the centre; with support points (the body is their convex hull) its extent is exactly
+    // the largest |x + p - c|.
+    const bool finite_bodies = source_body_support.finite() || target_body_support.finite();
     std::vector<double> source_support, target_support;
     if (finite_bodies) {
-        const auto support = [&](const auto& sorted, const auto& permutation, const std::vector<double>& radii,
+        const auto norm = [](const Vec3& d) { return std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z); };
+        const auto support = [&](const auto& sorted, const auto& permutation, const BodySupport& body,
                                  std::vector<double>& out, bool targets_side) {
+            const bool radii = body.radii != nullptr && !body.radii->empty();
+            const bool points = body.points != nullptr && !body.points->empty();
             out.assign(t.nodes.size(), 0.0);
             for (const auto& node : t.nodes) {
                 const std::size_t begin = targets_side ? node.target_begin : node.source_begin;
@@ -196,14 +234,20 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
                 double a = 0.0;
                 for (std::size_t i = begin; i < end; ++i) {
                     const Vec3 d = sorted[i] - node.centre;
-                    a = std::max(a, std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z) +
-                                        (radii.empty() ? 0.0 : radii[permutation[i]]));
+                    const std::size_t b = static_cast<std::size_t>(permutation[i]);
+                    if (points) {
+                        for (std::size_t k = 0; k < body.points_per_body; ++k) {
+                            a = std::max(a, norm(d + (*body.points)[b * body.points_per_body + k]));
+                        }
+                    } else {
+                        a = std::max(a, norm(d) + (radii ? (*body.radii)[b] : 0.0));
+                    }
                 }
                 out[node.index] = a;
             }
         };
-        support(t.sorted_source_positions, t.source_permutation, source_radii, source_support, false);
-        support(t.sorted_target_positions, t.target_permutation, target_radii, target_support, true);
+        support(t.sorted_source_positions, t.source_permutation, source_body_support, source_support, false);
+        support(t.sorted_target_positions, t.target_permutation, target_body_support, target_support, true);
     }
     std::function<void(int, int)> visit;
     visit = [&](int source_id, int target_id) {
@@ -216,10 +260,15 @@ AdaptiveTree::AdaptiveTree(const std::vector<Vec3>& sources,
         const double radius_sum = std::sqrt(3.0) * (source.half_width + target.half_width);
         // Equal levels retain the classical stencil. Unequal boxes use a
         // convergent enclosing-sphere test plus explicit non-touching boxes.
+        // NOTE(cdfmm): box centres are accumulated root centre +- half widths in physical coordinates; for a root
+        // that is not a binary fraction (e.g. 2^k cells of a lattice whose spacing is 240/37) they carry rounding,
+        // and boxes exactly two widths apart would fail an exact >= and fall into the near field. The relative
+        // tolerance (as in the finite-support test) keeps exact roots unchanged and treats the others alike.
+        constexpr double tolerance = 1.0e-12;
         bool separated = source.level == target.level
-            ? separation >= 4.0 * source.half_width
-            : separation > source.half_width + target.half_width &&
-              radius_sum <= 0.75 * distance;
+            ? separation >= 4.0 * source.half_width * (1.0 - tolerance)
+            : separation > (source.half_width + target.half_width) * (1.0 + tolerance) &&
+              radius_sum <= 0.75 * distance * (1.0 + tolerance);
         // Finite bodies may protrude from their boxes: the expansions converge only if their supports satisfy
         // the acceptance criterion too, with the bound the box test gives for points (equal boxes: separation
         // >= 4h, so 2 sqrt(3) h <= sqrt(3)/2 |d|; across levels 0.75). Otherwise refine, as for neighbours.
