@@ -161,12 +161,16 @@ publication campaign is NEXT**; it runs against this frozen implementation
 with its own measurement protocol. Do not begin benchmark redesign as a side
 effect of another change.
 
-The `v0.1.0` annotated tag and `release/v0.1` branch preserve the pre-refactor
-implementation. Never move, recreate, or rewrite either ref. Architectural
-work occurs on `refactor/architecture-v0.2`. Do not create `release/v0.2`
-until the refactor and Article1 acceptance tests are complete; creating that
-branch is an explicit release step. A release branch does not itself create a
-release tag or publish a release.
+Branches (since November 2026): `main` is the v0.2 release; `release/v0.1` (with
+the `v0.1.0` annotated tag) preserves the pre-refactor implementation and
+`release/v0.2` the refactored architecture; all later work - the adaptive tree
+and variable cuboids, tetrahedra through the C ABI, the quadruple/double-double
+triangle-pair reduction, the finite-support check and the target split rule -
+is collected on `develop/v0.3`, where development continues. Never move,
+recreate, or rewrite `main`, a `release/*` branch or a tag; work branches start
+from `develop/v0.3` and merge back into it. Creating `release/v0.3` (and moving
+`main` to it) is an explicit release step, and a release branch does not itself
+create a release tag or publish a release.
 
 The foundational `core`, `math`, `geometry`, and `tree` layers, followed by the
 operator/static-plan step and backend boundaries, are now organised. The

@@ -1,3 +1,22 @@
+## 2026-11-04 — branch layout: main, release/v0.1, release/v0.2, develop/v0.3
+
+User request: only `main`, `release/v0.1`, `release/v0.2` and `develop/v0.3`. `main` = `release/v0.2` =
+bafe1cd (unchanged); `release/v0.1` and the `v0.1.0` tag unchanged. `develop/v0.3` collects everything
+after v0.2:
+- `adaptive_devel` (8ddc9c9 … 1465ec0: per-body prisms and the adaptive tree through the C ABI,
+  tetrahedra in the C ABI and Fortran, the quadruple/double-double triangle-pair reduction);
+- `target-split` 1ca6119 (finite-support check, target split rule);
+- 179e4c1, the vertex-extent support check (uncommitted since 2 Nov; tests of 2 Nov: ctest 289/289, pytest 189
+  passed / 11 skipped).
+The main checkout now has `develop/v0.3` checked out. Removed:
+- branches `adaptive_devel`, `refactor/architecture-v0.2`, `target-split`, `tet-pair-quad`, `tetra-c-abi`
+  (all contained in `develop/v0.3` or `main`);
+- the worktrees `tet-pair-base`, `tet-pair-quad`, `tetra-cabi`.
+Kept:
+- worktree `adaptive-devel`: its `.cache` holds the multigrain runs' plans (CDFMM_CACHE_DIR);
+- worktree `target-split`, detached: its `build-check` Python module is used by the grain-study tools.
+AGENTS.md describes the new branch policy.
+
 ## 2026-10-19 — tet-pair-quad: the triangle-pair reduction in quadruple precision, with quadrature fallbacks
 
 Branch `tet-pair-quad` (from `adaptive_devel` at 7b41691). Port of the fix found for
