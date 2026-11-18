@@ -306,6 +306,42 @@ cmake --build --preset release -j
 See [C and Fortran integration](c-and-fortran.md) for compiler and linking
 details.
 
+### Windows
+
+The presets are written for Linux. On Windows the library is built with the
+scripts in `tools/windows`, which need a Conda environment holding the Intel
+compilers (`icx`, and `ifx` for the Fortran wrapper), oneMKL, the CUDA toolkit,
+CMake and Ninja, and Visual Studio 2022 with the C++ workload. `icx` is used
+because it follows the MSVC ABI and shares the Intel OpenMP runtime with
+oneMKL; `nvcc` uses MSVC `cl` as its host compiler.
+
+```console
+tools\windows\build.cmd            :: configure, build, install under local\
+tools\windows\build.cmd static     :: the same with oneMKL linked into cdfmm_c.dll
+tools\windows\test.cmd             :: build and run the C++ and Fortran tests
+```
+
+`env.cmd` sets the environment up for the other scripts. It uses the active
+Conda environment, or activates the one named by `CDFMM_CONDA_ENV` (default
+`cdfmm`), and then calls `vcvars64.bat`. The order matters: a Conda
+environment can carry an msys `link.exe` that must not come ahead of MSVC's.
+A project that builds dip-fmm as part of its own build can call `env.cmd` to
+get the same environment.
+
+Use the `static` build when `cdfmm_c.dll` is loaded into a host process that
+brings its own oneMKL, such as MATLAB: with the dynamic link the library can
+bind to the host's oneMKL, which may use another integer interface.
+
+Known limits of the Windows build:
+
+- `long double` is the 64-bit `double`, so the exact prism and tetrahedron
+  pair kernels are evaluated in double instead of extended precision. Four
+  tests that ask for more than double precision of these kernels fail.
+- Two statistical thresholds are tuned to the `normal_distribution` of
+  libstdc++ and one test compares `asinh` for exact equality with a libm
+  value; these three tests fail with the MSVC standard library.
+- Python packaging (`CDFMM_BUILD_PYTHON`) has not been tried on Windows.
+
 ### Manual CMake configuration
 
 Presets are recommended because they keep compiler and feature choices

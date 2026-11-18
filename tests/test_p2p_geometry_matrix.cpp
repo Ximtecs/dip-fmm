@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
+#include "posix_compat.hpp"
 
 #include "cdfmm/plan/direct/dense.hpp"
 #include "cdfmm/rectangular_prism.hpp"

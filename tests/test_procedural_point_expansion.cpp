@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
+#include "posix_compat.hpp"
 
 #include "cdfmm/math/spherical_harmonics.hpp"
 #include "cdfmm/operators/l2p.hpp"

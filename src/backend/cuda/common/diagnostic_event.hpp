@@ -26,6 +26,14 @@ inline void record_diagnostic(const bool detailed, const cudaEvent_t event,
 inline double diagnostic_elapsed_seconds(const cudaEvent_t first,
                                          const cudaEvent_t second,
                                          const char *what) {
+  // The host waits on the functional completion event, not on these. A
+  // diagnostic event recorded around that point may not have completed yet,
+  // and cudaEventElapsedTime then fails with cudaErrorNotReady ("device not
+  // ready"; seen intermittently on Linux and, where the driver batches stream
+  // commands under WDDM, regularly on Windows). Waiting on both returns at
+  // once where they have already completed.
+  check_cuda(cudaEventSynchronize(first), what);
+  check_cuda(cudaEventSynchronize(second), what);
   float milliseconds = 0.0F;
   check_cuda(cudaEventElapsedTime(&milliseconds, first, second), what);
   return static_cast<double>(milliseconds) * 1.0e-3;

@@ -20,7 +20,7 @@
 #include <numeric>
 #include <string>
 #include <vector>
-#include <unistd.h>
+#include "posix_compat.hpp"
 
 #include "cdfmm/backend/cuda/dense_direct.hpp"
 #include "cdfmm/backend/cuda/direct.hpp"

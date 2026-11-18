@@ -11,6 +11,8 @@
 #include <random>
 #include <vector>
 
+#include "posix_compat.hpp"
+
 #include "cdfmm/operators.hpp"
 #include "cdfmm/static_operators.hpp"
 #include "cdfmm/uniform_fmm.hpp"

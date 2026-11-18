@@ -158,7 +158,29 @@ target_include_directories(cdfmm_core PRIVATE src)
 # evaluated speculatively. Nothing in the library reads errno or traps FP
 # exceptions, and results for finite inputs are unchanged. With LTO the
 # code is generated at link time, so the flags are also passed to the link.
-if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|IntelLLVM")
+#
+# clang-cl and icx on Windows have the cl-style command line
+# (CMAKE_CXX_COMPILER_FRONTEND_VARIANT is MSVC): the GNU spellings are ignored
+# there with a warning and have to go through /clang:. The link is done by
+# link.exe or lld-link, which take no code generation flags.
+set(CDFMM_CLANG_CL OFF)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|IntelLLVM"
+   AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  set(CDFMM_CLANG_CL ON)
+endif()
+if(CDFMM_CLANG_CL AND CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+  # Under the MSVC ABI `long double` is the 64-bit double, but Intel's libmmd,
+  # which icx searches ahead of the UCRT, defines the C99 long double
+  # functions that the UCRT exports as real functions (log1pl, asinhl,
+  # atanhl, ...) for the 80-bit type of /Qlong-double: called with a 64-bit
+  # argument they crash. Naming the UCRT explicitly makes the linker search it
+  # first; libmmd still supplies the Intel-only entry points.
+  target_link_libraries(cdfmm_core PUBLIC $<IF:$<CONFIG:Debug>,ucrtd,ucrt>)
+endif()
+if(CDFMM_CLANG_CL)
+  target_compile_options(cdfmm_core PRIVATE
+    $<$<COMPILE_LANGUAGE:CXX>:/clang:-fno-math-errno;/clang:-fno-trapping-math>)
+elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|IntelLLVM")
   target_compile_options(cdfmm_core PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-fno-math-errno;-fno-trapping-math>)
   target_link_options(cdfmm_core INTERFACE -fno-math-errno -fno-trapping-math)
@@ -174,7 +196,10 @@ set_target_properties(cdfmm_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # the standard CMake build type.  Generator expressions keep host-only options
 # away from nvcc when CUDA is enabled.
 if(CDFMM_ENABLE_NATIVE_ARCH)
-  if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|IntelLLVM")
+  if(CDFMM_CLANG_CL)
+    target_compile_options(cdfmm_core PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:/clang:-march=native>)
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang|IntelLLVM")
     target_compile_options(cdfmm_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-march=native>)
   elseif(MSVC)
     target_compile_options(cdfmm_core PRIVATE $<$<COMPILE_LANGUAGE:CXX>:/arch:AVX2>)

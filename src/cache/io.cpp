@@ -13,10 +13,25 @@
 #include <string_view>
 #include <system_error>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+#include <sys/stat.h>
+#else
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
 // The cache file container: where cache files live, the header this unit
 // writes and validates, and how a file is materialised atomically so
@@ -29,6 +44,45 @@ namespace {
 // Read-only private mapping of a whole cache file.  The payload is decoded
 // straight out of the mapping, so nothing is copied until a record is built;
 // the CachePayload owns the mapping and unmaps it on destruction.
+#ifdef _WIN32
+CachePayload map_cache_file(const std::filesystem::path& path) {
+  // Share everything: a concurrent writer publishes by renaming over this
+  // name, and a reader must not make that rename fail.
+  const HANDLE file = ::CreateFileW(
+      path.c_str(), GENERIC_READ,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    throw std::runtime_error("cache file unavailable");
+  }
+
+  LARGE_INTEGER file_size{};
+  if (::GetFileSizeEx(file, &file_size) == 0 || file_size.QuadPart <= 0) {
+    (void)::CloseHandle(file);
+    throw std::runtime_error("cache file metadata unavailable");
+  }
+  if (static_cast<std::uintmax_t>(file_size.QuadPart) >
+      std::numeric_limits<std::size_t>::max()) {
+    (void)::CloseHandle(file);
+    throw std::runtime_error("cache file too large for this process");
+  }
+
+  const std::size_t size = static_cast<std::size_t>(file_size.QuadPart);
+  const HANDLE section =
+      ::CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr);
+  (void)::CloseHandle(file);
+  if (section == nullptr) {
+    throw std::runtime_error("failed to memory-map cache file");
+  }
+  // The view keeps the section alive, so its handle can be closed at once.
+  void* mapping = ::MapViewOfFile(section, FILE_MAP_READ, 0, 0, 0);
+  (void)::CloseHandle(section);
+  if (mapping == nullptr) {
+    throw std::runtime_error("failed to memory-map cache file");
+  }
+  return CachePayload(mapping, size);
+}
+#else
 CachePayload map_cache_file(const std::filesystem::path& path) {
   const int fd = ::open(path.c_str(), O_RDONLY);
   if (fd < 0) {
@@ -56,6 +110,70 @@ CachePayload map_cache_file(const std::filesystem::path& path) {
   }
   return CachePayload(mapping, size);
 }
+#endif
+
+// Descriptor-level file access for the writer. The Windows CRT spells the
+// POSIX calls with a leading underscore, needs binary mode, takes at most
+// INT_MAX bytes per write, and has neither pwrite nor ssize_t.
+#ifdef _WIN32
+using file_offset = std::int64_t;
+
+int open_new_file(const std::filesystem::path& path) noexcept {
+  return ::_wopen(path.c_str(),
+                  _O_WRONLY | _O_CREAT | _O_EXCL | _O_BINARY | _O_NOINHERIT,
+                  _S_IREAD | _S_IWRITE);
+}
+
+std::int64_t write_some(const int fd, const void* data,
+                        const std::size_t bytes) noexcept {
+  constexpr std::size_t chunk_limit = std::size_t{1} << 30;
+  return ::_write(fd, data,
+                  static_cast<unsigned int>(std::min(bytes, chunk_limit)));
+}
+
+bool seek_file(const int fd, const file_offset offset) noexcept {
+  return ::_lseeki64(fd, offset, SEEK_SET) >= 0;
+}
+
+bool sync_file(const int fd) noexcept { return ::_commit(fd) == 0; }
+
+bool close_file(const int fd) noexcept { return ::_close(fd) == 0; }
+
+long long process_id() noexcept { return ::_getpid(); }
+
+// A directory cannot be opened for flushing through the CRT, and NTFS
+// journals the rename itself.
+void sync_directory(const std::filesystem::path&) noexcept {}
+#else
+using file_offset = off_t;
+
+int open_new_file(const std::filesystem::path& path) noexcept {
+  return ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+}
+
+std::int64_t write_some(const int fd, const void* data,
+                        const std::size_t bytes) noexcept {
+  return ::write(fd, data, bytes);
+}
+
+bool seek_file(const int fd, const file_offset offset) noexcept {
+  return ::lseek(fd, offset, SEEK_SET) >= 0;
+}
+
+bool sync_file(const int fd) noexcept { return ::fsync(fd) == 0; }
+
+bool close_file(const int fd) noexcept { return ::close(fd) == 0; }
+
+long long process_id() noexcept { return ::getpid(); }
+
+void sync_directory(const std::filesystem::path& directory) noexcept {
+  const int directory_fd = ::open(directory.c_str(), O_RDONLY);
+  if (directory_fd >= 0) {
+    (void)::fsync(directory_fd);
+    (void)::close(directory_fd);
+  }
+}
+#endif
 
 [[nodiscard]] std::uint64_t checksum_avalanche(std::uint64_t value) noexcept {
   value ^= value >> 33;
@@ -110,7 +228,7 @@ CachePayload map_cache_file(const std::filesystem::path& path) {
 bool write_all_fd(const int fd, const void* data, std::size_t bytes) noexcept {
   const auto* input = static_cast<const unsigned char*>(data);
   while (bytes != 0) {
-    const ssize_t count = ::write(fd, input, bytes);
+    const std::int64_t count = write_some(fd, input, bytes);
     if (count < 0 && errno == EINTR) {
       continue;
     }
@@ -124,6 +242,15 @@ bool write_all_fd(const int fd, const void* data, std::size_t bytes) noexcept {
 }
 
 } // namespace
+
+void release_cache_mapping(void* mapping,
+                           [[maybe_unused]] const std::size_t mapping_size) noexcept {
+#ifdef _WIN32
+  (void)::UnmapViewOfFile(mapping);
+#else
+  (void)::munmap(mapping, mapping_size);
+#endif
+}
 
 // The root is resolved at every construction, so a test or a caller may
 // change `CDFMM_CACHE_DIR` between plans.  The `v1` subdirectory versions the
@@ -346,6 +473,14 @@ namespace {
   return header;
 }
 
+#ifdef _WIN32
+// No pwrite: the stream is the only user of the descriptor, and the header is
+// the last thing written to it, so moving the file position is harmless.
+bool pwrite_all_fd(const int fd, const void* data, const std::size_t bytes,
+                   const file_offset offset) noexcept {
+  return seek_file(fd, offset) && write_all_fd(fd, data, bytes);
+}
+#else
 bool pwrite_all_fd(const int fd, const void* data, std::size_t bytes,
                    off_t offset) noexcept {
   const auto* input = static_cast<const unsigned char*>(data);
@@ -363,6 +498,7 @@ bool pwrite_all_fd(const int fd, const void* data, std::size_t bytes,
   }
   return true;
 }
+#endif
 
 } // namespace
 
@@ -383,16 +519,19 @@ CacheFileStream::CacheFileStream(const std::filesystem::path& path,
   const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
   const std::uint64_t unique =
       temporary_counter.fetch_add(1, std::memory_order_relaxed);
-  state.temporary = path.string() + ".tmp." + std::to_string(::getpid()) + "." +
+  // Appended to the path itself rather than to path.string(), which on Windows
+  // would round-trip the name through the narrow code page.
+  state.temporary = path;
+  state.temporary += ".tmp." + std::to_string(process_id()) + "." +
       std::to_string(stamp) + "." + std::to_string(unique);
-  state.fd = ::open(state.temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  state.fd = open_new_file(state.temporary);
   if (state.fd < 0) {
     state.failed = true;
     return;
   }
   // The payload follows the header, which is written once its size and
   // checksum are known.
-  if (::lseek(state.fd, static_cast<off_t>(state.payload_offset), SEEK_SET) < 0) {
+  if (!seek_file(state.fd, static_cast<file_offset>(state.payload_offset))) {
     state.failed = true;
   }
 }
@@ -400,7 +539,7 @@ CacheFileStream::CacheFileStream(const std::filesystem::path& path,
 CacheFileStream::~CacheFileStream() {
   State& state = *state_;
   if (state.fd >= 0) {
-    (void)::close(state.fd);
+    (void)close_file(state.fd);
   }
   if (!state.committed && !state.temporary.empty()) {
     std::error_code error;
@@ -440,8 +579,8 @@ std::size_t CacheFileStream::commit() noexcept {
   } catch (...) {
     return 0;
   }
-  const bool fsync_ok = ::fsync(state.fd) == 0;
-  const bool close_ok = ::close(state.fd) == 0;
+  const bool fsync_ok = sync_file(state.fd);
+  const bool close_ok = close_file(state.fd);
   state.fd = -1;
   if (!fsync_ok || !close_ok) {
     return 0;
@@ -453,11 +592,7 @@ std::size_t CacheFileStream::commit() noexcept {
     return std::filesystem::exists(state.path) ? total : 0;
   }
   state.committed = true;
-  const int directory_fd = ::open(state.path.parent_path().c_str(), O_RDONLY);
-  if (directory_fd >= 0) {
-    (void)::fsync(directory_fd);
-    (void)::close(directory_fd);
-  }
+  sync_directory(state.path.parent_path());
   return total;
 }
 

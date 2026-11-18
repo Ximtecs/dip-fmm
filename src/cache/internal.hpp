@@ -13,8 +13,6 @@
 #include "cdfmm/tree/static_topology.hpp"
 #include "cdfmm/tree/uniform_tree.hpp"
 
-#include <sys/mman.h>
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -75,7 +73,13 @@ struct CacheDescriptor {
   std::string geometry_hash{};
 };
 
+// Releases a mapping created by io.cpp, which owns the platform mapping API
+// (mmap on POSIX, a file-mapping view on Windows).
+void release_cache_mapping(void* mapping, std::size_t mapping_size) noexcept;
+
 // Read-only mapping of a complete cache file plus the selected payload range.
+// A null mapping means "no file"; io.cpp never constructs a payload from a
+// failed mapping.
 class CachePayload {
 public:
   CachePayload() = default;
@@ -99,7 +103,7 @@ public:
   ~CachePayload() { reset(); }
 
   [[nodiscard]] std::span<const unsigned char> full_bytes() const noexcept {
-    if (mapping_ == MAP_FAILED || mapping_ == nullptr) {
+    if (mapping_ == nullptr) {
       return {};
     }
     return {static_cast<const unsigned char*>(mapping_), mapping_size_};
@@ -120,10 +124,10 @@ public:
 
 private:
   void reset() noexcept {
-    if (mapping_ != MAP_FAILED && mapping_ != nullptr && mapping_size_ != 0) {
-      (void)::munmap(mapping_, mapping_size_);
+    if (mapping_ != nullptr && mapping_size_ != 0) {
+      release_cache_mapping(mapping_, mapping_size_);
     }
-    mapping_ = MAP_FAILED;
+    mapping_ = nullptr;
     mapping_size_ = 0;
     payload_offset_ = 0;
     payload_size_ = 0;
@@ -134,13 +138,13 @@ private:
     mapping_size_ = other.mapping_size_;
     payload_offset_ = other.payload_offset_;
     payload_size_ = other.payload_size_;
-    other.mapping_ = MAP_FAILED;
+    other.mapping_ = nullptr;
     other.mapping_size_ = 0;
     other.payload_offset_ = 0;
     other.payload_size_ = 0;
   }
 
-  void* mapping_{MAP_FAILED};
+  void* mapping_{nullptr};
   std::size_t mapping_size_{0};
   std::size_t payload_offset_{0};
   std::size_t payload_size_{0};

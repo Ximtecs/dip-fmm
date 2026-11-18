@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-#include <unistd.h>
+#include "posix_compat.hpp"
 
 #include "cdfmm/uniform_fmm.hpp"
 #include "fmm/p2p_construction.hpp"

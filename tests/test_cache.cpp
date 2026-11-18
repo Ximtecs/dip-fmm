@@ -12,7 +12,7 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <unistd.h>
+#include "posix_compat.hpp"
 
 #include "cdfmm/uniform_fmm.hpp"
 #include "cache/internal.hpp"
